@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { getToasts } from "../app/toast/toastStore";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -2368,6 +2369,155 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
+  });
+
+  it("scopes right-click to the multi-selection: bulk menu inside it, the row's own menu outside it", async () => {
+    const atRest = workMocks.makeTerminalSession("chat-at-rest", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const waiting = workMocks.makeTerminalSession("chat-waiting", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+      pendingInputItemId: "input-1",
+    });
+    const outside = workMocks.makeTerminalSession("chat-outside", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { settle, delete: vi.fn() },
+        agentChat: { delete: vi.fn() },
+      },
+    });
+    const sessions = [atRest, waiting, outside];
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions,
+      visibleSessions: sessions,
+      endedFiltered: sessions,
+      filtered: sessions,
+      sessionsGroupedByLane: new Map([["lane-primary", sessions]]),
+    };
+
+    render(<TerminalsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-at-rest" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-waiting" }), { metaKey: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-waiting" }));
+    const bulk = await screen.findByRole("menu", { name: "2 selected sessions" });
+    expect(screen.queryByRole("button", { name: "context delete chat chat-waiting" })).toBeNull();
+
+    // Bulk settle files away only the at-rest row; the one waiting on the user
+    // keeps its pending input.
+    const settleRow = within(bulk).getByRole("menuitem", { name: /Settle/ });
+    expect(settleRow.textContent).toContain("1 of 2");
+    fireEvent.click(settleRow);
+    await waitFor(() => expect(settle).toHaveBeenCalledTimes(1));
+    expect(settle.mock.calls[0]).toEqual(["chat-at-rest"]);
+
+    // A refused clipboard write says so instead of closing silently.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-at-rest" }));
+    fireEvent.click(within(await screen.findByRole("menu", { name: "2 selected sessions" }))
+      .getByRole("menuitem", { name: "Copy session IDs" }));
+    await waitFor(() => expect(getToasts().some((toast) => toast.title === "Could not copy session IDs")).toBe(true));
+    expect(writeText).toHaveBeenCalledWith("chat-at-rest\nchat-waiting");
+
+    // A row outside the selection keeps its own single-session menu.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-outside" }));
+    expect(await screen.findByRole("button", { name: "context delete chat chat-outside" })).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "2 selected sessions" })).toBeNull();
+  });
+
+  it("shift-selects a range from the open row when the selection anchor has left the screen", async () => {
+    const one = workMocks.makeTerminalSession("chat-range-1", "lane-primary", "codex-chat");
+    const two = workMocks.makeTerminalSession("chat-range-2", "lane-primary", "codex-chat");
+    const three = workMocks.makeTerminalSession("chat-range-3", "lane-primary", "codex-chat");
+    const sessions = [one, two, three];
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions,
+      visibleSessions: sessions,
+      runningFiltered: sessions,
+      filtered: sessions,
+      sessionsGroupedByLane: new Map([["lane-primary", sessions]]),
+      selectedSessionId: "chat-range-2",
+    };
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const click = (id: string, event: Partial<React.MouseEvent>, visible: string[]) => act(() => {
+      sessionListPaneProps.latest?.onSelectSession(id, {
+        shiftKey: false, metaKey: false, ctrlKey: false, ...event,
+      } as React.MouseEvent, visible);
+    });
+    // The anchor is chat-range-1; by the next shift-click its lane has folded
+    // out of the visible list, so the anchor is not part of `visible`.
+    click("chat-range-1", {}, ["chat-range-1", "chat-range-2", "chat-range-3"]);
+    click("chat-range-3", { shiftKey: true }, ["chat-range-2", "chat-range-3"]);
+
+    await waitFor(() => {
+      const selected = (sessionListPaneProps.latest as unknown as { selectedSessionIds?: Set<string> })
+        .selectedSessionIds;
+      expect(selected ? [...selected].sort() : null).toEqual(["chat-range-2", "chat-range-3"]);
+    });
+    // The range branch selects; it never opens the clicked row off-screen.
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalledWith("chat-range-3");
+  });
+
+  it("offers Lanes bulk actions only for sessions in the tab's own roster with a lane it can manage", async () => {
+    const managed = workMocks.makeTerminalSession("chat-managed", "lane-background", "codex-chat");
+    // Shown as a local row but not in the tab's own roster (a runtime-pinned row).
+    const pinnedElsewhere = workMocks.makeTerminalSession("chat-pinned-elsewhere", "lane-background-2", "codex-chat");
+    // In the roster, but its lane is not one the Work tab knows about.
+    const unknownLane = workMocks.makeTerminalSession("chat-unknown-lane", "lane-gone", "codex-chat");
+    const backgroundTwo = { ...workMocks.baseWork.lanes[1]!, id: "lane-background-2", name: "Background Two" };
+    const navigate = vi.fn();
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      navigate,
+      lanes: [workMocks.baseWork.lanes[0]!, workMocks.baseWork.lanes[1]!, backgroundTwo],
+      sessions: [managed, unknownLane],
+      visibleSessions: [managed, pinnedElsewhere, unknownLane],
+      runningFiltered: [managed, pinnedElsewhere, unknownLane],
+      filtered: [managed, pinnedElsewhere, unknownLane],
+      sessionsGroupedByLane: new Map([
+        ["lane-background", [managed]],
+        ["lane-background-2", [pinnedElsewhere]],
+        ["lane-gone", [unknownLane]],
+      ]),
+    };
+
+    render(<TerminalsPage />);
+    for (const id of ["chat-managed", "chat-pinned-elsewhere", "chat-unknown-lane"]) {
+      fireEvent.click(await screen.findByRole("button", { name: `select ${id}` }), { metaKey: true });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-managed" }));
+
+    const bulk = await screen.findByRole("menu", { name: "3 selected sessions" });
+    fireEvent.keyDown(within(bulk).getByTestId("session-bulk-menu-lanes"), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage…" }));
+
+    // Only the roster lane on a known lane is batched; the pinned-elsewhere and
+    // unknown-lane rows are reported as out of reach instead of silently joining.
+    await waitFor(() => expect(navigate).toHaveBeenCalledTimes(1));
+    const url = navigate.mock.calls[0]![0] as string;
+    expect(url).toContain("action=batch");
+    expect(url).toContain("laneIds=lane-background");
+    expect(url).not.toContain("lane-background-2");
+    expect(url).not.toContain("lane-gone");
   });
 
   const studioBindingForDelete = STUDIO_BINDING;

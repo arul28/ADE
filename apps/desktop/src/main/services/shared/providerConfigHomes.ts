@@ -78,7 +78,7 @@ export function qwenConfigHome(args: HomeArg = {}): string {
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".qwen");
 }
 
-/** `COPILOT_HOME` names the config directory itself; `--config-dir` is its flag twin. */
+/** `COPILOT_HOME` names the config directory itself (the `--config-dir` flag is deprecated). */
 export function copilotConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).COPILOT_HOME);
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".copilot");

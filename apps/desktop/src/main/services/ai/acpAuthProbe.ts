@@ -238,7 +238,7 @@ export async function probeAcpProviderAuth(
       ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
     });
     try {
-      const { response } = await initializeAcpConnection({
+      const response = await initializeAcpConnection({
         connection,
         dialect,
         timeoutMs: PROBE_TIMEOUT_MS,

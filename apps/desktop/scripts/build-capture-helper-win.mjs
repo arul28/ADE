@@ -47,13 +47,40 @@ fs.mkdirSync(outputRoot, { recursive: true });
 // Every spawn below passes `windowsHide: true`, including the two bare probes.
 // Omitting it is the documented Windows failure in `WINDOWS_PORT.md`: a console
 // window flashes up for each probe and can outlive the run that opened it.
+let compilerEnv = process.env;
 function hasTool(command) {
-  const probe = spawnSync(command, ["--version"], { stdio: "ignore", shell: false, windowsHide: true });
+  const probe = spawnSync(command, ["--version"], { stdio: "ignore", shell: false, windowsHide: true, env: compilerEnv });
   if (!probe.error) return true;
   // cl.exe has no --version and exits non-zero on a bare invocation, but it
   // still runs; `error` is only set when the executable could not be spawned.
-  const bare = spawnSync(command, [], { stdio: "ignore", shell: false, windowsHide: true });
+  const bare = spawnSync(command, [], { stdio: "ignore", shell: false, windowsHide: true, env: compilerEnv });
   return !bare.error;
+}
+
+// Match the Windows Desktop driver build: ordinary shells can discover the
+// installed MSVC/SDK environment without a Developer Command Prompt.
+if (!hasTool("cl.exe")) {
+  const vswhere = path.join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Microsoft Visual Studio", "Installer", "vswhere.exe");
+  if (fs.existsSync(vswhere)) {
+    const installation = execFileSync(vswhere, ["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], { encoding: "utf8", windowsHide: true }).trim();
+    const devCommand = path.join(installation, "Common7", "Tools", "VsDevCmd.bat");
+    if (installation && fs.existsSync(devCommand) && !/["\r\n%]/.test(devCommand)) {
+      const environment = execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"call "${devCommand}" -arch=x64 -host_arch=x64 >nul && set"`], { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true });
+      compilerEnv = { ...process.env };
+      for (const line of environment.split(/\r?\n/)) {
+        const equals = line.indexOf("=");
+        if (equals > 0) {
+          const key = line.slice(0, equals);
+          // Windows treats environment names as case-insensitive. Passing
+          // both PATH and Path makes Node select one and can discard MSVC.
+          for (const existing of Object.keys(compilerEnv)) {
+            if (existing.toLowerCase() === key.toLowerCase()) delete compilerEnv[existing];
+          }
+          compilerEnv[key] = line.slice(equals + 1);
+        }
+      }
+    }
+  }
 }
 
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-capture-helper-"));
@@ -78,7 +105,7 @@ try {
       `/Fo:${path.join(scratchDir, "main.obj")}`,
       "/link",
       "/SUBSYSTEM:CONSOLE",
-    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true });
+    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true, env: compilerEnv });
   } else {
     const compiler = hasTool("clang++") ? "clang++" : hasTool("g++") ? "g++" : null;
     if (!compiler) {
@@ -101,7 +128,7 @@ try {
       // every import library itself.
       "-lgdiplus", "-lgdi32", "-luser32", "-ldwmapi", "-lole32",
       "-static",
-    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true });
+    ], { stdio: "inherit", cwd: scratchDir, windowsHide: true, env: compilerEnv });
   }
 
   if (!fs.existsSync(temporaryOutput)) {

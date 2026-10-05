@@ -24,6 +24,8 @@ type ForeignLaneContextMenuProps = {
   onStartChat: () => void;
   onManage: () => void;
   onOpenInLanes: () => void;
+  /** History's commit graph on this lane, read from its machine. */
+  onOpenHistory: () => void;
 };
 
 function branchNameFromRef(ref: string | null | undefined): string {
@@ -41,6 +43,7 @@ export function ForeignLaneContextMenu({
   onStartChat,
   onManage,
   onOpenInLanes,
+  onOpenHistory,
 }: ForeignLaneContextMenuProps) {
   const { ref, position } = useClampedFixedPosition(
     { x, y },
@@ -118,6 +121,9 @@ export function ForeignLaneContextMenu({
       </HoverButton>
       <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenInLanes}>
         Open in Lanes
+      </HoverButton>
+      <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenHistory}>
+        Commit history
       </HoverButton>
       {online && openIn ? (
         <OpenInSubmenu

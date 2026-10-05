@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
+import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
+import { findCodexThreadRolloutPath, uuidV7TimestampMs } from "./codexSubagentUsage";
 
 /**
  * Copies one provider thread from one local account's config home to another,
@@ -45,7 +46,16 @@ async function copyFileReplacing(sourcePath: string, targetPath: string): Promis
   }
 }
 
-/** Finds `<home>/projects/*\/<id>.jsonl`. The project folder name is the CLI's own cwd slug. */
+/**
+ * Where a Claude thread can live: `<home>/projects/<cwd slug>/<id>.jsonl`, one
+ * candidate per project folder. The folder name is the CLI's own cwd slug.
+ */
+function claudeThreadCandidates(projectsDir: string, entries: readonly fs.Dirent[], sessionId: string): string[] {
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(projectsDir, entry.name, `${sessionId}.jsonl`));
+}
+
 async function findClaudeThreadFile(configHome: string, sessionId: string): Promise<string | null> {
   const projectsDir = path.join(configHome, "projects");
   let entries: fs.Dirent[];
@@ -55,9 +65,7 @@ async function findClaudeThreadFile(configHome: string, sessionId: string): Prom
     return null;
   }
   let newest: { filePath: string; mtimeMs: number } | null = null;
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.join(projectsDir, entry.name, `${sessionId}.jsonl`);
+  for (const candidate of claudeThreadCandidates(projectsDir, entries, sessionId)) {
     try {
       const stat = await fs.promises.stat(candidate);
       if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: candidate, mtimeMs: stat.mtimeMs };
@@ -66,6 +74,43 @@ async function findClaudeThreadFile(configHome: string, sessionId: string): Prom
     }
   }
   return newest?.filePath ?? null;
+}
+
+/**
+ * Whether one config home holds this thread, so a chat that never recorded its
+ * account can be tied back to the account its conversation lives in.
+ */
+export function providerThreadIsInHome(
+  provider: "claude" | "codex",
+  threadId: string,
+  configHome: string,
+): boolean {
+  const id = threadId.trim();
+  if (!id || !configHome.trim()) return false;
+  if (provider === "codex") {
+    // A v7 thread id names its own day directory, so only that day is listed.
+    // Only an older non-v7 id needs the full history walk.
+    if (uuidV7TimestampMs(id) != null) return findCodexThreadRolloutPath(configHome, id) !== null;
+    return findCodexRolloutPathBySessionId(id, { env: { CODEX_HOME: configHome } }) !== null;
+  }
+  const projectsDir = path.join(configHome, "projects");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return claudeThreadCandidates(projectsDir, entries, id).some((candidate) => fs.existsSync(candidate));
+}
+
+/** The account whose config home holds this thread: the default first, then the rest. */
+export function findInstanceHoldingThread<T extends { configHome: string; isDefault: boolean }>(
+  provider: "claude" | "codex",
+  threadId: string,
+  instances: readonly T[],
+): T | null {
+  const ordered = [...instances].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  return ordered.find((instance) => providerThreadIsInHome(provider, threadId, instance.configHome)) ?? null;
 }
 
 async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {

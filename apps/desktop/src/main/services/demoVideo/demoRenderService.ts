@@ -17,6 +17,10 @@
  * - The raw file never outlives this call when a file is returned: it is
  *   deleted after a render, or it becomes the output on the fallback. On a
  *   thrown error it is left for the caller, which decides.
+ * - A raw MP4 about to be filed as it is is read first: one that holds
+ *   nothing to show (empty, never finalised, no frames) throws
+ *   {@link DemoRecordingUnusableError} and is never filed as proof; any other
+ *   reports the length read from its own index, not zero.
  */
 
 import fs from "node:fs";
@@ -33,6 +37,10 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import { demoMetadataFor, planDemo, planPlainDemo, refitPlanForSize } from "../../../shared/demoVideo/demoPlanner";
 import type { Logger } from "../logging/logger";
+import { type DemoMp4Inspection, inspectDemoMp4 } from "./demoMp4Source";
+
+/** The recording holds nothing to show. The caller must not file it as proof. */
+export class DemoRecordingUnusableError extends Error {}
 
 /** A recording's three lengths: the video, the real time it covers, and what was cut. */
 export type DemoRecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
@@ -116,6 +124,8 @@ export async function produceDemoVideo(args: {
   track: DemoTrack | null;
   plain: boolean;
   engines: Array<DemoEngine | null | undefined>;
+  /** Why no engine is here, when the caller knows (`DemoEngineSet.missingEngineReason`). */
+  missingEngineReason?: string | null;
   logger: Logger;
   signal?: AbortSignal;
   onProgress?: (fraction: number) => void;
@@ -126,9 +136,15 @@ export async function produceDemoVideo(args: {
   const engine = args.engines.find((candidate): candidate is DemoEngine => Boolean(candidate?.canRead(rawPath))) ?? null;
   const rawIsPlayable = PLAYABLE_RAW.has(path.extname(rawPath).toLowerCase());
   const startedAt = Date.now();
-
-  const fileRawAsIs = (reason: string, analysis: DemoAnalysis | null): ProducedDemoVideo => {
+  const fileRawAsIs = async (reason: string, analysis: DemoAnalysis | null): Promise<ProducedDemoVideo> => {
     if (!rawIsPlayable) throw new Error(`The demo video could not be made: ${reason}`);
+    // The movie's own index: an empty or unfinished one is never proof, and
+    // one with no analysis still reports its real length, not zero.
+    const inspection: DemoMp4Inspection = await inspectDemoMp4(rawPath);
+    if (inspection.status === "unusable") {
+      logger.warn("demo_video.unusable_raw", { reason: inspection.reason, rawPath });
+      throw new DemoRecordingUnusableError(`The recording was not filed. ${inspection.reason}`);
+    }
     // The raw file answers to the same 10 MB limit as a demo. One over it is
     // left for the caller, which keeps it and reports why.
     if (fs.statSync(rawPath).size > DEMO_MAX_BYTES) {
@@ -136,7 +152,7 @@ export async function produceDemoVideo(args: {
     }
     removeQuietly(outputPath);
     if (path.resolve(rawPath) !== path.resolve(outputPath)) fs.renameSync(rawPath, outputPath);
-    const seconds = analysis?.durationSeconds ?? 0;
+    const seconds = analysis?.durationSeconds ?? (inspection.status === "ok" ? inspection.durationSeconds : 0);
     logger.warn("demo_video.fallback_raw", { reason, rawPath });
     return {
       path: outputPath,
@@ -156,8 +172,10 @@ export async function produceDemoVideo(args: {
   };
 
   if (!engine) {
-    return fileRawAsIs(
-      rawIsPlayable ? "this machine has no demo engine, so the recording is filed as it was recorded" : "no engine on this machine can read the recording",
+    const missing = args.missingEngineReason?.trim();
+    return await fileRawAsIs(
+      missing
+        || (rawIsPlayable ? "this machine has no demo engine, so the recording is filed as it was recorded" : "no engine on this machine can read the recording"),
       null,
     );
   }
@@ -167,7 +185,7 @@ export async function produceDemoVideo(args: {
     analysis = await engine.analyze(rawPath, { signal: args.signal });
   } catch (error) {
     if (args.signal?.aborted) throw error;
-    return fileRawAsIs(`the recording could not be read (${errorText(error)})`, null);
+    return await fileRawAsIs(`the recording could not be read (${errorText(error)})`, null);
   }
 
   const attempts: Array<{ plain: boolean; plan: () => DemoPlan }> = args.plain
@@ -213,5 +231,5 @@ export async function produceDemoVideo(args: {
       logger.warn("demo_video.render_failed", { engine: engine.id, plain: attempt.plain, error: errorText(error) });
     }
   }
-  return fileRawAsIs(`the video could not be rendered (${errorText(lastError)})`, analysis);
+  return await fileRawAsIs(`the video could not be rendered (${errorText(lastError)})`, analysis);
 }

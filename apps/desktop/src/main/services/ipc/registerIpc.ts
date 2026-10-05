@@ -139,6 +139,8 @@ import {
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
+import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
+import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
   parseProductAnalyticsCapture,
@@ -307,6 +309,7 @@ import type {
   GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   BranchPullRequest,
@@ -514,6 +517,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -532,6 +537,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -695,6 +702,12 @@ import type {
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  SetAdeUsageModelPriceArgs,
+  AdeUsageCostBreakdown,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
   UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
@@ -759,6 +772,7 @@ import type {
   ProviderInstanceProvider,
   ProviderInstanceRemoveResult,
   ProviderInstanceSettings,
+  ProviderLoginStatus,
 } from "../../../shared/types";
 import type {
   ApiCredentialGetArgs,
@@ -879,6 +893,9 @@ import type {
 } from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
+import type { PrWatchService } from "../prs/prWatchService";
+import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
@@ -1233,6 +1250,7 @@ export type AppContext = {
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
+  prWatchService: PrWatchService | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
@@ -6702,6 +6720,12 @@ export function registerIpc({
     return id;
   };
 
+  /** A sign-in field that must arrive as a string; a coerced value never reaches the PTY. */
+  const providerLoginString = (value: unknown, label: string): string => {
+    if (typeof value !== "string") throw new Error(`A provider sign-in ${label} is required.`);
+    return value;
+  };
+
   const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
     if (!isProviderInstanceProvider(value)) {
       throw new Error("A provider account provider must be \"claude\" or \"codex\".");
@@ -6760,6 +6784,32 @@ export function registerIpc({
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
   });
 
+  ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().dismissReplaced(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().start(providerInstanceId(arg), {
+      deviceAuth: providerInstanceArgs(arg).deviceAuth === true,
+    });
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    const args = providerInstanceArgs(arg);
+    return getMachineProviderLoginRunner().submitCode(
+      providerLoginString(args.loginId, "id"),
+      providerLoginString(args.code, "code"),
+    );
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().cancel(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
   ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     return getMachineProviderInstanceStore()
       .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
@@ -6786,10 +6836,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
-    const provider = providerInstanceArgs(arg).provider;
-    return getMachineProviderInstanceStore().refreshAccounts(
-      provider == null ? undefined : providerInstanceProvider(provider),
-    );
+    const args = providerInstanceArgs(arg);
+    const provider = args.provider == null ? undefined : providerInstanceProvider(args.provider);
+    const instanceId = typeof args.instanceId === "string" ? args.instanceId : undefined;
+    return refreshProviderAccounts({ provider, instanceId }, getCtx().usageTrackingService);
   });
 
 
@@ -6915,6 +6965,39 @@ export function registerIpc({
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
+
+  ipcMain.handle(
+    IPC.usageGetCostBreakdown,
+    async (_event, arg: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> => {
+      if (!isRecord(arg)) throw new Error("usage cost breakdown expects an object payload.");
+      return (await getCtx().usageTrackingService?.getCostBreakdown(arg)) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelDetail,
+    async (_event, arg: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> => {
+      if (!isRecord(arg) || typeof arg.provider !== "string" || typeof arg.model !== "string") {
+        throw new Error("usage model detail needs a provider and a model.");
+      }
+      return getCtx().usageTrackingService?.getModelDetail(arg) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelPriceOverrides,
+    async (): Promise<AdeUsagePriceOverrides | null> => getCtx().usageTrackingService?.getModelPriceOverrides() ?? null,
+  );
+
+  ipcMain.handle(
+    IPC.usageSetModelPriceOverride,
+    async (_event, arg: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> => {
+      const service = getCtx().usageTrackingService;
+      if (!service) throw new Error("Model prices are not available on this host.");
+      if (!isRecord(arg)) throw new Error("usage set model price expects an object payload.");
+      return service.setModelPriceOverride(arg);
+    },
+  );
 
   /**
    * Spend one banked reset credit.
@@ -7791,6 +7874,22 @@ export function registerIpc({
       throw new Error("Agent chat edit steer text must be a string");
     }
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
+  };
+
+  const parseAgentChatMoveSteerArgs = (
+    value: unknown,
+  ): AgentChatMoveSteerArgs => {
+    const record = requireRecord(value, "Agent chat move steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat move steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat move steer steerId must be a non-empty string");
+    }
+    if (typeof record.toIndex !== "number" || !Number.isInteger(record.toIndex) || record.toIndex < 0) {
+      throw new Error("Agent chat move steer toIndex must be a non-negative integer");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), toIndex: record.toIndex };
   };
 
   const parseAgentChatDispatchSteerArgs = (
@@ -8704,6 +8803,11 @@ export function registerIpc({
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
+  ipcMain.handle(IPC.agentChatMoveSteer, async (_event, arg: unknown): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    await ctx.agentChatService.moveSteer(parseAgentChatMoveSteerArgs(arg));
+  });
+
   ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
@@ -8728,6 +8832,18 @@ export function registerIpc({
       ...(rawMode ? { mode: rawMode } : {}),
     };
     return await ctx.agentChatService.interrupt(request);
+  });
+
+  ipcMain.handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("A chat session id is required.");
+    }
+    return await ctx.agentChatService.restartSession({
+      sessionId: record.sessionId,
+      ...(record.stopFirst === true ? { stopFirst: true } : {}),
+    });
   });
 
   ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
@@ -8821,6 +8937,11 @@ export function registerIpc({
       await ctx.agentChatService.dismissPendingInput(arg);
     },
   );
+
+  ipcMain.handle(IPC.agentChatLaunchDefaults, async (): Promise<AgentChatLaunchDefaults | null> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getLaunchDefaults();
+  });
 
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();
@@ -8948,6 +9069,14 @@ export function registerIpc({
     ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.continueUsageLimitOnAlternate(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatSwitchAccount,
+    async (_event, arg: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.switchAccount(arg);
     },
   );
 
@@ -9804,6 +9933,12 @@ export function registerIpc({
     ensureMacDesktop().recheckPermissions(arg));
   ipcMain.handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
     ensureMacDesktop().requestPermission(arg));
+  ipcMain.handle(IPC.macDesktopSetupWindows, async (_event, arg) =>
+    ensureMacDesktop().setupWindowsDesktop(arg ?? { allowPrompt: false }));
+  ipcMain.handle(IPC.macDesktopTakeoverWindows, async (_event, arg) =>
+    ensureMacDesktop().takeoverWindowsDesktop(arg));
+  ipcMain.handle(IPC.macDesktopUseSharedDesktop, async (_event, arg) =>
+    ensureMacDesktop().start({ ...arg, seatMode: "shared", sharedDesktopConsent: true }));
   ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
   ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
   ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));
@@ -10535,6 +10670,13 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
+    const ctx = ensureDiffContext();
+    return await withIpcTiming(ctx, "diff.getBranchChanges", async () => await ctx.diffService.getBranchChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
+  });
+
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(
@@ -10786,7 +10928,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
+  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
   });
@@ -12109,6 +12251,26 @@ export function registerIpc({
     IPC.prsListChatSessionsForPr,
     async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
       ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
+  );
+
+  ipcMain.handle(
+    IPC.prsSetChatWatch,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
+      return ensurePrMutationContext().prService.setChatWatch({
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        mode: parsePrWatchMode(prChatLinkOptionalString(raw, "mode")),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsGetChatWatches,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary[]> =>
+      ensurePrReadContext().prService.getChatWatches({
+        sessionId: prChatLinkOptionalString(raw, "sessionId") ?? undefined,
+        prId: prChatLinkOptionalString(raw, "prId") ?? undefined,
+      }),
   );
 
   ipcMain.handle(

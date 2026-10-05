@@ -393,20 +393,12 @@ struct LinearConfigRow: View {
 
 // MARK: - Model name prettifier
 
-/// Human label for a model id, reusing the Work catalog's known-name table with
-/// a Claude-family fallback (mirrors the composer's `prettyNewChatModelName`).
+/// Human label for a model id, reusing the Work catalog's known-name table and
+/// its canonical route-aware prettifier (`workPrettyModelNameFromId`), so a
+/// gateway id reads as its model rather than as a path.
 func linearPrettyModelName(_ modelId: String) -> String {
   let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Choose model" }
   if let known = workKnownModelDisplayName(trimmed) { return known }
-  if trimmed.lowercased().hasPrefix("claude-") {
-    let tail = trimmed.dropFirst("claude-".count)
-    let joined = tail.split(separator: "-").map { part -> String in
-      let s = String(part)
-      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-      return s.prefix(1).uppercased() + s.dropFirst()
-    }.joined(separator: " ")
-    return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
-  }
-  return trimmed
+  return workPrettyModelNameFromId(trimmed) ?? trimmed
 }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runGit } from "../git/git";
+import { parseNameStatusRecords, runGit } from "../git/git";
 
 /**
  * What a turn changed, for the "Files changed" row at the end of it.
@@ -86,24 +86,7 @@ export function parseNumstatZ(stdout: string): TurnDiffFile[] {
  * the one the map is keyed by.
  */
 export function parseNameStatusZ(stdout: string): Map<string, string> {
-  const tokens = stdout.split("\0");
-  const statuses = new Map<string, string>();
-  for (let index = 0; index < tokens.length; index += 1) {
-    const code = tokens[index];
-    if (!code) continue;
-    const letter = code.trim().charAt(0);
-    if (!letter) continue;
-    const first = tokens[index + 1] ?? "";
-    index += 1;
-    if (letter === "R" || letter === "C") {
-      const destination = tokens[index + 1] ?? "";
-      index += 1;
-      if (destination) statuses.set(destination, letter);
-      continue;
-    }
-    if (first) statuses.set(first, letter);
-  }
-  return statuses;
+  return new Map(parseNameStatusRecords(stdout).map((record) => [record.path, record.letter]));
 }
 
 /**
@@ -198,15 +181,16 @@ export function parseUntrackedPorcelainZ(stdout: string): string[] {
 export function countAddedLines(contents: Buffer): number {
   if (contents.length === 0) return 0;
   if (contents.includes(0)) return 0; // binary; git reports "-" here
+  // `indexOf` is a native scan; iterating a Buffer byte by byte cost a busy
+  // brain most of a second per turn on a worktree with large untracked files.
   let lines = 0;
-  for (const byte of contents) {
-    if (byte === 0x0a) lines += 1;
-  }
+  for (let at = contents.indexOf(0x0a); at !== -1; at = contents.indexOf(0x0a, at + 1)) lines += 1;
   if (contents[contents.length - 1] !== 0x0a) lines += 1;
   return lines;
 }
 
-async function untrackedFiles(cwd: string): Promise<TurnDiffFile[]> {
+/** `only`: the paths worth reading; any other untracked file is skipped unread. */
+async function untrackedFiles(cwd: string, only?: ReadonlySet<string>): Promise<TurnDiffFile[]> {
   const status = await runGit(["status", "--porcelain=v1", "-z", "-uall"], {
     cwd,
     timeoutMs: GIT_TIMEOUT_MS,
@@ -214,6 +198,7 @@ async function untrackedFiles(cwd: string): Promise<TurnDiffFile[]> {
   if (status.exitCode !== 0) return [];
   const files: TurnDiffFile[] = [];
   for (const relativePath of parseUntrackedPorcelainZ(status.stdout)) {
+    if (only && !only.has(relativePath)) continue;
     let additions = 0;
     try {
       const absolute = path.join(cwd, relativePath);
@@ -231,6 +216,20 @@ async function untrackedFiles(cwd: string): Promise<TurnDiffFile[]> {
     files.push({ path: relativePath, additions, deletions: 0, status: "A" });
   }
   return files;
+}
+
+/**
+ * The paths that changed since `beforeTree`: `undefined` when the caller asked
+ * for no scope, `null` when either capture failed.
+ */
+async function touchedSince(
+  cwd: string,
+  beforeTree: WorkingTreeFingerprint | null | undefined,
+): Promise<Set<string> | null | undefined> {
+  if (beforeTree === undefined) return undefined;
+  const afterTree = await captureWorkingTreeFingerprint(cwd);
+  if (!beforeTree || !afterTree) return null;
+  return fingerprintChanges(beforeTree, afterTree);
 }
 
 /**
@@ -279,22 +278,21 @@ export async function collectTurnDiffSummary(args: {
 
   let scoped = files;
   if (uncommitted) {
+    // Only what this turn touched. A capture that failed at either end
+    // (`null`) leaves the turn with no honest scope, and "nothing to show"
+    // beats the whole tree's dirt presented as the turn's work. Scoped first,
+    // so an untracked file the turn never touched is not read just to be
+    // filtered out.
+    const touched = await touchedSince(cwd, beforeTree);
+    if (touched === null) return null;
     // A file git has never seen produces no diff record at all, so the turn
     // that created it would otherwise report zero changes.
     const seen = new Set(files.map((file) => file.path));
-    for (const file of await untrackedFiles(cwd)) {
+    for (const file of await untrackedFiles(cwd, touched)) {
       if (seen.has(file.path)) continue;
       files.push(file);
     }
-    if (beforeTree !== undefined) {
-      // Only what this turn touched. A capture that failed at either end
-      // (`null`) leaves the turn with no honest scope, and "nothing to show"
-      // beats the whole tree's dirt presented as the turn's work.
-      const afterTree = await captureWorkingTreeFingerprint(cwd);
-      if (!beforeTree || !afterTree) return null;
-      const touched = fingerprintChanges(beforeTree, afterTree);
-      scoped = files.filter((file) => touched.has(file.path));
-    }
+    if (touched) scoped = files.filter((file) => touched.has(file.path));
   }
 
   let totalAdditions = 0;

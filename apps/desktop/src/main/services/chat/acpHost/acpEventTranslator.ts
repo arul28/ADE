@@ -44,6 +44,8 @@ import {
   type AcpToolCallContent,
   type AcpToolCallStatus,
   type AcpToolKind,
+  type AcpWireToolCallStatus,
+  type AcpWireToolKind,
 } from "./acpProtocolTypes";
 
 /**
@@ -159,6 +161,7 @@ function textOfContentBlock(block: AcpContentBlock): string {
     case "resource":
       return typeof block.resource.text === "string" ? block.resource.text : "";
     default:
+      // The wire validator admits only these block types.
       return assertNever(block, "acp content block");
   }
 }
@@ -172,8 +175,31 @@ function planStatusToAde(status: AcpPlanEntry["status"]): AgentChatPlanStep["sta
     case "completed":
       return "completed";
     default:
-      return assertNever(status, "acp plan entry status");
+      // A plan status from a newer schema keeps its step, as pending.
+      return "pending";
   }
+}
+
+const ACP_TOOL_KINDS: ReadonlySet<string> = new Set<AcpToolKind>([
+  "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
+]);
+const ACP_TOOL_STATUSES: ReadonlySet<string> = new Set<AcpToolCallStatus>(["pending", "in_progress", "completed", "failed"]);
+
+/**
+ * Narrow a wire tool kind to one ADE knows. Grok reports file writes as
+ * `write`, which is not an ACP kind but is an edit; anything else unknown is
+ * the protocol's own catch-all, so the call still shows as a generic tool.
+ */
+function normalizeToolKind(kind: AcpWireToolKind | null | undefined): AcpToolKind {
+  if (kind == null) return "other";
+  if (kind === "write") return "edit";
+  return ACP_TOOL_KINDS.has(kind) ? (kind as AcpToolKind) : "other";
+}
+
+/** A status from a newer schema has not finished the call, so it reads as in progress. */
+function normalizeToolStatus(status: AcpWireToolCallStatus | null | undefined, fallback: AcpToolCallStatus): AcpToolCallStatus {
+  if (status == null) return fallback;
+  return ACP_TOOL_STATUSES.has(status) ? (status as AcpToolCallStatus) : "in_progress";
 }
 
 function toolStatusToAde(status: AcpToolCallStatus): "running" | "completed" | "failed" {
@@ -302,6 +328,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     status: AcpToolCallStatus,
   ): AgentChatEvent[] => {
     const events: AgentChatEvent[] = [];
+    // The validator only checks that items are records, so an item type from a
+    // newer schema matches none of these and falls through.
     for (const item of content) {
       if (item.type === "content") {
         const text = textOfContentBlock(item.content);
@@ -348,9 +376,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
           }),
         );
         tracked.opened = true;
-        continue;
       }
-      assertNever(item, "acp tool call content");
     }
     return events;
   };
@@ -487,13 +513,13 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       }
 
       case "tool_call": {
-        const kind = update.kind ?? "other";
+        const kind = normalizeToolKind(update.kind);
         const tracked: TrackedToolCall = {
           rowKind: classifyRowKind(kind),
           toolName: update.name?.length ? update.name : update.title,
           title: update.title,
           kind,
-          status: update.status ?? "pending",
+          status: normalizeToolStatus(update.status, "pending"),
           opened: false,
           cwd: "",
           lastOutput: "",
@@ -517,13 +543,13 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         if (!tracked) {
           // An update for a tool call ADE never saw. Adopt it rather than drop
           // it: an agent that restarts mid-turn can skip the opening frame.
-          const kind = update.kind ?? "other";
+          const kind = normalizeToolKind(update.kind);
           const adopted: TrackedToolCall = {
             rowKind: classifyRowKind(kind),
             toolName: update.name?.length ? update.name : update.title ?? update.toolCallId,
             title: update.title ?? update.toolCallId,
             kind,
-            status: update.status ?? "in_progress",
+            status: normalizeToolStatus(update.status, "in_progress"),
             opened: false,
             cwd: "",
             lastOutput: "",
@@ -555,11 +581,11 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         // The row type is fixed once a row is out; before that, a late `kind`
         // still decides it.
         if (update.kind && !tracked.opened) {
-          tracked.kind = update.kind;
-          tracked.rowKind = classifyRowKind(update.kind);
+          tracked.kind = normalizeToolKind(update.kind);
+          tracked.rowKind = classifyRowKind(tracked.kind);
         }
         const previousStatus = tracked.status;
-        if (update.status) tracked.status = update.status;
+        if (update.status) tracked.status = normalizeToolStatus(update.status, previousStatus);
 
         const terminalStatus = tracked.status === "completed" || tracked.status === "failed";
         let commandDetailsChanged = false;

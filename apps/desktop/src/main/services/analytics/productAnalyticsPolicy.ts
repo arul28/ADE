@@ -202,7 +202,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "start",
   "stop",
   "reset_credit_consumed",
+  // A model price set or cleared, a "Map to" added or removed. Never the
+  // model id or the rates.
+  "model_price_changed",
+  "model_mapping_changed",
   "pending_input_dismissed",
+  // A user moved a chat to another Claude/Codex account. Never the accounts.
+  "account_switched",
   "new_lane_launch",
   // One event after Codex realtime answers a chat's voice offer. It is scoped
   // to a chat session locally; no audio, transcript, or voice preferences.
@@ -355,7 +361,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser", "tool_pr", "tool_mac_desktop",
+    "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

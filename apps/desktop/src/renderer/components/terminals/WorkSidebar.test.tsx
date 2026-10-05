@@ -826,7 +826,7 @@ describe("WorkSidebar context targets", () => {
     expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
-  it("disables the Apple card when the bound runtime is not a Mac", async () => {
+  it("closes the Apple tab when the bound runtime is not a Mac", async () => {
     window.ade.iosSimulator.getStatus = vi.fn().mockResolvedValue({
       supported: false,
       activeSession: null,
@@ -839,8 +839,7 @@ describe("WorkSidebar context targets", () => {
       onTabChange,
     });
 
-    await waitFor(() => expect(screen.getByText("The runtime for this project is not a Mac")).toBeTruthy());
-    expect(cardFor("Apple Development").disabled).toBe(true);
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     await waitFor(() => expect(onTabChange).toHaveBeenCalledWith(null));

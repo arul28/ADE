@@ -6,10 +6,11 @@ import { localArtifactMediaUrl } from "../../../shared/artifactStreamUrl";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
-  isWorkSurfaceElementMounted,
   useWorkSurfaceElementMounted,
+  useWorkSurfaceMounted,
   workSurfaceKey,
 } from "../../lib/workToolOnScreen";
+import { MAC_DESKTOP_CARD_ON_SCREEN_KEY } from "../work/macDesktopCardGrants";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
@@ -20,10 +21,12 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  * cheap to ignore. One card at a time, the most recent turn's, because a thread
  * that accumulates clips is a thread you scroll past.
  *
- * Never shown while the tools pane shows the lane's Mac Desktop: the person
- * watched the turn happen live there, and a second picture of the same screen
- * popping up in the thread is the duplicate the owner reported on 2026-09-24.
- * A clip that arrives then is dropped, not kept for later.
+ * Never shown while another surface already shows the lane's Mac Desktop —
+ * the tools pane, or the floating player over the chat. The person watched the
+ * turn happen live there, and a second picture of the same screen popping up in
+ * the thread is the duplicate the owner reported on 2026-09-24 (the pane) and
+ * again on 2026-10-05 (the floating player). A clip that arrives then is
+ * dropped, not kept for later.
  *
  * Only rendered when the lane's host is THIS machine. The clip is a file path
  * on the host: pointing a player at a path that exists on another Mac would
@@ -86,11 +89,18 @@ export function ChatMacDesktopTimeLapseCard({
   // this chat's machine.
   const paneKey = laneId ? workSurfaceKey("mac-desktop", workScopeKey, laneId) : null;
   const paneShowsDesktop = useWorkSurfaceElementMounted(paneKey);
-  const paneKeyRef = useRef(paneKey);
-  paneKeyRef.current = paneKey;
+  // The floating player is a second surface for the same screen. It is not
+  // laid out in the pane, so it registers under its own key — and the clip must
+  // hide for it too, or the chat shows two pictures of one desktop (the pane
+  // check alone was the 2026-09-24 duplicate, half fixed).
+  const playerKey = laneId ? workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, workScopeKey, laneId) : null;
+  const playerShowsDesktop = useWorkSurfaceMounted(playerKey);
+  const desktopOnScreen = paneShowsDesktop || playerShowsDesktop;
+  const desktopOnScreenRef = useRef(desktopOnScreen);
+  desktopOnScreenRef.current = desktopOnScreen;
   useEffect(() => {
-    if (paneShowsDesktop) setTimeLapse(null);
-  }, [paneShowsDesktop]);
+    if (desktopOnScreen) setTimeLapse(null);
+  }, [desktopOnScreen]);
 
   useEffect(() => {
     if (!laneId || !sessionId) return;
@@ -104,7 +114,7 @@ export function ChatMacDesktopTimeLapseCard({
       if (event.type !== "time-lapse") return;
       const clip = event.timeLapse;
       if (clip.laneId !== laneId || clip.chatSessionId !== sessionId) return;
-      if (paneKeyRef.current && isWorkSurfaceElementMounted(paneKeyRef.current)) return;
+      if (desktopOnScreenRef.current) return;
       setTimeLapse(clip);
     }, runtimePin);
   }, [laneId, runtimePin, sessionId]);
@@ -130,7 +140,7 @@ export function ChatMacDesktopTimeLapseCard({
     };
   }, [filePath, hostIsLocal, rootPath, runtimePin]);
 
-  if (!timeLapse || !hostIsLocal || !src || paneShowsDesktop) return null;
+  if (!timeLapse || !hostIsLocal || !src || desktopOnScreen) return null;
 
   return (
     <div

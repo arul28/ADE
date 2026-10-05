@@ -14,11 +14,19 @@ import { createSwiftDemoEngine } from "./swiftDemoEngine";
 
 export type DemoEngineSet = {
   engines(): DemoEngine[];
+  /**
+   * Why the desktop app's engine is not here, when this process reaches it
+   * over the bridge and it is missing; null otherwise. A recording filed
+   * uncut says this instead of a generic "no demo engine".
+   */
+  missingEngineReason?(): string | null;
 };
 
 export function createDemoEngineSet(args: {
   logger: Logger;
   getChromiumDemoEngine?: (() => DemoEngine | null) | null;
+  /** Why the desktop app could not attach, when one tried. */
+  getChromiumUnavailableReason?: (() => string | null) | null;
 }): DemoEngineSet {
   let swift: DemoEngine | null | undefined;
   const swiftEngine = (): DemoEngine | null => {
@@ -35,6 +43,13 @@ export function createDemoEngineSet(args: {
       const chromium = args.getChromiumDemoEngine?.() ?? null;
       if (chromium) list.push(chromium);
       return list;
+    },
+    missingEngineReason() {
+      if (!args.getChromiumDemoEngine || args.getChromiumDemoEngine()) return null;
+      const why = args.getChromiumUnavailableReason?.()?.trim();
+      return why
+        ? `the ADE desktop app was not connected to make the demo (${why})`
+        : "the ADE desktop app was not connected to make the demo";
     },
   };
 }

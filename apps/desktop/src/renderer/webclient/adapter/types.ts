@@ -66,3 +66,12 @@ export type AdapterInfra = {
 };
 
 export type AdeNamespace<TName extends keyof Window["ade"]> = Partial<Window["ade"][TName]>;
+
+// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
+// value or a lazy resolver that may throw for calls with no offline shape.
+export type MiscCall = <T>(
+  action: string,
+  args: unknown,
+  fallback: T | (() => T | Promise<T>),
+  idempotent?: boolean,
+) => Promise<T>;

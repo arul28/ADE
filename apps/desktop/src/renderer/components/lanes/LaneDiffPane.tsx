@@ -5,7 +5,7 @@ import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
-import type { FileDiff, FilePatch, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
+import type { FileDiff, FilePatch, GitCommitSummary, LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
@@ -63,11 +63,13 @@ export function LaneDiffPane({
   selectedFileMode,
   selectedCommit,
   liveSync = false,
-  runtimePin = null
+  runtimePin = null,
+  initialCommitFilePath = null,
+  commitHeaderStart = null
 }: {
   laneId: string | null;
   selectedPath: string | null;
-  selectedFileMode: "staged" | "unstaged" | null;
+  selectedFileMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
   liveSync?: boolean;
   /**
@@ -75,6 +77,10 @@ export function LaneDiffPane({
    * (the historical behavior). When set, every diff/git read is routed there.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** The commit file to open first (History opens a commit at the file you clicked). */
+  initialCommitFilePath?: string | null;
+  /** Rendered at the start of the commit header (History puts its Back button here). */
+  commitHeaderStart?: React.ReactNode;
 }) {
   const navigate = useNavigate();
   const pin = runtimePin ?? null;
@@ -228,7 +234,9 @@ export function LaneDiffPane({
       .then((files) => {
         if (cancelled || commitFilesRequestSeq.current !== requestId) return;
         setCommitFiles(files);
-        setSelectedCommitFilePath(files[0] ?? null);
+        setSelectedCommitFilePath(
+          initialCommitFilePath && files.includes(initialCommitFilePath) ? initialCommitFilePath : files[0] ?? null,
+        );
       })
       .catch(() => {
         if (cancelled || commitFilesRequestSeq.current !== requestId) return;
@@ -238,6 +246,8 @@ export function LaneDiffPane({
     return () => {
       cancelled = true;
     };
+    // The initial file only matters when the commit's file list is read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneId, pin, selectedCommit]);
 
   const refreshCommitDiff = React.useCallback(() => {
@@ -296,6 +306,7 @@ export function LaneDiffPane({
       <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
         <div className={HEADER_ROW} style={HEADER_ROW_STYLE}>
           <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            {commitHeaderStart}
             <GitCommit size={14} weight="bold" className="shrink-0" style={{ color: COLORS.textMuted }} aria-hidden />
             <span className="shrink-0 text-[11.5px]" style={{ fontFamily: MONO_FONT, color: COLORS.textMuted }}>{selectedCommit.shortSha}</span>
             <span className="truncate" style={{ color: COLORS.textPrimary }}>{selectedCommit.subject}</span>
@@ -395,11 +406,11 @@ export function LaneDiffPane({
             <span
               className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[11px] font-medium"
               style={{
-                color: selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success,
-                background: `color-mix(in srgb, ${selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success} 13%, transparent)`,
+                color: selectedFileMode === "unstaged" ? COLORS.warning : selectedFileMode === "branch" ? COLORS.accent : COLORS.success,
+                background: `color-mix(in srgb, ${selectedFileMode === "unstaged" ? COLORS.warning : selectedFileMode === "branch" ? COLORS.accent : COLORS.success} 13%, transparent)`,
               }}
             >
-              {selectedFileMode === "unstaged" ? "Unstaged" : "Staged"}
+              {selectedFileMode === "unstaged" ? "Unstaged" : selectedFileMode === "branch" ? "Branch" : "Staged"}
             </span>
             <span className="min-w-0 truncate" title={displayPath}>
               <span style={{ color: COLORS.textDim }}>{splitPath(displayPath).dir}</span>

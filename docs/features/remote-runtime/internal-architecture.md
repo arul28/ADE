@@ -43,7 +43,7 @@ Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for
 
 A window runs one pump for its active binding (`preload.ts`) plus, for every binding it has open but is not bound to, the pinned pumps in `preload/pinnedRuntimeEvents.ts` — one shared PTY pump per pinned binding and one generic pump per pinned chat/project listener. Main keys its subscriptions by `(sender, requestKey)` so those pumps coexist instead of evicting each other (see [ARCHITECTURE §5.4](../../ARCHITECTURE.md#54-event-subscriptions-push-not-poll)), and preload sends `ade.runtime.events.release` when the last pump on a `(binding, category)` stops reading, so a switched-away binding stops streaming immediately rather than at idle expiry.
 
-Each `stream_events` response carries a per-runtime `eventEpoch` UUID minted when the daemon's `eventBuffer` is constructed. The pump compares it against the last seen epoch for its binding; if it changes (daemon restart, ssh reconnect to a fresh process) the cursor and dedup set reset and the next poll starts from `cursor=0`. Responses can also include `gap: true` with `oldestCursor` when the requested cursor is older than the bounded replay buffer; preload clears the dedupe set and notifies the project-binding refresh callbacks so renderer projections re-hydrate from authoritative reads instead of assuming no events were missed. The `startedAtMs` "drop events older than the pump start" filter is only applied to **local** bindings — remote pumps rely on the epoch reset instead, so older events backfilled after a reconnect are still delivered.
+Each `stream_events` response carries a per-runtime `eventEpoch` UUID minted when the daemon's `eventBuffer` is constructed. The pump compares it against the last seen epoch for its binding; if it changes (daemon restart, ssh reconnect to a fresh process) the cursor and dedup set reset and the next poll starts from `cursor=0`. Responses can also include `gap: true` with `oldestCursor` when the requested cursor is older than the bounded replay buffer; preload clears the dedupe set and notifies the project-binding refresh callbacks so renderer projections re-hydrate from authoritative reads instead of assuming no events were missed. Transient events (App Control screencast frames) are delivered live but never retained for replay, so runtime-event ids are not contiguous and `gap` is judged against the newest id lost to eviction rather than the oldest retained id. The `startedAtMs` "drop events older than the pump start" filter is only applied to **local** bindings — remote pumps rely on the epoch reset instead, so older events backfilled after a reconnect are still delivered.
 
 The remote event buffer categories are intentionally narrow: `orchestrator`, `dag_mutation`, `runtime`, and `pty`. Preload dispatches `runtime` events by their payload `type` so domain-specific updates such as agent chat, terminal, lane, PR, file-watch, process, test, project-state, usage, automation, conflict, GitHub, Linear, feedback, Computer Use, iOS Simulator, and App Control changes still reach their dedicated remote subscribers without expanding the wire-level category enum. ade-cli wires these source-tagged payloads into the runtime event buffer in `bootstrap.ts` so a remote-bound window sees the same event fanout as the local host. Headless runtimes attach the shared machine usage tracker (`attachSharedUsageTrackingScope`) during `createAdeRuntime()` after the ADE action registry is bound, so the usage poller and threshold events run only once the runtime can answer the matching usage/budget actions, and every project scope in that process shares one poller.
 
@@ -202,7 +202,7 @@ The sync command registry labels descriptors as `runtime` or `project` scope. Pr
 Besides SSH, a remote target can use the **paired** transport: after PIN + DPoP
 pairing, the full runtime JSON-RPC rides the sync WebSocket as newline-delimited
 frames inside `rpc_*` envelopes, and loopback TCP previews ride `fwd_*`
-envelopes (host-side connect restricted to `127.0.0.1`). Both are gated to
+envelopes (host-side connect restricted to loopback). Both are gated to
 desktop runtime-host peers: the host only opens the RPC channel / port-forward
 for a peer that authenticated with `kind: "paired"` **and** whose authoritative
 stored pairing record has `runtimeHostGranted: true`. The Share Machine link
@@ -217,6 +217,27 @@ with "Runtime channel is only available to desktop clients", and `hello_ok`
 advertises `features.rpcChannel`/`features.portForward` as `false`. The host also
 caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
 authenticated peer cannot exhaust file descriptors or memory.
+
+**A forward dials both loopbacks.** The host accepts `127.0.0.1`, `::1` and
+`localhost` as the forward host and dials the port on both `127.0.0.1` and
+`::1` on one socket (`autoSelectFamily` with a pinned lookup, so `localhost`
+never resolves anywhere else). The requested host only decides which one is
+tried first. Node on macOS resolves `localhost` to `::1` first, so Vite and
+Next often listen on `[::1]:<port>` only, and an IPv4-only dial used to fail.
+SSH forwards (`remoteConnectionPool.ts`) retry `::1` when `127.0.0.1` is
+refused, the same way.
+
+**A refused forward shows a page, not a blank.** The local listener accepts
+the browser's connection before the remote dial happens, so a failed dial
+used to close a socket that had sent nothing, and Chromium showed
+`ERR_EMPTY_RESPONSE` on a blank page. The host now closes with a reason a
+person can act on (`Nothing is listening on port 4180 (tried 127.0.0.1 and
+::1).`). When that close arrives before any remote byte and the browser's
+first bytes are an HTTP request line, `SyncPortForwardClient` answers with a
+small `502` page (`forwardFailurePage.ts`). The page names the machine and the
+port, gives the reason, and reloads every 3 seconds, so starting the server
+is enough. A client that is not speaking HTTP (TLS, a raw protocol) is closed
+as before. The SSH path writes the same page.
 
 **Forward flow control.** A large remote-to-local transfer (for example a
 49 MB dev-server bundle) can fill the local browser socket faster than the

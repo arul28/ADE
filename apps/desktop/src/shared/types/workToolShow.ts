@@ -54,6 +54,12 @@ export type WorkToolShowRequest = {
    */
   auto: boolean;
   requestedAt: string;
+  /**
+   * The desktop that sent this chat its last message. Only that desktop acts
+   * on the request; null means every desktop does. See
+   * `shared/sessionInputOrigin.ts`.
+   */
+  targetClientId?: string | null;
 };
 
 export type WorkToolShowRequestEvent = {

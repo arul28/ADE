@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Gear,
   GitBranch,
+  GitCommit,
   Globe,
   Link,
   Palette,
@@ -99,6 +100,8 @@ export type LaneMenuArgs = {
   onAppearanceChanged?: () => void | Promise<void>;
   onStartChatInLane?: (laneId: string) => void;
   onToggleWorkPin?: (laneId: string) => void;
+  /** History's commit graph on this lane. */
+  onOpenHistory?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
   /** Work-sidebar pin key; foreign lanes use `machineId:laneId`. */
   workPinLaneId?: string;
@@ -153,6 +156,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     onAppearanceChanged,
     onStartChatInLane,
     onToggleWorkPin,
+    onOpenHistory,
     workPinnedLaneIds,
     workPinLaneId,
     openIn,
@@ -201,6 +205,15 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
 
   // ── Go to: surfaces outside this menu that show the same lane.
   const goTo: LaneMenuEntry[] = [];
+  if (lane && onOpenHistory) {
+    goTo.push({
+      kind: "action",
+      key: "commit-history",
+      label: "Commit history",
+      icon: GitCommit,
+      onSelect: () => { onClose(); onOpenHistory(laneId); },
+    });
+  }
   if (lane?.worktreePath && !isRemoteProject) {
     goTo.push({
       kind: "action",

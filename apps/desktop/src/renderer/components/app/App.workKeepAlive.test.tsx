@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ReactNamespace from "react";
 import type * as RouterNamespace from "react-router-dom";
+import type * as SidebarTabsNamespace from "./projectSidebar/projectSidebarTabs";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
 const ROUTE_INTEGRATION_TIMEOUT_MS = 45_000;
@@ -23,6 +24,8 @@ const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
+  setStandaloneSettingsOpen: vi.fn(),
   personalChatsTabOpen: false,
   openNewTab: vi.fn(),
   setPersonalChatsTabOpen: vi.fn(),
@@ -92,6 +95,7 @@ vi.mock("../../state/appStore", async () => {
     lanesLoading: false,
     keybindings: null,
     refreshLanes: vi.fn(async () => undefined),
+    requestLaneStatusRead: vi.fn(),
     refreshKeybindings: vi.fn(async () => undefined),
     refreshProviderMode: vi.fn(async () => undefined),
   });
@@ -179,11 +183,25 @@ vi.mock("./AppShell", async () => {
   };
 });
 
-// The project sidebar reads attention state that this store mock leaves out;
-// these tests cover which surfaces stay mounted, not the sidebar.
-vi.mock("./projectSidebar/ProjectSidebar", () => ({
-  ProjectSidebar: () => null,
-}));
+// The real project sidebar reads attention state this store mock leaves out.
+// This probe stands in for it and exposes the tab the held route selects, using
+// the sidebar's own path→tab mapping, so a test can assert which list an overlay
+// holds without the store coupling.
+vi.mock("./projectSidebar/ProjectSidebar", async () => {
+  const ReactModule = await vi.importActual("react") as typeof ReactNamespace;
+  const sidebarTabs = await vi.importActual("./projectSidebar/projectSidebarTabs") as typeof SidebarTabsNamespace;
+  return {
+    ProjectSidebar: ({ heldRoute }: { route: string; heldRoute?: string | null }) => {
+      const heldTab = heldRoute
+        ? sidebarTabs.projectSidebarTabForPath(heldRoute.split(/[?#]/, 1)[0] || "/work")
+        : null;
+      return ReactModule.createElement("div", {
+        "data-testid": "sidebar-probe",
+        "data-selected-tab": heldTab ?? "",
+      });
+    },
+  };
+});
 
 vi.mock("./ProjectRecoveryScreen", () => ({
   ProjectRecoveryScreen: () => <div data-testid="project-recovery-screen" />,
@@ -200,6 +218,12 @@ vi.mock("../onboarding/OnboardingBootstrap", () => ({
 
 vi.mock("../onboarding/LaunchGate", () => ({
   LaunchGate: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock("./SettingsPage", () => ({
+  SettingsPage: ({ standalone }: { standalone?: boolean }) => (
+    <div data-testid={standalone ? "standalone-settings" : "project-settings"} />
+  ),
 }));
 
 vi.mock("../projects/ProjectWelcomePage", () => ({
@@ -290,6 +314,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
     appStoreState.isNewTabOpen = false;
+    appStoreState.standaloneSettingsOpen = false;
     appStoreState.personalChatsTabOpen = false;
     appStoreState.openNewTab.mockReset();
     appStoreState.openNewTab.mockImplementation(() => {
@@ -554,6 +579,28 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.mounts).toBe(0);
   });
 
+  /*
+   * Settings with no project opens only when the new-project screen asked for
+   * it. A project that closes while its Settings tab is on screen leaves the
+   * route at /settings, and that must land on the welcome page, not on a
+   * Settings page nobody opened.
+   */
+  it.each([
+    ["a project closed while its Settings was on screen", false, "project-page", "standalone-settings"],
+    ["the new-project screen's Settings button", true, "standalone-settings", "project-page"],
+  ] as const)("with no project on /settings, %s leads to the right screen", async (_label, requested, shown, absent) => {
+    appStoreState.project = { rootPath: "" };
+    appStoreState.standaloneSettingsOpen = requested;
+    window.history.replaceState({}, "", "/settings");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId(shown);
+    expect(screen.queryByTestId(absent)).toBeNull();
+    expect(screen.queryByTestId("work-page")).toBeNull();
+  });
+
   it("shows the welcome page when the welcome flow is active on the Work route", async () => {
     appStoreState.showWelcome = true;
     const { App } = await import("./App");
@@ -651,6 +698,28 @@ describe("App Work route keep-alive", () => {
     expect(lanesLifecycle.mounts).toBe(0);
     expect(lanesLifecycle.unmounts).toBe(0);
   });
+
+  it.each([
+    { route: "/history", selectedTab: "/lanes", heldPage: "lanes-page", absentPage: "work-page" },
+    { route: "/cto", selectedTab: "/work", heldPage: "work-page", absentPage: "lanes-page" },
+  ])(
+    "holds $selectedTab and mounts its list when the app opens straight onto $route",
+    async ({ route, selectedTab, heldPage, absentPage }) => {
+      window.history.replaceState({}, "", route);
+      const { App } = await import("./App");
+
+      render(<App />);
+
+      // The held page is mounted (its list is in the sidebar) but inactive in
+      // the main area, which the overlay covers.
+      const held = await screen.findByTestId(heldPage);
+      expect(held.getAttribute("data-active")).toBe("false");
+      expect(held.closest("[aria-hidden='true']")).not.toBeNull();
+      expect(screen.queryByTestId(absentPage)).toBeNull();
+      expect(screen.getByTestId("sidebar-probe").getAttribute("data-selected-tab")).toBe(selectedTab);
+    },
+    ROUTE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it("does not render inactive project Lanes surfaces against the active runtime", async () => {
     appStoreState.project = { rootPath: "/fake/project" };

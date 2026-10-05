@@ -55,6 +55,24 @@ export const ACP_HANDSHAKE_TIMEOUT_MS = 20_000;
 /** Grace period between SIGTERM and SIGKILL on disposal. */
 export const ACP_TERMINATE_GRACE_MS = 1_500;
 
+/**
+ * The agent's own explanation, when it sends one in `data`. Qwen answers a
+ * prompt it could not send upstream with a bare "Internal error" and puts
+ * "Connection error." in `data.details`; without it the chat shows only the
+ * generic text and nothing says the model endpoint is unreachable.
+ */
+function acpErrorDetailSuffix(payload: AcpRpcErrorPayload): string {
+  const data = payload.data;
+  const record = data && typeof data === "object" ? data as Record<string, unknown> : null;
+  let raw = "";
+  if (typeof data === "string") raw = data;
+  else if (typeof record?.details === "string") raw = record.details;
+  else if (typeof record?.message === "string") raw = record.message;
+  const detail = raw.replace(/\s+/g, " ").trim().slice(0, 200);
+  if (!detail || payload.message.includes(detail)) return "";
+  return ` (${detail})`;
+}
+
 /** A JSON-RPC error the agent returned. */
 export class AcpRpcError extends Error {
   readonly code: number;
@@ -62,7 +80,7 @@ export class AcpRpcError extends Error {
   readonly method: string;
 
   constructor(method: string, payload: AcpRpcErrorPayload) {
-    super(`ACP ${method} failed (${payload.code}): ${payload.message}`);
+    super(`ACP ${method} failed (${payload.code}): ${payload.message}${acpErrorDetailSuffix(payload)}`);
     this.name = "AcpRpcError";
     this.code = payload.code;
     this.data = payload.data;
@@ -524,12 +542,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   return connection;
 }
 
-export type InitializeAcpConnectionResult = {
-  response: AcpInitializeResponse;
-  /** True when the agent answered with a protocol version this host speaks. */
-  protocolVersionAccepted: boolean;
-};
-
 /**
  * Run the `initialize` handshake.
  *
@@ -553,7 +565,7 @@ export async function initializeAcpConnection(args: {
   connection: AcpConnection;
   dialect: AcpDialect;
   timeoutMs?: number;
-}): Promise<InitializeAcpConnectionResult> {
+}): Promise<AcpInitializeResponse> {
   const { connection, dialect } = args;
   try {
     const response = await connection.request<AcpInitializeResponse>(
@@ -566,11 +578,29 @@ export async function initializeAcpConnection(args: {
       },
       { timeoutMs: args.timeoutMs ?? ACP_HANDSHAKE_TIMEOUT_MS },
     );
+    const advertised = typeof response.protocolVersion === "number" && Number.isFinite(response.protocolVersion)
+      ? response.protocolVersion
+      : null;
+    if (advertised === null) {
+      // ACP requires the agent to name the protocol version it selected. An
+      // answer without one has not established compatibility at all.
+      throw new Error(
+        `${dialect.displayName} answered the ACP handshake without a protocol version, so ADE cannot tell `
+        + `whether it speaks ACP ${ACP_PROTOCOL_VERSION}. Update ${dialect.displayName}, or update ADE.`,
+      );
+    }
+    if (advertised > ACP_PROTOCOL_VERSION) {
+      // The agent speaks a newer protocol than this build of ADE. Continuing
+      // would fail later on an unrecognized request or session update, so stop
+      // at the handshake with a message that names the CLI and both ways out.
+      throw new Error(
+        `${dialect.displayName} answered with ACP protocol version ${advertised}, but this build of ADE speaks `
+        + `version ${ACP_PROTOCOL_VERSION}. Update ADE, or update ${dialect.displayName} to a build that speaks `
+        + `ACP ${ACP_PROTOCOL_VERSION}.`,
+      );
+    }
     connection.initializeResult = response;
-    return {
-      response,
-      protocolVersionAccepted: response.protocolVersion <= ACP_PROTOCOL_VERSION,
-    };
+    return response;
   } catch (error) {
     // A crash during the handshake precedes every exit handler, so the pool's
     // rethrow is the only chance to pass the agent's stderr to the caller.

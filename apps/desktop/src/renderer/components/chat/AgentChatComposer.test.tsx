@@ -2471,7 +2471,9 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
-    expect(screen.getByLabelText(/stop/i)).toBeTruthy();
+    // Every provider now has a Stop menu beside the button; the button itself
+    // keeps its own name.
+    expect(screen.getByRole("button", { name: "Stop active turn" })).toBeTruthy();
   });
 
   it("locks the prompt box while a pending question is waiting", () => {

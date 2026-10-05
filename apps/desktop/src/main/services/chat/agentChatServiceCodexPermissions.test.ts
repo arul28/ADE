@@ -12,6 +12,70 @@ import {
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
+  describe("permission ceiling for agents", () => {
+    it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const parent = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "default",
+      });
+      const defaultsBefore = service.getLaunchDefaults();
+      expect(defaultsBefore?.provider).toBe("claude");
+      const actor = { kind: "agent" as const, chatSessionId: parent.id };
+
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+        runtimeActor: actor,
+      });
+      // Unparented, yet capped at the calling agent's own level (ask), in Codex's vocabulary.
+      expect(child.codexSandbox).toBe("workspace-write");
+      expect(child.codexApprovalPolicy).toBe("on-request");
+      await vi.waitFor(() => expect(events.some((event) =>
+        event.sessionId === child.id
+        && event.event.type === "system_notice"
+        && /capped/i.test(event.event.message),
+      )).toBe(true));
+      // An agent's launch never moves the machine's defaults.
+      expect(service.getLaunchDefaults()).toEqual(defaultsBefore);
+
+      // Every route to more access is refused for the agent: the native
+      // fields and a model switch onto an open provider.
+      await expect(service.updateSession({
+        sessionId: child.id,
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+        runtimeActor: actor,
+      })).rejects.toThrow(/more access/i);
+      await expect(service.updateSession({
+        sessionId: child.id,
+        modelId: "anthropic/claude-opus-5",
+        claudePermissionMode: "bypassPermissions",
+        runtimeActor: actor,
+      })).rejects.toThrow(/more access/i);
+      // Nor can the agent raise its own chat.
+      await expect(service.updateSession({ sessionId: parent.id, claudePermissionMode: "bypassPermissions", runtimeActor: actor }))
+        .rejects.toThrow(/more access/i);
+
+      // A person is not capped.
+      const raised = await service.updateSession({
+        sessionId: child.id,
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+      });
+      expect(raised.codexSandbox).toBe("danger-full-access");
+      expect(raised.codexApprovalPolicy).toBe("never");
+    });
+  });
+
   describe("Codex permissions and reasoning", () => {
     it("keeps fast mode switching away from Codex only onto a model with a fast tier", async () => {
       const { service } = createService();

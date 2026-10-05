@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -34,9 +34,13 @@ import {
 import {
   AGENT_CHAT_STOP_MODES,
   chatStopModeCopy,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
   parseAgentChatStopMode,
+  providerStopModeSupport,
   providerSupportsStopModeChoice,
+  stopModeAvailable,
   stopModeClearsQueue,
+  stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
 import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
 import {
@@ -66,6 +70,8 @@ import {
 import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
+  CHAT_MENTION_DND_MIME,
+  parseChatMentionDragPayload,
   isChatMentionTokenBody,
   parseChatMentions,
   chatMentionKindFromToken,
@@ -184,6 +190,7 @@ import {
 } from "./ComposerPromptStash";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
@@ -1300,6 +1307,8 @@ function PendingSteerItem({
   onEdit,
   onSendNow,
   onInterrupt,
+  reorder,
+  attachmentTray,
 }: {
   steer: {
     steerId: string;
@@ -1312,11 +1321,71 @@ function PendingSteerItem({
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
+  /** Present only when the queue can be reordered and holds more than one row. */
+  reorder?: PendingSteerReorder;
+  /** The message's files and context, as the composer's own tray draws them. */
+  attachmentTray?: React.ReactNode;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
-      <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+    <div
+      ref={rowRef}
+      data-testid="pending-steer-item"
+      className={cn(
+        "group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5 transition-opacity",
+        reorder?.dragging && "opacity-40",
+        reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
+        reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
+      )}
+      onDragOver={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        reorder.onDragOverRow(event.clientY < rect.top + rect.height / 2 ? "before" : "after");
+      } : undefined}
+      onDrop={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        reorder.onDrop();
+      } : undefined}
+    >
+      {reorder ? (
+        <SmartTooltip forceEnabled side="left" content={{ label: "Reorder", description: "Drag to change when this message is sent, or focus and use the arrow keys." }}>
+          <button
+            type="button"
+            ref={reorder.handleRef}
+            draggable
+            data-testid="pending-steer-reorder-handle"
+            aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
+            aria-keyshortcuts="ArrowUp ArrowDown Home End"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-[var(--chat-accent)]/45 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
+              if (rowRef.current) event.dataTransfer.setDragImage(rowRef.current, 12, 12);
+              reorder.onDragStart();
+            }}
+            onDragEnd={reorder.onDragEnd}
+            onKeyDown={(event) => {
+              const target = event.key === "ArrowUp" ? reorder.index - 1
+                : event.key === "ArrowDown" ? reorder.index + 1
+                  : event.key === "Home" ? 0
+                    : event.key === "End" ? reorder.count - 1
+                      : null;
+              if (target == null) return;
+              event.preventDefault();
+              if (target < 0 || target >= reorder.count || target === reorder.index) return;
+              reorder.onMove(target);
+            }}
+          >
+            <DotsSixVertical size={11} weight="bold" />
+          </button>
+        </SmartTooltip>
+      ) : (
+        <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+      )}
       <div className="flex-1 min-w-0">
         <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
           Sends after turn
@@ -1324,6 +1393,7 @@ function PendingSteerItem({
         <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
           {steer.text}
         </div>
+        {attachmentTray}
       </div>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
@@ -1458,12 +1528,14 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  canReorder?: boolean;
   /** Why some staged messages cannot be sent during the turn, when any cannot. */
   inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
     ...(args.canInterrupt ? ["interrupt with this message"] : []),
+    ...(args.canReorder ? ["drag to reorder"] : []),
     "edit",
     "remove",
   ];
@@ -1682,17 +1754,24 @@ function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
   backgroundJobCount,
+  childChatCount = 0,
+  provider = null,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
   backgroundJobCount: number;
+  /** Spawned chats of this chat that are working right now. */
+  childChatCount?: number;
+  provider?: string | null;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount, childChatCount);
+  // The child-chat choices only appear while there is a child chat to stop.
+  const visibleModes = ACTIVE_TURN_STOP_MODES.filter((option) => childChatCount > 0 || !stopModeStopsChildren(option));
 
   if (!allowQueueChoice) {
     return (
@@ -1716,13 +1795,15 @@ function ActiveTurnStopButton({
           <button
             type="button"
             className="inline-flex h-7 items-center justify-center px-2 text-red-400/80 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
-            aria-label={selectedCopy.label}
+            aria-label="Stop active turn"
+            aria-description={selectedCopy.label}
             onClick={onStop}
           >
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
+        {/* Off while the menu is open: it would sit on top of the menu's last rows. */}
+        <SmartTooltip forceEnabled={!menuOpen} content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1746,21 +1827,27 @@ function ActiveTurnStopButton({
               className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
-              {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                const copy = chatStopModeCopy(option, backgroundJobCount);
+              {visibleModes.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount, childChatCount);
                 const selected = option === mode;
+                const support = providerStopModeSupport(provider, option);
                 return (
                   <button
                     key={option}
                     type="button"
                     role="menuitemradio"
                     aria-checked={selected}
+                    aria-disabled={!support.supported}
+                    disabled={!support.supported}
+                    title={support.supported ? undefined : support.reason}
                     onClick={() => {
+                      if (!support.supported) return;
                       onModeChange(option);
                       setMenuOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
+                      support.supported ? "hover:bg-red-500/[0.08]" : "cursor-not-allowed opacity-45",
                       index > 0 && "border-t border-white/[0.05]",
                     )}
                   >
@@ -1769,7 +1856,9 @@ function ActiveTurnStopButton({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {support.supported ? copy.description : support.reason}
+                      </span>
                     </span>
                     <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
                       {selected ? <Check size={11} weight="bold" /> : null}
@@ -1871,6 +1960,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel = "Background",
   onInterrupt,
   backgroundJobCount = 0,
+  childChatCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -1900,6 +1990,7 @@ export function AgentChatComposer({
   onEditSteer,
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
+  onMoveSteer,
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
@@ -2090,6 +2181,8 @@ export function AgentChatComposer({
   onInterrupt: (mode?: AgentChatStopMode) => void;
   /** Live background job count for stop-menu labels. */
   backgroundJobCount?: number;
+  /** This chat's spawned chats that are working now, for the Stop menu's child-chat choices. */
+  childChatCount?: number;
   /**
    * Resolves `false` when the response could not be delivered. The answer card
    * stays open in that case, so a caller that cleared a draft to send it has to
@@ -2151,6 +2244,12 @@ export function AgentChatComposer({
   ) => void;
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
+  /**
+   * Moves a staged message to `toIndex`. Absent when the provider keeps its own
+   * queue (see `queuedSteersCanReorder`). Rejects when the host refused, which
+   * drops the optimistic order.
+   */
+  onMoveSteer?: (steerId: string, toIndex: number) => Promise<void>;
   /**
    * Active-turn split-button primary: submit the current draft and immediately
    * fold it into the running turn (Claude Code parity). Only supplied for
@@ -2319,6 +2418,12 @@ export function AgentChatComposer({
       + appControlContextItems.length
       + builtInBrowserContextItems.length,
   });
+  const {
+    orderedSteers: orderedPendingSteers,
+    canReorder: canReorderSteers,
+    reorderPropsFor: steerReorderPropsFor,
+  } = usePendingSteerReorder(pendingSteers, onMoveSteer);
+
   const stagedSteerInlineBlock = (steer: {
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
@@ -2363,6 +2468,11 @@ export function AgentChatComposer({
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
     setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
+  // A remembered choice this chat cannot honour right now (a provider without
+  // background stop, a child-chat stop with no child chats) stops the default way.
+  const effectiveStopMode: AgentChatStopMode = stopModeAvailable(sessionProvider, activeTurnStopMode, childChatCount)
+    ? activeTurnStopMode
+    : DEFAULT_AGENT_CHAT_STOP_MODE;
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
     setActiveTurnStopMode(mode);
@@ -2372,7 +2482,7 @@ export function AgentChatComposer({
   }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
@@ -5200,7 +5310,7 @@ export function AgentChatComposer({
       return;
     }
 
-    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(activeTurnStopMode); return; }
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(effectiveStopMode); return; }
 
     /* Tab to accept prompt suggestion */
     if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
@@ -5454,11 +5564,18 @@ export function AgentChatComposer({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
+      if (composerInputLocked) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
     const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
     if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
-    setDragActive(true);
+    setDragActive("files");
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5470,6 +5587,23 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
+      ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
+      : null;
+    if (mention) {
+      event.preventDefault();
+      if (composerInputLocked || mention.id === sessionId) return;
+      const token = formatChatMentionToken(mention.kind, mention.id);
+      mentionLabelsRef.current.set(token, mention.title);
+      onMentionLabelChange?.(token, mention.title);
+      if (useRichComposer) {
+        insertTextIntoRichEditor(`${token} `);
+      } else {
+        const separator = draft.length && !/\s$/.test(draft) ? " " : "";
+        onDraftChange(`${draft}${separator}${token} `);
+      }
+      return;
+    }
     const hasFiles = event.dataTransfer.files.length > 0;
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!hasFiles && !hasUriList)) return;
@@ -6525,11 +6659,13 @@ export function AgentChatComposer({
         turnActive ? (
           <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
             <ActiveTurnStopButton
-              mode={activeTurnStopMode}
+              mode={effectiveStopMode}
               allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
               backgroundJobCount={backgroundJobCount}
+              childChatCount={childChatCount}
+              provider={sessionProvider}
               onModeChange={updateActiveTurnStopMode}
-              onStop={() => onInterrupt(activeTurnStopMode)}
+              onStop={() => onInterrupt(effectiveStopMode)}
             />
           </div>
         ) : undefined
@@ -7002,11 +7138,13 @@ export function AgentChatComposer({
                   ),
                 ) : null}
                 <ActiveTurnStopButton
-                  mode={activeTurnStopMode}
+                  mode={effectiveStopMode}
                   allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
                   backgroundJobCount={backgroundJobCount}
+                  childChatCount={childChatCount}
+                  provider={sessionProvider}
                   onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(activeTurnStopMode)}
+                  onStop={() => onInterrupt(effectiveStopMode)}
                 />
               </>
             ) : (
@@ -7100,7 +7238,7 @@ export function AgentChatComposer({
         >
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-[1]">
-              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} kind={dragActive === "reference" ? "reference" : "files"} />
             </div>
           ) : null}
 
@@ -7451,17 +7589,28 @@ export function AgentChatComposer({
                 canSendNow: Boolean(onDispatchSteerInline)
                   && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
                 canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
                 inlineBlockedReason: onDispatchSteerInline
                   ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
                   : null,
               })}
             </span>
           </div>
-          {pendingSteers.map((steer) => (
+          {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
+                <ChatAttachmentTray
+                  attachments={steer.attachments}
+                  contextAttachments={steer.contextAttachments}
+                  machinePin={composerMachineBinding}
+                  mode={surfaceMode}
+                  className="mt-1 gap-1.5 px-0 py-0"
+                />
+              ) : null}
+              reorder={canReorderSteers ? steerReorderPropsFor(steer.steerId, index) : undefined}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,

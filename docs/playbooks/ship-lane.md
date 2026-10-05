@@ -104,7 +104,7 @@ Review-comment fixes routinely introduce new CI failures (different file gets to
 Therefore:
 
 - **Wait for both signals to be terminal** before doing any fix work. CI terminal = every required check has a final conclusion. Review-bots terminal = every bot with current-head start evidence has posted or settled; bots with zero evidence after the grace window are inactive/terminal-neutral. If only one signal is back, sleep — don't iterate.
-- **Decide holistically.** Read the failing CI list AND the new-comments list together before deciding what to change. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
+- **Decide holistically.** Read the whole poll together before deciding what to change: failing CI, open review threads, review-body findings, and new comments. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
 - **Dispatch `ci-fix-agent` and `review-fix-agent` in parallel** (Phase 3b.3), each with its own minimum scope but in the same iteration.
 - **One commit, one push.** The lead reviews the combined diff, runs the narrow checks below, and pushes once. Never one push for CI and a second push for review feedback in the same iteration.
 
@@ -129,19 +129,19 @@ Therefore, when verifying a fix:
 
 Pick the richest available and **use it fully**:
 
-1. **Agent teams** (e.g., Claude Code `TeamCreate` with `AGENT_TEAMS` enabled): **MANDATORY when available.** Spawn a team with a lead and role-specific sub-agents (poll, rebase, ci-fix, review-fix, conflict-resolver). Sub-agents return structured summaries so the lead's context never ingests full CI logs or comment threads.
-2. **Parallel subagents** (e.g., Claude Code `Agent` tool, other CLIs with parallel task spawning): fall back here if teams aren't available. Spawn discrete subagents for poll, ci-fix, review-fix within a single iteration. Same context-keeping rules apply.
+1. **Agent teams** (e.g., Claude Code `TeamCreate` with `AGENT_TEAMS` enabled): **MANDATORY when available.** Spawn a team with a lead and role-specific sub-agents (rebase, ci-fix, review-fix, conflict-resolver). Sub-agents return structured summaries so the lead's context never ingests full CI logs or comment threads.
+2. **Parallel subagents** (e.g., Claude Code `Agent` tool, other CLIs with parallel task spawning): fall back here if teams aren't available. Spawn discrete subagents for ci-fix and review-fix within a single iteration. Same context-keeping rules apply.
 3. **Serial** (any CLI): absolute last resort. Run phases in order, in-process. Compact aggressively.
 
 **Subagent limits:** follow the **Subagents** rules in `AGENTS.md`. Every
-poll, fix, rebase and conflict agent is a leaf: it does not start subagents,
+fix, rebase and conflict agent is a leaf: it does not start subagents,
 and its brief says so. Start a helper only when the work is real and batch
 fixes into one agent per iteration; a small fix is the lead's own work. When
 the user has asked to limit agents, run the loop serially (option 3).
 
-**Rule:** the lead reads poll-agent summaries, not raw API output. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
+**Rule:** the lead runs the poll itself (`node scripts/ship-poll.mjs`); its output is already the structured summary, so no poll agent is needed, and the lead never reads raw API output instead. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
 
-**Waiting rule:** agents never stay alive just to wait. A poll-agent performs one bounded poll and exits. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
+**Waiting rule:** agents never stay alive just to wait. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
 
 ## Common failure modes
 
@@ -208,6 +208,7 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
   "qualityReviewedSha": "abc123...",
   "localAhead": false,
   "addressedCommentIds": [987654, 987655],
+  "addressedReviewFindings": ["cr:f1685e92a4e564f3b6f98c88"],
   "harvests": [
     { "point": "quality", "headSha": "0a1b2c...", "failedJobs": ["test-desktop (3)"],
       "commentsFixed": 2, "commentsStale": 5, "pendingReviewBots": [] }
@@ -224,6 +225,9 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 `/ship` has not started yet. `qualityReviewedSha` is the last commit a clean
 quality pass covered; every later review looks only at the delta from it.
 `localAhead` is true while reviewed commits are held back by the push rule.
+`addressedReviewFindings` holds the keys of review-body findings (for example
+`cr:<id>`) that a fix or a rejection already handled; the poll stops reporting
+them.
 `lastPushAt` is the UTC time of the last push; the push rule's 12-minute grace
 window counts from it. Every push in any phase updates both `lastPushSha` and
 `lastPushAt`. `mode` is `merge` for ordinary `/ship` and `stack` only when
@@ -484,8 +488,8 @@ Do not wait for anything. Start the quality review immediately.
 
 ### Harvest (end of `/quality`, end of `/test`)
 
-One bounded poll — the Phase 1.1–1.3 calls through a poll-agent — then act on
-whatever has finished. Do not wait for anything still running.
+One run of `node scripts/ship-poll.mjs --pr <n>` (the Phase 1 poll), then act
+on whatever has finished. Do not wait for anything still running.
 
 Fixing here on a partial signal is allowed. Fix discipline §1 forbids
 *pushing* on a partial signal, and the push rule below still enforces that.
@@ -531,6 +535,11 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 - **Hold** otherwise. Commit locally, set `localAhead: true`, and continue to
   the next phase. The next harvest or `/ship` pushes the held commits together
   with its own fixes, in one push.
+- Before any push — a fix, a rebase, held commits, or a rerun of a flaky job
+  that ends in a rebase — run the poll again and act on everything it reports.
+  A push made from a CI-only check carries open review work past the loop: on
+  PR #1469 a CodeRabbit finding and seven unanswered threads stayed open that
+  way until the user asked about them.
 - Before any push, run **Commit-bound quality revalidation**. It reviews the
   delta since `qualityReviewedSha`. At the end of `/quality` that delta is
   usually empty, so this is only the bind and the push; a fix that the review
@@ -764,7 +773,25 @@ Runs instead of 0.1–0.5 when the state file says `status: "prepping"`.
 
 ## Phase 1 — Poll
 
-Runs on every wake-up. Delegate to a **poll-agent** so the lead's context stays clean. The poll-agent runs these calls and returns a single structured summary.
+Runs on every wake-up, and before every push. The poll is one command:
+
+```bash
+node scripts/ship-poll.mjs --pr "$PR_NUMBER"          # JSON summary (1.3)
+node scripts/ship-poll.mjs --pr "$PR_NUMBER" --text   # the same, readable
+```
+
+It reads every surface on each run: CI, review-bot checks, every open review
+thread whatever its age, findings that bots put in a review body instead of a
+thread (CodeRabbit's "Outside diff range comments"), new comments since the
+last push, bot notices (a bot that could not run, or has no reviews left this
+hour), base movement, and held local commits. Its `next` field is the Phase 2
+route: `wait`, `fix`, `rebase`, `resolve-threads`, `merge`, `merged`.
+
+Do not hand-write a poll, and do not act on part of one. A poll that read CI
+and a time-filtered comment list is how this loop missed a CodeRabbit review
+that landed while CI ran, and a review-body finding that no thread query
+returns. Sections 1.1 and 1.2 describe what the script reads; use them by hand
+only when the script cannot run, and then run all of them.
 
 This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or `reviewBotsRunning: true` respectively, then let Phase 5 schedule the next wake.
 
@@ -841,35 +868,52 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 An unresolved thread whose first comment id is not in `addressedCommentIds`
 is fix work, even when the code it points at moved ("outdated" is not
 "answered"). It goes to Phase 3b: fix it, or reply with the reason it is
-rejected, then resolve the thread.
+rejected, then resolve the thread. A thread whose id is already in
+`addressedCommentIds` but is still open was fixed and never answered: reply
+with the fix commit and the test that pins it, then resolve it.
+
+**Then read the bots' review bodies.** A finding on a line outside the diff
+cannot be an inline comment, so CodeRabbit lists it in the review body under
+"Outside diff range comments", with a `cr-comment:v1:<id>` marker. No thread
+query returns it. Each one is fix work until its key is in
+`addressedReviewFindings`. Read bot notices too: Cursor Bugbot's "couldn't run
+– usage limit reached" means it reviewed nothing, and Devin's "flag not posted
+on this PR" means a finding exists only in the Devin app. Name both in the
+summary instead of reporting the bot as clean.
 
 ### 1.3 Return structured summary
 
+`scripts/ship-poll.mjs` prints this summary:
+
 ```json
 {
-  "merged": false,
-  "behindBase": true,
+  "next": "fix",
+  "headSha": "<current PR head sha>",
   "baseBranch": "<SHIP_BASE_BRANCH>",
-  "baseSha": "<current fetched base sha>",
-  "isDraft": false,
-  "ciRunning": false,
-  "reviewBotsRunning": false,
-  "pendingReviewBots": [],
-  "inactiveReviewBots": ["Greptile"],
+  "merged": false,
+  "behindBase": false,
+  "conflicting": false,
+  "ciRunning": [],
   "ciFailed": [
     { "name": "test-desktop (3)", "link": "https://github.com/.../runs/123" }
   ],
-  "newComments": [
-    {
-      "id": 987700,
-      "author": "human-reviewer",
-      "body": "Consider guarding against null here.",
-      "path": "apps/desktop/src/main/services/x.ts",
-      "line": 42,
-      "type": "diff-line"
-    }
+  "reviewBotsRunning": false,
+  "pendingReviewBots": [],
+  "openThreads": [
+    { "threadId": "PRRT_…", "commentId": 4186812976, "author": "coderabbitai",
+      "path": "apps/desktop/src/main/services/x.ts", "outdated": false, "addressed": false }
   ],
-  "pollHeadSha": "<current PR head sha>",
+  "reviewFindings": [
+    { "key": "cr:f1685e92a4e564f3b6f98c88", "author": "coderabbitai[bot]",
+      "path": "apps/desktop/src/main/services/search/searchService.ts", "line": 948,
+      "title": "Invalidate the PR summary cache when a PR changes during a pass." }
+  ],
+  "newComments": [
+    { "id": 987700, "author": "human-reviewer", "type": "issue", "body": "Consider guarding against null here." }
+  ],
+  "botNotices": [
+    { "bot": "cursor[bot]", "notice": "Bugbot couldn't run - usage limit reached" }
+  ],
   "localAhead": false
 }
 ```
@@ -877,7 +921,8 @@ rejected, then resolve the thread.
 `localAhead` is `true` when local HEAD has commits that the remote branch does
 not (`git rev-list --count "origin/$CURRENT_BRANCH"..HEAD` is non-zero).
 
-`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty.
+`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. CI is
+running while `ciRunning` lists any check.
 Populate `pendingReviewBots` only for bots with explicit current-head in-flight
 evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
 elapsed and every available surface has zero evidence for that bot. Do not infer
@@ -1088,9 +1133,11 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 
 Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
 
-**Pre-merge check: zero open review threads.** Immediately before the merge,
-list the unresolved threads again (Phase 1.2's `ade prs comments` / GraphQL
-query) — fresh, not from an earlier poll or a remembered bot status. Every
+**Pre-merge check: the poll says `merge`.** Immediately before the merge, run
+`node scripts/ship-poll.mjs` again — fresh, not from an earlier poll or a
+remembered bot status — and merge only when `next` is `merge`. That means no
+open review thread, no unhandled review-body finding, no new comment, and no
+running or failed check on the head you are about to merge. Every
 thread must be fixed, or answered with the reason it is rejected and then
 resolved. One open thread routes back to Phase 3b; it is never "noise", never
 "rate-limited", and never disclosed after the merge instead. The summary lists

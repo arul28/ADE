@@ -1,5 +1,5 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -89,7 +89,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -143,6 +143,14 @@ import {
   setPtyDataSubscriptionsForSender,
   shouldSendPtyDataToWebContents,
 } from "./services/pty/ptyDataSubscriptions";
+import {
+  heldAppControlFrameLanes,
+  normalizeAppControlFrameLaneIds,
+  setAppControlFrameLanesForSender,
+  setAppControlFrameLanesListener,
+  shouldSendAppControlFrameToWebContents,
+} from "./services/appControl/appControlFrameSubscriptions";
+import { appControlFrameEventLaneId } from "../shared/appControlFrameDemand";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
@@ -183,6 +191,7 @@ import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLoca
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createPrWatchService } from "./services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -393,6 +402,7 @@ import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
@@ -401,6 +411,7 @@ import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
 import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
+import { createDemoEngineSet } from "./services/demoVideo/demoEngines";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -431,6 +442,9 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
+
+/** The desktop's windows, in a project service's App Control frame demand. */
+const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
@@ -1740,6 +1754,13 @@ app.whenReady().then(async () => {
     );
   });
 
+  ipcMain.handle(IPC.appControlFrameSubscriptions, (event, arg: { laneIds?: unknown } | undefined) => {
+    setAppControlFrameLanesForSender(
+      event.sender,
+      normalizeAppControlFrameLaneIds(arg?.laneIds),
+    );
+  });
+
   const broadcastPtyData = (payload: PtyDataEvent) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!shouldSendPtyDataToWebContents(win.webContents, payload.ptyId)) continue;
@@ -1901,6 +1922,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  /** Windows: this desktop runs elevated, so the background service cannot reach it. */
+  let elevatedDesktop = false;
+  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
@@ -1908,6 +1932,19 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      // Windows: an elevated desktop's pipe refuses the background service.
+      // A lasting state, so the renderer docks a banner for it.
+      onElevatedDesktop: () => {
+        elevatedDesktop = true;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win.isDestroyed()) continue;
+          try {
+            win.webContents.send(IPC.appElevatedDesktopChanged, true);
+          } catch {
+            // ignore
+          }
+        }
+      },
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -2070,6 +2107,15 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  // App Control screencasts follow what the windows show: a lane no window
+  // holds streams no frames, in the brain or in a project hosted here.
+  setAppControlFrameLanesListener(() => {
+    const lanes = heldAppControlFrameLanes();
+    localRuntimePool.setAppControlFrameLanes(lanes);
+    for (const ctx of projectContexts.values()) {
+      ctx.appControlService?.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, lanes);
+    }
   });
   const accountVaultBridge = createAccountVaultBridge({
     getPool: () => localRuntimePool,
@@ -2608,12 +2654,14 @@ app.whenReady().then(async () => {
     projectRoot: string,
     channel: string,
     payload: unknown,
+    shouldSendTo?: (webContents: WebContents) => boolean,
   ): void => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     for (const win of BrowserWindow.getAllWindows()) {
       const isActiveInWindow = windowProjectRoots.get(win.id) === normalizedRoot;
       const isOpenTabInWindow = windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true;
       if (!isActiveInWindow && !isOpenTabInWindow) continue;
+      if (shouldSendTo && !shouldSendTo(win.webContents)) continue;
       try {
         win.webContents.send(channel, payload);
       } catch {
@@ -3844,6 +3892,7 @@ app.whenReady().then(async () => {
     prServiceRef = prService;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let prWatchServiceRef: ReturnType<typeof createPrWatchService> | null = null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -3861,7 +3910,10 @@ app.whenReady().then(async () => {
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
     // PR event channel, and a freshly created worktree lane triggers a
     // best-effort auto-map of any existing open PR on its branch (Trigger #1).
-    prService.setEventEmitter(emitPrEvent);
+    prService.setEventEmitter((event) => {
+      emitPrEvent(event);
+      prWatchServiceRef?.onPrEvent(event);
+    });
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
     });
@@ -3905,6 +3957,7 @@ app.whenReady().then(async () => {
           ),
         );
         const chatService = agentChatServiceRef;
+        prWatchServiceRef?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         if (chatService) {
           await Promise.all(changes.map(async (change) => {
             try {
@@ -4223,7 +4276,49 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
+    /**
+     * An OS notification about one chat that opens it on click. Skipped while
+     * any ADE window is focused: there is no per-window "which chat is open"
+     * signal in main, and the chat's own transcript already says what happened.
+     */
+    const showChatOsNotification = (args: {
+      sessionId: string;
+      title: string;
+      body: string;
+      source: string;
+      failureEvent: string;
+    }): void => {
+      if (!Notification.isSupported()) return;
+      if (BrowserWindow.getFocusedWindow()) return;
+      try {
+        const notification = new Notification({ title: args.title, body: args.body });
+        // Clicking it opens the chat, through the same protocol dispatcher
+        // an `ade://` click from outside the app goes through.
+        notification.on("click", () => {
+          handleDeeplinkUrl(
+            buildDeeplink({ kind: "session", sessionId: args.sessionId }, { form: "ade" }),
+            args.source,
+            (request) => {
+              if (dispatchAppNavigationForProjectRoot) {
+                dispatchAppNavigationForProjectRoot(projectRoot, request);
+                return;
+              }
+              dispatchOrQueueAppNavigationRequest(request);
+            },
+            (event, fields) => logger.warn(event, fields),
+          );
+        });
+        notification.show();
+      } catch (error) {
+        logger.warn(args.failureEvent, {
+          sessionId: args.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     const agentChatService = createAgentChatService({
+      machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
       analytics: productAnalyticsService,
@@ -4332,44 +4427,30 @@ app.whenReady().then(async () => {
         surface: "api",
         provider,
       }),
+      onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        provider,
+      }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
-        if (!Notification.isSupported()) return;
-        // An OS notification for something the user is already looking at is
-        // noise. There is no per-window "which chat is open" signal in main, so
-        // the check is the coarse one that is actually available: any focused
-        // ADE window means the user is here, and the chat's own transcript
-        // notice already says the resume happened.
-        if (BrowserWindow.getFocusedWindow()) return;
-        try {
-          const notification = new Notification({
-            title: "Chat resumed",
-            body: title?.trim()
-              ? `"${title.trim()}" continued after its usage limit reset.`
-              : "A chat continued after its usage limit reset.",
-          });
-          // Clicking it opens the chat, through the same protocol dispatcher
-          // an `ade://` click from outside the app goes through.
-          notification.on("click", () => {
-            handleDeeplinkUrl(
-              buildDeeplink({ kind: "session", sessionId }, { form: "ade" }),
-              "notification:usage_limit_resume",
-              (request) => {
-                if (dispatchAppNavigationForProjectRoot) {
-                  dispatchAppNavigationForProjectRoot(projectRoot, request);
-                  return;
-                }
-                dispatchOrQueueAppNavigationRequest(request);
-              },
-              (event, fields) => logger.warn(event, fields),
-            );
-          });
-          notification.show();
-        } catch (error) {
-          logger.warn("agent_chat.usage_limit_resume_notification_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        showChatOsNotification({
+          sessionId,
+          title: "Chat resumed",
+          body: title?.trim()
+            ? `"${title.trim()}" continued after its usage limit reset.`
+            : "A chat continued after its usage limit reset.",
+          source: "notification:usage_limit_resume",
+          failureEvent: "agent_chat.usage_limit_resume_notification_failed",
+        });
+      },
+      onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        showChatOsNotification({
+          sessionId,
+          title: outcome === "reached" ? "Goal reached" : "Goal blocked",
+          body: `${title ? `"${title}": ` : ""}${objective}`,
+          source: "notification:goal_ended",
+          failureEvent: "agent_chat.goal_ended_notification_failed",
+        });
       },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
@@ -4405,6 +4486,14 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    prWatchServiceRef = createPrWatchService({
+      logger,
+      prService,
+      sessionService,
+      messageSession: (args) => agentChatService.messageSession(args),
+      emitPrEvent,
+      getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
+    });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
       sessionService,
@@ -4926,10 +5015,27 @@ app.whenReady().then(async () => {
      * service's own `subscribe` is for in-process readers constructed after it
      * (the Work tools mirror), while this is what reaches a window.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMachineMainLogger());
     const macDesktopService = createMacDesktopService({
       projectRoot,
       // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
-      logger: createMacDesktopLogger(logger, getMachineMainLogger()),
+      logger: macDesktopLogger,
+      // Windows hosts reuse the whole seat service; only the helper, the
+      // provider, and the permission story differ. Every other host keeps the
+      // Mac adapter (and its unchanged macOS behavior).
+      seat: process.platform === "win32"
+        ? createWindowsDesktopSeatAdapter({
+          logger: macDesktopLogger,
+          adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+        })
+        : null,
+      adeHome: process.env.ADE_HOME?.trim() || null,
+      // `ade-media` on macOS; this desktop's Chromium engine everywhere, which
+      // is what turns a Windows lane's MP4 recording into its demo.
+      demoEngines: createDemoEngineSet({
+        logger: macDesktopLogger,
+        getChromiumDemoEngine: () => chromiumDemoEngine,
+      }),
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {
@@ -4948,6 +5054,7 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
@@ -5010,7 +5117,17 @@ app.whenReady().then(async () => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
         }
-        emitProjectEvent(projectRoot, IPC.appControlEvent, payload);
+        emitProjectEvent(
+          projectRoot,
+          IPC.appControlEvent,
+          payload,
+          payload.type === "frame"
+            ? (webContents) => shouldSendAppControlFrameToWebContents(
+              webContents,
+              appControlFrameEventLaneId(payload),
+            )
+            : undefined,
+        );
       },
       // Recording: macOS records the app's window with the desktop helper
       // (the service's default); Windows/Linux use this desktop's encoder.
@@ -5026,6 +5143,7 @@ app.whenReady().then(async () => {
         return lane?.name ?? null;
       },
     });
+    appControlService.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, heldAppControlFrameLanes());
     // The session is per lane and owned by a chat: it goes when the chat ends
     // and when its lane is archived or deleted.
     agentChatService.registerChatSessionEndedListener((sessionId) => {
@@ -5267,7 +5385,10 @@ app.whenReady().then(async () => {
 
     scheduleBackgroundProjectTask(
       "prs.polling_start",
-      () => prPollingService.start(),
+      () => {
+        prPollingService.start();
+        prWatchServiceRef?.start();
+      },
       (error) => {
         logger.warn("prs.polling_start_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -5844,6 +5965,7 @@ app.whenReady().then(async () => {
       feedbackReporterService,
       prService,
       prPollingService,
+      prWatchService: prWatchServiceRef,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -6059,6 +6181,7 @@ app.whenReady().then(async () => {
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,
+      prWatchService: null,
       prSummaryService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
@@ -6309,6 +6432,7 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService?.dispose();
+      ctx.prWatchService?.dispose();
     } catch {
       // ignore
     }

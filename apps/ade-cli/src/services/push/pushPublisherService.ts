@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
 import {
@@ -2159,6 +2160,26 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             event.sourceTaskId?.trim() || event.id.trim(),
             event.status,
           );
+          break;
+        }
+        resumeRunOnActivity(run);
+        break;
+      }
+      case "system_notice": {
+        if (event.status === GOAL_REACHED_NOTICE_STATUS || event.status === GOAL_BLOCKED_NOTICE_STATUS) {
+          const reached = event.status === GOAL_REACHED_NOTICE_STATUS;
+          // The objective stays off the lock screen, like an error's text.
+          enqueueAlert({
+            sessionId: run.sessionId,
+            dedupeKey: `alert:${run.sessionId}:goal`,
+            render: () => ({ title: `${runSubject(run)} ${reached ? "reached its goal" : "is blocked on its goal"}`, body: laneTitleLine(run) }),
+            deepLink: `ade://session/${run.sessionId}`,
+            threadId: run.sessionId,
+            phase: "terminal",
+            interruptionLevel: "active",
+            fingerprintSalt: event.message,
+          });
+          immediate = true;
           break;
         }
         resumeRunOnActivity(run);

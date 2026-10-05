@@ -965,6 +965,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
+  // A PR watch wakes a chat on THIS machine. A replicated row would let a
+  // second machine's brain wake its own copy of the chat too, so the watch and
+  // the ids of comments ADE posted (which never wake it) stay local.
+  "pull_request_ade_comments",
+  "pull_request_chat_watches",
   // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
   // clients read effective config through RPC, never from a synced replica,
   // so these tables must not be CRRs.
@@ -2953,6 +2958,38 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)");
   db.run("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)");
+
+  // PR Watch / Ship (`prChatWatchStore.ts`). Machine-local: see
+  // LOCAL_ONLY_CRR_EXCLUDED_TABLES.
+  db.run(`
+    create table if not exists pull_request_chat_watches (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      session_id text not null,
+      mode text not null,
+      armed_by text not null,
+      state_json text not null,
+      started_at text not null,
+      stopped_at text,
+      stop_reason text,
+      last_told_at text,
+      last_told_summary text,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_chat_watches_session on pull_request_chat_watches(project_id, session_id)");
+  db.run("create index if not exists idx_pull_request_chat_watches_pr on pull_request_chat_watches(project_id, pr_id)");
+  db.run(`
+    create table if not exists pull_request_ade_comments (
+      comment_key text primary key,
+      project_id text not null,
+      pr_id text not null,
+      comment_id text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_ade_comments_pr on pull_request_ade_comments(project_id, pr_id)");
   safeAddColumn(db, "alter table pull_requests add column last_polled_at text");
   safeAddColumn(db, "alter table pull_requests add column head_sha text");
   safeAddColumn(db, "alter table pull_requests add column creation_strategy text");

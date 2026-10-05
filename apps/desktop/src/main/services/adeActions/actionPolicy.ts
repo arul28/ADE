@@ -100,7 +100,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
-  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
+  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   // Restoring brings a lane's worktree and services back up — the CTO's call,
@@ -225,6 +225,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // modal fired at whoever is at the Mac.
       "recheckPermissions",
       "requestPermission",
+      // Windows: a person's admin prompt and their choice to take the private
+      // screen from another lane. Neither is a session-bound agent's to make.
+      "setupWindows",
+      "takeoverWindows",
+      "useSharedDesktop",
     ],
   },
   computer_use_artifacts: {
@@ -473,7 +478,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
+  diff: ["getChanges", "getBranchChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
   conflicts: [
     "applyProposal",
     "attachResolverSession",
@@ -596,6 +601,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linkChatStack",
     "listChatSessionsForPr",
     "getStackLinkOffer",
+    "setChatWatch",
+    "getChatWatches",
     "updateBody",
     "updateBranch",
     "updateComment",
@@ -613,7 +620,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "dispatchSteer",
     "editSteer",
     "ensureCtoSession",
+    "moveSteer",
     "getAvailableModels",
+    "getLaunchDefaults",
     "getClaudeSessionInfo",
     "getClaudeSessionMessages",
     "getChatEventHistory",
@@ -641,6 +650,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "interrupt",
     "interruptWithQueueMode",
     "stopTask",
+    "restartSession",
+    "waitFor",
+    "armWait",
+    "listWaits",
+    "cancelWait",
+    "holdBackgroundWork",
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",
@@ -713,6 +728,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cancelScheduledWork",
     "resumeUsageLimitNow",
     "continueUsageLimitOnAlternate",
+    "switchAccount",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -927,6 +943,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getCostBreakdown",
+    "getModelDetail",
+    "getModelPriceOverrides",
     "getModelRoutes",
     "getRouterEfficiency",
     "getRouterShadowSummary",
@@ -937,6 +956,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "poll",
     "previewModelRoute",
     "refreshModelRegistry",
+    "setModelPriceOverride",
     "start",
     "stop",
   ],
@@ -973,7 +993,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // so phones and the hosted web client can mirror it. `show` is an agent
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
+  // `listDevServers` and `probePort` let a Browser on another machine see this
+  // machine's dev servers; both only read.
+  work_tools: [
+    "getLaneState",
+    "setActiveTool",
+    "readObservationPreview",
+    "show",
+    "acknowledgeShow",
+    "listDevServers",
+    "probePort",
+  ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -1008,7 +1038,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * durable agent transcript, so an unredacted stream token would be printed
    * into one.
    *
-   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`, `click`,
+   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`,
+   * `focusWindow`, `minimizeWindow`, `closeWindow`, `requestSharedDesktop`, `click`,
    * `type`, `press`, `scroll`, `drag`, `wait`, `screenshot`, `startRecording`,
    * `stopRecording`, `requestInputLease`, `present`.
    *
@@ -1033,6 +1064,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "claimWindow",
     "releaseWindow",
     "quitApp",
+    // Windows: a lane's own windows only (the service refuses any other).
+    "focusWindow",
+    "minimizeWindow",
+    "closeWindow",
+    // Windows: asks the user in the calling chat; their answer is the consent.
+    "requestSharedDesktop",
     "observe",
     "click",
     "type",
@@ -1052,6 +1089,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "takeControl",
     "returnControl",
     "renewLease",
+    "setupWindows",
+    "takeoverWindows",
+    "useSharedDesktop",
   ],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow", "startRecording", "stopRecording", "getRecordingStatus", "captureProof", "getLatestFrame"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
@@ -1109,6 +1149,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * anything on disk. So none of these methods can leak or destroy a
    * credential, which is the bar the CTO gate exists to enforce.
    *
+   * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
+   * account in a private PTY. That opens the user's browser and, once the user
+   * approves there, the CLI writes a new login into that account's directory,
+   * which can replace the login it held (tracked as `replacedAccount`). ADE
+   * still never sees the token, and nothing changes without the user's
+   * approval in the browser.
+   *
    * The locked decision is that an agent may both see and manage accounts:
    * a worker agent that needs a second Claude login (rate limits, a separate
    * work identity) must be able to create it and point a session at it without
@@ -1122,6 +1169,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rename",
     "setDefault",
     "setAccent",
+    "dismissReplaced",
+    "loginStart",
+    "loginStatus",
+    "loginSubmitCode",
+    "loginCancel",
     "getSettings",
     "setSettings",
     "loginCommand",

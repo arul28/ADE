@@ -80,6 +80,31 @@ describe("classifyAgentCliError", () => {
     }
   });
 
+  it("installs every ACP CLI from the shared source, at its latest release", async () => {
+    // ADE runs whichever version of these CLIs is installed, so the install
+    // command must fetch the latest release: a pinned `@x.y.z` here would leave
+    // a new user on a build nobody verified.
+    for (const platform of ["darwin", "win32"] as const) {
+      setPlatform(platform);
+      vi.resetModules();
+      const [{ AGENT_CLI_REGISTRY }, { ACP_PROVIDER_METADATA, ACP_PROVIDER_IDS }] = await Promise.all([
+        import("./agentRegistry"),
+        import("../../../desktop/src/shared/acpProviderMetadata"),
+      ]);
+      for (const provider of ACP_PROVIDER_IDS) {
+        const row = AGENT_CLI_REGISTRY.find((entry) => entry.agent === provider);
+        const source = ACP_PROVIDER_METADATA[provider].install;
+        expect(row?.authCommand).toBe(ACP_PROVIDER_METADATA[provider].loginCommand);
+        if (source.kind === "npm") {
+          expect(row?.installCommand).toContain(`npm install -g ${source.packageName}`);
+          expect(row?.installCommand).not.toMatch(/@\d+\.\d+/);
+        } else {
+          expect(row?.installCommand).toBe(source.command);
+        }
+      }
+    }
+  });
+
   it("classifies unauthenticated agent CLIs with auth commands", () => {
     expect(classifyAgentCliError("codex failed: login required")).toMatchObject({
       agent: "codex",
@@ -152,6 +177,42 @@ describe("classifyAgentCliError", () => {
       category: "unauthenticated",
       authCommand: "claude auth login",
     });
+  });
+
+  // A missing CLI is the binary itself failing to start. The harness's own
+  // "not found" for a slash command, a session, a model or a file, and a bare
+  // 403, must never send the user to reinstall or sign in again.
+  it.each([
+    ["opencode", "Command not found: ship"],
+    ["opencode", "OpenCode: model not found"],
+    ["opencode", "ENOENT: no such file or directory, open '/tmp/lane/notes.md'"],
+    ["pi", "Pi session \"abc\" was not found in the authorized session directory."],
+    ["opencode", "403 Forbidden: insufficient balance"],
+    ["codex", "Error on line 401 of the config"],
+    // A harness that answers an unknown slash command named like the binary,
+    // a foreign executable, and a bare non-command "not found" are not missing
+    // CLIs and must not send the user to reinstall.
+    ["opencode", "Command not found: opencode"],
+    ["opencode", "spawn git ENOENT"],
+    ["opencode", "git is not recognized as an internal or external command"],
+  ])("does not classify %s's %j as a CLI problem", (agent, message) => {
+    expect(classifyAgentCliError(message, agent)).toBeNull();
+  });
+
+  it.each([
+    ["opencode", "zsh: command not found: opencode"],
+    ["opencode", "/bin/sh: opencode: command not found"],
+    ["opencode", "spawn /opt/homebrew/bin/opencode ENOENT"],
+    ["opencode", "OpenCode: not-installed: OpenCode binary could not be found. Install OpenCode or ensure it is on your PATH."],
+    ["opencode", 'exec: "opencode": executable file not found in $PATH'],
+    ["opencode", "spawn /Users/me/bin/my-opencode-wrapper ENOENT"],
+    ["opencode", "spawn C:\\Program Files\\OpenCode\\opencode.exe ENOENT"],
+    ["opencode", "'opencode' is not recognized as an internal or external command"],
+    ["claude", "claude command not found"],
+    ["grok", "Grok was not found on this machine."],
+    ["codex", "codex executable not found"],
+  ])("classifies %s's %j as a missing CLI", (agent, message) => {
+    expect(classifyAgentCliError(message, agent)).toMatchObject({ agent, category: "missing" });
   });
 
   it("does not mistake Cursor SDK agent resume misses for a missing Cursor CLI", () => {

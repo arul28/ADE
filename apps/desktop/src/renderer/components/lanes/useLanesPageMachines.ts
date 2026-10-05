@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import {
   createLaneMachineRouter,
@@ -12,12 +13,29 @@ import {
 } from "../../state/laneMachineRouting";
 
 /**
- * A lane on another machine is selected in page state, never in the store's
+ * A lane on another machine is selected here, never in the store's
  * `selectedLaneId`: other tabs read that id as a lane on the tab's machine, and
  * a foreign row key (or a foreign lane id that happens to exist here too) must
- * not leak into them. Kept per project across remounts of the route.
+ * not leak into them. Kept per project across remounts of the route, and
+ * shared with History, which shows the lane the Lanes list has selected.
  */
-const foreignSelectionByProject = new Map<string, string | null>();
+const useForeignLaneSelectionStore = create<{ byProject: Record<string, string | null> }>(() => ({ byProject: {} }));
+
+/** The foreign row key (`machineId:laneId`) the Lanes list has selected, or null. */
+export function useForeignLaneSelection(projectStateKey: string | null): string | null {
+  return useForeignLaneSelectionStore((state) => state.byProject[projectStateKey ?? ""] ?? null);
+}
+
+export function readForeignLaneSelection(projectStateKey: string | null): string | null {
+  return useForeignLaneSelectionStore.getState().byProject[projectStateKey ?? ""] ?? null;
+}
+
+export function setForeignLaneSelection(projectStateKey: string | null, key: string | null): void {
+  const projectKey = projectStateKey ?? "";
+  if (readForeignLaneSelection(projectStateKey) === key) return;
+  useForeignLaneSelectionStore.setState((state) => ({ byProject: { ...state.byProject, [projectKey]: key } }));
+}
+
 const machineFilterByProject = new Map<string, string>();
 
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
@@ -130,15 +148,9 @@ export function useLanesPageMachines({
 
   /* ---- Selection ---- */
 
-  const [foreignSelectedKey, setForeignSelectedKeyState] = useState<string | null>(
-    () => (projectStateKey ? foreignSelectionByProject.get(projectStateKey) ?? null : null),
-  );
+  const foreignSelectedKey = useForeignLaneSelection(projectStateKey);
   const setForeignSelectedKey = useCallback((key: string | null) => {
-    if (projectStateKey) foreignSelectionByProject.set(projectStateKey, key);
-    setForeignSelectedKeyState(key);
-  }, [projectStateKey]);
-  useEffect(() => {
-    setForeignSelectedKeyState(projectStateKey ? foreignSelectionByProject.get(projectStateKey) ?? null : null);
+    setForeignLaneSelection(projectStateKey, key);
   }, [projectStateKey]);
   // The page's selection: a foreign row when one is picked and still listed,
   // otherwise the store's lane on the tab's machine.
@@ -156,10 +168,10 @@ export function useLanesPageMachines({
   }, [setForeignSelectedKey, storeSelectLane]);
   /** Drop a foreign selection (the lane is gone from its machine). */
   const clearForeignSelection = useCallback((key: string) => {
-    if (foreignSelectionByProject.get(projectStateKey ?? "") === key || foreignSelectedKey === key) {
+    if (foreignSelectedKey === key) {
       setForeignSelectedKey(null);
     }
-  }, [foreignSelectedKey, projectStateKey, setForeignSelectedKey]);
+  }, [foreignSelectedKey, setForeignSelectedKey]);
 
   /* ---- Machine filter ---- */
 

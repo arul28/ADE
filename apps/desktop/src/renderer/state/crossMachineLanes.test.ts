@@ -319,7 +319,23 @@ describe("offline machines stay in the sidebar, dimmed", () => {
       lanes: [lane],
     });
     const beforeEntry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    const beforeUnion = useAppStore.getState().crossMachineLanesByMachineId;
+
+    // A read with no news a few seconds later publishes nothing: the sync
+    // stamps alone are not worth re-rendering every surface that lists machines.
     vi.setSystemTime(new Date("2026-07-27T10:00:05Z"));
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      online: true,
+      lanes: [lane],
+    });
+    expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(beforeUnion);
+    expect(useAppStore.getState().crossMachineLanesByMachineId["target-studio"]).toBe(beforeEntry);
+
+    // Once the stamps are stale enough to matter they advance, still reusing
+    // the unchanged lane array.
+    vi.setSystemTime(new Date("2026-07-27T10:00:12Z"));
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",
       machineName: "Mac Studio (12)",
@@ -334,7 +350,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
     // A sessions-only merge (what an optimistic foreign launch writes) advances
     // the general clock but must NOT claim the lane list was read — consumers
     // use `lanesSyncedAtMs` to tell "no lanes" from "not read yet".
-    vi.setSystemTime(new Date("2026-07-27T10:00:10Z"));
+    vi.setSystemTime(new Date("2026-07-27T10:00:14Z"));
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",
       machineName: "Mac Studio (12)",

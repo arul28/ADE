@@ -8,6 +8,11 @@ import {
   PEER_BACKPRESSURE_BYTES,
 } from "../sync/syncProtocol";
 import type { AuthenticatedSyncConnection } from "./syncRuntimeTransport";
+import {
+  buildForwardFailureResponse,
+  FORWARD_FAILURE_SNIFF_BYTES,
+  looksLikeHttpRequest,
+} from "./forwardFailurePage";
 
 const LOCAL_FORWARD_HOST = "127.0.0.1" as const;
 /** Local→remote queue ceiling. A healthy upload pauses the socket well before this. */
@@ -26,10 +31,23 @@ const DEFAULT_INBOUND_PAUSE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_INBOUND_HARD_CAP_BYTES = 64 * 1024 * 1024;
 /** A socket that stays paused this long is not a live browser. */
 const DEFAULT_INBOUND_STALL_MS = 60_000;
+/**
+ * How long a forward the remote refused waits for the browser's first bytes.
+ * A browser writes its request as soon as it connects, so this only matters
+ * for a client that is not speaking first, which then just gets closed.
+ */
+const FAILURE_PAGE_WAIT_MS = 2_000;
 
 type ActiveSocket = {
   socket: net.Socket;
   forwardId: string;
+  remotePort: number;
+  /** The start of what the browser sent, kept to tell an HTTP client apart. */
+  firstBytes: Buffer | null;
+  /** Once the remote server has answered, a close is a normal close. */
+  receivedRemoteBytes: boolean;
+  /** The remote refused before the browser spoke; answer on its first bytes. */
+  pendingFailure: { reason: string | null; timer: ReturnType<typeof setTimeout> } | null;
   ownerSockets: Map<string, ActiveSocket>;
   outboundPending: Buffer[];
   outboundPendingBytes: number;
@@ -108,6 +126,8 @@ export class SyncPortForwardClient {
       inboundHardCapBytes?: number;
       /** Test seam. Production closes a forward that stays paused for 60s. */
       inboundStallMs?: number;
+      /** The paired machine's name, for the page shown when its port is closed. */
+      machineLabel?: string | null;
     } = {},
   ) {
     this.inboundPauseBytes = normalizePositive(options.inboundPauseBytes, DEFAULT_INBOUND_PAUSE_BYTES);
@@ -131,6 +151,10 @@ export class SyncPortForwardClient {
       if (!active) return;
       if (envelope.type === "fwd_close") {
         active.remoteClosed = true;
+        if (!active.receivedRemoteBytes) {
+          this.answerRemoteRefusal(active, typeof payload.reason === "string" ? payload.reason : null);
+          return;
+        }
         this.closeActiveSocket(active, false);
         return;
       }
@@ -139,6 +163,7 @@ export class SyncPortForwardClient {
         this.closeActiveSocket(active, true, "Forward received invalid base64 data.");
         return;
       }
+      active.receivedRemoteBytes = true;
       this.acceptInbound(active, bytes);
     });
     this.removeCloseListener = connection.onClose(() => this.dispose(false));
@@ -195,6 +220,34 @@ export class SyncPortForwardClient {
     this.forwards.clear();
   }
 
+  /**
+   * The remote closed the forward before its server sent anything: the dial
+   * failed. A browser waiting on that socket would get an empty response, so an
+   * HTTP client gets a page saying what is wrong instead.
+   */
+  private answerRemoteRefusal(active: ActiveSocket, reason: string | null): void {
+    if (active.firstBytes) {
+      this.closeWithFailurePage(active, reason);
+      return;
+    }
+    if (active.pendingFailure) return;
+    const timer = setTimeout(() => this.closeActiveSocket(active, false), FAILURE_PAGE_WAIT_MS);
+    timer.unref?.();
+    active.pendingFailure = { reason, timer };
+  }
+
+  /** Close a refused forward: with the failure page for an HTTP client, plainly otherwise. */
+  private closeWithFailurePage(active: ActiveSocket, reason: string | null): void {
+    const page = looksLikeHttpRequest(active.firstBytes)
+      ? buildForwardFailureResponse({
+        remotePort: active.remotePort,
+        machineLabel: this.options.machineLabel ?? null,
+        reason,
+      })
+      : null;
+    this.closeActiveSocket(active, false, undefined, page);
+  }
+
   private async createForward(
     remoteHost: "127.0.0.1" | "localhost",
     remotePort: number,
@@ -209,6 +262,10 @@ export class SyncPortForwardClient {
       const active: ActiveSocket = {
         socket,
         forwardId,
+        remotePort,
+        firstBytes: null,
+        receivedRemoteBytes: false,
+        pendingFailure: null,
         ownerSockets: sockets,
         outboundPending: [],
         outboundPendingBytes: 0,
@@ -394,6 +451,14 @@ export class SyncPortForwardClient {
   }
 
   private sendLocalData(active: ActiveSocket, data: Buffer): void {
+    if (!active.firstBytes && data.byteLength > 0) {
+      active.firstBytes = Buffer.from(data.subarray(0, FORWARD_FAILURE_SNIFF_BYTES));
+      if (active.pendingFailure) {
+        this.closeWithFailurePage(active, active.pendingFailure.reason);
+        return;
+      }
+    }
+    if (active.remoteClosed) return;
     for (let offset = 0; offset < data.byteLength; offset += FORWARD_DATA_CHUNK_BYTES) {
       const chunk = Buffer.from(data.subarray(
         offset,
@@ -461,9 +526,13 @@ export class SyncPortForwardClient {
     active: ActiveSocket,
     notifyRemote: boolean,
     reason = "Local forward socket closed.",
+    /** A last response for the browser (the failure page); ends instead of destroying. */
+    finalBytes: Buffer | null = null,
   ): void {
     if (!this.sockets.delete(active.forwardId)) return;
     active.ownerSockets.delete(active.forwardId);
+    if (active.pendingFailure) clearTimeout(active.pendingFailure.timer);
+    active.pendingFailure = null;
     if (active.outboundTimer) clearInterval(active.outboundTimer);
     active.outboundTimer = null;
     active.outboundPending = [];
@@ -480,6 +549,14 @@ export class SyncPortForwardClient {
         // The connection is already gone.
       }
     }
+    if (finalBytes) {
+      try {
+        active.socket.end(finalBytes);
+        return;
+      } catch {
+        // Fall through to a plain teardown.
+      }
+    }
     try {
       active.socket.destroy();
     } catch {
@@ -490,6 +567,7 @@ export class SyncPortForwardClient {
 
 export function createSyncPortForwardClient(
   connection: AuthenticatedSyncConnection,
+  options: { machineLabel?: string | null } = {},
 ): SyncPortForwardClient {
-  return new SyncPortForwardClient(connection);
+  return new SyncPortForwardClient(connection, options);
 }

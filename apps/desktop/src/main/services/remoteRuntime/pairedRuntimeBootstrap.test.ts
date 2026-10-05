@@ -155,7 +155,7 @@ describe("bootstrapPairedRuntime", () => {
       "ws://studio.local:8787/",
       expect.any(Number),
     );
-    expect(createForwardClientMock).toHaveBeenCalledWith(result.transport.connection);
+    expect(createForwardClientMock).toHaveBeenCalledWith(result.transport.connection, expect.anything());
   });
 
   it.each([

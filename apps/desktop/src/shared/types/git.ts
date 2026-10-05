@@ -133,6 +133,26 @@ export type GitCommitSummary = {
   authoredAt: string;
   subject: string;
   pushed: boolean;
+  /** Author email, when the read asked for it (History). */
+  authorEmail?: string;
+  /** `Co-authored-by:` trailer values ("Claude <noreply@anthropic.com>"). */
+  coAuthors?: string[];
+};
+
+/**
+ * Which refs a commit list walks. `lane` is the lane's HEAD. `lanes` is the
+ * lane's HEAD plus every active lane's branch and the lane's base, so one
+ * graph shows where every lane sits.
+ */
+export type GitCommitListScope = "lane" | "lanes";
+
+export type GitListRecentCommitsArgs = {
+  laneId: string;
+  /** Page size; at most 500 per call. */
+  limit?: number;
+  /** Newest commits to skip, for loading older pages. */
+  skip?: number;
+  scope?: GitCommitListScope;
 };
 
 export type GitFileHistoryEntry = {
@@ -169,7 +189,15 @@ export type GitStashSummary = {
   createdAt: string | null;
 };
 
-export type DiffMode = "unstaged" | "staged" | "commit";
+/**
+ * `branch` is everything the lane changed since its base: the merge-base of the
+ * base and HEAD against the working tree, so commits, uncommitted edits and
+ * untracked files read as one diff per file.
+ */
+export type DiffMode = "unstaged" | "staged" | "commit" | "branch";
+
+/** A lane file selection: every scope but a single commit. */
+export type LaneDiffMode = Exclude<DiffMode, "commit">;
 
 export type FileChange = {
   path: string;
@@ -183,6 +211,17 @@ export type FileChange = {
 export type DiffChanges = {
   unstaged: FileChange[];
   staged: FileChange[];
+};
+
+/** `git.getBranchChanges`: every file the lane changed since its base. */
+export type BranchDiffChanges = {
+  /** The ref the lane is compared with, as shown ("main", "origin/main"). */
+  baseRef: string;
+  /** The commit the diff starts from: merge-base(base, HEAD). */
+  mergeBase: string;
+  files: FileChange[];
+  additions: number;
+  deletions: number;
 };
 
 export type DiffLineStats = {

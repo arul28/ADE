@@ -8,16 +8,23 @@ import {
   type BuiltInBrowserRemoteRequestAck,
 } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import { DesktopBridgeUnavailableError } from "./desktopBridgeClient";
+import type { SessionInputOrigin } from "../../../../desktop/src/shared/sessionInputOrigin";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
 
 /**
- * `ade browser open` on a machine that has no desktop attached.
+ * `ade browser open` reaching the screen the user is actually looking at.
  *
- * The built-in browser is a `WebContentsView` owned by an Electron main
- * process, so a box running only `ade serve` has no browser to open — the
+ * With a desktop on this machine, that desktop takes every call: an agent
+ * drives the tab it opened through this machine's bridge. A request to show
+ * the user (`--panel`) is also sent to the desktop that sent the chat its last
+ * message when that is another machine (a MacBook connected to this Mac
+ * Studio), or to every connected desktop when nobody can tell.
+ *
+ * Without a desktop on this machine: the built-in browser is a
+ * `WebContentsView` owned by an Electron main process, so a box running only `ade serve` has no browser to open — the
  * bridge socket simply isn't listening. But a desktop somewhere else may hold a
  * remote pin on this machine's lane, and that desktop can already reach this
  * machine's loopback ports over a port-forward. So instead of failing, the
@@ -38,10 +45,15 @@ type PendingRequest = {
 };
 
 export type RemoteBrowserForwarder = {
-  /** Wrap a bridge call, forwarding to an attached desktop when there is none here. */
-  forwardIfNoDesktop: (
+  /**
+   * Run a "put this URL on a screen" call. The desktop on this machine takes it
+   * when there is one; a request to show the user also reaches the desktop
+   * the user is talking from; with no desktop here, it goes to one elsewhere.
+   */
+  route: (
     input: unknown,
-    call: () => Promise<unknown>,
+    call: (input: unknown) => Promise<unknown>,
+    method: string,
   ) => Promise<unknown>;
   /** Runtime action a desktop calls once it has taken (or refused) a request. */
   acknowledgeRemoteRequest: (input: unknown) => { ok: boolean };
@@ -61,6 +73,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createRemoteBrowserForwarder(args: {
   emitEvent: (payload: Record<string, unknown>) => void;
   logger: Logger;
+  /** The desktop that sent a chat its last message, when one is known. */
+  resolveOrigin?: (chatSessionId: string) => SessionInputOrigin | null;
   ackTimeoutMs?: number;
 }): RemoteBrowserForwarder {
   const pending = new Map<string, PendingRequest>();
@@ -75,7 +89,10 @@ export function createRemoteBrowserForwarder(args: {
     return true;
   }
 
-  async function forward(input: unknown): Promise<BuiltInBrowserForwardedToDesktop> {
+  async function forward(
+    input: unknown,
+    targetClientId: string | null,
+  ): Promise<BuiltInBrowserForwardedToDesktop> {
     const record = isRecord(input) ? input : {};
     const url = stringOrNull(record.url) ?? "";
     const request: BuiltInBrowserRemoteRequest = {
@@ -85,6 +102,7 @@ export function createRemoteBrowserForwarder(args: {
       chatSessionId: stringOrNull(record.chatSessionId),
       openPanel: record.openPanel !== false,
       requestedAt: new Date().toISOString(),
+      targetClientId,
     };
     const ack = await new Promise<BuiltInBrowserRemoteRequestAck | null>((resolve) => {
       const timer = setTimeout(() => {
@@ -106,6 +124,7 @@ export function createRemoteBrowserForwarder(args: {
     args.logger.info("built_in_browser.remote_request_forwarded", {
       requestId: request.requestId,
       url: request.url,
+      targeted: Boolean(targetClientId),
       acknowledged: Boolean(ack?.accepted),
     });
     return {
@@ -123,14 +142,51 @@ export function createRemoteBrowserForwarder(args: {
     };
   }
 
+  /** To the desktop the user is at; if it does not answer, to any desktop. */
+  async function forwardToUser(
+    input: unknown,
+    targetClientId: string | null,
+  ): Promise<BuiltInBrowserForwardedToDesktop> {
+    const forwarded = await forward(input, targetClientId);
+    if (!targetClientId || forwarded.acknowledged) return forwarded;
+    return await forward(input, null);
+  }
+
   return {
-    forwardIfNoDesktop: async (input, call) => {
+    route: async (input, call, method) => {
+      const record = isRecord(input) ? input : {};
+      const chatSessionId = stringOrNull(record.chatSessionId);
+      const origin = chatSessionId ? args.resolveOrigin?.(chatSessionId) ?? null : null;
+      // The desktop the user talks from, when that is not this machine's.
+      const remoteTargetId = origin && !origin.local ? origin.clientId : null;
+      // "Show the user": `showPanel` always, a navigation with `--panel` (or a
+      // person's own call). An agent opening a tab for itself to drive is not
+      // that and stays on this machine.
+      const showToUser = method === "showPanel" || record.openPanel === true;
+      // Revealing a panel on this machine has no use when the user is
+      // elsewhere and nothing here loads a page an agent drives.
+      let forwarded: BuiltInBrowserForwardedToDesktop | null = null;
+      if (method === "showPanel" && remoteTargetId) {
+        forwarded = await forwardToUser(input, remoteTargetId);
+        if (forwarded.acknowledged) return forwarded;
+      }
+      // This machine's desktop takes the call either way: an agent drives the
+      // tab it opened through this machine's bridge. It reveals its panel only
+      // when the user is at this machine, or nobody can tell where they are.
+      const localInput = showToUser && remoteTargetId ? { ...record, openPanel: false } : input;
+      let result: unknown;
       try {
-        return await call();
+        result = await call(localInput);
       } catch (error) {
         if (!(error instanceof DesktopBridgeUnavailableError)) throw error;
-        return await forward(input);
+        return forwarded ?? await forwardToUser(input, remoteTargetId);
       }
+      if (showToUser && !forwarded && (remoteTargetId || !origin)) {
+        // Also put it on the other screen: the one the user is talking from,
+        // or every connected one when nobody can tell.
+        void forwardToUser(input, remoteTargetId).catch(() => {});
+      }
+      return result;
     },
     acknowledgeRemoteRequest: (input) => {
       const record = isRecord(input) ? input : {};
@@ -179,7 +235,7 @@ export function withRemoteBrowserForwarding(
           | undefined;
         if (typeof inner !== "function") return inner;
         return (input?: unknown) =>
-          forwarder.forwardIfNoDesktop(input, () => inner(input));
+          forwarder.route(input, (next) => inner(next), property);
       }
       return Reflect.get(target, property, receiver);
     },

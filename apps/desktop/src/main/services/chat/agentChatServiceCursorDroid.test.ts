@@ -503,6 +503,80 @@ describe("createAgentChatService", () => {
     }
   });
 
+  it("retires a Cursor SDK approval card when its hook stops waiting", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, logger } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "agent",
+    });
+
+    const releaseGate = parkCursorSend();
+    const pendingTurn = service.sendMessage({
+      sessionId: session.id,
+      text: "Run a command that needs approval.",
+    }, { awaitDispatch: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBe(1);
+      });
+
+      const hookResponse = mockState.cursorSdkPooled.bridge.onHookRequest({
+        id: "cursor-hook-abandoned",
+        toolName: "shell",
+        title: "Run shell command",
+        summary: "Run git status",
+        cwd: tmpRoot,
+        raw: { command: "git status --short" },
+        toolInput: { command: "git status --short" },
+        risk: "shell",
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cursor-hook-abandoned",
+      );
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toHaveLength(1);
+
+      // The gate script gave up (or Cursor killed it) before ADE answered, so
+      // the card must be retired instead of left pending with no possible reply.
+      mockState.cursorSdkPooled.bridge.onHookAbandoned("cursor-hook-abandoned");
+
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+      await expect(hookResponse).resolves.toEqual(expect.objectContaining({ permission: "deny" }));
+      expect(events).toContainEqual(expect.objectContaining({
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: "cursor-hook-abandoned",
+          resolution: "cancelled",
+        }),
+      }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.cursor_permission_hook_abandoned",
+        expect.objectContaining({
+          sessionId: session.id,
+          itemId: "cursor-hook-abandoned",
+          toolName: "shell",
+        }),
+      );
+    } finally {
+      releaseGate();
+      await pendingTurn;
+    }
+  });
+
   it("exits Cursor SDK plan mode through ADE plan approval control blocks", async () => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];

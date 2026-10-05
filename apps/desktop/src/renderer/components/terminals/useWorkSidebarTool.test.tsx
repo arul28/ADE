@@ -555,6 +555,49 @@ describe("work tool runtime publish", () => {
     expect(setActiveTool).toHaveBeenCalledWith("lane-studio", "git", ["git"], studioPin);
   });
 
+  it("re-publishes when a brain reconnects or a new one answers, not on a status heartbeat", () => {
+    let emitLocal: ((status: unknown) => void) | null = null;
+    let emitRemote: ((snapshot: unknown) => void) | null = null;
+    (window as unknown as { ade: unknown }).ade = {
+      workTools: { setActiveTool },
+      app: { onRuntimeStatusChanged: (cb: (status: unknown) => void) => { emitLocal = cb; return () => {}; } },
+      remoteRuntime: { onConnectionSnapshotChanged: (cb: (snapshot: unknown) => void) => { emitRemote = cb; return () => {}; } },
+    };
+    renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    const settle = () => act(() => {
+      vi.advanceTimersByTime(WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+    });
+    settle();
+    expect(emitLocal, "setup precondition").not.toBeNull();
+    expect(emitRemote, "setup precondition").not.toBeNull();
+    const publishes = () => setActiveTool.mock.calls.length;
+    const remote = (connectedAt: string) => ({
+      connections: [{ target: { id: "target-studio" }, state: "connected", connectedAt }],
+    });
+
+    act(() => emitLocal!({ connectionState: "connected", pid: 101 }));
+    act(() => emitRemote!(remote("2026-10-05T00:00:00.000Z")));
+    settle();
+    const afterFirstStatus = publishes();
+
+    // Heartbeats repeat the same brain and the same connection.
+    for (let i = 0; i < 5; i += 1) {
+      act(() => emitLocal!({ connectionState: "connected", pid: 101 }));
+      act(() => emitRemote!(remote("2026-10-05T00:00:00.000Z")));
+      settle();
+    }
+    expect(publishes()).toBe(afterFirstStatus);
+
+    act(() => emitLocal!({ connectionState: "connected", pid: 202 }));
+    settle();
+    expect(publishes()).toBe(afterFirstStatus + 1);
+
+    act(() => emitRemote!(remote("2026-10-05T00:05:00.000Z")));
+    settle();
+    expect(publishes()).toBe(afterFirstStatus + 2);
+    expect(setActiveTool).toHaveBeenLastCalledWith("lane-studio", null, [], studioPin);
+  });
+
   it("retries once without the active tool when an older runtime rejects it", async () => {
     setActiveTool.mockImplementationOnce(async () => {
       throw new Error('work_tools.setActiveTool got an unknown tool "pr".');

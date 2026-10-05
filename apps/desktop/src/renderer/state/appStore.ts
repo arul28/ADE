@@ -221,6 +221,7 @@ export type WorkSidebarTab =
   | "app-control"
   | "browser"
   | "mac-desktop"
+  | "windows-desktop"
   | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
@@ -330,6 +331,18 @@ export type WorkProjectViewState = {
   /** Funnel-panel chip selections. OR within an axis, AND across axes. */
   workSessionFilters: WorkSessionFilters;
   /**
+   * By-lane "Fold busy lanes": lanes whose live work is all running or waiting
+   * on a PR collapse into a Working shelf until something needs the user.
+   * Optional and off by default, so an older blob keeps today's list.
+   */
+  workFoldBusyLanes?: boolean;
+  /**
+   * When the user last looked at each session, keyed by session id. A finished
+   * row seen after it finished no longer keeps its lane out of the Working
+   * shelf. Bounded by `stampWorkSeenAt`.
+   */
+  workSeenAtBySessionId?: Record<string, string>;
+  /**
    * Lanes-tab view state. The Lanes route is unmounted whenever it isn't active
    * (unlike Work, which is kept warm), so component state there cannot survive a
    * tab switch by construction — it has to live here to be preserved at all.
@@ -380,6 +393,10 @@ const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
 const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Lane status older than this is re-measured when a surface shows it. */
+const LANE_STATUS_MAX_AGE_MS = 30_000;
+/** Delay before a scheduled status read, so a burst of identity reads collapses into one. */
+const LANE_STATUS_READ_DELAY_MS = 1_200;
 
 export function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -415,6 +432,8 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneSortMode: "created",
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
+    workFoldBusyLanes: false,
+    workSeenAtBySessionId: {},
     lanesFilter: "",
     lanesGroupBy: "state",
     lanesCollapsedGroupIds: [],
@@ -449,6 +468,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "app-control"
     || value === "browser"
     || value === "mac-desktop"
+    || value === "windows-desktop"
     || value === "pr"
   ) return value;
   return null;
@@ -531,6 +551,10 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneSortMode: normalizeWorkLaneSortMode(candidate.workLaneSortMode),
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
+    // Additive, no version bump: an older blob has neither key and lands on the
+    // unfolded list with nothing seen, which is the behaviour it already had.
+    workFoldBusyLanes: candidate.workFoldBusyLanes === true,
+    workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
@@ -568,6 +592,16 @@ function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
     if (sessionIds.length < 2) continue;
     seenSetIds.add(id);
     out.push({ id, layoutId, sessionIds });
+  }
+  return out;
+}
+
+function normalizeWorkSeenAt(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [sessionId, at] of Object.entries(value as Record<string, unknown>)) {
+    if (!sessionId.trim() || typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
+    out[sessionId] = at;
   }
   return out;
 }
@@ -1425,10 +1459,23 @@ export type AppState = {
    */
   gitFolderTrustPrompt: GitFolderTrustPrompt | null;
   isNewTabOpen: boolean;
+  /**
+   * Settings is open with no project, from the new-project screen's Settings
+   * button. Set only by that request: a project that closes while `/settings`
+   * is on screen falls back to the welcome page, not to this.
+   */
+  standaloneSettingsOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  /**
+   * True when the git status in `lanes` (ahead/behind, dirty) was not
+   * measured on this machine within the freshness window: a read for it is
+   * pending, or the last one failed. Surfaces show those numbers quietly,
+   * never as current, and never place anything by them.
+   */
+  laneStatusStale: boolean;
   laneDeleteProgressByLaneId: Record<string, LaneDeleteProgress>;
   selectedLaneId: string | null;
   focusedSessionId: string | null;
@@ -1677,6 +1724,7 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
   refreshProject: () => Promise<void>;
@@ -1687,6 +1735,15 @@ export type AppState = {
     includeRebaseSuggestions?: boolean;
     includeAutoRebaseStatus?: boolean;
   }) => Promise<void>;
+  /**
+   * Schedules one coalesced lane read WITH git status when this store's lane
+   * status is older than `maxAgeMs` (default {@link LANE_STATUS_MAX_AGE_MS}).
+   * A status-less refresh carries the last status forward, so a surface that
+   * only ever did those would show a status no one measured: the `0/0`
+   * placeholder, or a number cached days ago. Surfaces call this when they
+   * show lane status and the branch may have moved.
+   */
+  requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (
     rootPath: string,
@@ -1887,6 +1944,9 @@ function transitionFailureState(
   return { projectTransitionError: formatProjectTransitionError(kind, error) };
 }
 
+/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
+const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
+
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;
   /** Monotonic counter incremented before each lane refresh request.
@@ -1897,6 +1957,48 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
   let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
+  /**
+   * When this store's lanes last carried a measured git status, and for which
+   * project. Status-less reads carry the old status forward; this is what
+   * tells "measured just now" from "inherited from a cache of any age".
+   */
+  let laneStatusReadAt: { projectKey: string | null; atMs: number } | null = null;
+  let laneStatusReadTimer: number | null = null;
+  /**
+   * The strictest freshness the pending timer was asked for. A later, stricter
+   * request (`maxAgeMs: 0` from a commit-list reload) lowers it, so a forced
+   * re-read is never swallowed by a timer armed for the default window.
+   */
+  let laneStatusReadThresholdMs = LANE_STATUS_MAX_AGE_MS;
+
+  const laneStatusAgeMs = (projectKey: string | null): number =>
+    laneStatusReadAt && laneStatusReadAt.projectKey === projectKey
+      ? Date.now() - laneStatusReadAt.atMs
+      : Number.POSITIVE_INFINITY;
+
+  const scheduleLaneStatusRead = (maxAgeMs: number) => {
+    const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+    if (!projectKey || laneStatusAgeMs(projectKey) < maxAgeMs) return;
+    // Numbers older than the window are not current while this read is out.
+    // A read asked for sooner (History reload) leaves fresh numbers fresh.
+    if (laneStatusAgeMs(projectKey) >= LANE_STATUS_MAX_AGE_MS && !get().laneStatusStale) {
+      set({ laneStatusStale: true });
+    }
+    if (laneStatusReadTimer != null) {
+      laneStatusReadThresholdMs = Math.min(laneStatusReadThresholdMs, maxAgeMs);
+      return;
+    }
+    laneStatusReadThresholdMs = maxAgeMs;
+    laneStatusReadTimer = window.setTimeout(() => {
+      laneStatusReadTimer = null;
+      const threshold = laneStatusReadThresholdMs;
+      const currentKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      if (!currentKey || laneStatusAgeMs(currentKey) < threshold) return;
+      void get().refreshLanes({ includeStatus: true, includeSnapshots: false }).catch((err) => {
+        console.debug("Lane status read failed:", err);
+      });
+    }, LANE_STATUS_READ_DELAY_MS);
+  };
 
   const scheduleProjectHydration = () => {
     if (warmupTimer != null) {
@@ -1943,8 +2045,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: cachedLanes?.laneSnapshots ?? [],
         lanes: cachedLanes?.lanes ?? [],
+        laneStatusStale: true,
         lanesLoading: !cachedLanes,
         laneDeleteProgressByLaneId: {},
         selectedLaneId: restoredSelection.laneId,
@@ -1957,7 +2061,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
       };
     });
-    invalidateAiDiscoveryCache(project.rootPath);
+    invalidateAiDiscoveryCache(project.rootPath, { force: false });
     invalidateProjectConfigCache(project.rootPath);
     void Promise.allSettled([
       get().refreshLanes({ includeStatus: false }),
@@ -2001,10 +2105,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   worktreeOpenPrompt: null,
   gitFolderTrustPrompt: null,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  // Nothing has been measured yet: whatever lanes arrive first (a cache, an
+  // identity read) carry a status of unknown age.
+  laneStatusStale: true,
   laneDeleteProgressByLaneId: {},
   selectedLaneId: null,
   focusedSessionId: null,
@@ -2137,6 +2245,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? {
               laneSnapshots: warmLaneCache?.laneSnapshots ?? [],
               lanes: warmLaneCache?.lanes ?? [],
+              laneStatusStale: true,
               lanesLoading: project ? !warmLaneCache : false,
               selectedLaneId: restoredSelection?.laneId ?? null,
               focusedSessionId: restoredSelection?.sessionId ?? null,
@@ -2350,6 +2459,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
+      // A read that found nothing new still re-stamps the sync clocks. Their
+      // readers judge staleness on a minute scale, so a stamp-only change waits
+      // until it is worth a re-render of every surface that lists machines.
+      const stampCurrent = (prevMs: number | null, nextMs: number | null): boolean =>
+        prevMs === nextMs
+        || (prevMs != null && nextMs != null && nextMs - prevMs < CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS);
       const sliceUnchanged = (
         previous
         && previous.machineName === next.machineName
@@ -2360,8 +2475,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
-        && previous.lastSyncedAtMs === next.lastSyncedAtMs
-        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
+        && stampCurrent(previous.lastSyncedAtMs, next.lastSyncedAtMs)
+        && stampCurrent(previous.lanesSyncedAtMs, next.lanesSyncedAtMs)
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};
@@ -2663,11 +2778,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? { activeDictationTarget: null }
         : prev,
     ),
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
+  // A new tab is the new-project screen, so it also ends Settings-without-a-project.
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
+  setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
@@ -2798,6 +2915,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
+      // A status-less read of a lane this store has no status for returns the
+      // brain's 0/0 placeholder, which is no measurement at all.
+      const statusUnknownForSomeLane = !currentRequest.includeStatus
+        && rawLanes.some((lane) => !previousLanesById.has(lane.id) && !previousSnapshotsById.has(lane.id));
       // Discard stale response: a newer refresh was issued while this one was in-flight
       if (token !== laneRefreshVersion) {
         return;
@@ -2866,12 +2987,26 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneSnapshots: nextSnapshots,
           lanes,
           lanesLoading: false,
+          // A measured read replaces the numbers and their flag together. A
+          // status-less one only carries numbers forward: they stay as fresh
+          // as they were, unless they have aged out or a lane arrived with
+          // only the brain's 0/0 placeholder.
+          laneStatusStale: currentRequest.includeStatus
+            ? false
+            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
           selectedLaneId: nextSelected,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
           laneCacheByProject: nextLaneCache,
         };
       });
+      if (currentRequest.includeStatus) {
+        laneStatusReadAt = { projectKey: requestedProjectKey, atMs: Date.now() };
+      } else {
+        // This read carried the previous status forward (or the brain's 0/0
+        // placeholder when there was none). Measure it unless that was recent.
+        scheduleLaneStatusRead(statusUnknownForSomeLane ? 0 : LANE_STATUS_MAX_AGE_MS);
+      }
     };
 
     // Only show a loading spinner when there's nothing to display. If we
@@ -2920,6 +3055,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
 
     await laneRefreshInFlight;
+  },
+
+  requestLaneStatusRead: (options) => {
+    scheduleLaneStatusRead(Math.max(0, options?.maxAgeMs ?? LANE_STATUS_MAX_AGE_MS));
   },
 
   refreshProviderMode: async () => {
@@ -3078,8 +3217,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedWarmLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredWarmSelection.laneId,
@@ -3119,6 +3260,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
           }
         : {
             projectHydrated: true,
@@ -3126,8 +3268,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectTransition: null,
             projectTransitionError: null,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedLanes?.laneSnapshots ?? [],
             lanes: cachedLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredSelection.laneId,
@@ -3137,7 +3281,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           });
-      invalidateAiDiscoveryCache(rootPath);
+      invalidateAiDiscoveryCache(rootPath, { force: false });
       invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -3315,9 +3459,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransition: null,
           projectTransitionError: null,
           isNewTabOpen: false,
+          standaloneSettingsOpen: false,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
+          laneStatusStale: true,
           lanesLoading: !cachedLanes,
           laneDeleteProgressByLaneId: {},
           selectedLaneId: restoredSelection.laneId,
@@ -3329,7 +3475,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneCacheByProject,
         };
       });
-      invalidateAiDiscoveryCache(binding.rootPath);
+      invalidateAiDiscoveryCache(binding.rootPath, { force: false });
       invalidateProjectConfigCache(binding.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -3380,6 +3526,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: [],
         lanes: [],
         lanesLoading: false,
@@ -3462,6 +3609,7 @@ export function createProjectAppStore(
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     theme: rootState.theme,
     themeId: rootState.themeId,
@@ -3523,6 +3671,7 @@ export function createProjectAppStore(
     sessionsCacheByProject: rootState.sessionsCacheByProject,
     laneSnapshots: cachedLanes?.laneSnapshots ?? [],
     lanes: cachedLanes?.lanes ?? [],
+    laneStatusStale: true,
     // The scoped surface owns its refresh lifecycle. Keep cached lanes visible,
     // but let ProjectSurface start a refresh when this surface becomes active.
     lanesLoading: false,

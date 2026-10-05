@@ -230,6 +230,8 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     name: preset.name,
     harness: preset.harness,
     model: preset.model,
+    logo: preset.logo,
+    accentColor: preset.accentColor,
   }));
 
   const modelCounts: Record<string, number> = {};

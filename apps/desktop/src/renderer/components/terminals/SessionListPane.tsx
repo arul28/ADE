@@ -1,14 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
-import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
+import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, NO_LANE_PRS, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -34,7 +34,8 @@ import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
-import { useLaneMacDesktops } from "./useLaneMacDesktops";
+import { laneDesktopSeat, useLaneDesktopSeats } from "./useLaneMacDesktops";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./useLaneWorkToolUse";
 import { SessionCard } from "./SessionCard";
@@ -59,6 +60,15 @@ import {
   sharedBranchClusterKey,
 } from "./workLaneBranchClusters";
 import { useWorkLaneReorder } from "./useWorkLaneReorder";
+import { LaneFocusStatusDot } from "./LaneFocusStatusDot";
+import {
+  EMPTY_WORK_SEEN_AT,
+  floatReturnedLanes,
+  summarizeLaneFocus,
+  type WorkLaneFocus,
+  type WorkLaneFocusStatus,
+} from "./workLaneFocus";
+import { useWorkLaneReturnState } from "./useWorkLaneReturnState";
 import {
   EMPTY_WORK_SESSION_FILTERS,
   activeWorkSessionFilterLabels,
@@ -293,8 +303,21 @@ type ForeignLaneEntry = {
   /** Full-row partition used for stable shelving and collapse shape. */
   fullQuiet: ReturnType<typeof partitionQuietSessions>;
   nesting: WorkNestingDrawers<TerminalSessionSummary>;
-  shelf: "snoozed" | "settled" | null;
+  shelf: WorkLaneShelf | null;
+  /** Rolled-up lane status for the header dot; null when nothing is live. */
+  focusStatus: WorkLaneFocusStatus | null;
 };
+
+/**
+ * Where a lane files below the inbox. Working only exists while "Fold busy
+ * lanes" is on; Snoozed and Settled are the quiet zone.
+ */
+type WorkLaneShelf = "working" | "snoozed" | "settled";
+
+/** Snoozed and Settled: their lanes render flat, because the shelf names the tier. */
+function isQuietLaneShelf(shelf: WorkLaneShelf | null): shelf is "snoozed" | "settled" {
+  return shelf === "snoozed" || shelf === "settled";
+}
 
 type ClusterableLaneItem =
   | { id: string; kind: "local"; lane: LaneSummary }
@@ -452,13 +475,15 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
 
 /**
  * Non-lane shelf tones, following t3's Sidebar V2 convention: Snoozed is blue
- * (hidden for now, still yours), Settled is muted (done, out of the way).
- * Everything else is the neutral hairline.
+ * (hidden for now, still yours), Settled is muted (done, out of the way), and
+ * Working carries the board's Working accent on its label only. Everything else
+ * is the neutral hairline.
  */
-type GroupShelfTone = "default" | "snoozed" | "settled";
+type GroupShelfTone = "default" | "working" | "snoozed" | "settled";
 
 const SHELF_TONE_LABEL_CLASS: Record<GroupShelfTone, string> = {
   default: "text-fg/75",
+  working: "text-[var(--color-info)]",
   snoozed: "text-blue-400",
   settled: "text-muted-fg/50",
 };
@@ -470,6 +495,7 @@ const SHELF_TONE_LABEL_CLASS: Record<GroupShelfTone, string> = {
  */
 const SHELF_TONE_RULE_CLASS: Record<GroupShelfTone, string> = {
   default: "bg-white/[0.06]",
+  working: "bg-white/[0.06]",
   snoozed: "bg-blue-400/15",
   settled: "bg-white/[0.06]",
 };
@@ -528,6 +554,7 @@ function StickyGroupHeader({
   dragProps = null,
   dropIndicatorEdge = null,
   layoutDependency,
+  laneStatus = null,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -597,6 +624,11 @@ function StickyGroupHeader({
    * changes. When undefined, the row does not animate at all.
    */
   layoutDependency?: string;
+  /**
+   * The lane's rolled-up status (`workLaneFocus.ts`), drawn as one dot in the
+   * board column's accent. Null when every row is snoozed or settled.
+   */
+  laneStatus?: WorkLaneFocusStatus | null;
 }) {
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
@@ -804,6 +836,7 @@ function StickyGroupHeader({
                   className="shrink-0 text-muted-fg/45"
                 />
               ) : null}
+              {isLane && laneStatus ? <LaneFocusStatusDot status={laneStatus} /> : null}
               {machineMarker}
               {prBadge}
               {headerAction}
@@ -953,6 +986,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   toggleWorkLanePinned,
   workLaneSortMode = "created",
   setWorkLaneSortMode,
+  workFoldBusyLanes = false,
+  setWorkFoldBusyLanes,
+  workSeenAtBySessionId = EMPTY_WORK_SEEN_AT,
   workLaneOrder = EMPTY_LANE_IDS,
   reorderWorkLanes,
   gridSets = EMPTY_GRID_SETS,
@@ -1066,6 +1102,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   toggleWorkLanePinned?: (laneId: string) => void;
   workLaneSortMode?: WorkLaneSortMode;
   setWorkLaneSortMode?: (mode: WorkLaneSortMode) => void;
+  /** By-lane only: fold lanes with nothing waiting on the user into a Working shelf. */
+  workFoldBusyLanes?: boolean;
+  setWorkFoldBusyLanes?: (enabled: boolean) => void;
+  /** When each session was last looked at; see `summarizeLaneFocus`. */
+  workSeenAtBySessionId?: Readonly<Record<string, string>>;
   workLaneOrder?: string[];
   reorderWorkLanes?: (args: {
     movedLaneId: string;
@@ -1098,8 +1139,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   const prsByLaneId = useLanePrsByLaneId();
   // Keyed to the lane list, so claims refresh when the lanes do.
   const laneAppleDevices = useLaneAppleDevices({ refreshKey: lanesProp });
-  // One status read plus display events for the whole list, not per row.
-  const laneMacDesktops = useLaneMacDesktops();
+  // Which lanes hold a screen, and which kind (Mac, private or shared
+  // Windows): one status read plus display events for the whole list, not per row.
+  const laneDesktopSeats = useLaneDesktopSeats();
   // The same for App Control apps and agent-owned browser tabs: one read and
   // one subscription each for the whole list.
   const laneToolUse = useLaneWorkToolUse();
@@ -1538,6 +1580,48 @@ export const SessionListPane = React.memo(function SessionListPane({
     [workPinnedLaneIds],
   );
 
+  /**
+   * Each local lane's rolled-up focus status and whether it folds into the
+   * Working shelf (`summarizeLaneFocus`). Read from the unfiltered roster for
+   * the same reason `isLaneQuiet` is: a lane must not change shelves as the
+   * user types in search.
+   */
+  const laneFocusByLaneId = useMemo(() => {
+    const map = new Map<string, WorkLaneFocus>();
+    const filingBuckets = effectiveFilingBucketsProp ?? effectiveSessionFilingBuckets(allSessionsUnfiltered);
+    for (const [laneId, roster] of unfilteredSessionsByLane) {
+      map.set(laneId, summarizeLaneFocus({
+        sessions: roster,
+        filingBuckets,
+        laneWaiting: lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
+        seenAtBySessionId: workSeenAtBySessionId,
+        nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+        launching: unfilteredHandoffCountByLaneId.get(laneId) ?? 0,
+      }));
+    }
+    return map;
+  }, [
+    allSessionsUnfiltered,
+    effectiveFilingBucketsProp,
+    prsByLaneId,
+    unfilteredHandoffCountByLaneId,
+    unfilteredNesting.excludedTopLevelIds,
+    unfilteredSessionsByLane,
+    workSeenAtBySessionId,
+  ]);
+  const foldBusyLanesActive = workFoldBusyLanes && isByLane;
+  /** Local lanes in the Working shelf. Pins and the primary lane never fold. */
+  const foldedLaneIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!foldBusyLanesActive) return set;
+    for (const [laneId, focus] of laneFocusByLaneId) {
+      if (!focus.folds || workPinnedLaneIdSet.has(laneId)) continue;
+      if (laneById.get(laneId)?.laneType === "primary") continue;
+      set.add(laneId);
+    }
+    return set;
+  }, [foldBusyLanesActive, laneById, laneFocusByLaneId, workPinnedLaneIdSet]);
+
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
   // chip filters the local list applies. Lanes elsewhere with nothing running
   // stay out of the sidebar — the union is about work in flight, not an inventory.
@@ -1709,17 +1793,57 @@ export const SessionListPane = React.memo(function SessionListPane({
       ? fullQuiet
       : partitionQuietSessions(row.sessions, effectiveFilingBuckets);
     const excluded = fullNesting.excludedTopLevelIds;
-    const shelf = ((): "snoozed" | "settled" | null => {
+    // A foreign lane has no local PR snapshot, so its running rows read
+    // Working rather than Waiting; both fold alike.
+    const focus = summarizeLaneFocus({
+      sessions: fullRow.sessions,
+      filingBuckets: effectiveFilingBuckets,
+      laneWaiting: false,
+      seenAtBySessionId: workSeenAtBySessionId,
+      nestedSessionIds: excluded,
+    });
+    const shelf = ((): WorkLaneShelf | null => {
       if (workPinnedLaneIdSet.has(compositeLaneId) || workPinnedLaneIdSet.has(row.lane.id)) return null;
       if (row.lane.laneType === "primary") return null;
-      if (row.sessions.length === 0 || countUnexcluded(fullQuiet.active, excluded) > 0) return null;
+      if (row.sessions.length === 0) return null;
+      if (countUnexcluded(fullQuiet.active, excluded) > 0) {
+        return foldBusyLanesActive && focus.folds ? "working" : null;
+      }
       const snoozedRows = countUnexcluded(fullQuiet.snoozed, excluded);
       const settledRows = countUnexcluded(fullQuiet.settled, excluded);
       if (snoozedRows + settledRows === 0) return null;
       return settledRows > snoozedRows ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, fullQuiet, nesting, shelf };
+    return { row, compositeLaneId, quiet, fullQuiet, nesting, shelf, focusStatus: focus.status };
   });
+
+  // Foreign composite ids fold and return exactly like local lane ids: a
+  // cross-machine lane parked on the Working shelf must come back to the front
+  // of the inbox when it needs the user, not stay buried below unrelated work.
+  const foldedForeignLaneSignature = foreignLaneShelving
+    .filter((entry) => entry.shelf === "working")
+    .map((entry) => entry.compositeLaneId)
+    .sort()
+    .join("\n");
+  const allFoldedLaneIds = useMemo(() => {
+    const set = new Set(foldedLaneIds);
+    for (const id of foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []) {
+      set.add(id);
+    }
+    return set;
+  }, [foldedForeignLaneSignature, foldedLaneIds]);
+  const presentForeignLaneSignature = foreignLaneShelving
+    .map((entry) => entry.compositeLaneId)
+    .sort()
+    .join("\n");
+  const presentLaneIds = useMemo(
+    () => [
+      ...lanes.map((lane) => lane.id),
+      ...(presentForeignLaneSignature ? presentForeignLaneSignature.split("\n") : []),
+    ],
+    [lanes, presentForeignLaneSignature],
+  );
+  const laneReturnState = useWorkLaneReturnState(foldBusyLanesActive, allFoldedLaneIds, presentLaneIds);
 
   /**
    * Render order for the by-lane list: primary first, then pinned → active →
@@ -1752,8 +1876,17 @@ export const SessionListPane = React.memo(function SessionListPane({
       workLaneSortMode,
       workLaneOrder,
     );
-    return ordered.map((entry) => entry.lane);
-  }, [isLaneQuiet, lanes, unfilteredSessionsByLane, workLaneOrder, workLaneSortMode, workPinnedLaneIdSet]);
+    // Lanes that just came back out of the Working shelf lead the active tier,
+    // newest return first, so "it needs you now" lands where the eye starts.
+    // Not in Manual: there the user's own order is the point, and a float would
+    // undo every drag of a returned lane.
+    if (workLaneSortMode === "manual") return ordered.map((entry) => entry.lane);
+    return floatReturnedLanes(
+      ordered,
+      laneReturnState.returnedAtMs,
+      (entry) => entry.laneType !== "primary" && !entry.pinned && !entry.quiet,
+    ).map((entry) => entry.lane);
+  }, [isLaneQuiet, laneReturnState, lanes, unfilteredSessionsByLane, workLaneOrder, workLaneSortMode, workPinnedLaneIdSet]);
 
   const renderedLaneIds = useMemo(() => orderedLanes.map((lane) => lane.id), [orderedLanes]);
 
@@ -1787,7 +1920,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Memoized rather than recomputed per call: this list re-renders on every
   // session tick, and the shelf split is read once per lane per section.
   const laneShelfByLaneId = useMemo(() => {
-    const map = new Map<string, "snoozed" | "settled">();
+    const map = new Map<string, WorkLaneShelf>();
+    // Folding is decided (pins and primary exempt) in `foldedLaneIds`; a
+    // folded lane is never also quiet, because folding needs live work.
+    for (const laneId of foldedLaneIds) map.set(laneId, "working");
     for (const [laneId, roster] of unfilteredSessionsByLane) {
       // A pin is an explicit "keep this where I can see it", which outranks
       // every automatic demotion — the same exemption the quiet header grants.
@@ -1808,10 +1944,36 @@ export const SessionListPane = React.memo(function SessionListPane({
       map.set(laneId, settledRows > snoozedRows ? "settled" : "snoozed");
     }
     return map;
-  }, [isLaneQuiet, laneById, unfilteredNesting.excludedTopLevelIds, unfilteredQuietBuckets, unfilteredSessionsByLane, workPinnedLaneIdSet]);
+  }, [foldedLaneIds, isLaneQuiet, laneById, unfilteredNesting.excludedTopLevelIds, unfilteredQuietBuckets, unfilteredSessionsByLane, workPinnedLaneIdSet]);
   const laneShelfFor = useCallback(
-    (laneId: string): "snoozed" | "settled" | null => laneShelfByLaneId.get(laneId) ?? null,
+    (laneId: string): WorkLaneShelf | null => laneShelfByLaneId.get(laneId) ?? null,
     [laneShelfByLaneId],
+  );
+
+  /**
+   * Lanes a same-branch sibling keeps in the inbox even though their own rows
+   * would shelve them (`inboxIdsKeptForSharedBranch`).
+   */
+  const sharedBranchInboxKeepSignature = [...inboxIdsKeptForSharedBranch([
+    ...orderedLanes.map((lane) => ({
+      id: lane.id,
+      clusterKey: sharedBranchClusterKey({ branchRef: lane.branchRef, laneType: lane.laneType }),
+      shelf: laneShelfFor(lane.id),
+    })),
+    ...foreignLaneShelving.map((entry) => ({
+      id: entry.compositeLaneId,
+      clusterKey: sharedBranchClusterKey({
+        branchRef: entry.row.lane.branchRef,
+        laneType: entry.row.lane.laneType,
+      }),
+      shelf: entry.shelf,
+    })),
+  ])].sort().join("\n");
+  // Rebuilt from a signature: the foreign entries are new objects every render,
+  // and the visible-id walk below must not recompute on every session tick.
+  const sharedBranchInboxKeepIds = useMemo<ReadonlySet<string>>(
+    () => new Set(sharedBranchInboxKeepSignature ? sharedBranchInboxKeepSignature.split("\n") : []),
+    [sharedBranchInboxKeepSignature],
   );
 
   /**
@@ -2066,30 +2228,44 @@ export const SessionListPane = React.memo(function SessionListPane({
         }
         return ids;
       };
-      for (const lane of orderedLanes) {
-        const shelf = laneShelfFor(lane.id);
-        if (shelf && isQuietShelfCollapsed(workCollapsedSectionIds, `lane-shelf:${shelf}`)) continue;
+      // Walked in render order — inbox lanes, orphans, then the Working,
+      // Snoozed and Settled shelves — so shift-range selection spans what is on
+      // screen. A lane a same-branch sibling keeps upstairs walks with the inbox.
+      const shelfOf = (laneId: string): WorkLaneShelf | null => (
+        sharedBranchInboxKeepIds.has(laneId) ? null : laneShelfFor(laneId)
+      );
+      const walkLane = (lane: LaneSummary, shelf: WorkLaneShelf | null) => {
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
         if (headerlessLaneIds.has(lane.id)) {
           // No header means no collapse toggle and no quiet tail: the one row is
           // always on screen, so it is always in range-selection order.
           ids.push(...collectVisibleIds(list));
-          continue;
+          return;
         }
-        if (shelf) {
+        if (isQuietLaneShelf(shelf)) {
           // A shelf lane renders flat, so there is no per-tail marker to consult:
           // once its own quiet header is expanded, every row in it is on screen.
           // (Quiet lanes record only the explicit expand, hence `lane-open:`.)
-          if (!workCollapsedSectionIds.includes(`lane-open:${lane.id}`)) continue;
-          ids.push(...collectVisibleIds(list));
-          continue;
+          if (workCollapsedSectionIds.includes(`lane-open:${lane.id}`)) ids.push(...collectVisibleIds(list));
+          return;
         }
-        if (workCollapsedLaneIds.includes(lane.id)) continue;
+        if (workCollapsedLaneIds.includes(lane.id)) return;
         ids.push(...laneVisibleIds(lane.id, list));
+      };
+      for (const lane of orderedLanes) {
+        if (shelfOf(lane.id) === null) walkLane(lane, null);
       }
       for (const [laneId, list] of missingLaneSessionGroups) {
         if (workCollapsedLaneIds.includes(laneId)) continue;
         ids.push(...laneVisibleIds(laneId, list));
+      }
+      for (const shelf of ["working", "snoozed", "settled"] as const) {
+        const collapsed = isQuietShelfCollapsed(workCollapsedSectionIds, `lane-shelf:${shelf}`);
+        for (const lane of orderedLanes) {
+          if (shelfOf(lane.id) !== shelf) continue;
+          if (collapsed) continue;
+          walkLane(lane, shelf);
+        }
       }
       return ids;
     }
@@ -2122,6 +2298,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     missingLaneSessionGroups,
     orderedLanes,
     quietIdSet,
+    sharedBranchInboxKeepIds,
     runningFiltered,
     sessionsGroupedByLane,
     settledIdSet,
@@ -2185,8 +2362,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     machineMarker?: CrossMachineLaneMarker | null;
     /** The Apple device a headerless lane holds; its card shows the mark. */
     laneAppleDevice?: LaneAppleDevice | null;
-    /** The headerless lane holds a Mac Desktop display; its card shows the mark. */
-    laneMacDesktop?: boolean;
+    /** The screen the headerless lane holds, or null; its card shows the mark. */
+    laneDesktop?: DesktopSeatKind | null;
     /** The headerless lane lives on a cloud; its card shows the mark. */
     laneCloud?: "devin" | "cursor" | null;
     /** The headerless lane has a live App Control app; its card shows the mark. */
@@ -2302,7 +2479,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? null}
-        laneMacDesktop={options?.laneMacDesktop ?? false}
+        laneDesktop={options?.laneDesktop ?? null}
         // A card that names its lane also says the lane lives on a cloud.
         laneCloud={options?.laneCloud ?? (options?.showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         laneAppControl={options?.laneAppControl ?? false}
@@ -2358,7 +2535,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 laneActions: null,
                 machineMarker: null,
                 laneAppleDevice: null,
-                laneMacDesktop: false,
+                laneDesktop: null,
                 laneAppControl: false,
                 laneBrowserTabs: 0,
               })}
@@ -2413,7 +2590,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       ? (foreignRow
           ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, lane.id)
           : boundMachineLanePrs(prsByLaneId, lane.id))
-      : [];
+      : NO_LANE_PRS;
     const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
     const markerKey = foreignRow ? `${foreignRow.machineId}:${foreignRow.lane.id}` : session.laneId;
     const laneActions: SessionContextMenuLaneActions | null = foreignRow
@@ -2458,7 +2635,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           : undefined,
       machineMarker: markersByLaneId.get(markerKey) ?? null,
       laneAppleDevice: !foreignRow && lane ? laneAppleDevices.get(lane.id) ?? null : null,
-      laneMacDesktop: !foreignRow && lane ? laneMacDesktops.has(lane.id) : false,
+      laneDesktop: !foreignRow && lane ? laneDesktopSeat(laneDesktopSeats, lane.id) : null,
       laneAppControl: !foreignRow && lane ? laneToolUse.appControl.has(lane.id) : false,
       laneBrowserTabs: !foreignRow && lane ? laneToolUse.browserTabs.get(lane.id) ?? 0 : 0,
       laneActions,
@@ -2895,21 +3072,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   // "No sessions" must not claim an empty machine when another machine is busy.
   const hasForeignSessions = visibleForeignRows.length > 0;
 
-  const sharedBranchInboxKeepIds = inboxIdsKeptForSharedBranch([
-    ...orderedLanes.map((lane) => ({
-      id: lane.id,
-      clusterKey: sharedBranchClusterKey({ branchRef: lane.branchRef, laneType: lane.laneType }),
-      shelf: laneShelfFor(lane.id),
-    })),
-    ...foreignLaneShelving.map((entry) => ({
-      id: entry.compositeLaneId,
-      clusterKey: sharedBranchClusterKey({
-        branchRef: entry.row.lane.branchRef,
-        laneType: entry.row.lane.laneType,
-      }),
-      shelf: entry.shelf,
-    })),
-  ]);
 
   const renderLaneGroup = (lane: LaneSummary) => {
     const list = sessionsGroupedByLane?.get(lane.id) ?? [];
@@ -2969,9 +3131,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     const suppressMachineChip = Boolean(machineMarker) && !headerless;
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
-    const inQuietShelf = laneShelfFor(lane.id) !== null && !sharedBranchInboxKeepIds.has(lane.id);
+    // The Working shelf is not quiet: its lanes keep their live cards and tails.
+    const inQuietShelf = isQuietLaneShelf(laneShelfFor(lane.id)) && !sharedBranchInboxKeepIds.has(lane.id);
     const laneAppleDevice = laneAppleDevices.get(lane.id) ?? null;
-    const laneMacDesktop = laneMacDesktops.has(lane.id);
+    const laneDesktop = laneDesktopSeat(laneDesktopSeats, lane.id);
     const laneAppControl = laneToolUse.appControl.has(lane.id);
     const laneBrowserTabs = laneToolUse.browserTabs.get(lane.id) ?? 0;
     return (
@@ -2991,10 +3154,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
           : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
-        appleDevice={laneAppleDevice || laneMacDesktop || laneAppControl || laneBrowserTabs > 0 ? (
+        appleDevice={laneAppleDevice || laneDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-            {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+            {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
             {laneAppControl ? (
               <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
             ) : null}
@@ -3008,6 +3171,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         dragProps={laneDragProps(lane.id)}
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
         layoutDependency={laneOrderSignature}
+        laneStatus={laneFocusByLaneId.get(lane.id)?.status ?? null}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: list.filter((session) =>
@@ -3050,7 +3214,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               })}`),
               machineMarker,
               laneAppleDevice,
-              laneMacDesktop,
+              laneDesktop,
               laneCloud: laneCloudProvider(lane),
               laneAppControl,
               laneBrowserTabs,
@@ -3157,6 +3321,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           />
         ) : null}
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
+        laneStatus={entry.focusStatus}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: quietTop.snoozed.length,
@@ -3192,8 +3357,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               nesting,
               ...(singletonLaneActions ? { laneActions: singletonLaneActions } : {}),
             })
-          : shelf
-          // Inside a shelf, and therefore flat — the same rule as
+          : isQuietLaneShelf(shelf)
+          // Inside a quiet shelf, and therefore flat — the same rule as
           // `renderLaneSessionLists`'s `flat` branch: the shelf header already
           // states the tier for everything under it, so a further per-lane
           // SNOOZED/SETTLED disclosure would reveal a label rather than content.
@@ -3259,6 +3424,20 @@ export const SessionListPane = React.memo(function SessionListPane({
   ).length;
   const snoozedShelfCount = shelfLaneCount(snoozedShelfLanes) + snoozedShelfForeignRows.length;
   const settledShelfCount = shelfLaneCount(settledShelfLanes) + settledShelfForeignRows.length;
+  // The Working shelf: lanes with nothing waiting on the user while "Fold busy
+  // lanes" is on. Not part of the quiet zone — this work is live — so it sits
+  // above the rule, and its lanes keep their full cards.
+  const workingShelfLanes = orderedLanes.filter((lane) => (
+    laneShelfFor(lane.id) === "working" && !sharedBranchInboxKeepIds.has(lane.id)
+  ));
+  const workingShelfForeignRows = foreignLaneShelving.filter((entry) => (
+    entry.shelf === "working" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
+  ));
+  const workingShelfCount = shelfLaneCount(workingShelfLanes) + workingShelfForeignRows.length;
+  // Only the user opens or closes the Working shelf. The open lane folds into
+  // it like any other busy lane: the chat stays open in the main pane, and its
+  // card shows again when the user unfolds the shelf.
+  const workingShelfCollapsed = isQuietShelfCollapsed(workCollapsedSectionIds, "lane-shelf:working");
 
   /**
    * Is this shelved row actually showing cards? A shelved lane is quiet by
@@ -3282,27 +3461,29 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
-  const clusterLaneItems = (
+  const buildLaneItems = (
     localLanes: LaneSummary[],
     foreignEntries: ForeignLaneEntry[],
-  ) => applySharedBranchAdjacency(
-    [
-      // `StickyGroupHeader` returns null when its count is zero, but the JSX
-      // element itself is still truthy until React evaluates that component.
-      // Filter at the source so an empty/deleted local lane cannot qualify a
-      // foreign sibling for a dashed cluster.
-      ...localLanes
-        .filter((lane) => (
-          (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
-          + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0
-        ))
-        .map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
-      ...foreignEntries.map((entry): ClusterableLaneItem => ({
-        id: entry.compositeLaneId,
-        kind: "foreign",
-        entry,
-      })),
-    ],
+  ): ClusterableLaneItem[] => [
+    // `StickyGroupHeader` returns null when its count is zero, but the JSX
+    // element itself is still truthy until React evaluates that component.
+    // Filter at the source so an empty/deleted local lane cannot qualify a
+    // foreign sibling for a dashed cluster.
+    ...localLanes
+      .filter((lane) => (
+        (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
+        + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0
+      ))
+      .map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
+    ...foreignEntries.map((entry): ClusterableLaneItem => ({
+      id: entry.compositeLaneId,
+      kind: "foreign",
+      entry,
+    })),
+  ];
+
+  const renderClusterItems = (items: ClusterableLaneItem[]) => applySharedBranchAdjacency(
+    items,
     clusterKeyForLaneItem,
   ).map((entry) => {
     switch (entry.item.kind) {
@@ -3324,6 +3505,31 @@ export const SessionListPane = React.memo(function SessionListPane({
       }
     }
   });
+
+  const clusterLaneItems = (
+    localLanes: LaneSummary[],
+    foreignEntries: ForeignLaneEntry[],
+  ) => renderClusterItems(buildLaneItems(localLanes, foreignEntries));
+
+  // A returned lane leads the active tier. Pins, the primary lane, and quiet
+  // rows stay put, exactly as they do for the local-only order in
+  // `orderedLanes`; foreign entries use the same rule keyed by their composite
+  // id. Not in Manual: there the user's own order is the point, and a float
+  // would undo every drag of a returned lane (the same exemption
+  // `orderedLanes` makes).
+  const mainLaneItems = workLaneSortMode === "manual"
+    ? buildLaneItems(mainLanes, mainForeignRows)
+    : floatReturnedLanes(
+      buildLaneItems(mainLanes, mainForeignRows),
+      laneReturnState.returnedAtMs,
+      (item) => (item.kind === "local"
+        ? item.lane.laneType !== "primary"
+          && !workPinnedLaneIdSet.has(item.lane.id)
+          && !isLaneQuiet(item.lane.id)
+        : item.entry.row.lane.laneType !== "primary"
+          && !workPinnedLaneIdSet.has(item.id)
+          && !workPinnedLaneIdSet.has(item.entry.row.lane.id)),
+    );
 
   const clusteredShelfItems = (
     localLanes: LaneSummary[],
@@ -3360,7 +3566,10 @@ export const SessionListPane = React.memo(function SessionListPane({
           {renderLaneSessionLists(laneId, list)}
         </StickyGroupHeader>
       ))}
-      {renderSharedBranchClusters(clusterLaneItems(mainLanes, mainForeignRows), GROUP_STACK_CLASS)}
+      {renderSharedBranchClusters(
+        renderClusterItems(mainLaneItems),
+        GROUP_STACK_CLASS,
+      )}
       {orphanLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
@@ -3430,15 +3639,35 @@ export const SessionListPane = React.memo(function SessionListPane({
           </StickyGroupHeader>
         );
       })}
-      {/* The two shelves close the column, hidden-for-now above done, inside the
-          quiet zone's single heavier rule. A demoted lane keeps its group — a
-          quiet header, or none at all for a singleton — so it is filed, not
+      {/* The shelves close the column inside the quiet zone's single heavier
+          rule: Working first (live, so it keeps its colour), then
+          hidden-for-now above done. A demoted lane keeps its group — a quiet
+          header, or none at all for a singleton — so it is filed, not
           flattened; only its BODY goes flat, because the shelf above it has
           already said what tier every row in it is in. */}
       {renderQuietZone(
-        snoozedShelfCount + settledShelfCount > 0,
+        workingShelfCount + snoozedShelfCount + settledShelfCount > 0,
         (
           <>
+            <StickyGroupHeader
+              sectionId="lane-shelf:working"
+              icon={<CircleDashed size={12} weight="bold" aria-hidden className="shrink-0 text-[var(--color-info)]" />}
+              label="Working"
+              tone="working"
+              heading
+              count={workingShelfCount}
+              // Collapsed unless explicitly opened, like the quiet shelves: the point
+              // is to stop looking at busy lanes until they need you.
+              collapsed={workingShelfCollapsed}
+              onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:working"))}
+            >
+              <div className={GROUP_STACK_CLASS} data-testid="shelf-body-working">
+                {renderSharedBranchClusters(
+                  clusterLaneItems(workingShelfLanes, workingShelfForeignRows),
+                  GROUP_STACK_CLASS,
+                )}
+              </div>
+            </StickyGroupHeader>
             <StickyGroupHeader
               sectionId="lane-shelf:snoozed"
               icon={snoozedSectionIcon}
@@ -3668,6 +3897,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             sortModes={WORK_LANE_SORT_MODES}
             sortLabels={WORK_LANE_SORT_LABELS}
             onSortModeChange={setWorkLaneSortMode}
+            foldBusyLanes={setWorkFoldBusyLanes && isByLane ? workFoldBusyLanes : undefined}
+            onFoldBusyLanesChange={setWorkFoldBusyLanes}
             filters={workSessionFilters}
             onFiltersChange={setWorkSessionFilters}
             machines={machineFilterOptions}

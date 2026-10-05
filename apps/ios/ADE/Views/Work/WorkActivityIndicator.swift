@@ -315,7 +315,7 @@ struct WorkActivityIndicator: View {
            .codexState, .turnDiagnostics, .codexTurnStalled, .codexTurnRecovery,
            .scheduledWorkUpdate, .transcriptRetraction,
            .completionReport, .tokens, .claudeGoalUpdated,
-           .claudeGoalCleared, .adeCard, .unknown:
+           .claudeGoalCleared, .adeCard, .queueReordered, .unknown:
         // `ade_card` describes work someone else is doing (CI, an artifact
         // pull); it is not this turn's activity, so it never drives the
         // composer indicator.

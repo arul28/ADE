@@ -3526,8 +3526,10 @@ describe("local runtime connection pool", () => {
 
   it("codes a missing unowned primary endpoint as socket_stale_no_owner", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-stale-socket-"));
-    const originalAdeHome = process.env.ADE_HOME;
-    process.env.ADE_HOME = adeHome;
+    vi.stubEnv("ADE_HOME", adeHome);
+    // Hermetic: a shell (or an ADE chat) that exports its live brain's socket
+    // would otherwise point the owner probe at that brain.
+    vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
     try {
       const pool = new LocalRuntimeConnectionPool("1.2.3", {
         debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
@@ -3553,8 +3555,7 @@ describe("local runtime connection pool", () => {
       const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
       expect(error.code).toBe("socket_stale_no_owner");
     } finally {
-      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = originalAdeHome;
+      vi.unstubAllEnvs();
       removeTempDir(adeHome);
     }
   });
@@ -4027,8 +4028,44 @@ describe("local runtime connection pool", () => {
       payload: { type: "file_change" },
     }, "epoch-local-1");
 
+    // The lanes this desktop shows go first: subscribing with frames and no
+    // declaration reads as a client from before demand, which streams every lane.
+    const methods = call.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("appControl.setFrameDemand")).toBeLessThan(methods.indexOf("runtimeEvents.subscribe"));
+    expect(call).toHaveBeenCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
+    pool.setAppControlFrameLanes(["lane-1"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-1"] },
+      expect.anything(),
+    );
+
+    // A second subscription to the same project shares the connection; ending
+    // the first must not stop this desktop's lanes reaching the brain.
+    const second = await pool.subscribeEventsForRoot(rootPath, { cursor: 22, category: "runtime" }, vi.fn());
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+    pool.setAppControlFrameLanes(["lane-3"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-3"] },
+      expect.anything(),
+    );
+    second();
+    // The last subscription gone, the project's screencasts must not keep
+    // streaming for a desktop that no longer listens.
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
+    const callsAfterCleanup = call.mock.calls.length;
+    pool.setAppControlFrameLanes(["lane-2"]);
+    expect(call.mock.calls.length).toBe(callsAfterCleanup);
   });
 });
 

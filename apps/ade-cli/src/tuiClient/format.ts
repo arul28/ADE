@@ -1521,6 +1521,12 @@ export function renderChatLines(args: {
         : "notice";
       if (isSpawnCompletionNotice(event)) {
         const childId = spawnCompletionChildId(event);
+        // A child on another machine says where it ran, like desktop and iOS.
+        const completionDetail = event.type === "system_notice" && event.detail && typeof event.detail === "object"
+          ? event.detail.spawnCompletion
+          : undefined;
+        const childMachine = completionDetail?.childMachineName?.trim();
+        const machineSuffix = childMachine ? ` · on ${childMachine}` : "";
         const last = lines[lines.length - 1];
         if (
           childId
@@ -1535,7 +1541,7 @@ export function renderChatLines(args: {
           // the same on all three surfaces.
           lines[lines.length - 1] = {
             ...last,
-            body: `${message} ×${spawnCompletionRun.count}`,
+            body: `${message}${machineSuffix} ×${spawnCompletionRun.count}`,
           };
           continue;
         }
@@ -1543,7 +1549,7 @@ export function renderChatLines(args: {
         // its own line. Pushed directly rather than through `pushLine` so two
         // peers with the same title still render as two lines — and so a repeat
         // that lost its `spawnCompletion` detail is never silently dropped.
-        lines.push({ id, tone, body: message });
+        lines.push({ id, tone, body: `${message}${machineSuffix}` });
         spawnCompletionRun = childId ? { childId, lineId: id, count: 1 } : null;
         continue;
       }

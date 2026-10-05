@@ -269,6 +269,30 @@ identifiers from one place instead of restating them:
   `closeHttpMcpServers(managed)` drops every lease, and all teardown paths use
   it.
 
+#### Who decides when a tool call has waited long enough
+
+ADE does, not the provider's MCP client. Every transport above runs a tool
+through `executeAdeTool`, which wraps it in `runAdeToolWithDeadline`
+(`ai/tools/toolDeadline.ts`):
+
+- A tool gets `DEFAULT_ADE_TOOL_BUDGET_MS` (120 s) unless it declares
+  `budgetMs` on its definition. Calls to another machine declare their call
+  timeout plus `REMOTE_CALL_ALLOWANCE_MS` for connecting (`createLane` and
+  `spawnChat` with `machine`, `runMachineAction` from its `timeoutSeconds`).
+- Time on an approval card does not count: `requestApproval` runs inside
+  `pauseAdeToolDeadline`. The card has its own cap,
+  `ADE_TOOL_APPROVAL_TIMEOUT_MS` (60 min); when it expires the card is
+  cancelled and the tool answers that nobody approved.
+- When a budget runs out the model gets an error saying the work may still
+  finish and to check state before retrying. The work itself keeps running.
+- The provider's own cap sits above all of this,
+  `ADE_MCP_TRANSPORT_TIMEOUT_MS` (65 min): the Claude SDK server's `timeout`,
+  and the OpenCode `remote` entry's `timeout` (OpenCode otherwise uses its
+  MCP client's 60 s default). Codex dynamic tools have no transport cap.
+- Cursor's and Droid's MCP configs have no timeout field, so their clients'
+  own defaults still apply to ADE's tools there; an approval card left open
+  past that default can end the call on the provider side first.
+
 `buildCtoOperatorToolDeps` builds the dependency set for the runtime map. It
 used to be shared with `previewSessionToolNames`, a name-enumeration helper that
 was removed along with `workflowTools.ts` because it had no non-test caller — so

@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AdeUsageCostBreakdown,
+  AdeUsageCostBreakdownBy,
+  AdeUsageCostSplit,
   AdeUsageDailyPoint,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
+  SetAdeUsageModelPriceArgs,
   AdeUsageEstimationKind,
   AdeUsagePricingSource,
   AdeUsageModelSummary,
@@ -46,6 +54,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import {
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
@@ -80,6 +89,7 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { machineProviderUsageHomes } from "./providerUsageHomes";
 import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
@@ -88,6 +98,7 @@ import {
   isCodexTokenStale,
   readClaudeLogin,
   readCodexCredentials,
+  type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -95,15 +106,17 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  priceTokenSplit,
+  isZeroTokenPrice,
+  priceTokenSplitDetailed,
   refreshDynamicTokenPricing,
   resetDynamicTokenPricingForTest,
-  ratesForRequest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
   WEB_SEARCH_COST_USD,
 } from "./usagePricing";
+import { applyUsageModelAlias, readUsagePriceOverrides, updateUsagePriceOverrides } from "./usagePriceOverrides";
+import { buildModelDetail, type ModelDetailDayRow } from "./usageModelDetail";
 import {
   type TokenEntry,
   discoverClaudeProjectDirs,
@@ -139,6 +152,8 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
+import { buildCostBreakdown } from "./usageCostBreakdown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
   resetCreditOutcomeKey,
@@ -146,6 +161,7 @@ import {
 } from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
 import {
+  captureModelPriceAnalytics,
   captureResetCreditAnalytics,
   type ResetCreditAnalyticsOutcome,
 } from "../analytics/featureProductAnalytics";
@@ -178,7 +194,7 @@ import {
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
-import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
 import { usageAccountId } from "./usageAccountId";
 import {
@@ -239,8 +255,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v5: Claude fast-mode requests now price at the fast multiple, which the
  * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
  * without the flag, so they must be re-derived once.
+ *
+ * v6: Codex Fast/Ultrafast requests price at their published tier rates (the
+ * scan reads `service_tier`), Claude fast mode at models.dev's fast rate, and
+ * costs carry their split by token type and speed.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 5;
+const USAGE_SNAPSHOT_CACHE_VERSION = 6;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -853,6 +873,40 @@ function noteAccountLogin(accountId: string, instanceId: string, login: UsageAcc
   } catch {
     // An unreadable registry already degrades every reader to its defaults.
   }
+}
+
+/**
+ * Reads the saved login of Claude accounts marked signed out, now, for a
+ * refresh the user asked for. Returns the ids whose login works again.
+ *
+ * Only a usage poll clears the signed-out mark, and a background poll serves
+ * the credential miss cache, so a fresh sign-in stayed "signed out" for one
+ * idle poll cycle (up to five minutes). The add-account sheet refreshes once
+ * when its login shell exits, so it reported a successful sign-in as failed.
+ * `instanceId` re-reads that one account even when it is not marked.
+ */
+export async function recheckSignedOutLogins(
+  args: { provider?: ProviderInstanceProvider; instanceId?: string } = {},
+): Promise<string[]> {
+  if (args.provider && args.provider !== "claude") return [];
+  const wanted = args.instanceId?.trim();
+  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
+    wanted ? instance.id === wanted : instance.loginBroken === true
+  ));
+  const restored: string[] = [];
+  await Promise.all(targets.map(async (instance) => {
+    const configHome = isBaseProviderInstance(instance) ? undefined : instance.configHome;
+    invalidateCachedClaudeCredentials(configHome);
+    const login = await readClaudeLogin({
+      allowKeychain: true,
+      skipMissCache: true,
+      ...(configHome ? { configHome } : {}),
+    }).catch((): ClaudeLoginRead => ({ state: "unreadable" }));
+    if (login.state === "unreadable") return;
+    noteAccountLogin(usageAccountId({ provider: "claude", instanceId: instance.id }), instance.id, login.state);
+    if (login.state !== "signed_out" && instance.loginBroken === true) restored.push(instance.id);
+  }));
+  return restored;
 }
 
 function attachAccountLogins(accounts: UsageAccount[]): void {
@@ -2090,16 +2144,18 @@ type TokenBreakdown = Record<string, CostTokenBreakdown & { cacheWrite: number; 
 type DailyTokenBreakdown = Record<string, number>;
 type DailyModelTokenBreakdown = Record<string, TokenBreakdown>;
 
-function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry): void {
+function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry, cost: EntryCost = calculateTokenEntryCost(entry)): void {
   const modelKey = entry.model || "unknown";
   if (!breakdown[modelKey]) {
-    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0 };
+    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0, costSplit: emptyCostSplit() };
   }
-  breakdown[modelKey].input += entry.inputTokens;
-  breakdown[modelKey].output += entry.outputTokens;
-  breakdown[modelKey].cached += entry.cachedTokens;
-  breakdown[modelKey].cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
-  breakdown[modelKey].costUsd += calculateTokenEntryCost(entry);
+  const row = breakdown[modelKey];
+  row.input += entry.inputTokens;
+  row.output += entry.outputTokens;
+  row.cached += entry.cachedTokens;
+  row.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
+  row.costUsd += cost.costUsd;
+  addCostSplit(row.costSplit ??= emptyCostSplit(), cost.split);
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
@@ -2109,30 +2165,56 @@ function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): 
   breakdown[date] = (breakdown[date] ?? 0) + tokens;
 }
 
-function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry): void {
+function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry, cost: EntryCost): void {
   const date = localDayKey(entry.timestamp);
   if (!date) return;
   if (!breakdown[date]) breakdown[date] = {};
-  addTokenBreakdownEntry(breakdown[date]!, entry);
+  addTokenBreakdownEntry(breakdown[date]!, entry, cost);
 }
 
-function calculateTokenEntryCost(entry: TokenEntry): number {
-  const override = finiteNumberOrNull(entry.costOverrideUsd);
-  if (override != null && override >= 0) return override;
-  const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
-    contextTokens: entry.requestContextTokens,
-    timestampMs: entry.timestamp,
-    fast: entry.fast === true,
-  });
-  const tokensUsd = priceTokenSplit(rates, {
+type EntryCost = { costUsd: number; split: AdeUsageCostSplit };
+
+/**
+ * One ledger entry's dollars and where they went. A provider-reported cost
+ * (`costOverrideUsd`) is the figure; it is split in proportion to what the
+ * list rates would have charged each token type, and lands in `other` when no
+ * list rate prices the model. Web search is a per-request fee: `other`.
+ */
+function calculateTokenEntryCost(entry: TokenEntry): EntryCost {
+  const listed = priceTokenSplitDetailed(entry.model, resolveTokenPrice(entry.model), {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
     output: toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens),
     cacheRead: toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens),
     cacheWrite: toNonNegativeInt(entry.cacheWriteTokens),
     cacheWrite1h: toNonNegativeInt(entry.oneHourCacheWriteTokens),
+  }, {
+    contextTokens: entry.requestContextTokens,
+    timestampMs: entry.timestamp,
+    speed: entry.speed ?? "standard",
   });
-  // Web search is a per-request fee, not a token rate, so it stays out of the shared split price.
-  return tokensUsd + toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  const override = finiteNumberOrNull(entry.costOverrideUsd);
+  if (override != null && override >= 0) {
+    if (listed.totalUsd > 0) return { costUsd: override, split: splitFromListed(listed, entry.speed, override / listed.totalUsd) };
+    return { costUsd: override, split: { ...emptyCostSplit(), other: override } };
+  }
+  const split = splitFromListed(listed, entry.speed, 1);
+  const webSearchUsd = toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  split.other += webSearchUsd;
+  return { costUsd: listed.totalUsd + webSearchUsd, split };
+}
+
+/** A listed price's split, scaled (a provider's own figure over the list total), with its speed premium. */
+function splitFromListed(
+  listed: ReturnType<typeof priceTokenSplitDetailed>,
+  speed: TokenEntry["speed"],
+  scale: number,
+): AdeUsageCostSplit {
+  const split = emptyCostSplit();
+  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
+  const premiumUsd = listed.speedPremiumUsd * scale;
+  if (premiumUsd > 0 && speed === "ultrafast") split.ultrafastPremium += premiumUsd;
+  else if (premiumUsd > 0 && speed === "fast") split.fastPremium += premiumUsd;
+  return split;
 }
 
 function aggregateCosts(
@@ -2179,16 +2261,19 @@ function aggregateCosts(
     adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    // "Map to": a mapped model's usage is bucketed and priced as its target.
+    const mappedModel = applyUsageModelAlias(rawEntry.model);
+    const entry = mappedModel === rawEntry.model ? rawEntry : { ...rawEntry, model: mappedModel };
     const cost = calculateTokenEntryCost(entry);
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;
       const accumulator = accumulators[preset];
-      accumulator.costUsd += cost;
-      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
+      accumulator.costUsd += cost.costUsd;
+      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry, cost);
       addDailyTokenEntry(accumulator.dailyTokens, entry);
-      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
+      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry, cost);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
         const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
@@ -2383,6 +2468,15 @@ type ResolvedAdeUsageRange = {
   until: string;
 };
 
+/** One row from the project database, or null when the read fails (a table missing on an old schema). */
+function safeUsageRow<T extends Record<string, unknown>>(db: AdeDb, sql: string, params: (string | number | null)[]): T | null {
+  try {
+    return db.get<T>(sql, params) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function toFiniteNumber(value: unknown): number {
   const numberValue = Number(value ?? 0);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -2505,11 +2599,13 @@ function addProviderModelUsage(
     inputTokens?: number;
     outputTokens?: number;
     cachedTokens?: number;
+    cacheWriteTokens?: number;
     calls?: number;
     costUsd?: number;
     rangeCostUsd?: number;
     todayCostUsd?: number;
     last30dCostUsd?: number;
+    costSplit?: AdeUsageCostSplit | null;
   },
 ): void {
   const provider = normalizeUsageLabel(args.provider, "unknown");
@@ -2551,6 +2647,7 @@ function addProviderModelUsage(
   providerSummary.rangeCostUsd += rangeCostUsd;
   providerSummary.todayCostUsd += todayCostUsd;
   providerSummary.last30dCostUsd += last30dCostUsd + costUsd;
+  if (args.costSplit) addCostSplit(providerSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 
   const model = normalizeUsageLabel(args.model, "");
   if (!model) return;
@@ -2576,6 +2673,9 @@ function addProviderModelUsage(
   modelSummary.cachedTokens += cachedTokens;
   modelSummary.totalTokens += totalTokens;
   modelSummary.costUsd += rangeCostUsd;
+  const cacheWriteTokens = toNonNegativeInt(args.cacheWriteTokens);
+  if (cacheWriteTokens > 0) modelSummary.cacheWriteTokens = toNonNegativeInt(modelSummary.cacheWriteTokens) + cacheWriteTokens;
+  if (args.costSplit) addCostSplit(modelSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 }
 
 function roundUsd(value: number): number {
@@ -2594,8 +2694,16 @@ function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
     provider.rangeCostUsd = roundUsd(provider.rangeCostUsd);
     provider.todayCostUsd = roundUsd(provider.todayCostUsd);
     provider.last30dCostUsd = roundUsd(provider.last30dCostUsd);
+    const providerSplit = finalizeCostSplit(provider.costSplit);
+    if (providerSplit) provider.costSplit = providerSplit;
+    else delete provider.costSplit;
   }
-  for (const model of models) model.costUsd = roundUsd(model.costUsd);
+  for (const model of models) {
+    model.costUsd = roundUsd(model.costUsd);
+    const modelSplit = finalizeCostSplit(model.costSplit);
+    if (modelSplit) model.costSplit = modelSplit;
+    else delete model.costSplit;
+  }
   return { providers, models };
 }
 
@@ -2671,6 +2779,10 @@ function addCostSnapshotsProviderUsage(
         inputTokens: modelInput,
         outputTokens: modelOutput,
         cachedTokens: modelCached,
+        cacheWriteTokens: toNonNegativeInt(tokens.cacheWrite),
+        // Only a breakdown that carries its own dollars carries a split of
+        // them; a share-of-provider estimate has nothing to split.
+        costSplit: tokens.costUsd != null ? parseCostSplit(tokens.costSplit) : null,
         rangeCostUsd: modelCostUsd,
         todayCostUsd: cost.todayCostUsd * share,
         last30dCostUsd: cost.last30dCostUsd * share,
@@ -2700,6 +2812,8 @@ function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsage
       selected[model].cached += toNonNegativeInt(entry.cached);
       selected[model].cacheWrite += toNonNegativeInt(entry.cacheWrite);
       selected[model].costUsd += Math.max(0, toFiniteNumber(entry.costUsd));
+      const daySplit = parseCostSplit(entry.costSplit);
+      if (daySplit) addCostSplit(selected[model].costSplit ??= emptyCostSplit(), daySplit);
     }
   }
   return selected;
@@ -4577,11 +4691,62 @@ export function createUsageTrackingService({
     return issues;
   }
 
-  /** The snapshot with this moment's balance issues in place of any it carried. */
+  function windowsByAccount(windows: readonly UsageWindow[]): Map<string, UsageWindow[]> {
+    const byAccount = new Map<string, UsageWindow[]>();
+    for (const window of windows) {
+      if (!window.accountId) continue;
+      const accountWindows = byAccount.get(window.accountId) ?? [];
+      accountWindows.push(window);
+      byAccount.set(window.accountId, accountWindows);
+    }
+    return byAccount;
+  }
+
+  /**
+   * Smart balance's pick for a provider on one snapshot, or `null` when the
+   * provider has balance off. Chat creation and the Settings preview both use
+   * it, so the account marked "Next chat" is the one a new chat gets.
+   */
+  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    return pickInstanceForNewChat({
+      provider,
+      instances: providerInstanceStore.list(provider),
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs: Date.now(),
+    });
+  }
+
+  /**
+   * The account each balancing provider would give a new chat now, so
+   * Settings can mark it. A pick that skipped balancing is not a decision and
+   * is left out.
+   */
+  function computeBalanceNext(snapshot: UsageSnapshot): NonNullable<UsageSnapshot["balanceNext"]> {
+    const next: NonNullable<UsageSnapshot["balanceNext"]> = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        const result = balancedPick(provider, snapshot);
+        if (result && !result.skip) next.push({ provider, instanceId: result.instanceId });
+      } catch {
+        // A preview that cannot run leaves the mark off; chat creation reports
+        // its own failure through `balanceIssues`.
+      }
+    }
+    return next;
+  }
+
+  /** The snapshot with this moment's balance issues and next picks in place of any it carried. */
   function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
-    const { balanceIssues: _previousIssues, ...rest } = snapshot;
+    const { balanceIssues: _previousIssues, balanceNext: _previousNext, ...rest } = snapshot;
     const balanceIssues = computeBalanceIssues(rest);
-    return balanceIssues.length > 0 ? { ...rest, balanceIssues } : rest;
+    const balanceNext = computeBalanceNext(rest);
+    return {
+      ...rest,
+      ...(balanceIssues.length > 0 ? { balanceIssues } : {}),
+      ...(balanceNext.length > 0 ? { balanceNext } : {}),
+    };
   }
 
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
@@ -4605,6 +4770,62 @@ export function createUsageTrackingService({
   ): Promise<AdeTurnUsageLedgerSummary> {
     return buildTurnUsageLedgerSummary(dependencies?.turnUsageLedger ?? null, args, Date.now(), {
       projectRoot: forScope.projectRoot,
+    });
+  }
+
+  /**
+   * Spend by chat, lane, or account, from the per-turn ledger. Chats and lanes
+   * are the calling project's (their names live in its database); accounts
+   * are the machine's, like the quota they draw on. The ledger keeps three
+   * months, so a longer range reports what it still holds.
+   */
+  async function getCostBreakdown(
+    args: GetAdeUsageCostBreakdownArgs,
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeUsageCostBreakdown> {
+    const by: AdeUsageCostBreakdownBy = isAdeUsageCostBreakdownBy(args?.by) ? args.by : "chat";
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const rangeOut = { since: range.since, until: range.until };
+    const ledger = dependencies?.turnUsageLedger ?? null;
+    if (!ledger) {
+      return { by, range: rangeOut, available: false, rows: [], other: null, totals: { turns: 0, totalTokens: 0, costUsd: 0, billedUsd: 0, planValueUsd: 0 } };
+    }
+    const sinceMs = range.since ? Date.parse(range.since) : 0;
+    const untilMs = Date.parse(range.until);
+    const scopeRoot = forScope.projectRoot ? pathKey(path.resolve(forScope.projectRoot)) : null;
+    const rows = (await ledger.store.readTurns({ sinceMs })).filter((row) => {
+      const atMs = Date.parse(row.at);
+      if (!(atMs >= sinceMs && atMs <= untilMs)) return false;
+      if (by === "account" || !scopeRoot) return true;
+      return Boolean(row.projectRoot) && pathKey(path.resolve(row.projectRoot!)) === scopeRoot;
+    }).map(repriceTurnForUserPrices);
+    const db = forScope.db;
+    const chatCache = new Map<string, { title: string | null; laneId: string | null } | null>();
+    const laneCache = new Map<string, string | null>();
+    return buildCostBreakdown({
+      rows,
+      by,
+      range: rangeOut,
+      laneId: args.laneId ?? null,
+      limit: args.limit,
+      rankBy: args.rankBy === "tokens" ? "tokens" : "cost",
+      labels: {
+        chat: (sessionId) => {
+          if (!chatCache.has(sessionId)) {
+            const row = db ? safeUsageRow<{ title: string | null; lane_id: string | null }>(db, "select title, lane_id from terminal_sessions where id = ?", [sessionId]) : null;
+            chatCache.set(sessionId, row ? { title: row.title ?? null, laneId: row.lane_id ?? null } : null);
+          }
+          return chatCache.get(sessionId) ?? null;
+        },
+        lane: (laneId) => {
+          if (!laneCache.has(laneId)) {
+            const row = db ? safeUsageRow<{ name: string | null }>(db, "select name from lanes where id = ?", [laneId]) : null;
+            laneCache.set(laneId, row?.name?.trim() || null);
+          }
+          return laneCache.get(laneId) ?? null;
+        },
+      },
     });
   }
 
@@ -4652,7 +4873,7 @@ export function createUsageTrackingService({
     if (!hasInjectedLedgerScanners) {
       const roots = scopeProjectRoots();
       scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal, allRoots) => (
-        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots })
+        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots, extraProviderHomes: machineProviderUsageHomes() })
       )))(projectRoot ?? null, ledgerAbortController.signal, roots);
     } else {
       // Recorded, not merely logged: a provider whose scan failed produced no
@@ -5438,6 +5659,88 @@ export function createUsageTrackingService({
     }
   }
 
+  /**
+   * One model's cost, tokens, cache hit rate, daily trend, split, and the
+   * price ADE bills it at, read from the same cached history as the stats.
+   * Account scope reads this machine's history: other machines publish only
+   * day totals, not a model's split.
+   */
+  function getModelDetail(args: GetAdeUsageModelDetailArgs, forScope: AttachedScope = defaultScope): AdeUsageModelDetail {
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const costs = normalizeScope(args.scope) === "project"
+      ? cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? []
+      : lastSnapshot.costs;
+    const provider = String(args.provider ?? "");
+    const model = String(args.model ?? "");
+    const rows: ModelDetailDayRow[] = [];
+    for (const cost of costs) {
+      if (cost.provider !== provider) continue;
+      for (const [date, models] of Object.entries(cost.dailyTokenBreakdownByPreset?.all ?? {})) {
+        if (!dateIntersectsRange(date, range)) continue;
+        for (const [modelId, row] of Object.entries(models)) {
+          if (displayModelName(modelId) !== model) continue;
+          rows.push({
+            date,
+            modelId,
+            input: toNonNegativeInt(row.input),
+            output: toNonNegativeInt(row.output),
+            cacheRead: toNonNegativeInt(row.cached),
+            cacheWrite: toNonNegativeInt(row.cacheWrite),
+            costUsd: Math.max(0, toFiniteNumber(row.costUsd)),
+            costSplit: parseCostSplit(row.costSplit),
+          });
+        }
+      }
+    }
+    return buildModelDetail({ provider, model, range: { since: range.since, until: range.until }, rows });
+  }
+
+  function getModelPriceOverrides(): AdeUsagePriceOverrides {
+    const file = readUsagePriceOverrides();
+    return { prices: { ...file.prices }, aliases: { ...file.aliases } };
+  }
+
+  /**
+   * Saves one price or mapping and re-prices history in the background: the
+   * history scan is what applies it, and it can take a minute on a large
+   * machine, so the caller gets the saved overrides now and the page updates
+   * when the scan's snapshot lands. A scan already running read the old
+   * prices when it started, so the re-price runs after it, not joined to it.
+   */
+  function setModelPriceOverride(args: SetAdeUsageModelPriceArgs): AdeUsagePriceOverrides {
+    const models = [args?.model, ...(Array.isArray(args?.models) ? args.models : [])]
+      .filter((model): model is string => typeof model === "string" && model.trim().length > 0);
+    if (models.length === 0) throw new Error("usage.setModelPrice needs a model id.");
+    updateUsagePriceOverrides({
+      models,
+      ...(args.price !== undefined ? { price: args.price } : {}),
+      ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
+    });
+    const sink = dependencies?.captureInternalAnalytics;
+    // The save already happened; analytics failing must not report it failed
+    // or skip the re-price below.
+    if (sink) {
+      try {
+        const analytics = { captureInternal: sink };
+        if (args.price !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
+        }
+        if (args.mapTo !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+        }
+      } catch (error) {
+        logger.debug("usage.price_override_analytics_failed", { error: getErrorMessage(error) });
+      }
+    }
+    const reprice = () => refreshHistory({ reason: "user" });
+    const running = inFlightHistoryRefresh;
+    void (running ? running.then(reprice, reprice) : reprice()).catch((error) => {
+      logger.warn("usage.price_override.reprice_failed", { error: getErrorMessage(error) });
+    });
+    return getModelPriceOverrides();
+  }
+
   async function getAdeUsageStats(
     args: GetAdeUsageStatsArgs = {},
     forScope: AttachedScope = defaultScope,
@@ -5560,24 +5863,13 @@ export function createUsageTrackingService({
    */
   function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
-      const settings = providerInstanceStore.getProviderSettings(provider);
-      if (!settings.smartBalance) return null;
-      const instances = providerInstanceStore.list(provider);
-      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
-      const windowsByAccountId = new Map<string, UsageWindow[]>();
-      for (const window of lastSnapshot.windows) {
-        if (!window.accountId) continue;
-        const accountWindows = windowsByAccountId.get(window.accountId) ?? [];
-        accountWindows.push(window);
-        windowsByAccountId.set(window.accountId, accountWindows);
+      const result = balancedPick(provider, lastSnapshot);
+      if (!result) return null;
+      if (result.skip === "one_account") {
+        // Nothing to balance; an issue from an earlier pick no longer applies.
+        setBalancePickIssue(provider, null);
+        return null;
       }
-      const result = pickInstanceForNewChat({
-        provider,
-        instances,
-        accounts: lastSnapshot.accounts ?? [],
-        windowsByAccountId,
-        nowMs: Date.now(),
-      });
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
         setBalancePickIssue(provider, {
@@ -5721,6 +6013,10 @@ export function createUsageTrackingService({
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
+      getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
+      getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args, scope),
+      getModelPriceOverrides,
+      setModelPriceOverride,
       getModelRoutes,
       previewModelRoute,
       getRouterShadowSummary,
@@ -5760,6 +6056,10 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
+    getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),
+    getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args),
+    getModelPriceOverrides,
+    setModelPriceOverride,
     getModelRoutes,
     previewModelRoute,
     getRouterShadowSummary,

@@ -36,6 +36,7 @@ import {
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
+import { PROVIDER_ACCOUNT_REMOTE_COMMANDS } from "../../../../desktop/src/shared/types/sync";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -6490,6 +6491,8 @@ describe("CTO-gated Linear sync commands", () => {
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
         "chat.continueUsageLimitOnAlternate",
+        // Switching accounts changes which login pays for the next turn.
+        "chat.switchAccount",
         // Cursor Cloud writes are controller-only: phone/browser controllers
         // may invoke them, but a desktop viewer must not.
         "ai.createCursorCloudRun",
@@ -6524,6 +6527,14 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
       ]);
 
+      // Provider-account changes, and a running sign-in's status, are for a
+      // controller; the reads stay open to a viewer.
+      for (const [method, access] of Object.entries(PROVIDER_ACCOUNT_REMOTE_COMMANDS)) {
+        if (access !== "controller") continue;
+        viewerBlockedActions.add(`providerAccounts.${method}`);
+        controllerAllowedActions.add(`providerAccounts.${method}`);
+      }
+
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         // `apple.*` is registered only by a runtime that built a simulator
         // service — which this fixture does not, and a Windows brain never
@@ -6532,7 +6543,17 @@ describe("CTO-gated Linear sync commands", () => {
         if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
-        const scope = action === "chat.resolveSourceFavicons" ? "runtime" : "project";
+        // Optional actions answered by the runtime's own stores rather than a
+        // project service are registered at runtime scope; the phone sees the
+        // scope in the descriptor either way.
+        const RUNTIME_SCOPED_OPTIONAL_ACTIONS = new Set([
+          "chat.resolveSourceFavicons",
+          "account.getMachineInventory",
+        ]);
+        // Provider accounts are machine-wide config homes, never a project's.
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.")
+          ? "runtime"
+          : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.

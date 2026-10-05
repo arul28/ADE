@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot } from "../../../shared/types";
 import {
@@ -106,6 +106,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   scopeOverride.current = null;
+  vi.restoreAllMocks();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -589,5 +590,68 @@ describe("proof provenance lines", () => {
     render(<ChatProofTimeline artifacts={[older]} />);
     const line = document.querySelector("[data-proof-recorded-before-request]")!;
     expect(line.textContent).toMatch(/before this request/);
+  });
+});
+
+describe("MediaLightbox demo chapters", () => {
+  // The chapters ride on the video's metadata; the lightbox draws them and a
+  // click seeks to the step and plays. Fewer than two steps are not chapters.
+  const chaptered = artifact(13, {
+    title: "Chaptered demo",
+    kind: "video_recording",
+    originalType: "video",
+    mimeType: "video/mp4",
+    uri: ".ade/artifacts/demo.mp4",
+    metadata: { demo: { steps: [{ t: 3, text: "Opened settings" }, { t: 9, text: "Saved" }] } },
+  });
+
+  async function openChapteredVideo(item: ComputerUseArtifactView, title: string) {
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValue("data:video/mp4;base64,AAAA");
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    render(<ChatProofTimeline artifacts={[item]} />);
+    fireEvent.click(await screen.findByRole("button", { name: `Play ${title}` }));
+  }
+
+  it("seeks the video to a chapter's time and plays it when the chapter is clicked", async () => {
+    await openChapteredVideo(chaptered, "Chaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 13" });
+    const buttons = within(within(dialog).getByTestId("media-lightbox-chapters")).getAllByRole("button");
+    expect(buttons).toHaveLength(2);
+
+    fireEvent.click(buttons[1]!);
+    const video = dialog.querySelector("video")!;
+    expect(video.currentTime).toBe(9);
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["one chapter", [{ t: 3, text: "Only step" }]],
+    ["no chapters", []],
+  ])("renders no chapter controls with %s", async (_name, steps) => {
+    const item = artifact(14, {
+      title: "Unchaptered demo",
+      kind: "video_recording",
+      originalType: "video",
+      mimeType: "video/mp4",
+      uri: ".ade/artifacts/demo.mp4",
+      metadata: { demo: { steps } },
+    });
+    await openChapteredVideo(item, "Unchaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 14" });
+    expect(dialog.querySelector("video")).toBeTruthy();
+    expect(within(dialog).queryByTestId("media-lightbox-chapters")).toBeNull();
+    expect(within(dialog).queryByText("Only step")).toBeNull();
+  });
+
+  it("hides the chapters once the video fails, so a dead player lists no steps", async () => {
+    await openChapteredVideo(chaptered, "Chaptered demo");
+
+    const dialog = screen.getByRole("dialog", { name: "Description 13" });
+    expect(within(dialog).getByTestId("media-lightbox-chapters")).toBeTruthy();
+    fireEvent.error(dialog.querySelector("video")!);
+    await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
+    expect(within(dialog).queryByTestId("media-lightbox-chapters")).toBeNull();
   });
 });

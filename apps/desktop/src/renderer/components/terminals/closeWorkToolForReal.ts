@@ -88,17 +88,15 @@ export function closeWorkToolForReal(
       // remember this chat as one that refuses the preview.
       retakeAppleMiniPlayer();
       /*
-       * A4, extended by round 4 §B3 and fixed in round 5 §S1: closing the
-       * Apple Development TAB closes the tool for real — this chat's stream
-       * lease first, then the device POWERS OFF.
+       * Closing the Apple Development TAB closes the tool for real — this
+       * chat's stream lease first, then the device POWERS OFF.
        *
-       * Round 4 wired the second half to `ios.shutdown`, which is the verb for
-       * ending this chat's SESSION: it released the claim, stopped the stream,
-       * and left the simulator running. The dialog said "Closing this tab
-       * powers off the simulator", the tool returned at once, and the tools
-       * card kept reading "ADE Repro · Running". `deviceStop` is the verb that
-       * runs `simctl shutdown`; it releases the session on the way past, so
-       * nothing is lost by calling it instead.
+       * The verb is `deviceStop`, which runs `simctl shutdown` and releases the
+       * session on the way past. Not `ios.shutdown`: that ends this chat's
+       * SESSION only — it releases the claim and stops the stream but leaves
+       * the simulator running, so the dialog's "Closing this tab powers off the
+       * simulator" would be false and the tools card would keep reading
+       * "· Running".
        *
        * The question that makes powering off safe is asked upstream, in
        * `useWorkSidebarTool.closeTool`, because Cancel has to keep the tab as
@@ -146,7 +144,8 @@ export function closeWorkToolForReal(
         .catch((error) => logCloseFailure(tool, error));
       return;
     }
-    case "mac-desktop": {
+    case "mac-desktop":
+    case "windows-desktop": {
       const macDesktop = window.ade?.macDesktop;
       if (!macDesktop?.stop || !laneId) return;
       // Through the status store, so a pane reopened before the stop answers

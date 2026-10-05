@@ -11,6 +11,7 @@ import {
   CaretRight,
   ArrowRight,
   Bug,
+  ArrowBendUpRight,
   CloudArrowUp,
   GitFork,
   Warning,
@@ -217,14 +218,14 @@ import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 import { formatTurnFoldHead, formatTurnFoldJobCount, formatTurnFoldLabel } from "../../../shared/chatTurnFold";
 import { pluralCount } from "../../../shared/formatting";
-import { sameKeyList, sameMapContents, sameSetContents, useStableIdentity } from "../../lib/stableIdentity";
+import { sameKeyList, sameMapContents, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import {
   getEventTurnId,
   useTranscriptPresentation,
 } from "./chatTranscriptPresentation";
 import {
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
@@ -234,7 +235,9 @@ import {
   USER_SCROLL_UP_REPIN_HOLD_MS,
 } from "./chatListScrollAnchoring";
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
-import { ScheduledWorkLine } from "./ScheduledWorkLine";
+import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
+import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
+import { useWakeLoopFolds } from "./useWakeLoopFolds";
 
 export { deriveTranscriptToolActivity, deriveTurnStartedAtMs, stabilizeTranscriptToolActivity } from "./chatTranscriptPresentation";
 export { sameKeyList, sameMapContents, sameSetContents } from "../../lib/stableIdentity";
@@ -253,8 +256,8 @@ function warnOnDuplicateRowKeys(keys: readonly string[]): void {
   }
 }
 export {
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   findAnchoredChatEventIndex,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
@@ -277,6 +280,8 @@ import {
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
 import { ChatProofFilmstrip } from "./chatCardPrimitives";
+import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
+import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -914,6 +919,31 @@ const USER_MESSAGE_STATUS_TONE_CLASS: Record<UserMessageStatusTone, string> = {
   error: "text-amber-300/85",
 };
 
+/** The accent hairline that marks where a forked or briefed chat began. */
+function ChatOriginDivider({ icon, label, className, testId }: {
+  icon: React.ReactNode;
+  label: string;
+  className: string;
+  testId: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]",
+        className,
+      )}
+      data-testid={testId}
+    >
+      <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+      <span className="inline-flex shrink-0 items-center gap-1.5">
+        {icon}
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+    </div>
+  );
+}
+
 function UserMessageStatusGlyph({ icon }: { icon: UserMessageStatus["icon"] }) {
   const glyphClass = "shrink-0 opacity-85";
   if (icon === "clock") return <Clock size={11} weight="bold" className={glyphClass} aria-hidden />;
@@ -1506,28 +1536,6 @@ function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: 
  */
 export const ChatInfoHostContext = React.createContext(false);
 
-function activityBundleDedupeKey(item: ChatActivityBundleItem): string {
-  const event = item.event;
-  return `schedule:${event.sourceTaskId ?? event.id}`;
-}
-
-// Folding collapses repeated scheduled-work updates for the same id down to the latest.
-function foldActivityBundleItems(items: ChatActivityBundleItem[]): ChatActivityBundleItem[] {
-  const folded: ChatActivityBundleItem[] = [];
-  const indexByKey = new Map<string, number>();
-  for (const item of items) {
-    const key = activityBundleDedupeKey(item);
-    const existingIndex = indexByKey.get(key);
-    if (existingIndex === undefined) {
-      indexByKey.set(key, folded.length);
-      folded.push(item);
-    } else {
-      folded[existingIndex] = item;
-    }
-  }
-  return folded;
-}
-
 function ChatActivityBundle({
   event,
   sessionId,
@@ -1535,15 +1543,34 @@ function ChatActivityBundle({
   event: ChatActivityBundleEvent;
   sessionId?: string | null;
 }) {
-  const displayItems = foldActivityBundleItems(event.items);
+  // `foldScheduledWorkRows` already left one item per schedule id.
+  const displayItems = event.items;
   const rows = displayItems.map((item) => (
     <ScheduledWorkLine
-      key={activityBundleDedupeKey(item)}
+      key={item.event.id}
       event={item.event}
       onOpen={() => openChatInfoFromActivity(sessionId, item.event.sourceTaskId ?? item.event.id)}
     />
   ));
   return displayItems.length === 1 ? rows[0]! : <div className="min-w-0 max-w-full">{rows}</div>;
+}
+
+function NewSinceDivider({ sinceMs }: { sinceMs: number }) {
+  const since = new Date(sinceMs);
+  const sameDay = since.toDateString() === new Date().toDateString();
+  const label = sameDay
+    ? since.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : since.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return (
+    <div
+      data-testid="chat-new-since-divider"
+      className="flex items-center gap-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-200/65"
+    >
+      <span className="h-px flex-1 bg-amber-200/15" aria-hidden />
+      <span>New since {label}</span>
+      <span className="h-px flex-1 bg-amber-200/15" aria-hidden />
+    </div>
+  );
 }
 
 /* ── Collapsible card ── */
@@ -2542,7 +2569,7 @@ function renderEvent(
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
           <span className="inline-flex shrink-0 items-center gap-1.5">
             <Robot size={11} weight="duotone" className="text-violet-300/75" aria-hidden />
-            Subagent returned
+            Subagent returned{event.childMachineName ? ` · on ${event.childMachineName}` : ""}
           </span>
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
         </div>
@@ -2585,10 +2612,47 @@ function renderEvent(
     );
   }
 
+  /* ── PR Watch / Ship wake ──
+     ADE woke the agent because its pull request changed. The user did not
+     write this message, so it is never a user bubble: the card says what
+     changed and that the agent was told, and the exact text sits folded
+     underneath for anyone who wants to see what the agent read. */
+  const prWatchWake = event.type === "user_message" ? event.metadata?.prWatchWake : undefined;
+  if (event.type === "user_message" && prWatchWake?.card) {
+    const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
+    return (
+      <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
+        <AdeCard
+          card={card}
+          onAction={(actionId) => dispatchAdeCardAction(card, actionId, options?.sessionId ?? null)}
+        />
+        <details className="group mx-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
+          <summary className="cursor-pointer select-none list-none hover:text-fg/70">
+            <span className="group-open:hidden">What the agent was told</span>
+            <span className="hidden group-open:inline">Hide what the agent was told</span>
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-white/[0.02] p-2 font-sans leading-relaxed text-fg/60">
+            {event.text}
+          </pre>
+        </details>
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
+      ? event.metadata.kind
+      : null;
+    // A brief handoff's first message is the hidden brief. The thread marks it
+    // with a line, like the fork line, not with a label inside the bubble.
+    const handoffBriefLabel = metadataKind === "handoff"
+      ? "Started from a brief of the previous chat"
+      : metadataKind === "cross_machine_handoff"
+        ? "Continued from another computer"
+        : null;
     return (
       <motion.div
         className="flex min-w-0 max-w-full w-full flex-col items-end overflow-visible"
@@ -2597,6 +2661,16 @@ function renderEvent(
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
+        {handoffBriefLabel ? (
+          <ChatOriginDivider
+            className="mb-3"
+            testId="handoff-brief-divider"
+            label={handoffBriefLabel}
+            icon={metadataKind === "cross_machine_handoff"
+              ? <CloudArrowUp size={12} weight="regular" className="opacity-80" aria-hidden />
+              : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
+          />
+        ) : null}
         <div
           className={cn(
             GLASS_CARD_CLASS,
@@ -2631,30 +2705,9 @@ function renderEvent(
           {(() => {
             const displayText = event.displayText?.trim();
             if (event.metadata?.hideFullPrompt === true) {
-              const metadataKind = typeof event.metadata?.kind === "string" ? event.metadata.kind : null;
-              const isHandoffBrief = metadataKind === "handoff" || metadataKind === "cross_machine_handoff";
-              const briefChip = isHandoffBrief ? (
-                <div
-                  className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_26%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-4 text-[color:color-mix(in_srgb,var(--chat-accent)_78%,var(--chat-fg,#e6e6e6))]"
-                  data-testid="handoff-brief-chip"
-                >
-                  <CloudArrowUp size={12} weight="regular" className="shrink-0 opacity-85" aria-hidden />
-                  Previous chat summarized into this chat&rsquo;s context
-                </div>
+              return displayText ? (
+                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
               ) : null;
-              if (!briefChip) {
-                return displayText ? (
-                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-                ) : null;
-              }
-              return (
-                <div>
-                  {briefChip}
-                  {displayText ? (
-                    <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-                  ) : null}
-                </div>
-              );
             }
             // A send that carried thread comments: the review card, then what
             // the user typed (if anything) under it.
@@ -3350,6 +3403,9 @@ function renderEvent(
         >
           <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
           <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
+          {completion?.childMachineName ? (
+            <span className="shrink-0 text-slate-300/50">· on {completion.childMachineName}</span>
+          ) : null}
           {repeatCount ? (
             <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
           ) : null}
@@ -4261,6 +4317,10 @@ function DoneTurnDivider({
   durationMs,
   toolEntries,
   proofArtifacts,
+  scheduledWork,
+  turnEndFold = null,
+  wakeChain = null,
+  onToggleFold,
   resolveProofThumbnailSrc,
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
@@ -4277,8 +4337,11 @@ function DoneTurnDivider({
   workSummaryInFold = false,
   turnSources,
   onOpenTurnSources,
+  onForkFromTurn,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
+  /** "Fork from here": a new chat holding the conversation through this turn. */
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
   /**
    * This turn folded: its tool and file counts moved up to the fold row, so
    * the line keeps only time, usage, proof, and the checkpoint diff.
@@ -4309,6 +4372,13 @@ function DoneTurnDivider({
   turnDiffSummary?: TurnDiffSummary | null;
   turnDiffSummaries?: TurnDiffSummary[] | null;
   proofArtifacts?: ComputerUseArtifactView[];
+  /** Wake-ups, crons, and loops this turn scheduled: chips at the end of the line. */
+  scheduledWork?: readonly ChatActivityBundleItem[];
+  /** A wake turn has no fold row: its `ran …` opens the fold instead. */
+  turnEndFold?: { foldId: string; open: boolean } | null;
+  /** Earlier wake checks folded right below this line: a chip that opens them. */
+  wakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
+  onToggleFold?: (foldId: string) => void;
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   allowLocalProofArtifactProtocol?: boolean;
   onOpenProofDrawer?: () => void;
@@ -4363,7 +4433,21 @@ function DoneTurnDivider({
             <span className="font-medium">{modelLabel}</span>
           </span>
         ) : null}
-        {ranFor ? (
+        {ranFor && turnEndFold ? (
+          <button
+            type="button"
+            aria-expanded={turnEndFold.open}
+            aria-label={`${turnEndFold.open ? "Hide" : "Show"} the work from this turn`}
+            onClick={() => onToggleFold?.(turnEndFold.foldId)}
+            className="inline-flex items-center gap-1 rounded font-mono tabular-nums outline-none transition-colors hover:text-fg/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+          >
+            <Clock size={11} weight="bold" aria-hidden />
+            <span>{ranFor}</span>
+            {turnEndFold.open
+              ? <CaretDown size={9} weight="bold" aria-hidden />
+              : <CaretRight size={9} weight="bold" aria-hidden />}
+          </button>
+        ) : ranFor ? (
           <span className="inline-flex items-center gap-1">
             <Clock size={11} weight="bold" aria-hidden />
             <span>{ranFor}</span>
@@ -4428,11 +4512,23 @@ function DoneTurnDivider({
       {turnSources?.length && event.turnId ? (
         <TurnSourcesChip turnId={event.turnId} sources={turnSources} onOpen={onOpenTurnSources} />
       ) : null}
+      {onForkFromTurn && event.turnId ? (
+        <button
+          type="button"
+          data-testid="turn-fork-from-here"
+          aria-label="Fork from here"
+          title="Fork from here: a new chat with the conversation up to this point"
+          onClick={() => onForkFromTurn({ turnId: event.turnId!, timestamp })}
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-white/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--chat-fg,#e6e6e6))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
+        >
+          <GitFork size={11} weight="bold" aria-hidden />
+        </button>
+      ) : null}
     </span>
   );
 
   return (
-    <div className="my-4 min-w-0">
+    <div className="group/turnend my-4 min-w-0">
       <ChatTurnWorkSummary
         toolEntries={workSummaryInFold ? EMPTY_WORK_LOG_ENTRIES : toolEntries}
         fileEntries={hasCheckpointDiffSummary || workSummaryInFold
@@ -4445,6 +4541,24 @@ function DoneTurnDivider({
         sessionId={sessionId}
         leading={turnLeading}
         tokenUsage={usageLimitPaused ? null : event.usage}
+        trailing={scheduledWork?.length || wakeChain ? (
+          <span className="inline-flex min-w-0 items-center gap-2">
+            {scheduledWork?.length ? (
+              <ScheduledWorkChips
+                items={scheduledWork}
+                onOpen={(item) => openChatInfoFromActivity(sessionId, item.event.sourceTaskId ?? item.event.id)}
+              />
+            ) : null}
+            {wakeChain ? (
+              <WakeChainChip
+                chainId={wakeChain.chainId}
+                checkCount={wakeChain.checkCount}
+                open={wakeChain.open}
+                onToggle={onToggleFold}
+              />
+            ) : null}
+          </span>
+        ) : null}
         checkpointFiles={checkpointFiles}
         checkpointDetail={checkpointDetail}
       />
@@ -4682,6 +4796,12 @@ type EventRowProps = SpawnedChatProviderProps & {
   onStopSubagent?: (taskId: string) => void;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
   turnProof?: ComputerUseArtifactView[];
+  /** Wake-ups, crons, and loops this turn scheduled, drawn on its turn-end line. */
+  turnScheduledWork?: readonly ChatActivityBundleItem[];
+  /** A wake turn's fold, opened from its turn-end line. */
+  turnEndFold?: { foldId: string; open: boolean } | null;
+  /** Earlier wake checks folded under this turn-end line. */
+  turnEndWakeChain?: { chainId: string; checkCount: number; open: boolean } | null;
   /** Proof captured after this row but outside a completed turn window. */
   inlineProof?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
@@ -4699,6 +4819,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   /** `done` / `turn_fold` rows: sources the agent used this turn. */
   turnSources?: ChatSource[];
   onOpenTurnSources?: (turnId: string) => void;
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4754,6 +4875,9 @@ const EventRow = React.memo(function EventRow({
   settledQueueRecoveryIds,
   onStopSubagent,
   turnProof,
+  turnScheduledWork,
+  turnEndFold,
+  turnEndWakeChain,
   inlineProof,
   resolveProofThumbnailSrc,
   allowLocalProofArtifactProtocol = false,
@@ -4765,6 +4889,7 @@ const EventRow = React.memo(function EventRow({
   turnWorkInFold = false,
   turnSources,
   onOpenTurnSources,
+  onForkFromTurn,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   const doneTurnId = envelope.event.type === "done" ? envelope.event.turnId : null;
@@ -4778,17 +4903,12 @@ const EventRow = React.memo(function EventRow({
       )}
     >
       {showForkHistoryDivider ? (
-        <div
-          className="my-3 flex items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]"
-          data-testid="fork-history-divider"
-        >
-          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-          <span className="inline-flex shrink-0 items-center gap-1.5">
-            <GitFork size={12} weight="regular" className="opacity-80" aria-hidden />
-            Forked from the previous chat — full history above
-          </span>
-          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-        </div>
+        <ChatOriginDivider
+          className="my-3"
+          testId="fork-history-divider"
+          label="Forked from the previous chat — full history above"
+          icon={<GitFork size={12} weight="regular" className="opacity-80" aria-hidden />}
+        />
       ) : null}
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
@@ -4819,6 +4939,10 @@ const EventRow = React.memo(function EventRow({
           sessionId={sessionId}
           sourceCount={turnSources?.length ?? 0}
         />
+      ) : envelope.event.type === "new_since_divider" ? (
+        <NewSinceDivider sinceMs={envelope.event.sinceMs} />
+      ) : envelope.event.type === "wake_chain" ? (
+        <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
       ) : envelope.event.type === "activity_bundle"
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
@@ -4871,6 +4995,10 @@ const EventRow = React.memo(function EventRow({
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
           proofArtifacts={turnProof}
+          scheduledWork={turnScheduledWork}
+          turnEndFold={turnEndFold}
+          wakeChain={turnEndWakeChain}
+          onToggleFold={onToggleTurnFold}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
@@ -4889,6 +5017,7 @@ const EventRow = React.memo(function EventRow({
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
+          onForkFromTurn={onForkFromTurn}
         />
       ) : null}
       {inlineProof?.length ? (
@@ -4989,6 +5118,8 @@ export function estimateTranscriptRowHeight(
   const event = row.event;
   switch (event.type) {
     case "turn_fold":
+    case "wake_chain":
+    case "new_since_divider":
       return 26;
     case "done":
       return 34;
@@ -5121,6 +5252,15 @@ const SCROLL_RESTORE_MAX_CORRECTION_FRAMES = 60;
 const SCROLL_RESTORE_STABLE_FRAMES = 2;
 /** Automatic older pages allowed between two reader scrolls (not counting an underfilled pane). */
 const MAX_CHAINED_AUTO_OLDER_PAGES = 1;
+/** Longest an older-history backfill page waits for an idle slot before it runs anyway. */
+const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
+/** How often backfill looks again while a scroll restore is still landing. */
+const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
+  return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
+}
+/** Quiet time after the last scroll event before the exact scrollTop is committed to state. */
+const SCROLL_SETTLE_COMMIT_MS = 120;
 /** Keys that scroll the transcript pane; pressing one is the reader taking over. */
 const SCROLL_KEYS = new Set(["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "]);
 const SCROLL_UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
@@ -5355,15 +5495,18 @@ function AgentChatMessageListMain({
   loadingOlderHistory = false,
   olderHistoryError = null,
   onLoadOlderHistory,
+  backfillOlderHistory = false,
   onRetryOlderHistory,
   onReturnToLatest,
   mosaic,
   scrollToRowKeyRequest,
+  unreadSince = null,
   scrollToPromptHistoryRequest,
   proofArtifacts = EMPTY_PROOF_ARTIFACTS,
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onOpenTurnSources,
+  onForkFromTurn,
   threadComments = null,
 }: SpawnedChatProviderProps & {
   /**
@@ -5442,15 +5585,27 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: () => void;
+  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * Page the rest of the transcript in during idle time. Only for owners whose
+   * loader refuses a backfill page that would hit the resident cap (the cap
+   * merge keeps the oldest events, which would drop the reader's live tail).
+   */
+  backfillOlderHistory?: boolean;
   /** Called when the user explicitly retries a failed older-history page. */
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
   onReturnToLatest?: () => void;
   /** Present only for Claude-family sessions; enables interactive mosaic cards. */
   mosaic?: MosaicRenderContext;
-  /** Imperative jump request used by the while-you-were-away wake digest. */
+  /** Imperative jump to a row key: reveals the folds hiding it, then scrolls to it. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
+  /**
+   * When the reader last had this chat open (`sinceMs`) and when they opened it
+   * now (`openedAtMs`). Rows that arrived in between get a `New since …`
+   * divider above them; rows that arrive while the chat is open do not.
+   */
+  unreadSince?: { sinceMs: number; openedAtMs: number } | null;
   /** Imperative jump request emitted when composer history selects a prompt. */
   scrollToPromptHistoryRequest?: { eventKey: string; requestId: number } | null;
   /** Intentional proof linked to this chat, rendered at the transcript tail. */
@@ -5460,6 +5615,8 @@ function AgentChatMessageListMain({
   onOpenProofDrawer?: () => void;
   /** Opens the drawer's Sources section narrowed to one turn (the turn chip). */
   onOpenTurnSources?: (turnId: string) => void;
+  /** "Fork from here" on a finished turn's end line. Absent where forking is unavailable. */
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   // The machine label belongs to the CHAT, not to the tab. A Work tab unions
@@ -5495,6 +5652,8 @@ function AgentChatMessageListMain({
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
   const resolvedScrollMemoryKey = scrollMemoryKey ?? sessionId;
+  const resolvedScrollMemoryKeyRef = useRef(resolvedScrollMemoryKey);
+  resolvedScrollMemoryKeyRef.current = resolvedScrollMemoryKey;
   const initialScrollMemory = readChatScrollMemory(resolvedScrollMemoryKey);
   const restoredScrollMemoryRef = useRef(initialScrollMemory);
   const [stickToBottom, setStickToBottom] = useState(() => initialScrollMemory?.wasPinnedToBottom ?? true);
@@ -5629,6 +5788,22 @@ function AgentChatMessageListMain({
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
+  /** `scrollCommitKey` of the position the last render drew from. */
+  const renderedScrollKeyRef = useRef<string | null>(null);
+  /**
+   * The pane's real scrollTop as of the last scroll event or commit. Scroll
+   * events no longer commit every frame (see handleScroll), so the committed
+   * state can trail the pane; anything that sizes the mounted window reads this.
+   */
+  const liveScrollTopRef = useRef(0);
+  const committedScrollTopRef = useRef(scrollTop);
+  if (committedScrollTopRef.current !== scrollTop) {
+    committedScrollTopRef.current = scrollTop;
+    liveScrollTopRef.current = scrollTop;
+  }
+  /** What a scroll to `top` would change in the last render (mounted rows, active tick). */
+  const scrollCommitKeyRef = useRef<((top: number) => string) | null>(null);
+  const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [containerHeight, setContainerHeight] = useState(0);
   const [measurementTick, setMeasurementTick] = useState(0);
   const [anchoredRowKey, setAnchoredRowKey] = useState<string | null>(null);
@@ -5648,6 +5823,15 @@ function AgentChatMessageListMain({
     widthStep: -1,
     byKey: new Map(),
   });
+  /** Bumped on every `measuredHeights` write; keys the row-offset cache. */
+  const measuredHeightsVersionRef = useRef(0);
+  const rowOffsetsCacheRef = useRef<{
+    rowHeight: (index: number) => number;
+    rowCount: number;
+    rowGap: number;
+    heightsVersion: number;
+    offsets: number[];
+  } | null>(null);
   /** Best-known height of a row: measured, else its per-kind estimate. Reads refs only. */
   const heightForKey = useCallback((key: string | undefined): number => {
     if (!key) return ESTIMATED_ROW_HEIGHT;
@@ -5680,11 +5864,15 @@ function AgentChatMessageListMain({
    */
   const maybeRequestOlderHistory = useCallback((
     scrollTopNow: number,
-    source: "reader" | "auto" | "underfill",
+    source: "reader" | "auto" | "underfill" | "backfill",
   ) => {
     // Two viewport-heights of runway, falling back to the near-top threshold
     // before the pane has been measured. See PREFETCH_OLDER_VIEWPORT_HEIGHTS.
-    if (scrollTopNow > resolveOlderHistoryPrefetchTriggerPx(scrollRef.current?.clientHeight ?? 0)) return;
+    // Backfill pages wherever the reader is.
+    if (
+      source !== "backfill"
+      && scrollTopNow > resolveOlderHistoryPrefetchTriggerPx(scrollRef.current?.clientHeight ?? 0)
+    ) return;
     if (
       !hasOlderHistoryRef.current
       || loadingOlderHistoryRef.current
@@ -5696,7 +5884,7 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.();
+    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
   }, []);
 
   // Re-arm after a batch that changed nothing visible.
@@ -5722,6 +5910,50 @@ function AgentChatMessageListMain({
     if (root.scrollTop > resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)) return;
     maybeRequestOlderHistory(root.scrollTop, "auto");
   }, [loadingOlderHistory, hasOlderHistory, olderHistoryError, maybeRequestOlderHistory]);
+
+  // Backfill: page the rest of the transcript in during idle time, one page
+  // per idle slot, so older turns are already resident before the reader
+  // scrolls or jumps to them and the minimap rail holds every prompt. Re-arms
+  // as each page lands (`loadingOlderHistory` flips back) and stops at the
+  // head, on a latched error, or when the owner refuses a page that would hit
+  // the resident cap (no loading flip, so nothing re-arms). Idle slots keep it
+  // behind input, layout and streaming work.
+  useEffect(() => {
+    if (!backfillOlderHistory || !hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
+    let idleHandle: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      // jsdom (tests) has no idle callbacks.
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(run, { timeout: OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS });
+      } else {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS);
+      }
+    };
+    function run() {
+      idleHandle = null;
+      timer = null;
+      // A restore still landing owns the scroll position; look again shortly
+      // (a timer, not another idle slot, which can come back every frame).
+      if (scrollRestoreActiveRef.current) {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
+        return;
+      }
+      maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
+    }
+    // A reader already inside the prefetch runway is waiting on this page, and
+    // a busy frame can hold an idle slot for the whole timeout: fetch now.
+    const root = scrollRef.current;
+    if (root && !scrollRestoreActiveRef.current && root.scrollTop <= resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)) {
+      run();
+      return;
+    }
+    schedule();
+    return () => {
+      if (idleHandle !== null) window.cancelIdleCallback(idleHandle);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [backfillOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -5785,12 +6017,22 @@ function AgentChatMessageListMain({
     writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
   }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
+  // Rebuilt on every event; a turn whose copy text did not change keeps its
+  // previous info object, so its memoized last text row is not re-rendered.
+  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
   const { assistantTurnCopyByRowKey, interimTextRowKeys } = useMemo(() => {
+    const previous = previousAssistantTurnCopyRef.current;
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
     const turnCopy = deriveAssistantTurnCopyMap(rows);
     for (const info of turnCopy.values()) {
-      if (info.textEventCount >= 2) byRowKey.set(info.lastTextEventKey, info);
+      if (info.textEventCount < 2) continue;
+      const prior = previous.get(info.lastTextEventKey);
+      byRowKey.set(
+        info.lastTextEventKey,
+        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
+      );
     }
+    previousAssistantTurnCopyRef.current = byRowKey;
     // Every text row of a turn except its last one is interim narration.
     const interim = new Set<string>();
     for (const row of rows) {
@@ -5854,14 +6096,29 @@ function AgentChatMessageListMain({
     ),
     sameSetContents,
   );
+  // `work_log_group` rows no longer render anything in the timeline: tool
+  // calls are shown by the working indicator / done divider, and file changes
+  // are summarized ONCE per turn at the done divider instead of once per
+  // burst. A checkpoint `turn_diff_summary` folds into that same line when
+  // the turn has a done row. Dropping the rows outright (rather than
+  // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
+  // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
+  // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
+  const scheduledWorkAtTurnEnd = useMemo(
+    () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
+      if (row.event.type === "work_log_group") return false;
+      if (
+        row.event.type === "turn_diff_summary"
+        && row.event.turnId
+        && doneTurnIds.has(row.event.turnId)
+      ) return false;
+      return true;
+    }))),
+    [allGroupedRows, doneTurnIds],
+  );
+  const scheduledWorkByTurnEndKey = scheduledWorkAtTurnEnd.byTurnEndKey;
   const previousPresentedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
   const presentedRows = useMemo(
-    // `work_log_group` rows no longer render anything in the timeline: tool
-    // calls are shown by the working indicator / done divider, and file changes
-    // are summarized ONCE per turn at the done divider instead of once per
-    // burst. A checkpoint `turn_diff_summary` folds into that same line when
-    // the turn has a done row. Dropping the rows outright (rather than
-    // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
     // Consecutive same-kind subagent cards then join one side-by-side grid row
     // keyed by its first card (`groupSubagentCardGrids`). That runs here, on
     // the drawn rows and before the turn fold, so hidden rows never split a
@@ -5870,20 +6127,12 @@ function AgentChatMessageListMain({
     () => {
       const previous = previousPresentedRowsRef.current;
       const next = groupBackgroundJobRuns(groupSubagentCardGrids(mergeAdjacentActivityBundleRows(
-        allGroupedRows.filter((row) => {
-        if (row.event.type === "work_log_group") return false;
-        if (
-          row.event.type === "turn_diff_summary"
-          && row.event.turnId
-          && doneTurnIds.has(row.event.turnId)
-        ) return false;
-        return true;
-      }),
+        scheduledWorkAtTurnEnd.rows,
       ), previous), turnEndLiveRowKeys, previous);
       previousPresentedRowsRef.current = next;
       return next;
     },
-    [allGroupedRows, doneTurnIds, turnEndLiveRowKeys],
+    [scheduledWorkAtTurnEnd, turnEndLiveRowKeys],
   );
   // A card drawn inside a grid row answers to that row: jumps, highlights, and
   // event anchors that name the card land on its grid.
@@ -5921,19 +6170,13 @@ function AgentChatMessageListMain({
     useMemo(() => presentedRows.map((row) => row.key), [presentedRows]),
     sameKeyList,
   );
-  const foldIdByHiddenRowKey = useMemo(() => {
-    const byKey = new Map<string, string>();
-    for (const fold of turnFolds) {
-      for (const key of fold.hiddenKeys) byKey.set(key, fold.foldId);
-    }
-    return byKey;
-  }, [turnFolds]);
-  // `done` rows whose tool/file counts moved up to their turn's fold row. By
-  // row key, not turn id: an id-less `done` folds under an inferred id.
-  const foldedTurnEndKeys = useMemo(
-    () => new Set(turnFolds.map((fold) => fold.turnEndKey)),
-    [turnFolds],
-  );
+  const {
+    wakeChains,
+    wakeTurnIds,
+    wakeTurnFoldIdByTurnEndKey,
+    wakeChainByAnchorKey,
+    foldedTurnEndKeys,
+  } = useWakeLoopFolds(presentedRows, scheduledWorkByTurnEndKey, turnFolds);
   const [openTurnFoldsState, setOpenTurnFoldsState] = useState(() => ({
     viewKey: resolvedScrollMemoryKey ?? null,
     open: readOpenTurnFolds(resolvedScrollMemoryKey),
@@ -5945,6 +6188,18 @@ function AgentChatMessageListMain({
     : readOpenTurnFolds(resolvedScrollMemoryKey);
   const openTurnFoldsRef = useRef(openTurnFolds);
   openTurnFoldsRef.current = openTurnFolds;
+  // The fold a hidden row answers to (a closed wake chain wins over the turn
+  // fold inside it), and the turn fold alone, for a reveal that opens both.
+  const foldIdByHiddenRowKey = useMemo(
+    () => foldIdsByHiddenRowKey(turnFolds, wakeChains, openTurnFolds),
+    [openTurnFolds, turnFolds, wakeChains],
+  );
+  const turnFoldIdByHiddenRowKey = useMemo(
+    () => foldIdsByHiddenRowKey(turnFolds, [], EMPTY_OPEN_TURN_FOLDS),
+    [turnFolds],
+  );
+  const turnFoldIdByHiddenRowKeyRef = useRef(turnFoldIdByHiddenRowKey);
+  turnFoldIdByHiddenRowKeyRef.current = turnFoldIdByHiddenRowKey;
   const turnFoldViewKeyRef = useRef(resolvedScrollMemoryKey ?? null);
   turnFoldViewKeyRef.current = resolvedScrollMemoryKey ?? null;
   const setTurnFoldOpen = useCallback((foldId: string, open: boolean) => {
@@ -5970,13 +6225,24 @@ function AgentChatMessageListMain({
     }
     return byKey;
   }, [turnFolds]);
+  // A row in a closed wake chain is also inside its own turn's fold: open both
+  // in one update, or the jump lands on a fold that is still closed.
   const revealTurnFoldRow = useCallback((rowKey: string): boolean => {
-    const foldId = foldIdByHiddenRowKeyRef.current.get(rowKey);
-    if (!foldId || openTurnFoldsRef.current.has(foldId)) return false;
-    setTurnFoldOpen(foldId, true);
+    const current = openTurnFoldsRef.current;
+    const toOpen = [
+      foldIdByHiddenRowKeyRef.current.get(rowKey),
+      turnFoldIdByHiddenRowKeyRef.current.get(rowKey),
+    ].filter((foldId): foldId is string => Boolean(foldId) && !current.has(foldId!));
+    if (!toOpen.length) return false;
+    const next = new Set(current);
+    for (const foldId of toOpen) next.add(foldId);
+    openTurnFoldsRef.current = next;
+    rememberOpenTurnFolds(turnFoldViewKeyRef.current, next);
+    setOpenTurnFoldsState({ viewKey: turnFoldViewKeyRef.current, open: next });
     return true;
-  }, [setTurnFoldOpen]);
+  }, []);
   const previousFoldRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
+  const previousWakeChainRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousThoughtRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   // The reasoning row that draws the live ThinkingPreview: the newest row of
   // the live turn, read from the rows BEFORE work-log groups leave the drawn
@@ -6025,7 +6291,7 @@ function AgentChatMessageListMain({
   // minimap, jumps — works on this list, so a folded row is simply not a row
   // until revealed, and a merged Thought member answers to its merged row.
   const groupedRows = useMemo(() => {
-    const folded = applyChatTranscriptTurnFolds(
+    const turnFolded = applyChatTranscriptTurnFolds(
       presentedRows,
       turnFolds,
       openTurnFolds,
@@ -6033,13 +6299,27 @@ function AgentChatMessageListMain({
     );
     const foldRows = new Map<string, TranscriptGroupedEnvelope>();
     if (turnFolds.length) {
-      for (const row of folded) if (row.event.type === "turn_fold") foldRows.set(row.key, row);
+      for (const row of turnFolded) if (row.event.type === "turn_fold") foldRows.set(row.key, row);
     }
     previousFoldRowsRef.current = foldRows;
-    const next = mergeAdjacentThoughtRows(folded, previousThoughtRunRowsRef.current, rowDrawContext);
-    previousThoughtRunRowsRef.current = next === folded ? new Map() : collectMergedThoughtRows(next);
+    const folded = applyWakeChains(
+      wakeTurnIds.size
+        ? turnFolded.filter((row) => row.event.type !== "turn_fold" || !wakeTurnIds.has(row.event.turnId))
+        : turnFolded,
+      wakeChains,
+      openTurnFolds,
+      previousWakeChainRowsRef.current,
+    );
+    const chainRows = new Map<string, TranscriptGroupedEnvelope>();
+    if (wakeChains.length) {
+      for (const row of folded) if (row.event.type === "wake_chain") chainRows.set(row.key, row);
+    }
+    previousWakeChainRowsRef.current = chainRows;
+    const withUnread = insertNewSinceDivider(folded, unreadSince);
+    const next = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
+    previousThoughtRunRowsRef.current = next === withUnread ? new Map() : collectMergedThoughtRows(next);
     return next;
-  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds]);
+  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -6510,6 +6790,21 @@ function AgentChatMessageListMain({
     setScrollTop(el.scrollTop);
   }, []);
 
+  // The composer floats over the bottom of this list (see ChatSurfaceShell
+  // `overlayFooter`). Reserve its height at the end of the scroll content so
+  // the last row can scroll clear of it, and keep browser-driven scrolls
+  // (focus, find, PageDown) from landing under it. Written to the DOM
+  // directly: the height moves with every prompt line, and neither a list
+  // render nor a subtree restyle should pay for that.
+  useChatComposerOverlayInset((px) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.style.paddingBottom = px > 0 ? `calc(var(--chat-timeline-pad-bottom) + ${px}px)` : "";
+    el.style.scrollPaddingBottom = px > 0 ? `${px}px` : "";
+    // A taller composer must not cover the line a pinned reader is on.
+    if (stickToBottomRef.current) pinScrollToBottomNow(el);
+  });
+
   const measureScrollContainerHeight = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -6626,6 +6921,10 @@ function AgentChatMessageListMain({
       scrollRafRef.current = null;
     }
     scrollFollowFramesRef.current = 0;
+    if (scrollSettleTimerRef.current) {
+      clearTimeout(scrollSettleTimerRef.current);
+      scrollSettleTimerRef.current = null;
+    }
   }, []);
 
   // Opening or closing a fold keeps the fold row where the reader clicked it.
@@ -6979,6 +7278,7 @@ function AgentChatMessageListMain({
     if (prev !== height) {
       const previousHeight = prev ?? heightForKey(key);
       measuredHeights.current.set(key, height);
+      measuredHeightsVersionRef.current += 1;
       const scrollEl = scrollRef.current;
       if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
         const adjustedScrollTop = reconcileMeasuredScrollTop({
@@ -7017,7 +7317,26 @@ function AgentChatMessageListMain({
   // A row-list change under a scrolled-up reader sizes this commit's window
   // from where the anchor row is about to be, not from the pre-change
   // scrollTop, so the row the list anchor reads back is mounted.
-  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? scrollTop;
+  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? liveScrollTopRef.current;
+  // Row start offsets under the height model, rebuilt only when rows or their
+  // heights change — never per scroll frame. Shared by the virtual window, the
+  // scroll-commit probe and the minimap. A measurement lands in the ref at once
+  // but `measurementTick` trails it by a debounce, so the cache is keyed on the
+  // ref's own version: offsets drawn from stale heights misplace the spacers.
+  const cachedRowOffsets = rowOffsetsCacheRef.current;
+  const rowStartOffsets = cachedRowOffsets
+    && cachedRowOffsets.rowHeight === rowHeight
+    && cachedRowOffsets.rowCount === groupedRows.length
+    && cachedRowOffsets.rowGap === timelineRowGapPx
+    && cachedRowOffsets.heightsVersion === measuredHeightsVersionRef.current
+    ? cachedRowOffsets.offsets
+    : (rowOffsetsCacheRef.current = {
+      rowHeight,
+      rowCount: groupedRows.length,
+      rowGap: timelineRowGapPx,
+      heightsVersion: measuredHeightsVersionRef.current,
+      offsets: computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx),
+    }).offsets;
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
@@ -7035,15 +7354,14 @@ function AgentChatMessageListMain({
       });
     }
 
-    return calculateVirtualWindow({
-      rowCount: groupedRows.length,
+    return calculateVirtualWindowFromOffsets({
+      offsets: rowStartOffsets,
       scrollTop: windowScrollTop,
       containerHeight,
       rowHeight,
-      rowGap: timelineRowGapPx,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, containerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
 
   useLayoutEffect(() => {
     if (stickToBottomRef.current) scrollToBottomSoon(2);
@@ -7201,7 +7519,8 @@ function AgentChatMessageListMain({
     };
   }, [measuredRowStartOffsets]);
 
-  // Keep a committed snapshot for each view. Passive cleanup runs after the
+  // Keep a committed snapshot for each view (scrolling also snapshots from
+  // handleScroll, which commits no render of its own). Passive cleanup runs after the
   // shared list has already rendered the next view, so reading live refs there
   // would save the child transcript under the parent's key. Skip until restore
   // has settled so a key switch cannot store the previous view's scrollTop
@@ -7387,6 +7706,7 @@ function AgentChatMessageListMain({
     // Ref write, not state: the per-chat scroll memory is snapshotted at unmount
     // so following the scroll costs zero renders.
     lastScrollTopRef.current = target.scrollTop;
+    liveScrollTopRef.current = target.scrollTop;
     // Absorb scroll events produced by our own programmatic scroll-to-bottom
     // writes so we never flip sticky state based on them — only the user's
     // own gesture (wheel / trackpad / keyboard) should break auto-follow.
@@ -7420,9 +7740,10 @@ function AgentChatMessageListMain({
     const scrolledDown = target.scrollTop > previousScrollTop + 0.5;
     const scrollUpAt = userScrollUpAtRef.current;
     const repinHeld = scrollUpAt != null && performance.now() - scrollUpAt < USER_SCROLL_UP_REPIN_HOLD_MS;
+    const stickToBottomBefore = stickToBottomRef.current;
     const nextStick = shouldStickToBottomAfterScroll({
       distanceFromBottom,
-      wasStuckToBottom: stickToBottomRef.current,
+      wasStuckToBottom: stickToBottomBefore,
       scrolledDown,
       repinHeld,
     });
@@ -7445,12 +7766,39 @@ function AgentChatMessageListMain({
         markDetachAnchor();
       }
     }
-    setScrollTop(target.scrollTop);
+    // Plain scrolling inside the mounted window changes nothing React draws, so
+    // it commits no render: only a change of the mounted rows or the active
+    // minimap tick does, plus one exact commit once the scroll settles (the
+    // scroll memory and anything else reading `scrollTop` see where it ended).
+    const commitKey = scrollCommitKeyRef.current;
+    if (
+      nextStick !== stickToBottomBefore
+      || !commitKey
+      || commitKey(target.scrollTop) !== renderedScrollKeyRef.current
+    ) {
+      setScrollTop(target.scrollTop);
+    }
+    if (scrollSettleTimerRef.current) clearTimeout(scrollSettleTimerRef.current);
+    scrollSettleTimerRef.current = setTimeout(() => {
+      scrollSettleTimerRef.current = null;
+      setScrollTop(lastScrollTopRef.current);
+    }, SCROLL_SETTLE_COMMIT_MS);
+    // The scroll memory follows the reader here rather than on a commit: this
+    // scroll may never render, and a chat switch can land before the settle
+    // commit. Same guards as the commit-time snapshot below.
+    const memoryKey = resolvedScrollMemoryKeyRef.current;
+    if (memoryKey && scrollRestoreSettledRef.current && !scrollRestoreActiveRef.current) {
+      rememberBoundedChatScrollMemory(
+        scrollMemorySnapshotByKeyRef.current,
+        memoryKey,
+        captureScrollMemory(groupedRowKeysRef.current, stickToBottomRef.current, target, target.scrollTop),
+      );
+    }
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
     autoOlderLoadsSinceUserScrollRef.current = 0;
     maybeRequestOlderHistory(target.scrollTop, "reader");
-  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
+  }, [captureScrollMemory, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
 
   /** The reader scrolled up (true) or down (false): starts or ends the re-pin hold. */
   const noteReaderScrollDirection = useCallback((up: boolean) => {
@@ -7544,16 +7892,28 @@ function AgentChatMessageListMain({
     return minimapIndex >= 0 ? minimapIndex : null;
   }, [presentedRows, minimapSourceEntries, scrollToPromptHistoryRequest]);
 
-  const rowStartOffsetsForMinimap = useMemo(() => {
-    void measurementTick;
-    return computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-  }, [groupedRows, rowHeight, measurementTick, timelineRowGapPx]);
-
   // Ticks are 1:1 with entries, so the ordinal IS the rail index — no
   // display-index translation step exists any more.
+  // Same position the virtual window drew from, so the rail and the rows agree.
   const activeFullUserOrdinal = useMemo(
-    () => computeActiveFullUserOrdinal(scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap),
-    [scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap],
+    () => computeActiveFullUserOrdinal(windowScrollTop, minimapSourceEntries, rowStartOffsets),
+    [windowScrollTop, minimapSourceEntries, rowStartOffsets],
+  );
+  // What a scroll to `top` would draw differently: the mounted rows and the
+  // active tick. handleScroll commits a render only when this moves off what
+  // this render drew (the same three values, already computed above).
+  const windowFollowsScroll = shouldVirtualize && !stickToBottom;
+  scrollCommitKeyRef.current = (top: number): string => {
+    const win = windowFollowsScroll
+      ? calculateVirtualWindowFromOffsets({ offsets: rowStartOffsets, scrollTop: top, containerHeight, rowHeight })
+      : null;
+    const ordinal = computeActiveFullUserOrdinal(top, minimapSourceEntries, rowStartOffsets);
+    return scrollCommitKeyOf(win?.startIndex ?? -1, win?.endIndex ?? -1, ordinal);
+  };
+  renderedScrollKeyRef.current = scrollCommitKeyOf(
+    windowFollowsScroll ? startIndex : -1,
+    windowFollowsScroll ? endIndex : -1,
+    activeFullUserOrdinal,
   );
 
   const jumpToRowFromMinimap = useCallback(
@@ -7581,6 +7941,12 @@ function AgentChatMessageListMain({
     [groupedRows, rowHeight, scrollToRowKey, timelineRowGapPx],
   );
 
+  // Rows get stable handles for these two: both are rebuilt whenever a row is
+  // added (they close over the row keys), and a new identity re-rendered every
+  // mounted row on each streamed item. The call still reaches the latest one.
+  const rowMeasure = useLatestCallback(handleMeasure);
+  const rowScrollToRowKey = useLatestCallback(scrollToRowKey);
+
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
@@ -7600,11 +7966,22 @@ function AgentChatMessageListMain({
     const turnFileEntries = turnEndKey
       ? (transcriptToolActivity.fileEntriesByDoneRowKey.get(turnEndKey) ?? EMPTY_WORK_LOG_ENTRIES)
       : undefined;
-    const turnFoldOpen = foldEvent ? openTurnFolds.has(foldEvent.foldId) : false;
+    const turnFoldOpen = foldEvent
+      ? openTurnFolds.has(foldEvent.foldId)
+      : envelope.event.type === "wake_chain" ? openTurnFolds.has(envelope.event.chainId) : false;
     const turnWorkInFold = envelope.event.type === "done" && foldedTurnEndKeys.has(envelope.key);
     const turnProof = envelope.event.type === "done"
       ? turnProofByRowKey.get(envelope.key)
       : undefined;
+    const turnScheduledWork = envelope.event.type === "done"
+      ? scheduledWorkByTurnEndKey.get(envelope.key)
+      : undefined;
+    const turnEndFoldId = envelope.event.type === "done" ? wakeTurnFoldIdByTurnEndKey.get(envelope.key) : undefined;
+    const turnEndFold = turnEndFoldId ? { foldId: turnEndFoldId, open: openTurnFolds.has(turnEndFoldId) } : null;
+    const anchoredChain = envelope.event.type === "done" ? wakeChainByAnchorKey.get(envelope.key) : undefined;
+    const turnEndWakeChain = anchoredChain
+      ? { chainId: anchoredChain.chainId, checkCount: anchoredChain.checkCount, open: openTurnFolds.has(anchoredChain.chainId) }
+      : null;
     const inlineProof = inlineProofByRowKey.get(envelope.key);
     const sourcesTurnId = envelope.event.type === "done" ? envelope.event.turnId : foldEvent?.turnId;
     const turnSources = sourcesTurnId ? turnSourcesByTurnId.get(sourcesTurnId) : undefined;
@@ -7630,7 +8007,7 @@ function AgentChatMessageListMain({
         <MeasuredEventRow
           key={envelope.key}
           index={index}
-          onMeasure={handleMeasure}
+          onMeasure={rowMeasure}
           envelope={envelope}
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
@@ -7639,8 +8016,12 @@ function AgentChatMessageListMain({
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
           turnProof={turnProof}
+          turnScheduledWork={turnScheduledWork}
+          turnEndFold={turnEndFold}
+          turnEndWakeChain={turnEndWakeChain}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
+          onForkFromTurn={onForkFromTurn}
           inlineProof={inlineProof}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
@@ -7681,7 +8062,7 @@ function AgentChatMessageListMain({
           runtimeName={runtimeName}
           mosaic={mosaic}
           anchored={anchored}
-          onScrollToRowKey={scrollToRowKey}
+          onScrollToRowKey={rowScrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
           interimText={interimText}
           staleInterruptReceipts={staleInterruptReceipts}
@@ -7709,8 +8090,12 @@ function AgentChatMessageListMain({
         turnEndDurationMs={turnEndDurationMs}
         turnToolEntries={turnToolEntries}
         turnProof={turnProof}
+        turnScheduledWork={turnScheduledWork}
+        turnEndFold={turnEndFold}
+        turnEndWakeChain={turnEndWakeChain}
         turnSources={turnSources}
         onOpenTurnSources={onOpenTurnSources}
+        onForkFromTurn={onForkFromTurn}
         inlineProof={inlineProof}
         resolveProofThumbnailSrc={resolveProofThumbnailSrc}
         allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
@@ -7751,7 +8136,7 @@ function AgentChatMessageListMain({
         runtimeName={runtimeName}
         mosaic={mosaic}
         anchored={anchored}
-        onScrollToRowKey={scrollToRowKey}
+        onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopy={assistantTurnCopy}
         interimText={interimText}
         staleInterruptReceipts={staleInterruptReceipts}
@@ -7766,7 +8151,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -7846,11 +8231,6 @@ function AgentChatMessageListMain({
         entries={minimapSourceEntries}
         activeIndex={activeFullUserOrdinal}
         onJumpToRow={jumpToRowFromMinimap}
-        hasOlderHistory={hasOlderHistory}
-        loadingOlderHistory={loadingOlderHistory}
-        olderHistoryError={olderHistoryError}
-        onLoadOlderHistory={onLoadOlderHistory}
-        onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={listRootBoxPx.width}
         listHeightPx={listRootBoxPx.height}
         columnWidthPx={columnWidthPx}
@@ -7931,18 +8311,7 @@ function AgentChatMessageListMain({
           )}
         </div>
       </div>
-      {showJumpToLatest ? (
-        <button
-          type="button"
-          onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/20 px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
-          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump to latest message"}
-        >
-          <CaretDown size={9} weight="bold" />
-          {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
-          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
-        </button>
-      ) : null}
+      {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

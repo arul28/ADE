@@ -31,7 +31,14 @@ const providerInstances: MachineInventoryProviderInput[] = [
 
 const presets: MachineInventoryPresetInput[] = [
   { id: "ship", name: "Ship", harness: "claude", model: "sonnet" },
-  { id: "review", name: "Review", harness: "codex", model: "gpt-5" },
+  {
+    id: "review",
+    name: "Review",
+    harness: "codex",
+    model: "gpt-5",
+    logo: { kind: "provider", providerId: "deepseek" },
+    accentColor: "#4d6bfe",
+  },
 ];
 
 describe("machine inventory builders", () => {
@@ -84,11 +91,42 @@ describe("machine inventory builders", () => {
         },
       ],
       presets: [
-        { id: "ship", name: "Ship", harness: "claude", model: "sonnet", bound: true },
-        { id: "review", name: "Review", harness: "codex", model: "gpt-5", bound: false },
+        { id: "ship", name: "Ship", harness: "claude", model: "sonnet", logo: { kind: "ade" }, bound: true },
+        {
+          id: "review",
+          name: "Review",
+          harness: "codex",
+          model: "gpt-5",
+          logo: { kind: "provider", providerId: "deepseek" },
+          accentColor: "#4d6bfe",
+          bound: false,
+        },
       ],
     });
     expect(JSON.stringify(detail)).not.toMatch(/configHome|apiKey|secret|token/i);
+  });
+
+  it("carries a preset mark as an identity, never artwork, and drops a bad accent", () => {
+    const detail = buildMachineInventoryDetail({
+      machineKey: "machine-1",
+      providerInstances: [],
+      presets: [
+        // A picture that lives on its own machine crosses as its kind only.
+        { id: "shot", name: "Shot", harness: "claude", model: "sonnet", logo: { kind: "upload" } },
+        // A provider mark with no provider id is not a mark.
+        { id: "bare", name: "Bare", harness: "claude", model: "sonnet", logo: { kind: "provider" } },
+        // A nonsense accent is decoration, not a reason to drop the preset.
+        { id: "accent", name: "Accent", harness: "claude", model: "sonnet", accentColor: "red" },
+      ],
+    });
+
+    expect(detail.presets.map((preset) => ({ id: preset.id, logo: preset.logo, accentColor: preset.accentColor })))
+      .toEqual([
+        { id: "shot", logo: { kind: "upload" }, accentColor: undefined },
+        { id: "bare", logo: { kind: "ade" }, accentColor: undefined },
+        { id: "accent", logo: { kind: "ade" }, accentColor: undefined },
+      ]);
+    expect(JSON.stringify(detail)).not.toMatch(/data:image/);
   });
 
   it("drops malformed rows and clamps counts", () => {

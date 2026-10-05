@@ -865,6 +865,29 @@ describe("PersonalChatScope", () => {
     await scope.dispose();
   });
 
+  it("never answers a user-only consent card, and still answers an ordinary one", async () => {
+    // `personalChats.call` is an untrusted edge: the Mac input-lease and the
+    // Windows shared-seat cards are the user's own permission.
+    const { service, createRuntime } = fixture();
+    Object.assign(service, {
+      isUserOnlyPendingInput: vi.fn(({ itemId }: { sessionId: string; itemId: string }) => itemId === "consent-card"),
+    });
+    const scope = new PersonalChatScope({ createRuntime });
+
+    for (const action of ["respondToInput", "approve"] as const) {
+      await expect(scope.call(action, { sessionId: "chat-1", itemId: " consent-card ", decision: "accept" }))
+        .rejects.toThrow(/user/i);
+    }
+    expect(service.respondToInput).not.toHaveBeenCalled();
+    expect(service.approveToolUse).not.toHaveBeenCalled();
+
+    await scope.call("respondToInput", { sessionId: "chat-1", itemId: "item-1", decision: "accept" });
+    await scope.call("approve", { sessionId: "chat-1", itemId: "item-1", decision: "accept" });
+    expect(service.respondToInput).toHaveBeenCalledTimes(1);
+    expect(service.approveToolUse).toHaveBeenCalledTimes(1);
+    await scope.dispose();
+  });
+
   it("refuses pendingInputs without a sessionId", async () => {
     const { createRuntime } = fixture();
     const scope = new PersonalChatScope({ createRuntime });

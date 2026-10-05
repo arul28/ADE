@@ -364,7 +364,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
      * second reader on the same lane.
      */
     async subscribe(args: MacDesktopSyncStreamSubscribeArgs): Promise<SyncMacDesktopStreamSubscribeResult> {
-      if (disposed) throw new Error("The Mac Desktop sync stream has been disposed.");
+      if (disposed) throw new Error("The lane screen sync stream has been disposed.");
       const laneId = args.laneId?.trim();
       const subscriptionId = args.subscriptionId?.trim();
       if (!laneId) throw new Error("macDesktop.streamSubscribe requires laneId.");

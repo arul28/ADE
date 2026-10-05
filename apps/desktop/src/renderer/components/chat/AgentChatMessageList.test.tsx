@@ -16,6 +16,8 @@ import {
   TEXT_REVEAL_HORIZON_STORAGE_KEY,
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
+import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
+import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 
 vi.mock("@lobehub/icons", () => {
@@ -61,12 +63,12 @@ vi.mock("../../state/appStore", async (importOriginal) => {
   };
 });
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   deriveTranscriptToolActivity,
   deriveTurnModelState,
   estimateTranscriptRowHeight,
@@ -99,7 +101,7 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 import { setPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
-import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { CHAT_TIMELINE_ROW_GAP_PX, computeRowStartOffsets } from "./chatUserMinimap.logic";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -166,11 +168,14 @@ function renderMessageList(
     usageLimitResumeTurnId?: string | null;
     sessionProvider?: string | null;
     resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+    /** Mount the list inside a host, e.g. a chat shell with a floating composer. */
+    wrapList?: (list: ReactElement) => ReactElement;
   },
 ) {
+  const wrapList = options?.wrapList ?? ((list: ReactElement) => list);
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
-      <AgentChatMessageList
+      {wrapList(<AgentChatMessageList
         events={events}
         usageLimitResumeActive={options?.usageLimitResumeActive}
         usageLimitResumeTurnId={options?.usageLimitResumeTurnId}
@@ -201,7 +206,7 @@ function renderMessageList(
         allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
         onOpenTurnSources={options?.onOpenTurnSources}
-      />
+      />)}
       <LocationProbe />
     </MemoryRouter>,
   );
@@ -1413,9 +1418,12 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
     expect(screen.queryByText("Full prompt")).toBeNull();
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+    // The hidden brief is marked in the thread above the bubble, not inside it.
+    const divider = screen.getByTestId("handoff-brief-divider");
+    expect(divider.textContent).toContain("Started from a brief of the previous chat");
   });
 
-  it("renders a brief chip for hidden cross-machine handoff messages", async () => {
+  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1430,13 +1438,13 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-chip")).toBeTruthy();
+      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
     });
-    expect(screen.getByText(/Previous chat summarized into this chat/i)).toBeTruthy();
+    expect(screen.getByText("Continued from another computer")).toBeTruthy();
     expect(screen.getByText("Continue the handoff")).toBeTruthy();
   });
 
-  it("does not render a brief chip for hidden messages that are not handoffs", async () => {
+  it("does not render a brief divider for hidden messages that are not handoffs", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1453,7 +1461,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByText("Visible summary")).toBeTruthy();
     });
-    expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
+    expect(screen.queryByTestId("handoff-brief-divider")).toBeNull();
   });
 
   it("renders a provider handoff divider with direction and provider marks", () => {
@@ -2556,6 +2564,90 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
   });
 
+  it("stays pinned to latest when a floating composer grows over the transcript", async () => {
+    // The thread runs behind a floating composer, so a taller composer adds
+    // reserved space at the end of the scroll content instead of shrinking the
+    // viewport. Fake layout: the content grows by whatever the composer covers.
+    const overlay = createChatComposerOverlay();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Keep typing", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Still at the bottom.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatComposerOverlayContext.Provider value={overlay}>{list}</ChatComposerOverlayContext.Provider>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, get: () => 1_000 + overlay.inset.get() });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 400 });
+    act(() => overlay.inset.set(100));
+    transcript.scrollTop = 700;
+    fireEvent.scroll(transcript);
+
+    act(() => overlay.inset.set(260));
+
+    expect(transcript.scrollTop).toBe(860);
+    expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+
+    // A reader who scrolled up keeps their place when the composer grows again.
+    transcript.scrollTop = 300;
+    fireEvent.scroll(transcript);
+    act(() => overlay.inset.set(320));
+    expect(transcript.scrollTop).toBe(300);
+  });
+
+  it.each([
+    { chips: 1, docked: true },
+    { chips: 0, docked: false },
+  ])("docks Jump To Latest in the composer's chip row only while it shows a chip (chips: $chips)", async ({ chips, docked }) => {
+    const footer = (
+      <div data-chat-composer-dock="">
+        <div data-chat-composer-chip-row="">
+          <div data-status-strip="">
+            {Array.from({ length: chips }, (_, index) => <span key={index}>Snoozed</span>)}
+          </div>
+          <div data-chat-composer-jump-slot="" />
+        </div>
+      </div>
+    );
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Start the audit", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Working through the inventory.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatSurfaceShell mode="standard" overlayFooter footer={footer}>{list}</ChatSurfaceShell>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+
+    const jump = await screen.findByRole("button", { name: "Jump to latest message" });
+    const slot = document.querySelector("[data-chat-composer-jump-slot]");
+    expect(slot?.contains(jump)).toBe(docked);
+    expect(transcript.closest("[data-chat-message-list-root]")?.contains(jump)).toBe(!docked);
+    fireEvent.click(jump);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+    });
+  });
+
   it("automatically backfills an underfilled transcript without requiring a scroll event", async () => {
     const onLoadOlderHistory = vi.fn();
     renderMessageList([], {
@@ -3378,18 +3470,14 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("recomputes virtualization windows when measured heights change", () => {
-    const baseline = calculateVirtualWindow({
-      rowCount: 100,
+    const windowFor = (rowHeight: (index: number) => number) => calculateVirtualWindowFromOffsets({
+      offsets: computeRowStartOffsets(100, rowHeight),
       scrollTop: 2000,
       containerHeight: 240,
-      rowHeight: () => 80,
+      rowHeight,
     });
-    const updated = calculateVirtualWindow({
-      rowCount: 100,
-      scrollTop: 2000,
-      containerHeight: 240,
-      rowHeight: (index) => (index === 0 ? 180 : 80),
-    });
+    const baseline = windowFor(() => 80);
+    const updated = windowFor((index) => (index === 0 ? 180 : 80));
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
@@ -7629,5 +7717,105 @@ describe("AgentChatMessageList — the chat's one task list", () => {
     expect(keys.at(-1)).toBe("task-list:task-session");
     // The running item reads in its present-continuous form.
     expect(screen.getByTestId("chat-task-list-card").textContent).toBe("Tasks·0/1·Deploying to staging");
+  });
+});
+
+describe("AgentChatMessageList self-paced wake loops", () => {
+  it("opens both the closed chain and the check's own fold when a jump lands inside them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        nextRunAt: at(dueMinute),
+        turnId,
+      });
+    const events = [
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      // Check B: its interim line is inside B's fold, and B is inside the chain.
+      envelope(6, { type: "text", text: "Reading the run log.", itemId: "b-interim", turnId: "B" }),
+      envelope(6, { type: "command", command: "gh run view", cwd: "/repo", output: "", itemId: "b-cmd", status: "completed", turnId: "B" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", itemId: "b-answer", turnId: "B" }),
+      wake(6, "B", "w2", 10),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: deploy finished.", turnId: "C" }),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Reading the run log.");
+    const interimKey = buildTranscriptEventRowKeys(events)[4]!;
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(view.container.textContent).toContain("Reading the run log.");
+    expect(screen.getByRole("button", { name: "Hide 1 more check" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("draws each wake-up on its turn-end line and folds earlier checks under the line that started them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, status: "scheduled" | "completed", dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status,
+        origin: "schedule_wakeup",
+        reason: `deploy-watch ${id}`,
+        ...(status === "scheduled" ? { nextRunAt: at(dueMinute) } : { firedAt: at(dueMinute) }),
+        turnId,
+      });
+    const rendered = renderMessageList([
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", "scheduled", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", turnId: "B" }),
+      wake(6, "B", "w2", "scheduled", 10),
+      wake(6, "B", "w1", "completed", 5),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: still queued.", turnId: "C" }),
+      wake(11, "C", "w3", "scheduled", 15),
+      wake(11, "C", "w2", "completed", 10),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+      envelope(16, { type: "text", text: "Check 4: deploy finished.", turnId: "D" }),
+      wake(16, "D", "w3", "completed", 15),
+      envelope(17, { type: "done", turnId: "D", status: "completed" }),
+    ]);
+
+    let text = rendered.container.textContent ?? "";
+    expect(text).toContain("Watching the deploy.");
+    expect(text).toContain("Check 4: deploy finished.");
+    expect(text).not.toContain("Check 2: still queued.");
+    expect(text).not.toContain("Check 3: still queued.");
+    // The wake-up rides the turn-end line that scheduled it; no row of its own.
+    expect(rendered.container.querySelectorAll('[data-scheduled-work="w1"]')).toHaveLength(1);
+    expect(text).toMatch(/woke at/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more checks" }));
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("Check 2: still queued.");
+    expect(text).toContain("Check 3: still queued.");
+    expect(text.indexOf("Watching the deploy.")).toBeLessThan(text.indexOf("Check 2: still queued."));
   });
 });

@@ -162,6 +162,14 @@ const mockState = vi.hoisted(() => ({
    * actor token (or its absence) is observable from a test.
    */
   openCodeEnvironmentCalls: [] as Array<{ sessionID: string; variables: Record<string, string> }>,
+  /** Commands the mocked OpenCode server lists (`command.list`), by bare name. */
+  openCodeCommands: [] as string[],
+  /** v2 `session.prompt` calls outside a running turn (no `delivery`), in call order. */
+  openCodePromptCalls: [] as Array<{ sessionID: string; text?: string; delivery?: string }>,
+  /** v2 `session.command` calls, in call order. */
+  openCodeCommandCalls: [] as Array<{ sessionID: string; name: string; text: string }>,
+  /** Set to make the mocked v2 `session.prompt` reject, as a server error would. */
+  openCodePromptError: null as Error | null,
   /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
   openCodeV2SteerError: null as Error | null,
   /** When set, the mocked v2 steer waits on this before answering. */
@@ -305,6 +313,10 @@ vi.mock("node:child_process", () => ({
       queueMicrotask(() => stdout.emit("data", Buffer.from(`server listening on http://127.0.0.1:${port}\n`)));
       return proc;
     }
+    // `once("exit")` listeners hear the exit a real app-server makes when its
+    // stdin closes (the short-lived fork process waits on it). `on` stays
+    // inert, so a long-lived runtime's exit handling never runs in tests.
+    const exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
     const proc: any = {
       stdin: {
         writable: true,
@@ -416,11 +428,20 @@ vi.mock("node:child_process", () => ({
           }
           return true;
         }),
-        end: vi.fn(),
+        end: vi.fn(() => {
+          queueMicrotask(() => {
+            for (const listener of exitListeners.splice(0)) listener(0, null);
+          });
+        }),
+        on: vi.fn(),
       },
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on: vi.fn(),
+      once: vi.fn((event: string, listener: (code: number | null, signal: string | null) => void) => {
+        if (event === "exit") exitListeners.push(listener);
+        return proc;
+      }),
       kill: vi.fn(),
       pid: 99999,
     };
@@ -485,6 +506,7 @@ vi.mock("@opencode/client", () => ({
           }),
         },
         message: { list: vi.fn(async () => ({ data: [] })) },
+        command: { list: vi.fn(async () => ({ data: mockState.openCodeCommands.map((name) => ({ name })) })) },
         permission: { reply: vi.fn(async () => ({ data: {} })) },
         question: { reply: vi.fn(async () => ({ data: {} })), reject: vi.fn(async () => ({ data: {} })) },
         session: {
@@ -501,6 +523,16 @@ vi.mock("@opencode/client", () => ({
           move: vi.fn(async () => ({})),
           wait: vi.fn(async () => ({})),
           prompt: vi.fn(async (args: any) => {
+            if (!args.delivery) mockState.openCodePromptCalls.push(args);
+            if (mockState.openCodePromptError) throw mockState.openCodePromptError;
+            publish({ type: "session.execution.started", data: { sessionID: args.sessionID } });
+            publish({ type: "session.execution.succeeded", data: { sessionID: args.sessionID } });
+            return {};
+          }),
+          // OpenCode 2.0 refuses a name it does not list with this message.
+          command: vi.fn(async (args: any) => {
+            mockState.openCodeCommandCalls.push(args);
+            if (!mockState.openCodeCommands.includes(args.name)) throw new Error(`Command not found: ${args.name}`);
             publish({ type: "session.execution.started", data: { sessionID: args.sessionID } });
             publish({ type: "session.execution.succeeded", data: { sessionID: args.sessionID } });
             return {};
@@ -2115,6 +2147,10 @@ beforeEach(() => {
   mockState.openCodePromptAsyncBarrier = null;
   mockState.openCodeV2SteerCalls = [];
   mockState.openCodeEnvironmentCalls = [];
+  mockState.openCodeCommands = [];
+  mockState.openCodePromptCalls = [];
+  mockState.openCodeCommandCalls = [];
+  mockState.openCodePromptError = null;
   mockState.openCodeV2SteerError = null;
   mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;

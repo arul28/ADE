@@ -2,7 +2,18 @@ import path from "node:path";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
 import type { CtoCrossMachineDeps } from "./ctoCrossMachine";
-import { asRemoteChat, asRemoteChats, asRemoteLanes, createCtoCrossMachineToolKit, summarizeLane } from "./ctoCrossMachineTools";
+import {
+  asRemoteChat,
+  asRemoteChats,
+  asRemoteLanes,
+  CREATE_REMOTE_LANE_BUDGET_MS,
+  createCtoCrossMachineToolKit,
+  REMOTE_LANE_CREATE_TIMEOUT_MS,
+  SPAWN_REMOTE_CHAT_BUDGET_MS,
+  summarizeLane,
+} from "./ctoCrossMachineTools";
+import { DEFAULT_ADE_TOOL_BUDGET_MS } from "./toolDeadline";
+import type { ArmChatWaitArgs, ChatWaiter } from "../../../../shared/chatWait";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -127,6 +138,8 @@ export interface CtoOperatorToolDeps {
   > | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
+  /** Durable wait: wake this thread when other chats reach a state. */
+  armChatWait?: (args: ArmChatWaitArgs) => Promise<ChatWaiter>;
   getChatTranscript: (args: {
     sessionId: string;
     limit?: number;
@@ -708,6 +721,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       parentLaneId: z.string().optional().describe("A lane on the same machine the new lane is created on."),
       machine: machineArgSchema,
     }),
+    budgetMs: ({ machine }) => (machine ? CREATE_REMOTE_LANE_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
     execute: async ({ name, description, parentLaneId, machine }) => {
       try {
         const target = await remoteMachine(machine);
@@ -720,8 +734,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               ...(description !== undefined ? { description } : {}),
               ...(parentLaneId !== undefined ? { parentLaneId } : {}),
             },
-            // Creating a worktree on a large repository takes a while.
-            timeoutMs: 120_000,
+            timeoutMs: REMOTE_LANE_CREATE_TIMEOUT_MS,
           });
           return { success: true, ...onMachine(target), lane };
         }
@@ -842,6 +855,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .optional()
         .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
+    budgetMs: ({ machine }) => (machine ? SPAWN_REMOTE_CHAT_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
     execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, machine, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
@@ -1229,6 +1243,62 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         const comment = await deps.prService.addComment({ prId, body });
         return { success: true, comment };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.waitForChats = core({
+    description:
+      "Return now and have ADE wake this thread when all (or any) of the named chats reach a state — 'idle' (finished "
+      + "its turn, the default) or 'terminal' (ended or failed). Use it instead of polling getChatStatus. Subagents "
+      + "you spawned already wake you after every turn; this is for joining several chats, or chats you did not spawn.",
+    inputSchema: z.object({
+      sessionIds: z.array(z.string().trim().min(1)).min(1),
+      mode: z.enum(["all", "any"]).default("all"),
+      waitFor: z.enum(["idle", "terminal", "awaiting-input"]).default("idle"),
+      timeoutMinutes: z.number().int().positive().max(7 * 24 * 60).optional(),
+    }),
+    execute: async ({ sessionIds, mode, waitFor, timeoutMinutes }) => {
+      if (!deps.armChatWait) return { success: false, error: "Waits are not available on this runtime." };
+      try {
+        const waiter = await deps.armChatWait({
+          callerSessionId: deps.currentSessionId,
+          targetSessionIds: sessionIds,
+          mode,
+          waitFor,
+          ...(timeoutMinutes ? { timeoutMinutes } : {}),
+        });
+        return { success: true, waitId: waiter.id, expiresAt: waiter.expiresAt, note: "End your turn; ADE wakes you." };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.watchPullRequest = core({
+    description:
+      "Have ADE wake a chat whenever its pull request changes: a check fails, the checks pass, someone comments "
+      + "or reviews, the branch starts conflicting, or the PR merges or closes. 'ship' adds standing instructions to "
+      + "take the PR all the way to merged (fix CI and review findings in one push, rebase only on a real conflict, "
+      + "merge when green) and waits until CI and the review bots have finished before waking. 'off' stops it. "
+      + "Defaults to your own thread; pass sessionId to watch for a worker chat.",
+    inputSchema: z.object({
+      pr: z.string().trim().min(1).describe("ADE PR id, PR number, or PR URL."),
+      mode: z.enum(["watch", "ship", "off"]).default("watch"),
+      sessionId: z.string().trim().min(1).optional().describe("Chat to wake. Defaults to this CTO thread."),
+    }),
+    execute: async ({ pr, mode, sessionId }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const watch = deps.prService.setChatWatch({
+          prId: pr,
+          sessionId: sessionId ?? deps.currentSessionId,
+          mode: mode === "off" ? null : mode,
+          armedBy: "agent",
+        });
+        return { success: true, watch };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

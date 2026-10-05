@@ -33,6 +33,7 @@ import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalStat
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
+import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
 import {
   EMPTY_WORK_SESSION_FILTERS,
   isWorkSessionFilterEmpty,
@@ -930,6 +931,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
+  const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_WORK_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,
   // refresh cadence, and optimistic writes must never target a foreign slice.
   const localSessionsById = useMemo(() => {
@@ -1126,6 +1129,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
+
+  const setWorkFoldBusyLanes = useCallback(
+    (enabled: boolean) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState({ workFoldBusyLanes: enabled });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  // A finished row counts as seen once the user has LEFT it since it finished:
+  // leaving covers everything it showed, including output that landed while it
+  // was open. Opening alone does not stamp, so clicking a finished row in the
+  // inbox never folds its lane out from under the cursor. A layout effect, so
+  // the stamp lands before paint and the lane does not flicker for a frame. A
+  // row left by switching projects is stamped into the project it belongs to.
+  const lastSelectionRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
+    projectStateKey: null,
+    sessionId: null,
+  });
+  useLayoutEffect(() => {
+    const previous = lastSelectionRef.current;
+    lastSelectionRef.current = { projectStateKey, sessionId: selectedSessionId };
+    if (!previous.sessionId || !previous.projectStateKey) return;
+    if (previous.sessionId === selectedSessionId && previous.projectStateKey === projectStateKey) return;
+    const leftId = previous.sessionId;
+    const at = new Date().toISOString();
+    setWorkViewState(previous.projectStateKey, (prev) => ({
+      ...prev,
+      workSeenAtBySessionId: stampWorkSeenAt(prev.workSeenAtBySessionId ?? {}, [leftId], at),
+    }));
+  }, [projectStateKey, selectedSessionId, setWorkViewState]);
 
   const setWorkLaneSortMode = useCallback(
     (mode: WorkLaneSortMode) => {
@@ -2576,6 +2610,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     toggleWorkLanePinned,
     workLaneSortMode,
     setWorkLaneSortMode,
+    workFoldBusyLanes,
+    setWorkFoldBusyLanes,
+    workSeenAtBySessionId,
     workLaneOrder,
     reorderWorkLanes,
     q,

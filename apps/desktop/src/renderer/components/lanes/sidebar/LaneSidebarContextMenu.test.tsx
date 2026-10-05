@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary } from "../../../../shared/types";
+import { LaneSidebarBulkContextMenu } from "./LaneSidebarBulkContextMenu";
 import { LaneSidebarContextMenu } from "./LaneSidebarContextMenu";
 
 vi.mock("../../../state/appStore", async () => {
@@ -39,23 +40,35 @@ function makeLane(id: string): LaneSummary {
   };
 }
 
-function renderMenu({
-  menuLaneId = "lane-1",
-  selectedLaneIds = [] as string[],
-}: { menuLaneId?: string; selectedLaneIds?: string[] } = {}) {
-  const lanes = ["lane-1", "lane-2", "lane-3"].map(makeLane);
+const lanes = ["lane-1", "lane-2", "lane-3"].map(makeLane);
+const lanesById = new Map(lanes.map((lane) => [lane.id, lane]));
+
+function renderSingleLaneMenu() {
   const props = {
-    menu: { laneId: menuLaneId, x: 10, y: 10 },
-    lanesById: new Map(lanes.map((lane) => [lane.id, lane])),
-    selectedLaneIds,
+    menu: { laneId: "lane-1", x: 10, y: 10 },
+    lanesById,
     onClose: vi.fn(),
     onManage: vi.fn(),
-    onBatchManage: vi.fn(),
     selectLane: vi.fn(),
     onAppearanceChanged: vi.fn(),
     onStartChatInLane: vi.fn(),
   };
   render(<LaneSidebarContextMenu {...props} />);
+  return props;
+}
+
+function renderBulkMenu(actionableLaneIds = ["lane-1", "lane-2"]) {
+  const props = {
+    point: { x: 10, y: 10 },
+    laneIds: ["lane-1", "lane-2", "lane-3"],
+    actionableLaneIds,
+    lanesById,
+    onClose: vi.fn(),
+    onManage: vi.fn(),
+    onBulkAction: vi.fn(),
+    onClearSelection: vi.fn(),
+  };
+  render(<LaneSidebarBulkContextMenu {...props} />);
   return props;
 }
 
@@ -74,22 +87,54 @@ afterEach(() => {
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
-describe("LaneSidebarContextMenu batch actions", () => {
-  it("offers the batch entry from a row outside the selection when a multi-selection exists", () => {
-    // Shift-click selects lane-1 and lane-2; the user right-clicks lane-3.
-    renderMenu({ menuLaneId: "lane-3", selectedLaneIds: ["lane-1", "lane-2"] });
-    expect(screen.getByRole("menuitem", { name: "Manage 2 Open Lanes..." })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+describe("LaneSidebarContextMenu single-lane actions", () => {
+  it("acts on the right-clicked lane", () => {
+    const props = renderSingleLaneMenu();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage Lane" }));
+
+    expect(props.onManage).toHaveBeenCalledWith("lane-1");
+    expect(props.onClose).toHaveBeenCalled();
+  });
+});
+
+describe("LaneSidebarBulkContextMenu", () => {
+  it("offers manage, rebase, archive and delete for the actionable lanes", () => {
+    const props = renderBulkMenu();
+
+    expect(screen.getByText("3 lanes selected")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Manage 2 lanes…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Rebase 2" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Archive 2…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Delete 2…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy lane names" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy branches" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage 2 lanes…" }));
+
+    // Only the actionable lanes are handed to the dialogs, and the menu closes.
+    expect(props.onManage).toHaveBeenCalledWith(["lane-1", "lane-2"]);
+    expect(props.onClose).toHaveBeenCalled();
   });
 
-  it("keeps the batch entry when the menu opens on a selected row", () => {
-    renderMenu({ menuLaneId: "lane-2", selectedLaneIds: ["lane-1", "lane-2"] });
-    expect(screen.getByRole("menuitem", { name: "Manage 2 Open Lanes..." })).toBeTruthy();
+  it("routes archive and rebase through the bulk action handler", () => {
+    const props = renderBulkMenu();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive 2…" }));
+    expect(props.onBulkAction).toHaveBeenCalledWith("archive", ["lane-1", "lane-2"]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rebase 2" }));
+    expect(props.onBulkAction).toHaveBeenCalledWith("rebase", ["lane-1", "lane-2"]);
   });
 
-  it("shows no batch entry for a single selected lane", () => {
-    renderMenu({ menuLaneId: "lane-1", selectedLaneIds: ["lane-1"] });
-    expect(screen.queryByRole("menuitem", { name: /Open Lanes/ })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+  it("keeps copy and clear available when no lane is actionable", () => {
+    const props = renderBulkMenu([]);
+
+    expect(screen.queryByRole("menuitem", { name: /Manage/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Rebase|Archive|Delete/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear selection" }));
+    expect(props.onClearSelection).toHaveBeenCalledTimes(1);
+    expect(props.onClose).toHaveBeenCalled();
   });
 });

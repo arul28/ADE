@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { applySteerOrder } from "../../../shared/steerOrder";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -45,6 +47,7 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type AgentChatLaunchDefaults,
   type CodexThreadGoal,
   type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
@@ -74,6 +77,7 @@ import {
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
+  queuedSteersCanReorder,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -126,6 +130,7 @@ import {
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
   resolveProviderGroupForModel,
+  resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
@@ -153,11 +158,7 @@ import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
 import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
-  permissionLevelForClaude,
-  permissionLevelForCodex,
-  permissionLevelForDroid,
-  permissionLevelForCursorMode,
-  permissionLevelForOpenCode,
+  permissionLevelForFamily,
   resolvePermissionLevel,
   type PermissionLadderFamily,
 } from "../../../shared/permissionLadder";
@@ -165,7 +166,6 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
-import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -188,7 +188,7 @@ import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ThreadEntityProvider } from "./threadEntities";
-import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
+import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -217,7 +217,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { Banner, NoticeChip } from "../ui/notice";
+import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -236,6 +236,7 @@ import {
 } from "../terminals/importSessions/contract";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
+import { CHAT_COMPOSER_CHIP_ROW_ATTR, CHAT_COMPOSER_JUMP_SLOT_ATTR, ChatComposerOverlayClear } from "./chatComposerOverlayInset";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
@@ -249,10 +250,11 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
@@ -265,6 +267,7 @@ import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
+import { ChatAccountNote } from "./ChatAccountNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
@@ -287,6 +290,7 @@ import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../wor
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -301,7 +305,7 @@ import {
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
+import { armLaneBranchDriftWarning, LaneBranchComposerChip } from "../lanes/LaneBranchDrift";
 import {
   CreateLaneDialogHost,
   type NewLaneDraftConfig,
@@ -341,6 +345,7 @@ import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 import {
   DEVIN_CLOUD_DEFAULT_VERSION,
@@ -1331,6 +1336,29 @@ export type PendingSteerEntry = {
   contextAttachments: AgentChatContextAttachment[];
 };
 
+/** A finished turn a fork keeps the conversation through ("Fork from here"). */
+type HandoffForkPoint = { turnId: string; timestamp: string };
+
+function formatHandoffForkPointTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "earlier";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? `at ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : `on ${date.toLocaleDateString([], { month: "short", day: "numeric" })} at ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
+/**
+ * Re-sorts the staged queue to the host's published order. Ids the event does
+ * not name (a steer queued after it, on another client) keep their place after
+ * the named ones; a named id that already left the queue is skipped.
+ */
+function reorderSteerMap(steerMap: Map<string, PendingSteerEntry>, steerIds: readonly string[]): void {
+  const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, steerIds);
+  steerMap.clear();
+  for (const [id, entry] of ordered) steerMap.set(id, entry);
+}
+
 export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
@@ -1378,6 +1406,8 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     } else if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+    } else if (event.type === "queue_reordered") {
+      reorderSteerMap(steerMap, event.steerIds);
     } else if (event.type === "queue_recovery" && event.state === "restored") {
       for (const steer of event.restoredSteers ?? []) {
         resolvedSteerIds.delete(steer.steerId);
@@ -2588,6 +2618,22 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
+/**
+ * The composer's model id for an existing chat. A chat on a harness preset or
+ * an ad-hoc route (`--via opencode-go`) runs a model the registry may not know
+ * (a DeepSeek model in Claude Code), so its id comes from the preset, the same
+ * value the model picker passes when that route is chosen there.
+ */
+function resolveSessionComposerModelId(
+  session: Pick<AgentChatSessionSummary, "modelId" | "model" | "presetId">,
+  harnessPresets: readonly HarnessPreset[],
+): string | null {
+  return session.modelId
+    ?? resolveRegistryModelId(session.model)
+    ?? resolveHarnessLaunchTarget(session.presetId, harnessPresets)?.launchModelId
+    ?? null;
+}
+
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
 const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
 const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "never"];
@@ -2827,6 +2873,29 @@ function buildLastLaunchConfig(
     controls,
     updatedAt,
   };
+}
+
+/** The machine's launch defaults as the composer's launch config. */
+function launchConfigFromMachineDefaults(
+  defaults: AgentChatLaunchDefaults,
+  controlDefaults: NativeControlState,
+): LastLaunchConfig | null {
+  return buildLastLaunchConfig({
+    modelId: defaults.modelId,
+    reasoningEffort: defaults.reasoningEffort,
+    fastMode: defaults.fastMode,
+    executionMode: defaults.executionMode ?? undefined,
+    interactionMode: defaults.interactionMode ?? undefined,
+    permissionMode: defaults.permissionMode ?? undefined,
+    claudePermissionMode: defaults.claudePermissionMode ?? undefined,
+    codexApprovalPolicy: defaults.codexApprovalPolicy ?? undefined,
+    codexSandbox: defaults.codexSandbox ?? undefined,
+    codexConfigSource: defaults.codexConfigSource ?? undefined,
+    opencodePermissionMode: defaults.opencodePermissionMode ?? undefined,
+    droidPermissionMode: defaults.droidPermissionMode ?? undefined,
+    cursorModeId: defaults.cursorModeId ?? undefined,
+    cursorConfigValues: defaults.cursorConfigValues ?? undefined,
+  }, controlDefaults, defaults.updatedAt);
 }
 
 function normalizeStoredLaunchConfig(
@@ -3990,6 +4059,8 @@ export function AgentChatPane({
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
   // Root store: the preset list is account-scoped (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((s) => s.harnessPresets);
+  const harnessPresetsRef = useRef(harnessPresets);
+  harnessPresetsRef.current = harnessPresets;
   /* The harness a draft's Custom pick runs in. A saved preset or an ad-hoc
      Run-in route names its own harness, and that — not the family the model id
      happens to belong to — decides the provider the chat or CLI launches. */
@@ -4381,7 +4452,14 @@ export function AgentChatPane({
   const [handoffNote, setHandoffNote] = useState("");
   // A note the local handoff form takes when it next opens (the quota card's
   // fork button). The form's one-shot open effect consumes it.
-  const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
+  const pendingHandoffPrefillRef = useRef<{ note: string; throughTurn?: HandoffForkPoint | null } | null>(null);
+  // The model and settings the machine that will run a new chat used last
+  // (`chat.getLaunchDefaults`). It outranks this window's own memory, so every
+  // client opens a new chat on the same defaults.
+  const [machineLaunchDefaults, setMachineLaunchDefaults] = useState<LastLaunchConfig | null>(null);
+  // "Fork from here": the finished turn a fork keeps the conversation through.
+  // Null forks the whole chat.
+  const [handoffForkPoint, setHandoffForkPoint] = useState<HandoffForkPoint | null>(null);
   // The local handoff form (fork | brief). The mode resets each time it opens.
   const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
   // Brief handoffs may target a different lane (or a freshly created one); fork
@@ -4392,6 +4470,9 @@ export function AgentChatPane({
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
+  // The form covers the pane's error line, so a failed local handoff also
+  // shows its error in the form.
+  const [localHandoffError, setLocalHandoffError] = useState<string | null>(null);
   // `handoffTurnGate` is derived far below in the render; the handoff router is
   // declared above it, so it reads the gate through this latest-value ref.
   const handoffTurnGateRef = useRef(false);
@@ -4542,9 +4623,28 @@ export function AgentChatPane({
   // switch or unmount can cancel them instead of stranding a timer that
   // resumes work for a chat nobody is looking at.
   const olderHistoryRetryWaitersRef = useRef<Set<{ handle: number; resolve: (proceed: boolean) => void }>>(new Set());
+  /**
+   * Sessions whose idle backfill reached the resident cap. The cap merge keeps
+   * the oldest events and detaches the view, which would take a reader at the
+   * live tail off it without their asking; backfill stops there instead.
+   */
+  const backfillCappedSessionsRef = useRef<Set<string>>(new Set());
+  /**
+   * Set once the pane unmounts. A page request still in flight at unmount
+   * would otherwise register its retry wait after the unmount cancelled the
+   * others, and keep fetching for a pane that no longer exists.
+   */
+  const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  /**
+   * The selection as of the latest render. `selectedSessionIdRef` follows in a
+   * passive effect, which runs after the transcript list's own effects, so a
+   * list asking for backfill on its first commit would still see the old chat.
+   */
+  const renderSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  renderSelectedSessionIdRef.current = selectedSessionId;
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
@@ -4706,8 +4806,9 @@ export function AgentChatPane({
   }, [laneId, laneLabel]);
   const selectedSessionModelId = useMemo(() => {
     if (!selectedSession) return null;
-    return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
-  }, [selectedSession]);
+    return resolveSessionComposerModelId(selectedSession, harnessPresets);
+  }, [selectedSession, harnessPresets]);
+  const selectedSessionPresetId = selectedSession?.presetId ?? null;
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
   const selectedSessionModelIdRef = useRef(selectedSessionModelId);
@@ -5006,13 +5107,13 @@ export function AgentChatPane({
     () => selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text"),
     [selectedEventsForDisplay],
   );
-  const [wakeAwayWindow, setWakeAwayWindow] = useState<{
+  // When this chat was last on screen here, read once per open: the thread
+  // draws a `New since …` divider above what arrived after it.
+  const [unreadWindow, setUnreadWindow] = useState<{
     sessionId: string;
     lastViewedAtMs: number;
     openedAtMs: number;
-    dismissed: boolean;
   } | null>(null);
-  const [wakeJumpRequest, setWakeJumpRequest] = useState<{ key: string; requestId: number } | null>(null);
   const promptHistoryJumpSequenceRef = useRef(0);
   const [promptHistoryJumpRequest, setPromptHistoryJumpRequest] = useState<{
     eventKey: string;
@@ -5031,7 +5132,7 @@ export function AgentChatPane({
   }, []);
   useEffect(() => {
     if (!selectedSessionId) {
-      setWakeAwayWindow(null);
+      setUnreadWindow(null);
       return;
     }
     const storageKey = `ade.chat.lastViewed.v1:${selectedSessionId}`;
@@ -5046,7 +5147,7 @@ export function AgentChatPane({
     } catch {
       // Renderer storage is best-effort; a blocked localStorage must not hide chat.
     }
-    setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs, dismissed: false });
+    setUnreadWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs });
     try {
       window.localStorage.setItem(storageKey, String(openedAtMs));
     } catch {
@@ -5060,26 +5161,13 @@ export function AgentChatPane({
       }
     };
   }, [selectedSessionId]);
-  const unattendedWakeTurns = useMemo(() => {
-    if (!selectedSessionId || wakeAwayWindow?.sessionId !== selectedSessionId || wakeAwayWindow.dismissed) return [];
-    return selectedEventsForDisplay.flatMap((envelope) => {
-      const event = envelope.event;
-      if (event.type !== "user_message" || !event.metadata?.scheduledWake || !event.turnId) return [];
-      const wake = event.metadata.scheduledWake;
-      const firedAtMs = Date.parse(wake.firedAt);
-      if (
-        !Number.isFinite(firedAtMs)
-        || firedAtMs <= wakeAwayWindow.lastViewedAtMs
-        || firedAtMs > wakeAwayWindow.openedAtMs
-      ) return [];
-      return [{
-        scheduleId: wake.scheduleId,
-        turnId: event.turnId,
-        reason: wake.reason?.trim() || null,
-        firedAtMs,
-      }];
-    }).sort((left, right) => left.firedAtMs - right.firedAtMs);
-  }, [selectedEventsForDisplay, selectedSessionId, wakeAwayWindow]);
+  // Memoized: the message list is memoized and a fresh object would re-render it on every keystroke.
+  const unreadSince = useMemo(
+    () => (unreadWindow && unreadWindow.sessionId === selectedSessionId
+      ? { sinceMs: unreadWindow.lastViewedAtMs, openedAtMs: unreadWindow.openedAtMs }
+      : null),
+    [selectedSessionId, unreadWindow],
+  );
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -5467,6 +5555,21 @@ export function AgentChatPane({
     };
   }, [localHandoffOpen, selectedSessionId, selectedSubagentSnapshots]);
 
+  // The form belongs to the chat it opened on. A handoff selects the new chat,
+  // and the user can switch chats with the form open; a form left open would
+  // then hand off the other chat.
+  const localHandoffSessionIdRef = useRef(selectedSessionId);
+  useEffect(() => {
+    if (localHandoffSessionIdRef.current === selectedSessionId) return;
+    localHandoffSessionIdRef.current = selectedSessionId;
+    setLocalHandoffOpen(false);
+  }, [selectedSessionId]);
+  // Each open starts clean: an error from an earlier attempt, or from one that
+  // failed after the form closed, belongs to that attempt.
+  useEffect(() => {
+    setLocalHandoffError(null);
+  }, [localHandoffOpen]);
+
   /**
    * Routes "where should this chat go" to the matching modal. A running turn
    * does not refuse the choice: each modal says the turn is still going and
@@ -5474,6 +5577,18 @@ export function AgentChatPane({
    * cross-machine modal's `turnActive`). A chat on another machine opens the
    * same modal: its source steps are pinned to that machine.
    */
+  const openForkFromTurn = useCallback((point: HandoffForkPoint) => {
+    // The open effect resets the form, so the fork point rides in as a prefill
+    // exactly like a card's note does; an already-open form takes it directly.
+    if (localHandoffOpen) {
+      setHandoffForkPoint(point);
+      setHandoffLocalMode("fork");
+      return;
+    }
+    pendingHandoffPrefillRef.current = { note: "", throughTurn: point };
+    setLocalHandoffOpen(true);
+  }, [localHandoffOpen]);
+
   const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
     if (intent === "remote") {
       setCrossMachineHandoffOpen(true);
@@ -5525,7 +5640,11 @@ export function AgentChatPane({
     },
     [selectedSessionId],
   );
-  const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
+  // Rebuilt on every event; held while unchanged so memoized rows keep their props.
+  const selectedTurnDiffSummaries = useStableIdentity(
+    useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]),
+    sameTurnDiffSummaries,
+  );
   // The chat's one task list (plan or todos, every provider). Feeds the Chat
   // Info Tasks section, the drawer auto-open, and the toolbar badge.
   const selectedTaskList = useMemo(() => deriveChatTaskList(selectedEvents), [selectedEvents]);
@@ -5646,6 +5765,16 @@ export function AgentChatPane({
         delete next[sessionId];
         return next;
       });
+    }
+  }, []);
+  // Claude's goal lives in its own `/goal` command; ADE sends it like a typed
+  // command, between turns.
+  const sendClaudeGoalCommand = useCallback(async (sessionId: string, argument: string) => {
+    setError(null);
+    try {
+      await window.ade.agentChat.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current);
+    } catch (goalError) {
+      setError(errorMessage(goalError));
     }
   }, []);
   const setCodexGoalStatusFromPanel = useCallback(async (
@@ -5917,13 +6046,13 @@ export function AgentChatPane({
       activeProviderConnection = null;
       break;
   }
-  const pendingApprovalIds = useMemo(() => {
+  const pendingApprovalIds = useStableIdentity(useMemo(() => {
     const ids = new Set<string>();
     for (const entry of resolvedPendingInputsBySession[selectedSessionId ?? ""] ?? []) {
       ids.add(entry.itemId);
     }
     return ids;
-  }, [resolvedPendingInputsBySession, selectedSessionId]);
+  }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
@@ -5933,6 +6062,7 @@ export function AgentChatPane({
     ? formatSubagentModelChip(subagentModelAttribution({
       snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
       sessionModelLabel: selectedModelDesc?.displayName ?? selectedSession?.model ?? null,
+      reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
@@ -6025,6 +6155,35 @@ export function AgentChatPane({
       message: `${localRuntimeState.label} is connected with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
     };
   }, [localRuntimeState, modelId, selectedModelDesc?.displayName]);
+  /**
+   * The composer under a subagent's thread shows THAT agent's model and effort,
+   * locked, not the parent's. A model the catalog cannot name keeps the
+   * parent's chip; the lock line still names the child's model.
+   */
+  const subagentComposerModel = useMemo(() => {
+    if (!subagentView) return null;
+    const reported = subagentViewSnapshot?.model ?? subagentMetadata?.model ?? null;
+    const descriptor = reported && reported !== "inherit"
+      ? resolveScopedModelDescriptor(reported, modelCatalogScopeKey) ?? resolveModelDescriptor(reported)
+      : null;
+    // A Claude subagent runs at the session's effort whatever model it names;
+    // a spawned chat or another runtime's child shows only what it reported.
+    const sharesSessionEffort = selectedSession?.provider === "claude" && !subagentViewSnapshot?.childSessionId;
+    return {
+      modelId: descriptor?.id ?? (reported && reported !== "inherit" ? null : modelId),
+      effort: subagentViewSnapshot?.reasoningEffort ?? (sharesSessionEffort ? effectiveReasoningEffort ?? null : null),
+    };
+  }, [
+    effectiveReasoningEffort,
+    modelCatalogScopeKey,
+    modelId,
+    selectedSession?.provider,
+    subagentMetadata?.model,
+    subagentView,
+    subagentViewSnapshot?.childSessionId,
+    subagentViewSnapshot?.model,
+    subagentViewSnapshot?.reasoningEffort,
+  ]);
 
   const cliRuntimeBlocked = Boolean(
     selectedSessionId
@@ -6355,7 +6514,7 @@ export function AgentChatPane({
     ) {
       deferredComposerSessionIdRef.current = null;
     }
-    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current);
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       nextModelId,
@@ -6457,6 +6616,14 @@ export function AgentChatPane({
     const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
   }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
+
+  // Spawned chats of this chat that are working now: the Stop menu offers to
+  // stop them too.
+  const activeChildChatCount = useMemo(() => {
+    const parentId = selectedSession?.sessionId;
+    if (!parentId) return 0;
+    return sessions.filter((s) => s.orchestrationParentSessionId === parentId && s.status === "active").length;
+  }, [selectedSession?.sessionId, sessions]);
 
   // Resolve a spawned child chat's live title so the Subagents pane's spawned-chat
   // rows read as the chat they open, not the bare runtime name.
@@ -6800,9 +6967,6 @@ export function AgentChatPane({
   const handoffCodexSelectValue: "default" | "edit" | "plan" | "full-auto" | "config-toml" =
     handoffCodexPermissionPreset === "custom" ? "default" : handoffCodexPermissionPreset;
   const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
-  const handoffButtonTitle = handoffBlocked
-    ? "Wait for the current output or approval to finish before handing off this chat."
-    : "Create a new work chat on another model and seed it with a summary of this chat.";
   // The cross-machine modal picks its own destination model, so derive its
   // provider independently of the local-handoff picker. Reasoning/permission
   // fields still inherit the source-session-derived handoff defaults.
@@ -6918,22 +7082,25 @@ export function AgentChatPane({
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
+    let revalidateStatus = false;
     // Unpinned IPC follows the bound tab. Two runtimes can share one project
     // root, so a tab switch must bypass the TTL instead of reusing the other
-    // machine's Settings cache. Leave pin-scoped buckets alone.
-    let forceStatus = options?.force === true;
+    // machine's Settings cache. Leave pin-scoped buckets alone. Bypassing the
+    // TTL only needs a fresh answer from the newly bound brain, not a forced
+    // re-probe of every CLI and the login shell's PATH.
     if (!runtimePin) {
       const previousBindingKey = lastUnpinnedAuthBindingKeyRef.current;
       lastUnpinnedAuthBindingKeyRef.current = boundRuntimeKey;
       if (previousBindingKey !== undefined && previousBindingKey !== boundRuntimeKey) {
-        forceStatus = true;
+        revalidateStatus = true;
       }
     }
     try {
       const status = await getAiStatusCached({
         projectRoot: runtimeProjectRoot,
         pin: runtimePin,
-        force: forceStatus,
+        force: options?.force === true,
+        revalidate: revalidateStatus,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
       return applyAiStatusSnapshot(status);
@@ -7170,6 +7337,9 @@ export function AgentChatPane({
     for (const sessionId of [...detachedHistorySessionsRef.current]) {
       if (!retainedSessionIds.has(sessionId)) detachedHistorySessionsRef.current.delete(sessionId);
     }
+    for (const sessionId of [...backfillCappedSessionsRef.current]) {
+      if (!retainedSessionIds.has(sessionId)) backfillCappedSessionsRef.current.delete(sessionId);
+    }
     olderHistoryCursorRef.current = pruneSessionRecord(olderHistoryCursorRef.current, retainedSessionIds);
     for (const sessionId of [...loadedHistoryRef.current]) {
       if (!retainedSessionIds.has(sessionId)) {
@@ -7343,6 +7513,7 @@ export function AgentChatPane({
     releaseRetainedChatSession(sessionId);
     deleteAgentChatSessionViewCache(sessionId);
     detachedHistorySessionsRef.current.delete(sessionId);
+    backfillCappedSessionsRef.current.delete(sessionId);
     missingHistorySessionsRef.current.delete(sessionId);
     setSyncPendingBySession((prev) => (sessionId in prev ? { ...prev, [sessionId]: false } : prev));
     delete detachedLiveEventsBySessionRef.current[sessionId];
@@ -7516,6 +7687,7 @@ export function AgentChatPane({
       // A successful hydrate reattaches the view to the live tail, so drop the
       // detached marker BEFORE caching — the merged window is cacheable again.
       detachedHistorySessionsRef.current.delete(sessionId);
+      backfillCappedSessionsRef.current.delete(sessionId);
       missingHistorySessionsRef.current.delete(sessionId);
       delete detachedLiveEventsBySessionRef.current[sessionId];
       applyOlderHistoryCursor(sessionId, historyCursor);
@@ -7573,6 +7745,10 @@ export function AgentChatPane({
    */
   const waitBeforeOlderHistoryRetry = useCallback((delayMs: number) => (
     new Promise<boolean>((resolve) => {
+      if (olderHistoryPaneUnmountedRef.current) {
+        resolve(false);
+        return;
+      }
       const waiter = { handle: 0, resolve };
       waiter.handle = window.setTimeout(() => {
         olderHistoryRetryWaitersRef.current.delete(waiter);
@@ -7603,10 +7779,18 @@ export function AgentChatPane({
   const loadOlderHistory = useCallback(async (
     sessionId: string,
     pin: OpenProjectBinding | null,
-    options?: { interactive?: boolean },
+    options?: { interactive?: boolean; backfill?: boolean },
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null || cursor <= 0) return;
+    if (options?.backfill) {
+      // Backfill is for the chat on screen. During a switch the outgoing
+      // chat's list can still ask once, which would start a page (and a retry
+      // ladder) for a chat nobody is looking at.
+      if (sessionId !== renderSelectedSessionIdRef.current) return;
+      // Returns before any loading state flips, so the list's backfill does not re-arm.
+      if (backfillCappedSessionsRef.current.has(sessionId)) return;
+    }
     if (olderHistoryInFlightRef.current.has(sessionId)) return;
     if (typeof window.ade.agentChat.getEventHistoryPage !== "function") return;
     const requestId = ++olderHistoryRequestSequenceRef.current;
@@ -7618,7 +7802,8 @@ export function AgentChatPane({
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
       : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES;
     const isCurrentRequest = () => (
-      olderHistoryInFlightRef.current.get(sessionId) === requestId
+      !olderHistoryPaneUnmountedRef.current
+      && olderHistoryInFlightRef.current.get(sessionId) === requestId
       && olderHistoryCursorRef.current[sessionId] === cursor
       && (chatRuntimePinRef.current?.key ?? activeProjectBindingKeyRef.current) === requestRouteKey
       && renderedSessionIdRef.current === sessionId
@@ -7652,6 +7837,12 @@ export function AgentChatPane({
           maxEvents,
           maxBytes: maxResidentBytes,
         });
+        if (hitResidentCap && options?.backfill) {
+          // Leave the view and the cursor as they are; a reader who pages up
+          // themselves still can.
+          backfillCappedSessionsRef.current.add(sessionId);
+          return true;
+        }
         if (hitResidentCap) {
           detachedHistorySessionsRef.current.add(sessionId);
           delete detachedLiveEventsBySessionRef.current[sessionId];
@@ -7735,6 +7926,12 @@ export function AgentChatPane({
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
   useEffect(() => () => cancelOlderHistoryRetryWaits(), [cancelOlderHistoryRetryWaits, selectedSessionId]);
+  useEffect(() => {
+    olderHistoryPaneUnmountedRef.current = false;
+    return () => {
+      olderHistoryPaneUnmountedRef.current = true;
+    };
+  }, []);
 
   // Prop-driven chat switches already render the incoming transcript from
   // `renderedSessionId`. Apply the matching session/composer state before the
@@ -7816,6 +8013,13 @@ export function AgentChatPane({
     if (selectedSessionId || lockSessionId) return;
     if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) return;
     const draftKey = draftLaunchConfigScopeKey;
+    if (machineLaunchDefaults) {
+      const machineHydrationKey = `${draftKey}:machine:${machineLaunchDefaults.updatedAt}`;
+      if (draftLaunchConfigHydratedRef.current === machineHydrationKey) return;
+      applyLaunchConfigToComposer(machineLaunchDefaults);
+      draftLaunchConfigHydratedRef.current = machineHydrationKey;
+      return;
+    }
     const latestSessionConfig = sessions[0]
       ? buildLastLaunchConfig(sessions[0], initialNativeControls)
       : null;
@@ -7836,6 +8040,7 @@ export function AgentChatPane({
   }, [
     applyLaunchConfigToComposer,
     initialNativeControls,
+    machineLaunchDefaults,
     draftLaunchConfigScopeKey,
     laneId,
     lastLaunchConfigStorageKeys,
@@ -7958,6 +8163,9 @@ export function AgentChatPane({
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
+    // A chat on a preset or route runs the preset's model, which discovery and
+    // the registry may not list (DeepSeek in Claude Code). Keep it.
+    if (selectedSessionPresetId && modelId === selectedSessionModelId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -7966,7 +8174,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId, selectedSessionPresetId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -8062,6 +8270,7 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
+      if (!isAddressedToThisDesktop(event.targetClientId)) return;
       // Only for surfaces the user drove (point selection and inspection, or a
       // launch started from this drawer).
       openIosSimulatorDrawer();
@@ -8196,9 +8405,9 @@ export function AgentChatPane({
     clearAgentChatSessionViewCacheForSessions(departed);
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
-  // Stay true until this open has a model other than the source chat's. The
-  // catalog often shows up as only that model first; treating that seed as a
-  // user choice kept every brief on the same model.
+  // Stay true until this open has seeded the source chat's model. The catalog
+  // can arrive without it; treating that fallback as a user choice would keep
+  // the form on the wrong model.
   const handoffModelAutoseedRef = useRef(true);
   const chooseHandoffModel = useCallback((modelId: string) => {
     handoffModelAutoseedRef.current = false;
@@ -8210,16 +8419,19 @@ export function AgentChatPane({
       return;
     }
     const autoseed = handoffModelAutoseedRef.current;
-    const preferredTargetId = handoffAvailableModelIds.find((id) => id !== selectedSessionModelId) ?? handoffAvailableModelIds[0] ?? "";
-    const hasAlternative = Boolean(selectedSessionModelId)
-      && handoffAvailableModelIds.some((id) => id !== selectedSessionModelId);
+    // Fork and brief both start on the model this chat runs on now. The user
+    // picks another one on purpose.
+    const sourceModelId = selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)
+      ? selectedSessionModelId
+      : null;
+    const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
       if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
       return preferredTargetId;
     });
-    // The catalog often arrives as just the source model, then grows. Locking
-    // on that first id left every brief on the chat's own model.
-    if (hasAlternative) handoffModelAutoseedRef.current = false;
+    // Until the source model is in the catalog, a later catalog update may
+    // still replace the fallback with it.
+    if (sourceModelId) handoffModelAutoseedRef.current = false;
   }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
@@ -8235,9 +8447,33 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
+      // Only the source family's control is this chat's real choice; the others
+      // hold defaults or an older choice. Carry the source level to every other
+      // family, so a Full auto chat hands off as Full auto to any model.
+      if (activeLadderFamily) {
+        const resolved = resolvePermissionLevel(permissionLevelForFamily(activeLadderFamily, {
+          claudePermissionMode,
+          codexApprovalPolicy,
+          codexSandbox,
+          opencodePermissionMode,
+          droidPermissionMode,
+          cursorModeId,
+        }));
+        if (activeLadderFamily !== "claude") setHandoffClaudePermissionMode(resolved.claudePermissionMode);
+        if (activeLadderFamily !== "codex") {
+          setHandoffCodexApprovalPolicy(resolved.codexApprovalPolicy);
+          setHandoffCodexSandbox(resolved.codexSandbox);
+        }
+        if (activeLadderFamily !== "opencode" && activeLadderFamily !== "acp") {
+          setHandoffOpenCodePermissionMode(resolved.opencodePermissionMode);
+        }
+        if (activeLadderFamily !== "droid") setHandoffDroidPermissionMode(resolved.droidPermissionMode);
+        if (activeLadderFamily !== "cursor") setHandoffCursorModeId(resolved.cursorModeId);
+      }
       const prefill = pendingHandoffPrefillRef.current;
       pendingHandoffPrefillRef.current = null;
       setHandoffNote(prefill?.note ?? "");
+      setHandoffForkPoint(prefill?.throughTurn ?? null);
       // Each open starts in fork mode on the current lane and seeds the remote
       // model.
       setHandoffLocalMode("fork");
@@ -8739,6 +8975,7 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
         // updates live for every viewer of this chat instead of waiting for a
@@ -9626,23 +9863,16 @@ export function AgentChatPane({
       return;
     }
 
-    const level = (() => {
-      switch (previous) {
-        case "claude": return permissionLevelForClaude(claudePermissionMode);
-        case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
-        case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
-        case "droid": return permissionLevelForDroid(droidPermissionMode);
-        // Switching AWAY from Cursor or an ACP provider must carry a level too;
-        // without these the ladder was one-directional for those families.
-        case "cursor": return permissionLevelForCursorMode(cursorModeId);
-        // ACP has no separate control on this surface; it rides the in-process
-        // mode that the OpenCode picker owns, which is what the apply branch
-        // below writes back.
-        case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
-        default: return null;
-      }
-    })();
-    if (!level) return;
+    // Switching AWAY from Cursor or an ACP provider carries a level too, so the
+    // ladder works in both directions for every family.
+    const level = permissionLevelForFamily(previous, {
+      claudePermissionMode,
+      codexApprovalPolicy,
+      codexSandbox,
+      opencodePermissionMode,
+      droidPermissionMode,
+      cursorModeId,
+    });
 
     // ACP takes its mode from the OpenCode table on this surface, so it must be
     // RESOLVED as that family too: resolving as "acp" reported an un-stepped
@@ -11985,6 +12215,7 @@ export function AgentChatPane({
       ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
     ]);
     setError(null);
+    setLocalHandoffError(null);
     setReplayForkDisclosure(null);
     setHandoffBusy(true);
     setChatActionsOpen(false);
@@ -12025,6 +12256,7 @@ export function AgentChatPane({
         mode,
         ...(resolvedTargetLaneId ? { targetLaneId: resolvedTargetLaneId } : {}),
         ...(trimmedHandoffNote ? { handoffNote: trimmedHandoffNote } : {}),
+        ...(mode === "fork" && handoffForkPoint ? { throughTurnId: handoffForkPoint.turnId } : {}),
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
           ? { fastMode: handoffFastMode }
@@ -12042,6 +12274,8 @@ export function AgentChatPane({
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
+      setHandoffForkPoint(null);
+      setLocalHandoffOpen(false);
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
@@ -12058,6 +12292,7 @@ export function AgentChatPane({
         ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
         : rawMessage;
       setError(message);
+      setLocalHandoffError(message);
       if (isTransportTimeout) {
         for (const delayMs of [20_000, 60_000, 120_000]) {
           window.setTimeout(() => {
@@ -12089,6 +12324,7 @@ export function AgentChatPane({
     handoffCodexConfigSource,
     handoffTargetDescriptor,
     handoffFastMode,
+    handoffForkPoint,
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
@@ -13952,6 +14188,42 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  // A draft reads the launch defaults of the machine it will launch on, again
+  // whenever that machine changes, a chat is created, or the window regains
+  // focus (another client may have launched since).
+  const launchDefaultsBindingKey = selectedSessionId ? null : (draftExecutionBinding?.key ?? "local");
+  const newestSessionKey = `${sessions[0]?.sessionId ?? ""}:${sessions[0]?.modelId ?? ""}`;
+  const launchDefaultsLoadedForKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (launchDefaultsBindingKey == null || lockSessionId) return undefined;
+    let cancelled = false;
+    // A new target machine starts from nothing: the previous machine's
+    // defaults must never seed this one's draft, even when it cannot answer.
+    // A refetch for the same machine keeps what it has until the answer lands.
+    if (launchDefaultsLoadedForKeyRef.current !== launchDefaultsBindingKey) {
+      launchDefaultsLoadedForKeyRef.current = launchDefaultsBindingKey;
+      setMachineLaunchDefaults(null);
+    }
+    const load = () => {
+      // Optional call: a host bridge without it (an older embedder, a test
+      // double) leaves the draft on this window's own memory.
+      void window.ade.agentChat.launchDefaults?.(draftExecutionBindingRef.current ?? null)
+        .then((defaults) => {
+          if (cancelled) return;
+          const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
+          setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
+        })
+        .catch(() => {
+          if (!cancelled) setMachineLaunchDefaults(null);
+        });
+    };
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", load);
+    };
+  }, [initialNativeControls, launchDefaultsBindingKey, lockSessionId, newestSessionKey]);
   /**
    * Catalog, auth, and model rows follow the machine that will RUN the turn —
    * the prompt-box picker or the chat's owner — not the global project tab.
@@ -14076,6 +14348,52 @@ export function AgentChatPane({
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
   ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+
+  // Handlers for the message list, stable across pane renders. The pane
+  // re-renders several times a second while idle (session, usage and runtime
+  // updates); fresh closures here broke the list's memo and re-rendered every
+  // mounted transcript row each time.
+  const listLoadOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? (options?: { backfill?: boolean }) => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { backfill: options?.backfill });
+        }
+      : undefined,
+  );
+  const listRetryOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
+        }
+      : undefined,
+  );
+  const listReturnToLatest = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
+      : undefined,
+  );
+  const listRevealChatTerminal = useLatestCallback(revealChatTerminal);
+  // Both close over the draft, so each keystroke made them new and re-rendered
+  // every mounted transcript row.
+  const listInsertDraft = useLatestCallback(insertComposerDraft);
+  const listEditUnprocessedMessage = useLatestCallback(handleEditUnprocessedMessage);
+  const listRewindFiles = useLatestCallback(
+    selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined,
+  );
+  const listStopSubagent = useLatestCallback(
+    !subagentView
+    && selectedSessionId
+    && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+      ? (taskId: string) => {
+          void window.ade.agentChat.stopTask({
+            sessionId: selectedSessionId,
+            taskId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+        }
+      : undefined,
+  );
 
   if (!laneId) {
     return (
@@ -14213,6 +14531,17 @@ export function AgentChatPane({
       sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
+      onEditClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? (condition) => { void sendClaudeGoalCommand(selectedSessionId, condition); }
+          : undefined
+      }
+      onClearClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? () => { void sendClaudeGoalCommand(selectedSessionId, "clear"); }
+          : undefined
+      }
+      claudeGoalLocked={selectedSession?.provider === "claude" && turnActive}
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
@@ -14376,34 +14705,40 @@ export function AgentChatPane({
     </div>
   );
   const handoffForkTabDisabled = !handoffForkSupported;
+  // The body shows the brief form whenever fork is not available.
+  const handoffLocalModeEffective = handoffLocalMode === "fork" && !handoffForkTabDisabled ? "fork" : "brief";
   const handoffLocalView = (
     <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
-      <div className="flex items-start gap-2.5 border-b border-white/[0.06] px-4 py-3">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
+        <div className="min-w-0">
+          <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
+          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">
+            {handoffForkPoint && handoffLocalMode === "fork"
+              ? "Fork copies the conversation up to the turn you picked. Brief summarizes it and starts fresh."
+              : handoffForkCopy.subtitle}
+          </div>
+        </div>
         <button
           type="button"
           aria-label="Close local handoff"
           onClick={() => setLocalHandoffOpen(false)}
-          className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
         >
-          <ArrowLeft size={13} />
+          <X size={13} />
         </button>
-        <div className="min-w-0">
-          <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
-          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">{handoffForkCopy.subtitle}</div>
-        </div>
       </div>
-      {handoffTurnGate ? (
-        <Banner
-          model={{
-            id: "handoff-turn-running",
-            tone: "warning",
-            title: "A turn is running — wait for it to finish before handing off.",
-          }}
-          layout="inline"
-          style={{ margin: "0 16px" }}
-        />
-      ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
+        {handoffTurnGate ? (
+          <Banner
+            model={{
+              id: "handoff-turn-running",
+              tone: "warning",
+              title: "A turn is running — wait for it to finish before handing off.",
+            }}
+            layout="inline"
+            style={{ marginBottom: 12 }}
+          />
+        ) : null}
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
           {([
             { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
@@ -14438,7 +14773,23 @@ export function AgentChatPane({
 
         {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
           <div className="mt-3 space-y-3">
-            <div className="text-[11px] leading-5 text-fg/54">{handoffForkCopy.body}</div>
+            {handoffForkPoint ? (
+              <Banner
+                model={{
+                  id: "handoff-fork-point",
+                  tone: "accent",
+                  icon: <GitFork size={13} weight="bold" />,
+                  title: `From the turn that ended ${formatHandoffForkPointTime(handoffForkPoint.timestamp)}. Later messages are left out.`,
+                  actions: [{ label: "Whole chat", variant: "secondary", onClick: () => setHandoffForkPoint(null) }],
+                }}
+                layout="inline"
+              />
+            ) : null}
+            <div className="text-[11px] leading-5 text-fg/54">
+              {handoffForkPoint
+                ? "The new chat starts with the conversation through that turn. This chat is not changed."
+                : handoffForkCopy.body}
+            </div>
             <div className="inline-flex items-center gap-1.5">
               <ModelPicker
                 value={handoffModelId}
@@ -14458,18 +14809,6 @@ export function AgentChatPane({
             <div className="text-[10px] leading-4 text-fg/40">{handoffForkCopy.footnote}</div>
             {handoffPermissionControls}
             {handoffNoteField("Optional. Sent to the new chat so it knows what to do next.")}
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  void handoffSession("fork");
-                }}
-                disabled={!handoffModelId || handoffBusy || handoffBlocked}
-              >
-                {handoffBusy ? "Starting…" : "Fork chat"}
-              </button>
-            </div>
           </div>
         ) : (
           <div className="mt-3 space-y-3">
@@ -14504,28 +14843,63 @@ export function AgentChatPane({
               <div className="text-[10px] leading-4 text-fg/40">Where the new chat starts. Pick another lane or create a fresh one.</div>
             </div>
             {handoffNoteField("Optional. Added to the brief as extra instructions.")}
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  void handoffSession("brief");
-                }}
-                disabled={!handoffModelId || handoffBusy || handoffBlocked}
-              >
-                {handoffBusy ? "Starting…" : "Start brief handoff"}
-              </button>
-            </div>
           </div>
         )}
-        {handoffBlocked ? (
-          <div className="mt-3 text-[10px] leading-4 text-fg/40">{handoffButtonTitle}</div>
+        {localHandoffError ? (
+          <Banner
+            model={{ id: "handoff-local-error", tone: "error", title: localHandoffError }}
+            layout="inline"
+            style={{ marginTop: 12 }}
+          />
         ) : null}
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/[0.06] px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setLocalHandoffOpen(false)}
+          className="rounded-md border border-white/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/65 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => {
+            void handoffSession(handoffLocalModeEffective);
+          }}
+          disabled={!handoffModelId || handoffBlocked}
+        >
+          {handoffBusy ? <CircleNotch size={11} className="animate-spin" aria-hidden /> : null}
+          {handoffBusy
+            ? (handoffLocalModeEffective === "fork" ? "Forking…" : "Summarizing…")
+            : (handoffLocalModeEffective === "fork" ? "Fork chat" : "Start brief handoff")}
+        </button>
       </div>
     </div>
   );
+  // Which login, key or endpoint this chat runs on. Only for the chat the
+  // transcript shows, so a chat switch never pairs one chat's turns with
+  // another chat's bound account.
+  const selectedSessionPreset = selectedSession?.presetId
+    ? harnessPresets.find((preset) => preset.id === selectedSession.presetId) ?? null
+    : null;
+  const chatAccountNote = selectedSession && selectedSession.sessionId === renderedSessionId ? (
+    <ChatAccountNote
+      key={selectedSession.sessionId}
+      sessionId={selectedSession.sessionId}
+      provider={selectedSession.provider}
+      instanceId={selectedSession.instanceId}
+      credentialId={selectedSession.credentialId}
+      preset={selectedSessionPreset}
+      events={selectedEvents}
+      runtimePin={chatRuntimePin}
+      busy={turnActiveBySession[selectedSession.sessionId] ?? false}
+      onSwitched={() => void refreshSessions({ force: true }).catch(() => {})}
+    />
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
+      footer={chatAccountNote}
       sections={[
         { key: "agents", content: agentsTabContent },
         (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },
@@ -14669,9 +15043,8 @@ export function AgentChatPane({
           deviceName={iosSimulatorSessionChip.deviceName}
           onOpen={openIosSimulatorDrawer}
           onFloat={() => {
-            // §7: Float opens the mini player, which owns native PiP in its
-            // own hover bar. The auto-appearing corner card it used to ask is
-            // gone, so asking it would have been a button that did nothing.
+            // Float opens the mini player, which owns native PiP in its own
+            // hover bar. There is no auto-appearing corner card to ask.
             if (!iosSimulatorSessionChip.deviceUdid) return;
             openAppleMiniPlayer({
               laneId: selectedSession?.laneId ?? laneId ?? null,
@@ -14796,6 +15169,7 @@ export function AgentChatPane({
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
       />
+      <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
       {hasAttachedTerminal ? (
         <button
           type="button"
@@ -14894,9 +15268,6 @@ export function AgentChatPane({
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
-        // Snooze keeps a small header affordance; settled state is shown only
-        // in the compact pill floating directly above the composer.
-        snoozeSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
         // Only wire the pane toggle where the pane actually renders (a selected
@@ -15149,7 +15520,7 @@ export function AgentChatPane({
             isActive={isTileActive}
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
-            modelId={modelId}
+            modelId={subagentComposerModel?.modelId ?? modelId}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={selectedSessionId ? selectedSession?.presetId ?? null : draftHarnessPresetId}
@@ -15170,9 +15541,9 @@ export function AgentChatPane({
               setRuntimeCatalogVersion((version) => version + 1);
             }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
-            reasoningEffort={reasoningEffort}
-            effectiveReasoningEffort={effectiveReasoningEffort}
-            fastMode={fastMode}
+            reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
+            effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
+            fastMode={subagentComposerModel ? false : fastMode}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}
@@ -15365,6 +15736,7 @@ export function AgentChatPane({
               void interrupt(mode);
             }}
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
+            childChatCount={activeChildChatCount}
             onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}
@@ -15457,6 +15829,16 @@ export function AgentChatPane({
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}
+            onMoveSteer={selectedSessionId && queuedSteersCanReorder(selectedSession?.provider)
+              ? async (steerId, toIndex) => {
+                try {
+                  await window.ade.agentChat.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatRuntimePinRef.current);
+                } catch (error) {
+                  setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  throw error;
+                }
+              }
+              : undefined}
             onDispatchSteerInline={activeTurnInlineSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
@@ -15590,25 +15972,39 @@ export function AgentChatPane({
       />
   );
 
-  const firstUnattendedWake = unattendedWakeTurns[0] ?? null;
-  const awayDigestCard = firstUnattendedWake ? (
-    <ChatAwayDigestCard
-      count={unattendedWakeTurns.length}
-      firstReason={firstUnattendedWake.reason}
-      onReview={() => setWakeJumpRequest((current) => ({
-        key: `scheduled-wake:${firstUnattendedWake.scheduleId}:${firstUnattendedWake.turnId}`,
-        requestId: (current?.requestId ?? 0) + 1,
-      }))}
-      onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
-    />
-  ) : null;
-  const appPanelLifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
-    <ChatLifecyclePill
-      sessionId={composerSessionId}
-      runtimePin={renderedChatRuntimePin}
-      className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
-    />
-  ) : null;
+  // Lifecycle, branch drift and the chat's diff, side by side on the
+  // composer's top edge instead of stacked cards over the thread. The row's
+  // end is where Jump to Latest docks while a chip is showing; CSS hides the
+  // row when no chip renders (see chatComposerOverlayInset).
+  const composerStatusStrip = (
+    <div
+      {...{ [CHAT_COMPOSER_CHIP_ROW_ATTR]: "" }}
+      className={cn(
+        "flex min-w-0 items-center gap-2 [&:not(:has([data-status-strip]>*))]:hidden",
+        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+      )}
+    >
+      <StatusStrip className="min-w-0 flex-1">
+        {lifecyclePill}
+        <LaneBranchComposerChip laneId={laneId} />
+        {sessionDelta ? (
+          <StatusChip
+            tone="neutral"
+            icon={<GitDiff size={10} weight="bold" />}
+            label={(
+              <span className="font-mono">
+                <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>{" "}
+                <span className="text-red-400/75">-{sessionDelta.deletions}</span>
+              </span>
+            )}
+            tooltip="Lines changed since this chat started"
+            testId="chat-session-delta-chip"
+          />
+        ) : null}
+      </StatusStrip>
+      <div {...{ [CHAT_COMPOSER_JUMP_SLOT_ATTR]: "" }} className="flex shrink-0 pb-1.5 empty:hidden" />
+    </div>
+  );
   /**
    * The turn's time-lapse of the lane's macOS screen, when there was one.
    *
@@ -15625,15 +16021,14 @@ export function AgentChatPane({
       workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
-    <div
+  const composerNoticeOverlay = macDesktopTimeLapseCard ? (
+    <ChatComposerOverlayClear
+      basePx={8}
       data-testid="chat-composer-notice-overlay"
-      className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
+      className="pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
-      {awayDigestCard}
-      {lifecyclePill}
-    </div>
+    </ChatComposerOverlayClear>
   ) : null;
 
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
@@ -15779,7 +16174,7 @@ export function AgentChatPane({
         );
       })}
       {authStickyBar}
-      <LaneBranchDriftStrip laneId={laneId} />
+      {composerStatusStrip}
       {takeoverBanner}
       {stalledTurnBanner}
       {steeringPendingInput ? (
@@ -15788,7 +16183,8 @@ export function AgentChatPane({
           /* Same column the composer below uses. `mx-3` without `mx-auto`
              left-pinned this card while the still-open composer stayed
              centered, so the non-blocking steering card read as off-axis. */
-          className="mx-auto w-full max-w-[var(--chat-column,52rem)]"
+          // Opaque: it can float over transcript text (ChatSurfaceShell `overlayFooter`).
+          className="mx-auto w-full max-w-[var(--chat-column,52rem)] bg-[color:var(--chat-canvas-bg)]"
         >
           <AskQuestionComposer
             key={steeringPendingInput.itemId}
@@ -15852,39 +16248,53 @@ export function AgentChatPane({
   // Wrap a right-side panel for either grid-tile (overlay) or standard
   // (resizable split) layout. Used for proof, iOS simulator, and App Control
   // panels which all share the same outer chrome.
+  // Right panes end above the floating composer: the composer spans the whole
+  // shell, and only the transcript is meant to run behind it.
   const renderRightPane = (content: React.ReactNode) =>
     layoutVariant === "grid-tile" ? (
-      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
+      <ChatComposerOverlayClear
+        basePx={12}
+        className="absolute inset-x-3 top-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl"
+      >
         {content}
-      </div>
+      </ChatComposerOverlayClear>
     ) : (
-      <div
+      <ChatComposerOverlayClear
+        basePx={0}
+        edge="paddingBottom"
         style={splitRightPaneStyle}
         className="flex h-full min-w-0 flex-1 basis-0 flex-col bg-surface/80"
       >
         {content}
-      </div>
+      </ChatComposerOverlayClear>
     );
 
   const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
   const FLOATING_PANE_CARD_CLASS =
-    // `min-h-0` lets the card shrink below its content inside the max-h-capped
-    // motion.div, so the inner overflow-auto engages instead of the content
-    // clipping at the max-h boundary.
+    // `min-h-0` lets the card shrink below its content inside the box that
+    // stops above the composer, so the inner overflow-auto engages instead of
+    // the content clipping at the box's edge.
     "ade-floating-side-pane flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
-      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
-      style={{ right: `${rightPaneOffsetPx}px` }}
+      className="pointer-events-none absolute inset-0 z-20"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={SIDE_PANE_FADE}
     >
-      <div className={FLOATING_PANE_CARD_CLASS}>
-        {content}
-      </div>
+      {/* Its box ends 12px above the floating composer; the card inside
+          grows with its content up to that box. */}
+      <ChatComposerOverlayClear
+        basePx={12}
+        className="absolute top-3 flex w-[min(16.5rem,calc(100%-1.5rem))] flex-col"
+        style={{ right: `${rightPaneOffsetPx}px` }}
+      >
+        <div className={cn(FLOATING_PANE_CARD_CLASS, "pointer-events-auto max-h-full")}>
+          {content}
+        </div>
+      </ChatComposerOverlayClear>
     </motion.div>
   );
   return (
@@ -15913,6 +16323,7 @@ export function AgentChatPane({
         onDropCapture={clearChatPaneDropActive}
         dropOverlay={chatPaneDropActive ? <ChatAttachmentDropOverlay variant="pane" /> : undefined}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
+        overlayFooter
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
@@ -16170,86 +16581,47 @@ export function AgentChatPane({
                             ? olderHistoryErrorBySession[renderedSessionId] ?? null
                             : null
                         }
-                        onLoadOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
-                              }
-                            : undefined
-                        }
-                        onRetryOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
-                              }
-                            : undefined
-                        }
-                        onReturnToLatest={
-                          !subagentView && renderedSessionId
-                            ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
-                            : undefined
-                        }
+                        onLoadOlderHistory={listLoadOlderHistory}
+                        backfillOlderHistory
+                        onRetryOlderHistory={listRetryOlderHistory}
+                        onReturnToLatest={listReturnToLatest}
                         respondingApprovalIds={respondingApprovalIds}
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
-                        onInsertDraft={insertComposerDraft}
-                        onRevealChatTerminal={revealChatTerminal}
+                        onInsertDraft={listInsertDraft}
+                        onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
-                        onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
+                        onRewindFiles={listRewindFiles}
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
                         onCodexRecovery={handleListCodexRecovery}
                         onRecoverContinuity={recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
-                        onEditUnprocessedMessage={handleEditUnprocessedMessage}
+                        onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
-                        onStopSubagent={
-                          !subagentView
-                          && selectedSessionId
-                          && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
-                            ? (taskId) => {
-                                void window.ade.agentChat.stopTask({
-                                  sessionId: selectedSessionId,
-                                  taskId,
-                                }, chatRuntimePinRef.current).catch((stopError) => {
-                                  setError(stopError instanceof Error ? stopError.message : String(stopError));
-                                });
-                              }
-                            : undefined
-                        }
+                        onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}
-                        scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                        unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
+                        onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}
-                    {sessionDelta ? (
-                      <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
-                        <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
-                        <span className="text-red-400/75">-{sessionDelta.deletions}</span>
-                      </div>
-                    ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
-                        <LaneBranchDriftStrip laneId={laneId} />
-                        {awayDigestCard ? (
-                          <div data-testid="chat-app-panel-notice-stack" className="flex flex-col items-center gap-1.5 px-3 py-1.5">
-                            {awayDigestCard}
-                            {appPanelLifecyclePill}
-                          </div>
-                        ) : appPanelLifecyclePill}
+                        {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {usageLimitPill}

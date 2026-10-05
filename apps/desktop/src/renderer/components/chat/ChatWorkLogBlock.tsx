@@ -19,6 +19,9 @@ import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { pinKey } from "../../state/projectMachines";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
@@ -131,36 +134,42 @@ const PORT_PROBE_NEGATIVE_TTL_MS = 30 * 1000;
 
 type PortProbeCacheEntry = { alive: boolean; checkedAtMs: number };
 
-const portProbeCache = new Map<number, PortProbeCacheEntry>();
-const portProbeInFlight = new Map<number, Promise<boolean>>();
+/** Keyed by machine and port: a chat on another machine probes that machine. */
+const portProbeCache = new Map<string, PortProbeCacheEntry>();
+const portProbeInFlight = new Map<string, Promise<boolean>>();
+
+function portProbeKey(port: number, pin: OpenProjectBinding | null): string {
+  return `${pinKey(pin)}:${port}`;
+}
 
 function isCacheEntryFresh(entry: PortProbeCacheEntry, nowMs: number): boolean {
   const ttl = entry.alive ? PORT_PROBE_POSITIVE_TTL_MS : PORT_PROBE_NEGATIVE_TTL_MS;
   return nowMs - entry.checkedAtMs < ttl;
 }
 
-async function runPortProbe(port: number): Promise<boolean> {
-  const existing = portProbeInFlight.get(port);
+async function runPortProbe(port: number, pin: OpenProjectBinding | null): Promise<boolean> {
+  const key = portProbeKey(port, pin);
+  const existing = portProbeInFlight.get(key);
   if (existing) return existing;
   const probe = window.ade?.localhost?.probePort;
   if (typeof probe !== "function") return false;
   const promise = (async () => {
     try {
-      const alive = Boolean(await probe(port));
-      portProbeCache.set(port, { alive, checkedAtMs: Date.now() });
+      const alive = Boolean(await probe(port, pin));
+      portProbeCache.set(key, { alive, checkedAtMs: Date.now() });
       return alive;
     } catch {
-      portProbeCache.set(port, { alive: false, checkedAtMs: Date.now() });
+      portProbeCache.set(key, { alive: false, checkedAtMs: Date.now() });
       return false;
     } finally {
-      portProbeInFlight.delete(port);
+      portProbeInFlight.delete(key);
     }
   })();
-  portProbeInFlight.set(port, promise);
+  portProbeInFlight.set(key, promise);
   return promise;
 }
 
-function useLiveLocalhostUrls(urls: ChatLocalhostUrl[]): ChatLocalhostUrl[] {
+function useLiveLocalhostUrls(urls: ChatLocalhostUrl[], pin: OpenProjectBinding | null): ChatLocalhostUrl[] {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -168,27 +177,27 @@ function useLiveLocalhostUrls(urls: ChatLocalhostUrl[]): ChatLocalhostUrl[] {
     const portsToProbe = new Set<number>();
     for (const url of urls) {
       if (url.port === null) continue;
-      const cached = portProbeCache.get(url.port);
+      const cached = portProbeCache.get(portProbeKey(url.port, pin));
       if (!cached || !isCacheEntryFresh(cached, now)) portsToProbe.add(url.port);
     }
     if (portsToProbe.size === 0) return;
-    void Promise.all(Array.from(portsToProbe, (port) => runPortProbe(port))).then(() => {
+    void Promise.all(Array.from(portsToProbe, (port) => runPortProbe(port, pin))).then(() => {
       if (!cancelled) setTick((value) => value + 1);
     });
     return () => {
       cancelled = true;
     };
-  }, [urls]);
+  }, [pin, urls]);
 
   return useMemo(() => {
     const now = Date.now();
     return urls.filter((url) => {
       if (url.port === null) return false;
-      const cached = portProbeCache.get(url.port);
+      const cached = portProbeCache.get(portProbeKey(url.port, pin));
       if (!cached || !isCacheEntryFresh(cached, now)) return false;
       return cached.alive;
     });
-  }, [urls, tick]);
+  }, [pin, urls, tick]);
 }
 
 function localhostUrlLabel(url: ChatLocalhostUrl): string {
@@ -1063,6 +1072,7 @@ export function ChatTurnWorkSummary({
   sessionId,
   leading,
   tokenUsage,
+  trailing,
   checkpointFiles = null,
   checkpointDetail = null,
   align = "end",
@@ -1077,6 +1087,8 @@ export function ChatTurnWorkSummary({
   /** Clock, duration, and timestamp that open the line. */
   leading?: React.ReactNode;
   tokenUsage?: TurnTokenUsage | null;
+  /** Drawn after the usage on the same line (the turn's scheduled wake-ups). */
+  trailing?: React.ReactNode;
   /**
    * Checkpoint diff for this turn. When the provider recorded one, it replaces
    * the entry-derived file list and sits on this same line.
@@ -1105,7 +1117,7 @@ export function ChatTurnWorkSummary({
       }
     : null);
   const tokens = <TurnTokenBlurb usage={tokenUsage} />;
-  if (!leading && !tokens && tools.length === 0 && !fileStat) return null;
+  if (!leading && !tokens && !trailing && tools.length === 0 && !fileStat) return null;
 
   const toggle = (which: "tools" | "files") => {
     if (which === "files") workspacePaths?.ensureWorkspacesLoaded?.();
@@ -1120,6 +1132,8 @@ export function ChatTurnWorkSummary({
             {leading}
             {leading && tokens ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
             {tokens}
+            {trailing && (leading || tokens) ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
+            {trailing}
           </div>
         ) : null}
         <div className={cn("flex shrink-0 items-center gap-3", align === "end" && "ml-auto")}>
@@ -1194,7 +1208,9 @@ function LocalhostServersStrip({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 }) {
   const detectedUrls = useMemo(() => collectLocalhostUrls(entries), [entries]);
-  const urls = useLiveLocalhostUrls(detectedUrls);
+  // The chat's machine: `localhost` in its output is that machine's.
+  const runtimePin = useChatRuntimeScope().pin;
+  const urls = useLiveLocalhostUrls(detectedUrls, runtimePin);
   const [busy, setBusy] = useState(false);
   if (urls.length === 0) return null;
 
@@ -1244,7 +1260,7 @@ function LocalhostServersStrip({
     <div className="mb-1.5 flex max-w-full flex-wrap items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]">
       <button
         type="button"
-        onClick={(event) => openLinkFromUi(primary.href, event)}
+        onClick={(event) => openLinkFromUi(primary.href, event, { runtimePin })}
         title={openTitle}
         aria-label={openTitle}
         className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-300/15 bg-sky-400/[0.06] py-0.5 pr-1.5 pl-2 text-sky-100/80 transition-colors hover:border-sky-300/30 hover:bg-sky-400/[0.11] hover:text-sky-50"

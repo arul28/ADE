@@ -235,14 +235,28 @@ describe("route catalog", () => {
 
 describe("router core", () => {
   it.each([
-    ["explore the sync code", "explore", "read_only"],
-    ["fix the parser bug", null, "light_edit"],
-    ["implement the new router", null, "heavy_edit"],
-    ["review this diff", null, "review"],
-    ["run the tests", null, "test_run"],
-    ["hello", null, "unknown"],
-  ] as const)("classifies task %s (agent %s) as %s", (description, agentType, kind) => {
-    expect(classifyRouterTask(description, agentType)).toBe(kind);
+    ["explore the sync code", "explore", null, "read_only"],
+    ["fix the parser bug", null, null, "light_edit"],
+    ["implement the new router", null, null, "heavy_edit"],
+    ["review this diff", null, null, "review"],
+    ["run the tests", null, null, "test_run"],
+    ["hello", null, null, "unknown"],
+    // An edit that starts by reading is still an edit.
+    ["Read the file and fix the parser bug", null, null, "light_edit"],
+    // A workflow agent is named for its job.
+    ["/root/quality_correctness", "/root/quality_correctness", null, "review"],
+    // The brief decides when the label says too little.
+    ["Quality Track A correctness", "general-purpose", "You are Track A. Do NOT edit any files; return findings only.", "review"],
+    // A ban on every edit outranks the label's verb.
+    ["Fix parser", null, "Do not edit any files. Find why the parser fails on CRLF.", "read_only"],
+    ["Fix parser", null, "This is a read-only task. Investigate the bug.", "read_only"],
+    // The earlier of an opening edit clause and a no-edit rule wins.
+    ["Long-tail extractors", null, "Task: write read-only log extractors for these providers.", "light_edit"],
+    ["Review the fixes", null, "READ-ONLY: do not edit, commit, or push anything. Work only in the lane worktree.", "review"],
+    // "Doing read-only analysis" is one step of an edit brief.
+    ["Fix async job errors", null, "You work in /x. Start by doing read-only analysis, then confine your edits to the job module.", "light_edit"],
+  ] as const)("classifies task %s (agent %s, brief %s) as %s", (description, agentType, prompt, kind) => {
+    expect(classifyRouterTask(description, agentType, prompt)).toBe(kind);
   });
 
   it("picks the cheaper same-harness route and reports the saving", () => {
@@ -427,11 +441,18 @@ afterEach(() => {
 });
 
 describe("shadow router service", () => {
-  it("records a decision for a subagent that inherits the session model, then its outcome", async () => {
+  it("records what a subagent ran, with its brief and reported effort, when it finishes", async () => {
     const dir = makeDir();
     const service = makeService({ dir, snapshot: baseSnapshot() });
-    const session = { provider: "claude", model: OPUS, modelId: OPUS, reasoningEffort: null };
+    const session = { provider: "claude", model: OPUS, modelId: OPUS, reasoningEffort: "high" };
 
+    // The Agent tool call carries the brief; the start names its tool use.
+    service.observe("sess1", {
+      type: "tool_call",
+      tool: "Agent",
+      itemId: "toolu-1",
+      args: { description: "fix the parser", prompt: "Read-only: do not edit any files. Explain why the parser fails." },
+    }, session);
     service.observe("sess1", {
       type: "subagent_started",
       taskId: "task-1",
@@ -439,8 +460,11 @@ describe("shadow router service", () => {
       model: "inherit",
       description: "fix the parser",
       agentType: "general",
+      parentToolUseId: "toolu-1",
     }, session);
-    await vi.waitFor(() => expect(readRows(dir).length).toBe(1));
+    // Nothing is logged until the child reports its effort and finishes.
+    service.observe("sess1", { type: "subagent_progress", taskId: "task-1", parentToolUseId: "toolu-1", summary: "", reasoningEffort: "medium" }, session);
+    expect(readRows(dir)).toHaveLength(0);
 
     service.observe("sess1", {
       type: "subagent_result",
@@ -454,8 +478,9 @@ describe("shadow router service", () => {
     const [decision, outcome] = readRows(dir);
     expect(decision.type).toBe("decision");
     const decided = decision as RouterShadowDecisionRow;
-    expect(decided.key).toBe("sess1:task-1");
-    expect(decided.kind).toBe("light_edit");
+    expect(decided).toMatchObject({ v: 2, key: "sess1:task-1", kind: "read_only", kindSource: "prompt" });
+    // The child's own report wins over the parent's "high".
+    expect(decided.requested).toEqual({ harness: "claude", model: OPUS, modelSource: "inherited", effort: "medium", effortSource: "reported" });
     expect(decided.reference?.routeId).toContain(OPUS);
     expect(outcome.type).toBe("outcome");
     const result = outcome as RouterShadowOutcomeRow;
@@ -479,11 +504,42 @@ describe("shadow router service", () => {
     service.observe("sess1", started("keep", { taskType: "subagent" }), session);
     service.observe("sess1", started("resumed", { taskType: "subagent", resumed: true }), session);
     service.observe("sess1", started("background", { taskType: "background" }), session);
-    await vi.waitFor(() => expect(readRows(dir).length).toBe(1));
+    for (const taskId of ["keep", "resumed", "background"]) {
+      service.observe("sess1", { type: "subagent_result", taskId, status: "completed", summary: "" }, session);
+    }
+    await vi.waitFor(() => expect(readRows(dir).length).toBe(2));
 
-    const rows = readRows(dir) as RouterShadowDecisionRow[];
+    const rows = readRows(dir).filter((row): row is RouterShadowDecisionRow => row.type === "decision");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.taskId).toBe("keep");
+  });
+
+  it("logs a follow-up run of the same task as its own decision and drops the replaced run's late result", async () => {
+    const dir = makeDir();
+    const service = makeService({ dir, snapshot: baseSnapshot() });
+    const session = { provider: "claude", model: OPUS, modelId: OPUS, reasoningEffort: "medium" };
+    const start = (toolUse: string) => service.observe("sess1", {
+      type: "subagent_started", taskId: "agent-1", taskType: "subagent", model: "inherit", description: "review the diff", parentToolUseId: toolUse,
+    }, session);
+    const result = (toolUse: string, totalTokens: number) => service.observe("sess1", {
+      type: "subagent_result", taskId: "agent-1", parentToolUseId: toolUse, status: "completed", summary: "", usage: { totalTokens },
+    }, session);
+
+    start("toolu-first");
+    // A correction of the same run (same tool call) is not a new run.
+    start("toolu-first");
+    // The parent messages the agent again before the first run's result lands.
+    start("toolu-followup");
+    result("toolu-first", 111);
+    result("toolu-followup", 222);
+    await vi.waitFor(() => expect(readRows(dir).length).toBe(3));
+
+    const rows = readRows(dir);
+    const decisions = rows.filter((row): row is RouterShadowDecisionRow => row.type === "decision").map((row) => row.key);
+    expect(decisions.sort()).toEqual(["sess1:agent-1", "sess1:agent-1#2"]);
+    const outcomes = rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ key: "sess1:agent-1#2", totalTokens: 222 });
   });
 
   it("writes nothing when the shadow log is disabled", () => {
@@ -642,7 +698,8 @@ describe("router efficiency", () => {
     expect(threads.switchedSegments.sameHarness).toBe(6);
     expect(threads.actualUsd).toBe(22.5);
     expect(threads.sameHarnessUsd).toBe(8.5);
-    const claudePlanRow = threads.byBilling.find((row) => row.billing === "claude plan");
+    // One row per plan account: the turns' unnamed `claude:local` login is the account the window was read on.
+    const claudePlanRow = threads.byBilling.find((row) => row.billing === "claude plan · claude:local");
     expect(claudePlanRow).toMatchObject({ actualUsd: 21, sameHarnessUsd: 7, actualPercent: 20, sameHarnessPercent: 6.67 });
     // The Go model stays on the Go plan, not the metered gateway of the same family.
     expect(threads.byBilling.find((row) => row.billing === "opencode-go plan")?.actualUsd).toBe(0.5);
@@ -672,7 +729,6 @@ describe("router efficiency", () => {
     }, session);
     start("finished");
     start("running");
-    await vi.waitFor(() => expect(readRows(dir).length).toBe(2));
     service.observe("parent", {
       type: "subagent_result",
       taskId: "finished",
@@ -680,14 +736,15 @@ describe("router efficiency", () => {
       summary: "",
       usage: { totalTokens: 4_000, costUsd: 3 },
     }, session);
-    await vi.waitFor(() => expect(readRows(dir).length).toBe(3));
+    // The running subagent is not logged until it finishes.
+    await vi.waitFor(() => expect(readRows(dir).length).toBe(2));
 
     const decision = readRows(dir).find((row): row is RouterShadowDecisionRow => row.type === "decision" && row.taskId === "finished")!;
     const saving = decision.sameHarness?.savingShare;
     expect(saving, "the finished subagent got a cheaper pick").toBeGreaterThan(0);
 
     const { subagents } = await service.efficiency({ days: 1 });
-    expect(subagents).toMatchObject({ decisions: 2, withOutcome: 1, sameHarnessPicks: 2, tokens: 4_000, pricedSubagents: 1, actualUsd: 3 });
+    expect(subagents).toMatchObject({ decisions: 1, withOutcome: 1, sameHarnessPicks: 1, tokens: 4_000, pricedSubagents: 1, actualUsd: 3, legacyDecisionsSkipped: 0 });
     expect(subagents.sameHarnessSaving).toBeCloseTo(saving!, 3);
     expect(subagents.sameHarnessUsd).toBeCloseTo(3 * (1 - saving!), 2);
   });
@@ -706,9 +763,10 @@ describe("router efficiency", () => {
 
   it("lists models from every open project, newest first, and skips a project that fails", async () => {
     let listModels: ((provider: "claude" | "opencode") => Promise<AgentChatModelInfo[]>) | null = null;
+    const dispose = vi.fn();
     const create = (getAvailableModels: typeof listModels) => {
       listModels = getAvailableModels;
-      return {} as ModelRouterService;
+      return { dispose } as unknown as ModelRouterService;
     };
     const info = (id: string, displayName: string): AgentChatModelInfo => ({ id, displayName, isDefault: false, modelId: id });
     const adeDir = makeDir();
@@ -729,6 +787,9 @@ describe("router efficiency", () => {
     newer.detach();
     expect((await listModels!("claude")).map((entry) => entry.displayName)).toEqual(["Opus (older project)"]);
     broken.detach();
+    expect(dispose).not.toHaveBeenCalled();
+    // The last scope to leave stops the router's timer.
     older.detach();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });

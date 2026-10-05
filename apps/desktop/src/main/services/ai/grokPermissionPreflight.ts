@@ -303,7 +303,7 @@ export type RunGrokAttestProbe = (args: {
 const spawnGrokAttestProbe: RunGrokAttestProbe = async ({ spawnPlan, debugFilePath, timeoutMs }) => {
   const connection = createAcpConnection({ dialect: grokDialect, spawnPlan });
   try {
-    const { response } = await initializeAcpConnection({
+    const response = await initializeAcpConnection({
       connection,
       dialect: grokDialect,
       timeoutMs,

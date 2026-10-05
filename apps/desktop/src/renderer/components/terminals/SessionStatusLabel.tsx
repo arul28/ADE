@@ -179,7 +179,7 @@ export function SessionStatusLabel({
         // Breathing is reserved for the one state that is actively changing.
         presentation.glyph === "working"
           && presentation.showsElapsed
-          && "motion-safe:animate-[ade-session-working-breathe_2600ms_ease-in-out_infinite]",
+          && "motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]",
       )}
       title={activityReportTitle ?? exactWakeTitle}
     >

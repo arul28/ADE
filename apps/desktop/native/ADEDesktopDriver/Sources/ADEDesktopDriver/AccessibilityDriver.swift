@@ -462,24 +462,51 @@ final class AccessibilityDriver {
     // Actions
     // -----------------------------------------------------------------------
 
-    /// A press, with a per-role fallback.
+    /// The first non-empty of title, label and value, for messages. An empty
+    /// title is common (web text keeps its words in the value), and quoting
+    /// it as `""` named nothing.
+    static func displayName(of record: ObservedElement) -> String {
+        for candidate in [record.title, record.label, record.value] {
+            if let text = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                return text.count > 60 ? String(text.prefix(59)) + "…" : text
+            }
+        }
+        return "untitled"
+    }
+
+    /// The actions a left click tries first, by role.
     ///
     /// Not every clickable thing answers `AXPress`: a menu bar item wants
     /// `AXShowMenu`, and a sheet's default button sometimes only answers
-    /// `AXConfirm`. Trying the element's own action list beats guessing.
-    func click(_ element: AXUIElement, record: ObservedElement) throws {
-        let preferred: [String]
-        switch record.role {
+    /// `AXConfirm`. Controls whose press IS a menu (menu bar items, menu and
+    /// pop-up buttons) keep `AXShowMenu`; everywhere else it opens a context
+    /// menu that a left click never does.
+    static func clickPreferredActions(forRole role: String) -> [String] {
+        switch role {
         case kAXMenuBarItemRole, kAXMenuButtonRole, kAXPopUpButtonRole:
-            preferred = ["AXPress", "AXShowMenu"]
+            return ["AXPress", "AXShowMenu"]
         case kAXTextFieldRole, kAXTextAreaRole:
-            preferred = ["AXPress", "AXConfirm"]
+            return ["AXPress", "AXConfirm"]
         default:
-            preferred = ["AXPress", "AXConfirm", "AXShowMenu", "AXOpen"]
+            return ["AXPress", "AXConfirm", "AXOpen"]
         }
+    }
+
+    /// The actions a left click never performs as a last resort, whatever the
+    /// element says it can do.
+    static let clickNeverActions: Set<String> = [
+        "AXShowAlternateUI", "AXShowDefaultUI", "AXShowMenu",
+        "AXCancel", "AXDecrement", "AXIncrement", "AXScrollToVisible",
+    ]
+
+    /// A press, with a per-role fallback.
+    ///
+    /// Trying the element's own action list beats guessing when no preferred
+    /// action answers.
+    func click(_ element: AXUIElement, record: ObservedElement) throws {
         // A timed-out perform was delivered: see `AXCallResult.wasDelivered`.
         // Trying the next action after one would press the element twice.
-        for action in preferred where record.actions.contains(action) {
+        for action in Self.clickPreferredActions(forRole: record.role) where record.actions.contains(action) {
             if Self.perform(element, action) { return }
         }
         // A click on a text field or area means "put the caret here". It has
@@ -489,13 +516,14 @@ final class AccessibilityDriver {
             let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             if AXCallResult.wasDelivered(rawError: focused.rawValue) { return }
         }
-        // Last resort: whatever the element says it can do, in its own order.
-        for action in record.actions where action != "AXShowAlternateUI" && action != "AXShowDefaultUI" {
+        // Last resort: whatever the element says it can do, in its own order,
+        // except the actions a left click never performs.
+        for action in record.actions where !Self.clickNeverActions.contains(action) {
             if Self.perform(element, action) { return }
         }
         throw DriverError(
             code: DriverErrorCode.invalidArgument,
-            message: "\(record.role) \"\(record.title ?? record.label ?? "untitled")\" answered no press action."
+            message: "\(record.role) \"\(Self.displayName(of: record))\" answered no press action."
         )
     }
 

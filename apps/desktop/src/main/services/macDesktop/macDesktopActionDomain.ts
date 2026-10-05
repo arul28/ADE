@@ -14,6 +14,7 @@
 
 import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+  MAC_DESKTOP_MODIFIERS,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   type MacDesktopInputMode,
@@ -53,8 +54,10 @@ type OpaqueService = Record<string, (args?: unknown) => unknown>;
  */
 class MacDesktopUnsupportedPlatformError extends Error {
   readonly code = MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE;
-  constructor() {
-    super(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: ${MAC_DESKTOP_MACOS_ONLY_MESSAGE}`);
+  constructor(reason?: string | null) {
+    // The status's own reason names the host ("needs a Windows host", "the
+    // driver is missing"); the macOS sentence is the fallback.
+    super(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: ${reason?.trim() || MAC_DESKTOP_MACOS_ONLY_MESSAGE}`);
     this.name = "MacDesktopUnsupportedPlatformError";
   }
 }
@@ -162,6 +165,22 @@ function requiredTargetOf(source: unknown, label: string, action: string): MacDe
   return target;
 }
 
+/**
+ * The trusted chat-less caller's holder (`MacDesktopTrustedHolderArgs`). Set
+ * only by the RPC layer, which strips it from every agent caller.
+ */
+function trustedHolderId(args: unknown): { holderId?: string } {
+  const value = optionalString(args, "holderId");
+  return value ? { holderId: value } : {};
+}
+
+function windowActionArgs(args: unknown, action: string): { laneId: string; windowId: number; chatSessionId?: string; holderId?: string } {
+  const windowId = optionalNumber(args, "windowId");
+  if (windowId == null) throw new Error(`macDesktop.${action} requires windowId.`);
+  const chat = optionalString(args, "chatSessionId");
+  return { laneId: requiredLaneId(args, action), windowId, ...(chat ? { chatSessionId: chat } : {}), ...trustedHolderId(args) };
+}
+
 export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): OpaqueService | null {
   const service: MacDesktopServiceApi | null = runtime.macDesktopService ?? null;
   if (!service) return null;
@@ -176,7 +195,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
    */
   const supported = async (): Promise<void> => {
     const status = await service.getStatus();
-    if (!status.supported) throw new MacDesktopUnsupportedPlatformError();
+    if (!status.supported) throw new MacDesktopUnsupportedPlatformError(status.unsupportedReason);
   };
   const gated = <T>(run: () => Promise<T>): Promise<T> => supported().then(run);
   const chatSessionId = (args: unknown): { chatSessionId?: string } => {
@@ -191,9 +210,9 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
    * has to be able to say which holder it is. It authorizes nothing by itself —
    * the service still refuses an id that does not hold the lease.
    */
-  const controllerId = (args: unknown): { controllerId?: string } => {
+  const controllerId = (args: unknown): { controllerId?: string; holderId?: string } => {
     const value = optionalString(args, "controllerId");
-    return value ? { controllerId: value } : {};
+    return { ...(value ? { controllerId: value } : {}), ...trustedHolderId(args) };
   };
   return {
     getStatus: (args?: unknown) => service.getStatus({
@@ -221,10 +240,52 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       }
       return service.requestPermission({ which });
     }),
-    start: (args?: unknown) => gated(() => service.start({
-      laneId: requiredLaneId(args, "start"),
-      resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
-      laneName: optionalString(args, "laneName"),
+    start: (args?: unknown) => gated(() => {
+      // An agent may only start a PRIVATE screen. The Mode B consent lives in
+      // its own CTO-only action (`useSharedDesktop`) so an agent cannot turn the
+      // user's own desktop into a lane screen by passing a boolean, and the
+      // service refuses a shared create that arrives without the field anyway.
+      const requestedMode = enumOf(args, "seatMode", ["private", "shared"] as const, "start");
+      if (requestedMode === "shared") {
+        throw new Error("macDesktop.start is private-only; a shared desktop needs the user's consent via macDesktop.useSharedDesktop.");
+      }
+      return service.start({
+        laneId: requiredLaneId(args, "start"),
+        resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
+        laneName: optionalString(args, "laneName"),
+        ...(requestedMode ? { seatMode: requestedMode } : {}),
+        ...chatSessionId(args),
+      });
+    }),
+    /**
+     * Windows only, CTO-only: the user consented to Mode B for this lane. The
+     * service refuses the shared create without `sharedDesktopConsent`, so this
+     * is the one path that can set it — and an agent cannot reach a CTO action.
+     */
+    useSharedDesktop: (args?: unknown) => gated(() => service.start({
+      laneId: requiredLaneId(args, "useSharedDesktop"),
+      seatMode: "shared",
+      sharedDesktopConsent: true,
+      ...chatSessionId(args),
+    })),
+    /**
+     * Windows only: the wizard's one admin step. CTO-only: it raises a Windows
+     * admin/Remote Desktop prompt at whoever is at the PC, which a session-bound
+     * agent cannot see. A trusted CTO client on any device can approve;
+     * UAC and password entry remain native dialogs on the Windows host.
+     */
+    setupWindows: (args?: unknown) => gated(() => service.setupWindowsDesktop({
+      allowPrompt: optionalBoolean(args, "allowPrompt") ?? false,
+      savePassword: optionalBoolean(args, "savePassword") ?? false,
+      forgetPassword: optionalBoolean(args, "forgetPassword") ?? false,
+    })),
+    /**
+     * Windows only: the user approved taking the private screen from its holder.
+     * CTO-only: it signs the old holder out. The pane's Take over button and the
+     * thread's ask card are the callers; an agent asks with a card instead.
+     */
+    takeoverWindows: (args?: unknown) => gated(() => service.takeoverWindowsDesktop({
+      laneId: requiredLaneId(args, "takeoverWindows"),
       ...chatSessionId(args),
     })),
     stop: (args?: unknown) => gated(() => service.stop({
@@ -241,6 +302,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         target: requiredString(args, "target", "open"),
         args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
         ...chatSessionId(args),
+        ...trustedHolderId(args),
       });
     }),
     claimWindow: (args?: unknown) => gated(() => {
@@ -259,6 +321,23 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     quitApp: (args?: unknown) => gated(() => service.quitApp({
       laneId: requiredLaneId(args, "quitApp"),
       app: optionalString(args, "app"),
+    })),
+    /**
+     * Windows only: raise, minimize or close one of the lane's own windows.
+     * The service refuses another lane's window and the user's.
+     */
+    focusWindow: (args?: unknown) => gated(() => service.focusWindow(windowActionArgs(args, "focusWindow"))),
+    minimizeWindow: (args?: unknown) => gated(() => service.minimizeWindow(windowActionArgs(args, "minimizeWindow"))),
+    closeWindow: (args?: unknown) => gated(() => service.closeWindow(windowActionArgs(args, "closeWindow"))),
+    /**
+     * Windows only, agent-callable: raises a card in the calling chat asking
+     * the user to allow the main desktop, and starts the shared seat on yes.
+     * The consent is the user's answer; `useSharedDesktop` stays CTO-only.
+     */
+    requestSharedDesktop: (args?: unknown) => gated(() => service.requestSharedDesktop({
+      laneId: requiredLaneId(args, "requestSharedDesktop"),
+      reason: optionalString(args, "reason"),
+      ...chatSessionId(args),
     })),
     observe: (args?: unknown) => gated(() => service.observe({
       laneId: requiredLaneId(args, "observe"),
@@ -295,7 +374,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     }),
     press: (args?: unknown) => gated(() => {
       const modifiers = objectArgs(args).modifiers;
-      const valid = ["cmd", "shift", "option", "control"] as const;
+      const valid = MAC_DESKTOP_MODIFIERS;
       const parsed = Array.isArray(modifiers)
         ? modifiers.map((entry) => {
           const match = valid.find((value) => value === entry);

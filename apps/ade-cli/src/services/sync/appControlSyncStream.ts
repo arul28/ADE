@@ -110,7 +110,15 @@ export type AppControlSyncSource = {
    * publishes a fresh capture as a `frame` event, which fans out as usual.
    */
   getLatestFrame?: (args: { laneId: string }) => Promise<AppControlScreencastFrame | null>;
+  /**
+   * Which lanes this module has viewers for. The service streams a lane's
+   * screencast only while something wants its frames.
+   */
+  setFrameDemand?: (sourceId: string, laneIds: readonly string[]) => void;
 };
+
+/** This module's name in the service's frame-demand registry. */
+const APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE = "sync-stream";
 
 export type AppControlSyncStreamDeps = {
   logger: Logger;
@@ -221,6 +229,11 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
   const pendingLimitBytes = Math.max(0, deps.pendingLimitBytes ?? APP_CONTROL_SYNC_STREAM_PENDING_LIMIT_BYTES);
 
   const subscriptions = new Map<string, Subscription>();
+  const reportFrameDemand = (): void => {
+    const laneIds = new Set<string>();
+    for (const subscription of subscriptions.values()) laneIds.add(subscription.laneId);
+    deps.source.setFrameDemand?.(APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE, [...laneIds]);
+  };
   /**
    * Subscribe calls still awaiting the status read. An unsubscribe or a
    * socket close that lands meanwhile marks the entry cancelled, so the call
@@ -379,6 +392,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
     if (subscription.ended) return;
     subscription.ended = true;
     subscriptions.delete(subscription.key);
+    reportFrameDemand();
     cancelTimer(subscription);
     subscription.pending = null;
     if (options.notify) {
@@ -583,6 +597,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
         ended: false,
       };
       subscriptions.set(key, subscription);
+      reportFrameDemand();
       deps.logger.debug("app_control.sync_stream_subscribed", {
         subscriptionId,
         laneId,
@@ -592,12 +607,18 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       });
       // The newest frame goes out on the next tick, after the command reply,
       // so the client has registered its handler for this subscription id.
-      if (latest && (!session || latest.frame.sessionId === session.id)) {
+      // A lane nobody was watching streamed nothing, so its cached frame can be
+      // minutes old; a fresh capture replaces it when one can be taken.
+      const latestUsable = latest
+        && (!session || latest.frame.sessionId === session.id)
+        && (now() - latest.receivedAtMs < APP_CONTROL_SYNC_STREAM_LIVE_WINDOW_MS || !deps.source.getLatestFrame);
+      if (latest && latestUsable) {
         subscription.pending = latest.frame;
         schedule(subscription, 1);
       } else if (session && deps.source.getLatestFrame) {
-        // No picture yet (a still app, or frames from before this module
-        // listened). Ask for one; it arrives as a frame event.
+        // No current picture (a still app, a lane that was paused, or frames
+        // from before this module listened). Ask for one; it arrives as a frame
+        // event.
         void Promise.resolve()
           .then(() => deps.source.getLatestFrame?.({ laneId }))
           .then((frame) => {

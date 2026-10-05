@@ -5,6 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { parseProofCitationUrl } from "../../../shared/proofCitation";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { cn } from "../ui/cn";
@@ -156,6 +157,8 @@ function ChatMarkdownAnchor({
 }): ReactNode {
   const openWorkspacePath = useChatWorkspacePathOpener();
   const workspacePath = resolveWorkspacePathFromHref(href);
+  // A `localhost` link means the chat's machine, not necessarily this one.
+  const runtimePin = useChatRuntimeScope().pin;
 
   // Allowing `file:` and drive schemes past the sanitizer (above) means an href
   // that is NEITHER a resolvable workspace path NOR a real URL — `file:///tmp`,
@@ -192,7 +195,7 @@ function ChatMarkdownAnchor({
       className={className}
       onClick={(event) => {
         event.preventDefault();
-        openLinkFromUi(href, event);
+        openLinkFromUi(href, event, { runtimePin });
       }}
     >
       {children}

@@ -12,7 +12,7 @@ import { FolderSimple, Key, Terminal, Warning, Wrench } from "@phosphor-icons/re
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
-import { ACP_PROVIDER_METADATA, COPILOT_NPM_PACKAGE_SPEC } from "../../../../shared/acpProviderMetadata";
+import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../../shared/acpProviderMetadata";
 import { CopyableCommand, SubsectionTitle } from "./providerUi";
 import type {
   AcpSettingsProviderId,
@@ -60,16 +60,16 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "qwen",
     tagline: "Uses the Qwen Code CLI you already set up.",
     logoFamily: "qwen",
-    installCommand: "npm install -g @qwen-code/qwen-code",
-    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. The `qwen auth` subcommand is removed in 0.24.0.",
-    setup: "Install Qwen Code 0.24.0 and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
+    credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. Recent releases no longer ship the `qwen auth` subcommand.",
+    setup: "Install Qwen Code and configure it in that CLI. ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,
     id: "kimi",
     tagline: "Uses your Moonshot account through the kimi CLI.",
     logoFamily: "kimi",
-    installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
     credentialSource: "Signed in through `kimi login`; stored in its config.toml. ADE does not write that file.",
     setup: "Install Kimi Code and run `kimi login` in a terminal. Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
     // Stated plainly rather than hidden behind a tooltip: Kimi's usage signals
@@ -82,7 +82,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    installCommand: "npm install -g @xai-official/grok@1.0.34",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
     credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
     setup: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
   },
@@ -91,7 +91,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "copilot",
     tagline: "Uses your GitHub account through the copilot CLI.",
     logoFamily: "github-copilot",
-    installCommand: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
   },
@@ -100,7 +100,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "devin",
     tagline: "Your local Devin CLI.",
     logoFamily: "devin",
-    installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    installCommand: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
     credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
     setup: "Install the devin CLI, then run `devin auth login`.",
     degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",

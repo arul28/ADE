@@ -37,6 +37,8 @@ import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteS
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { cn } from "../ui/cn";
+import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
@@ -129,6 +131,7 @@ import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   ADE_OPEN_DEEPLINK_EVENT,
+  setWindowRuntimeBinding,
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
@@ -237,13 +240,14 @@ function isOverlayRoutePath(pathname: string): boolean {
     || pathname === "/history" || pathname.startsWith("/history/");
 }
 
-const HIDDEN_PAGE_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  zIndex: -1,
-  opacity: 0,
-  pointerEvents: "none",
-};
+/**
+ * The page an overlay holds when the app opens straight onto it, so the
+ * sidebar is never empty. History is driven by the lane list, so it holds
+ * Lanes; CTO holds Work.
+ */
+function defaultHeldRouteForOverlay(pathname: string): string {
+  return pathname === "/history" || pathname.startsWith("/history/") ? "/lanes" : "/work";
+}
 
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -373,8 +377,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const overlayOpen = isOverlayRoutePath(pathname);
   // The last page route that was not CTO or History. While one of those is
   // open, this page stays mounted (hidden) and holds the sidebar. When the app
-  // opens straight onto CTO or History there is no such page, so none is held.
-  const [heldRoute, setHeldRoute] = React.useState<string | null>(() => overlayOpen ? null : route);
+  // opens straight onto CTO or History, it holds that overlay's default page,
+  // so the sidebar shows a list instead of an empty pane.
+  const [heldRoute, setHeldRoute] = React.useState<string>(() => overlayOpen ? defaultHeldRouteForOverlay(pathname) : route);
   const pageRoute = overlayOpen ? heldRoute : route;
   const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
   const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
@@ -406,13 +411,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!overlayOpen) setHeldRoute(route);
   }, [overlayOpen, route]);
-
-  React.useEffect(() => {
-    const node = pageSurfaceRef.current;
-    if (!node) return;
-    if (overlayOpen) node.setAttribute("inert", "");
-    else node.removeAttribute("inert");
-  }, [overlayOpen, pagePath]);
 
   React.useEffect(() => {
     if (active && isWorkRoute) return;
@@ -448,19 +446,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     };
   }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
-  React.useEffect(() => {
-    const node = workSurfaceRef.current;
-    if (!node) return;
-    if (isWorkRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isWorkRoute, shouldRenderWork]);
-
-  React.useEffect(() => {
-    const node = lanesSurfaceRef.current;
-    if (!node) return;
-    if (isLanesRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isLanesRoute, shouldRenderLanes]);
+  useParkedSurfaceFocus(workSurfaceRef, !isWorkRoute, shouldRenderWork);
+  useParkedSurfaceFocus(lanesSurfaceRef, !isLanesRoute, shouldRenderLanes);
+  useParkedSurfaceFocus(pageSurfaceRef, overlayOpen, pagePath);
 
   const workSurface = shouldRenderWork ? (
     <Routes location={visibleWorkRoute}>
@@ -468,9 +456,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={workSurfaceRef}
           className="h-full min-h-0 w-full"
-          aria-hidden={!isWorkRoute}
-          data-ade-animation-state={isWorkRoute ? "running" : "paused"}
-          style={!isWorkRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isWorkRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -490,9 +476,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={lanesSurfaceRef}
           className="ade-project-page h-full min-h-0 w-full"
-          aria-hidden={!isLanesRoute}
-          data-ade-animation-state={isLanesRoute ? "running" : "paused"}
-          style={!isLanesRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isLanesRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -517,8 +501,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             <div
               ref={pageSurfaceRef}
               className="ade-project-page h-full min-h-0 w-full"
-              aria-hidden={overlayOpen || undefined}
-              style={overlayOpen ? HIDDEN_PAGE_STYLE : undefined}
+              {...parkedSurfaceProps(overlayOpen)}
             >
               <ProjectSidebarHold held={overlayOpen}>
                 <Routes location={pageRoute}>
@@ -619,37 +602,25 @@ function ProjectSurface({
     ) {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
+    // A surface seeded from the lane cache shows whatever status that cache
+    // held, from any age. Measure it on this machine before anyone reads it.
+    state.requestLaneStatusRead();
     if (!state.keybindings) {
       void state.refreshKeybindings().catch(() => {});
     }
     void state.refreshProviderMode().catch(() => {});
   }, [active, projectBinding.kind, store]);
 
-  React.useEffect(() => {
-    const node = surfaceRef.current;
-    if (!node) return;
-    if (active) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [active]);
+  useParkedSurfaceFocus(surfaceRef, !active);
 
   return (
     <AppStoreProvider store={store}>
       <div
         ref={surfaceRef}
         className="h-full min-h-0 w-full"
-        aria-hidden={!active}
-        data-ade-animation-state={active ? "running" : "paused"}
+        {...parkedSurfaceProps(!active)}
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
-        style={!active
-          ? {
-            position: "absolute",
-            inset: 0,
-            zIndex: -1,
-            opacity: 0,
-            pointerEvents: "none",
-          }
-          : undefined}
       >
         <ProjectRouteContent active={active} route={route} />
       </div>
@@ -663,8 +634,14 @@ function ProjectTabHost() {
   const webMode = isWebClientMode();
   const activeProject = useAppStore((s) => s.project);
   const activeProjectBinding = useAppStore((s) => s.projectBinding);
+  // A `localhost` link means the bound machine's port; link routing reads this.
+  React.useEffect(() => {
+    setWindowRuntimeBinding(activeProjectBinding ?? null);
+  }, [activeProjectBinding]);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
+  const standaloneSettingsOpen = useAppStore((s) => s.standaloneSettingsOpen);
+  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
@@ -701,6 +678,10 @@ function ProjectTabHost() {
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
+  // Settings with no project open: the welcome screen's own Settings entry
+  // sends you here, and the machine-scoped sections of the page are the only
+  // ones that can render, so `SettingsPage` runs in its standalone mode.
+  const isSettingsRoute = location.pathname === "/settings";
   // The Hub is retired: the hosted client's landing surface is the shared
   // project welcome page. Old links and restored tabs still arrive here.
   const isLegacyHubRoute = location.pathname === "/hub";
@@ -863,7 +844,13 @@ function ProjectTabHost() {
       const activeEntry = projectEntries.find((entry) => entry.surfaceKey === activeSurfaceKey);
       if (activeEntry) warm.unshift(activeEntry);
     }
-    return warm;
+    // Recency picks WHICH surfaces stay warm; it must not set their DOM
+    // order. Rendered in recency order, every switch moved the surfaces'
+    // nodes, and a moved node is detached and re-attached: its whole tree
+    // was restyled and laid out again, and every scroll container in it came
+    // back at the top. Tab order is stable across switches.
+    const tabOrder = new Map(projectEntries.map((entry, index) => [entry.surfaceKey, index]));
+    return warm.sort((left, right) => (tabOrder.get(left.surfaceKey) ?? 0) - (tabOrder.get(right.surfaceKey) ?? 0));
   }, [activeSurfaceKey, projectEntries]);
 
   // Inside a project, the account lives in Settings. `/account` (sign-in
@@ -941,7 +928,8 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
+  if (!isPersonalChatsRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
     // along with the welcome page — this is the one state where the machine
@@ -1009,6 +997,23 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <AccountPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {/* Standalone Settings: no project is open, so there is no project
+          surface to host it. It shows the account and this-computer sections
+          and offers a Back to the new-project screen. */}
+      {standaloneSettingsRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <SettingsPage
+              active
+              standalone
+              onClose={() => {
+                setStandaloneSettingsOpen(false);
+                navigate("/work", { replace: true });
+              }}
+            />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
@@ -1489,7 +1494,13 @@ export function App() {
     <LaunchGate>
       <Router>
         <div
-          className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
+          className={cn(
+            "h-full bg-bg text-fg font-sans antialiased",
+            // See `.ade-app-selection` in index.css. Browsers that serve the
+            // hosted web client may not inherit ::selection, so it keeps the
+            // descendant rule.
+            isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
+          )}
         >
           <OnboardingBootstrap />
           {/* Windows beta notice: shown on every start of every Windows install

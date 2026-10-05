@@ -84,12 +84,13 @@ function withLogins(
 }
 
 describe("pickInstanceForNewChat", () => {
-  it("picks the account with the highest use-before-reset rate", () => {
-    // Equal five-hour room (no scaling). `work` has the more urgent weekly
-    // room, so it wins even though `claude` is the default.
+  it("keeps the default account when the weekly resets and five-hour room tie", () => {
+    // Both weekly windows reset at the same moment and both have the same
+    // five-hour room, so the ranking cannot separate them. The tie goes to the
+    // default account (`claude`), listed second, not to whichever came first.
     const result = pickInstanceForNewChat({
       provider: "claude",
-      instances: [instance("claude"), instance("work")],
+      instances: [instance("work"), instance("claude")],
       accounts: accounts("claude", "work"),
       windowsByAccountId: windows(
         windowSet("claude", { fiveHour: 20, weekly: 60 }),
@@ -98,41 +99,45 @@ describe("pickInstanceForNewChat", () => {
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "use-before-reset rate" });
+    expect(result).toEqual({ instanceId: "claude", reason: "soonest weekly reset" });
   });
 
   it("prefers the account whose weekly room expires sooner", () => {
-    // Equal room; the window resetting tomorrow must be spent before the one
-    // resetting in six days.
+    // Equal room; `work`'s window resets tomorrow and `claude`'s in six days,
+    // so `work` is spent first even though `claude` is the default account.
     const result = pickInstanceForNewChat({
       provider: "claude",
       instances: [instance("claude"), instance("work")],
       accounts: accounts("claude", "work"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
-        windowSet("work", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
+        windowSet("claude", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
+        windowSet("work", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
       ),
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "claude", reason: "use-before-reset rate" });
+    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
   });
 
-  it("scales an account down when less than half of its five-hour room is left", () => {
-    // `claude` has more weekly room, but only 30% of its five-hour window is
-    // left, so a chat there stops soon. `work`'s usable room wins.
+  it("ranks a nearly-spent five-hour window last when it is not about to reset", () => {
+    // `claude` has the sooner weekly reset, so it would win on that alone. But
+    // only 20% of its five-hour window is left and that window is two hours
+    // away from resetting, so a chat there stops within the hour. `work` wins.
     const result = pickInstanceForNewChat({
       provider: "claude",
       instances: [instance("claude"), instance("work")],
       accounts: accounts("claude", "work"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 70, weekly: 20 }),
-        windowSet("work", { fiveHour: 20, weekly: 40 }),
+        windowSet("claude", { fiveHour: 80, weekly: 90 }, {
+          weekly: WEEK_START + 24 * 60 * 60_000,
+          fiveHour: WEEK_START + 2 * 60 * 60_000,
+        }),
+        windowSet("work", { fiveHour: 20, weekly: 40 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
       ),
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "use-before-reset rate" });
+    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
   });
 
   it("treats an idle account with no five-hour window as having full five-hour room", () => {
@@ -147,7 +152,7 @@ describe("pickInstanceForNewChat", () => {
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "use-before-reset rate" });
+    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
   });
 
   it("skips a signed-out login and keeps balancing on the account that still works", () => {
@@ -164,7 +169,7 @@ describe("pickInstanceForNewChat", () => {
 
     expect(result).toEqual({
       instanceId: "claude",
-      reason: "use-before-reset rate",
+      reason: "soonest weekly reset",
       signedOutInstanceIds: ["work"],
     });
   });
@@ -231,7 +236,7 @@ describe("pickAlternateInstanceForLimitedChat", () => {
     })).toEqual({
       instanceId: "work",
       label: "Work",
-      reason: "use-before-reset rate",
+      reason: "soonest weekly reset",
     });
   });
 

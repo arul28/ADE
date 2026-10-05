@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { GitBranch } from "@phosphor-icons/react";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -9,6 +10,7 @@ import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { historyCommitsPath } from "../history/historyUrlHydration";
 
 /**
  * The lane menu, hosted as a submenu of a singleton lane's session menu.
@@ -62,6 +64,7 @@ export function LaneActionsSubmenu({
   workPinnedLaneIds?: string[];
   workPinLaneId?: string;
 }) {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectBinding = useAppStore((s) => s.projectBinding);
@@ -105,6 +108,7 @@ export function LaneActionsSubmenu({
       onClose,
       ...actions,
       onStartChatInLane: (id) => actions.onStartChatInLane(id, { machineId: startChatMachineId }),
+      onOpenHistory: (id) => navigate(historyCommitsPath(id, isForeignLane ? startChatMachineId : null)),
       onToggleWorkPin,
       workPinnedLaneIds,
       workPinLaneId,
@@ -120,6 +124,7 @@ export function LaneActionsSubmenu({
     lane,
     laneId,
     menuLanesById,
+    navigate,
     onClose,
     onToggleWorkPin,
     projectBinding,

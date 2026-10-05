@@ -1,4 +1,5 @@
 import React from "react";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
   Brain,
@@ -18,6 +19,7 @@ import {
   UsersThree,
   Warning,
   XCircle,
+  Target,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -45,6 +47,8 @@ import {
   sessionActivityInstant,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
@@ -55,6 +59,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel } from "./useLaneWorkToolUse";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -302,6 +307,12 @@ function branchDisplayLabel(branchName: string): string {
   return branchName.startsWith("ade/") ? branchName.slice("ade/".length) : branchName;
 }
 
+/** "Goal: <objective>", with the status when it is not plain active. */
+function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
+  const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
+  return `Goal${status}: ${goal.objective}`;
+}
+
 /** `·` between the adaptive "where" line's parts. Decoration, never read out. */
 function WhereSeparator() {
   return (
@@ -443,7 +454,9 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   return <span className="min-w-0 truncate">{text ?? ""}</span>;
 }
 
-export const SessionCard = React.memo(function SessionCard({
+// The list rebuilds each card's handlers on every render (session updates,
+// timers); with them proxied a card re-renders only when what it shows changes.
+export const SessionCard = memoWithLatestHandlers(function SessionCard({
   session,
   lane,
   isSelected,
@@ -467,7 +480,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
-  laneMacDesktop = false,
+  laneDesktop = null,
   laneCloud = null,
   laneAppControl = false,
   laneBrowserTabs = 0,
@@ -543,8 +556,11 @@ export const SessionCard = React.memo(function SessionCard({
    * with `showLaneIdentity`; elsewhere the lane header shows it.
    */
   laneAppleDevice?: LaneAppleDevice | null;
-  /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
-  laneMacDesktop?: boolean;
+  /**
+   * The screen the card's lane holds — the Mac Desktop, or a private or shared
+   * Windows seat — or null when it holds none. Shown like `laneAppleDevice`.
+   */
+  laneDesktop?: DesktopSeatKind | null;
   /** A headerless lane that lives on a cloud: its card carries the cloud mark. */
   laneCloud?: "devin" | "cursor" | null;
   /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
@@ -888,7 +904,7 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+        {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
         {laneAppControl ? (
           <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
         ) : null}
@@ -1214,6 +1230,13 @@ export const SessionCard = React.memo(function SessionCard({
       mono: true,
     });
   }
+  if (session.activeGoal) {
+    hoverRows.push({
+      id: "goal",
+      icon: <Target size={13} weight="duotone" className="text-amber-300/70" />,
+      value: sessionGoalTitle(session.activeGoal),
+    });
+  }
   if (session.nextWakeAt) {
     const wakeIn = formatFutureDuration(Date.parse(session.nextWakeAt), Date.now());
     // Neutral, never amber: a scheduled wake is the agent's move, not yours.
@@ -1306,8 +1329,25 @@ export const SessionCard = React.memo(function SessionCard({
      and machine marks: identity-adjacent state that never spends a status hue
      and never competes with the status slot for the eye. Glyph-only, with the
      sentence in the title and the hover card — the existing vocabulary. */
-  const indicatorGlyph = rowIndicators.length > 0 ? (
+  // A chat working toward a goal says so, in the same quiet glyph cluster.
+  const activeGoal = session.activeGoal ?? null;
+  const goalTitle = activeGoal ? sessionGoalTitle(activeGoal) : null;
+  const indicatorGlyph = rowIndicators.length > 0 || activeGoal ? (
     <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
+      {activeGoal && goalTitle ? (
+        <span
+          data-testid="session-goal-indicator"
+          role="img"
+          title={goalTitle}
+          aria-label={goalTitle}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            activeGoal.status === "active" ? "text-amber-300/80" : "text-muted-fg/55",
+          )}
+        >
+          <Target size={11} weight="duotone" />
+        </span>
+      ) : null}
       {rowIndicators.map((indicator) => (
         <span
           key={indicator.kind}
@@ -1659,6 +1699,12 @@ export const SessionCard = React.memo(function SessionCard({
         // Source for the Cursor-style work grid: drop onto a session / the work
         // area to add this chat or CLI session to a grid.
         event.dataTransfer.setData(GRID_SESSION_DND_MIME, session.id);
+        // Dropped on a composer, the row becomes an @-mention of itself.
+        event.dataTransfer.setData(CHAT_MENTION_DND_MIME, JSON.stringify({
+          kind: isChatToolType(session.toolType) ? "chat" : "terminal",
+          id: session.id,
+          title: session.title?.trim() || session.id,
+        }));
         event.dataTransfer.effectAllowed = "copyMove";
       }}
     >

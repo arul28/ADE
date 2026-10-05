@@ -1,4 +1,9 @@
 import {
+  configureExternalChatStore,
+  rememberExternalChat,
+  setExternalParentRouter,
+} from "./externalChats";
+import {
   AgentChatEventEnvelope,
   PendingInputRequest,
   SESSION_STALE_AFTER_MS,
@@ -1148,6 +1153,37 @@ describe("createAgentChatService", () => {
       expect(takeover.spawnKind).toBe("peer");
       expect(takeover.subagentTakeoverPromptShownAt).toBeTruthy();
       expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
+    });
+
+    it("keeps a subagent whose parent lives in another project or on another machine", async () => {
+      // The brain installs a router and records where such a parent lives; a
+      // child of it is not an orphan, or it would stop waking its parent.
+      configureExternalChatStore(null);
+      const restoreRouter = setExternalParentRouter({ route: () => true });
+      try {
+        rememberExternalChat("remote:device-a:parent-a", {
+          scope: null,
+          machineKey: "machine-a",
+          machineName: "Mac mini",
+          permissionLevel: "full-auto",
+        });
+        const { service } = createService();
+        const child = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          orchestrationParentSessionId: "remote:device-a:parent-a",
+          spawnKind: "subagent",
+        });
+
+        const summary = await service.getSessionSummary(child.id);
+        expect(summary?.spawnKind).toBe("subagent");
+        expect(summary?.orchestrationParentSessionId).toBe("remote:device-a:parent-a");
+        expect(summary?.subagentTakeoverPromptShownAt ?? null).toBeNull();
+      } finally {
+        restoreRouter();
+        configureExternalChatStore(null);
+      }
     });
 
     it("dismissing takeover on an orphan converts ownership and stays dismissed", async () => {
@@ -3907,14 +3943,20 @@ describe("createAgentChatService", () => {
       const sig = { signal: new AbortController().signal } as any;
       // Both finish with distinctive messages; A's generic notification must
       // keep A's hook result and never steal B's.
-      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-B", agent_type: "reviewer", last_assistant_message: "B-SECRET-RESULT" } as any, undefined as any, sig);
-      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-A", agent_type: "reviewer", last_assistant_message: "A-REAL-RESULT" } as any, undefined as any, sig);
+      // Each hook also reports the effort its child ran at (Claude's task frames carry none).
+      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-B", agent_type: "reviewer", last_assistant_message: "B-SECRET-RESULT", effort: { level: "max" } } as any, undefined as any, sig);
+      await stopHook!({ hook_event_name: "SubagentStop", agent_id: "agent-A", agent_type: "reviewer", last_assistant_message: "A-REAL-RESULT", effort: { level: "low" } } as any, undefined as any, sig);
       stopHooksFired!();
 
       const aResult = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-A");
       expect(JSON.stringify(aResult.event)).not.toContain("B-SECRET-RESULT");
       expect((aResult.event as any).summary).toBe("A-REAL-RESULT");
+      expect((aResult.event as any).reasoningEffort).toBe("low");
+      // The effort reaches the agent's row before it finishes, without renaming it.
+      const bProgress = events.find((e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "task-B" && (e.event as any).reasoningEffort);
+      expect(bProgress?.event).toMatchObject({ reasoningEffort: "max" });
+      expect((bProgress?.event as any).description).toBeUndefined();
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();

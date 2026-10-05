@@ -69,10 +69,10 @@ export function ChatHandoffDialogs({
         open={localOpen}
         onClose={onCloseLocal}
         title="Local handoff"
-        className="flex h-[min(720px,86vh)] w-[min(460px,94vw)] flex-col overflow-hidden"
+        className="flex max-h-[min(720px,86vh)] w-[min(460px,94vw)] flex-col overflow-hidden"
       >
         {localContent ?? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
             <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
             <button type="button" className={CLOSE_BUTTON_CLASS} onClick={onCloseLocal}>
               Close

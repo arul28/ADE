@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   detectLaneBranchDrift,
-  laneNameAdvertisesBranch,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
 
@@ -187,19 +186,5 @@ describe("detectLaneBranchDrift", () => {
     expect(detectLaneBranchDrift({ expectedBranchRef: "ade/feature", headBranchRef: "  " })).toBeNull();
     expect(detectLaneBranchDrift({ expectedBranchRef: null, headBranchRef: "hotfix-auth" })).toBeNull();
     expect(detectLaneBranchDrift({ expectedBranchRef: undefined, headBranchRef: undefined })).toBeNull();
-  });
-});
-
-describe("laneNameAdvertisesBranch", () => {
-  it("matches the full ref and its last segment", () => {
-    expect(laneNameAdvertisesBranch("ade/fix-auth", "ade/fix-auth")).toBe(true);
-    expect(laneNameAdvertisesBranch("fix-auth", "ade/fix-auth")).toBe(true);
-    expect(laneNameAdvertisesBranch("Fix-Auth", "ade/fix-auth")).toBe(true);
-  });
-
-  it("leaves hand-written lane names alone", () => {
-    expect(laneNameAdvertisesBranch("Auth work", "ade/fix-auth")).toBe(false);
-    expect(laneNameAdvertisesBranch("", "ade/fix-auth")).toBe(false);
-    expect(laneNameAdvertisesBranch("ade/fix-auth", "")).toBe(false);
   });
 });

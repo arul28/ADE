@@ -183,7 +183,7 @@ describe.skipIf(!LIVE)("ACP host live handshake", () => {
     });
     const connection = createAcpConnection({ dialect: qwenDialect, spawnPlan });
     try {
-      const { response } = await withDeadline(
+      const response = await withDeadline(
         "qwen initialize",
         initializeAcpConnection({ connection, dialect: qwenDialect }),
       );
@@ -223,7 +223,7 @@ describe.skipIf(!LIVE)("ACP host live handshake", () => {
     });
     const connection = createAcpConnection({ dialect: kimiDialect, spawnPlan });
     try {
-      const { response } = await withDeadline(
+      const response = await withDeadline(
         "kimi initialize",
         initializeAcpConnection({ connection, dialect: kimiDialect }),
       );

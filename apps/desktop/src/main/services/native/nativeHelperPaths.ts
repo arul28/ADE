@@ -28,6 +28,49 @@ export function resolveAttentionNotchExecutablePath(input: {
 /** The name of the Mac Desktop helper, next to `ade-attention-notch`. */
 const MAC_DESKTOP_DRIVER_BINARY = "ade-desktop-driver";
 
+/** The Windows Desktop helper, beside the capture helper. */
+const WINDOWS_DESKTOP_DRIVER_BINARY = "ade-desktop-driver.exe";
+
+/**
+ * The Windows Desktop native helper.
+ *
+ * The same search as `resolveMacDesktopDriverBinary`, for the same reasons, but
+ * gated to win32 and looking for the `.exe`. `ADE_WINDOWS_DESKTOP_DRIVER_PATH`
+ * is the developer override, honored only when it names a real file. Returns
+ * `null` off win32 rather than throwing.
+ */
+export function resolveWindowsDesktopDriverBinary(input: {
+  isPackaged?: boolean;
+  resourcesPath?: string | null;
+  appPath?: string | null;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
+} = {}): string | null {
+  if ((input.platform ?? process.platform) !== "win32") return null;
+  const env = input.env ?? process.env;
+  const override = env.ADE_WINDOWS_DESKTOP_DRIVER_PATH?.trim();
+  if (override) {
+    if (fs.existsSync(override)) return override;
+    input.logger?.debug("windows_desktop.driver_path_override_ignored", { path: override });
+  }
+  if (input.isPackaged && input.resourcesPath) {
+    return path.join(input.resourcesPath, "native", WINDOWS_DESKTOP_DRIVER_BINARY);
+  }
+  if (input.appPath) {
+    return path.join(input.appPath, "resources", "native", WINDOWS_DESKTOP_DRIVER_BINARY);
+  }
+  const candidates = daemonNativeCandidates(WINDOWS_DESKTOP_DRIVER_BINARY);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // An unreadable candidate is simply not the one.
+    }
+  }
+  return candidates[0] ?? null;
+}
+
 /**
  * The Mac Desktop native helper, resolved beside the notch helper.
  *

@@ -46,6 +46,8 @@ export type ModelRoute = {
   displayName: string;
   /** Effort level, or null for a model without levels. */
   effort: string | null;
+  /** True for the effort the model runs at when the caller names none. */
+  defaultEffort: boolean;
   billing: RouteBilling;
   /** The registry variant the ratings came from. */
   registrySlug: string | null;
@@ -227,11 +229,15 @@ function measuredAgentRow(
 
 /**
  * The route a task would run on anyway. Claude subagents name a model by
- * alias (`opus`, `sonnet`, `haiku`) or leave it to the parent (`inherit`);
- * an effort the catalog does not list falls back to `high`, then to none.
+ * alias (`opus`, `sonnet`, `haiku`) or leave it to the parent (`inherit`).
+ * An unknown effort (null) takes the model's default effort, then `high`, then
+ * none; a known effort the catalog does not list falls back the same way.
  * The exact model id wins over its family: OpenCode serves one model through
  * several gateways (`opencode-go/…` on the Go plan, `deepseek/…` metered), and
- * the gateway decides who bills the route.
+ * the gateway decides who bills the route. A harness preset can run another
+ * harness's model (OpenCode Go's DeepSeek inside Claude Code); when the harness
+ * lists no such model, the route that serves the same bare model id elsewhere
+ * stands in, since that gateway bills it.
  */
 export function findReferenceRoute(
   routes: readonly ModelRoute[],
@@ -246,12 +252,19 @@ export function findReferenceRoute(
   const family = ["opus", "sonnet", "haiku", "fable"].includes(alias)
     ? registryFamilyForModelId(inHarness.find((route) => route.modelId.toLowerCase().includes(alias))?.modelId ?? model)
     : registryFamilyForModelId(model);
-  const sameFamily = exact.length ? exact : inHarness.filter((route) => registryFamilyForModelId(route.modelId) === family);
-  if (!sameFamily.length) return null;
-  return sameFamily.find((route) => route.effort === effort)
-    ?? sameFamily.find((route) => route.effort === "high")
-    ?? sameFamily.find((route) => route.effort === null)
-    ?? sameFamily[0]!;
+  let candidates = exact.length ? exact : inHarness.filter((route) => registryFamilyForModelId(route.modelId) === family);
+  if (!candidates.length && !alias.includes("/")) {
+    // A plan gateway (OpenCode Go) before a metered one (Zen): presets bill a plan.
+    candidates = routes
+      .filter((route) => route.modelId.toLowerCase().endsWith(`/${alias}`))
+      .sort((a, b) => Number(a.billing.kind !== "plan") - Number(b.billing.kind !== "plan"));
+  }
+  if (!candidates.length) return null;
+  return (effort != null ? candidates.find((route) => route.effort === effort) : undefined)
+    ?? candidates.find((route) => route.defaultEffort)
+    ?? candidates.find((route) => route.effort === "high")
+    ?? candidates.find((route) => route.effort === null)
+    ?? candidates[0]!;
 }
 
 export type CatalogModel = { provider: string; info: AgentChatModelInfo };
@@ -285,6 +298,7 @@ export function buildModelRoutes(models: readonly CatalogModel[], snapshot: Mode
         modelId,
         displayName: info.displayName,
         effort,
+        defaultEffort: effort != null && effort === (info.defaultReasoningEffort ?? null),
         billing: routeBillingFor(harness, modelId),
         registrySlug: variant?.model.slug ?? null,
         quality,

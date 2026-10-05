@@ -1,4 +1,5 @@
 import type { AgentChatPlanUsage, AgentChatUsageAccount, AgentChatUsageConfidence } from "./chat";
+import type { UsageSpeed } from "./usage";
 
 // ---------------------------------------------------------------------------
 // Per-turn usage ledger (machine-local; the router's input)
@@ -65,6 +66,12 @@ export type AdeTurnUsageRecord = {
    * with an API-key turn. Null when models.dev has no list price for the model.
    */
   apiEquivalentUsd: number | null;
+  /**
+   * The service tier the turn billed at (Codex Fast/Ultrafast, Claude fast
+   * mode). `apiEquivalentUsd` is priced at it. Absent on rows written before
+   * ADE recorded it, which read as standard.
+   */
+  speed?: UsageSpeed;
   planUsage: AgentChatPlanUsage[] | null;
   /**
    * Factory credits that the Droid session had used when this turn ended.

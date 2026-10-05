@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
+import { historyCommitsPath, shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
+
+describe("historyCommitsPath", () => {
+  it("opens the commit graph on a lane without a machine id on this machine", () => {
+    const params = new URLSearchParams(historyCommitsPath("lane-1").split("?")[1]!);
+    expect(params.get("surface")).toBe("commits");
+    expect(params.get("laneId")).toBe("lane-1");
+    expect(params.has("machineId")).toBe(false);
+  });
+
+  it("names the machine only for a lane on another machine", () => {
+    const params = new URLSearchParams(historyCommitsPath("lane-2", "machine-9").split("?")[1]!);
+    expect(params.get("laneId")).toBe("lane-2");
+    expect(params.get("machineId")).toBe("machine-9");
+    // A missing or empty machine id is this tab's machine: no parameter.
+    expect(historyCommitsPath("lane-2", null)).not.toContain("machineId");
+    expect(historyCommitsPath("lane-2", "")).not.toContain("machineId");
+  });
+});
 
 /**
  * Documents History URL hydration ordering: setFocusLaneId clears commit selection,

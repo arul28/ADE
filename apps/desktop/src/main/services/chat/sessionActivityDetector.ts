@@ -65,6 +65,11 @@ const SHELL_TOOLS = new Set([
 const PLAN_TOOLS = new Set(["exitplanmode", "enterplanmode", "create_plan"]);
 const MONITOR_TOOLS = new Set(["schedulewakeup", "monitor", "croncreate"]);
 const SUBAGENT_TOOLS = new Set(["agent", "task", "spawn_agent", "subagent"]);
+
+/** True for a tool whose call starts a subagent (Claude Agent/Task, Codex spawn_agent, Cursor task/subagent). */
+export function isSubagentSpawnToolName(tool: string): boolean {
+  return SUBAGENT_TOOLS.has(normalizeToolName(tool));
+}
 const SKILL_TOOLS = new Set(["skill"]);
 
 // Shell patterns match at COMMAND POSITION only — the start of one segment of
@@ -318,7 +323,7 @@ function classifySessionActivityEvent(event: AgentChatEvent): SessionActivitySig
         const shellCommand = shellCommandField(args, ["command", "cmd", "script", "shellCommand", "fullCommand", "input"]);
         return shellCommand == null ? null : classifyShellCommand(shellCommand);
       }
-      if (SUBAGENT_TOOLS.has(name)) {
+      if (isSubagentSpawnToolName(event.tool)) {
         if (!hasNonEmptyRecord(args)) return null;
         return classifyDelegationParts(
           stringField(args, ["description"]),

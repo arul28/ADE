@@ -335,8 +335,10 @@ Cite the doc section in the finding.
    A finding you neither fixed nor gated is a bug in your run.
 9. **Harvest the PR (mandatory when a PR exists).** *After* the independent
    review, follow **Early PR and harvests → Harvest** in the ship playbook.
-   Read whatever CI jobs and review bots (Greptile, Codex, CodeRabbit) have
-   finished on the pushed head, and do not wait for the rest. Drop comments
+   Run `node scripts/ship-poll.mjs --pr <n> --text` and act on all of it: CI,
+   open review threads, review-body findings (bots put findings outside the
+   diff there, not in a thread), new comments and bot notices. Do not wait for
+   anything still running, and do not substitute a hand-written check. Drop comments
    this run already fixed. Verify each remaining comment like a Track A/B
    finding (step 4), then fix it (step 6) and re-review the fix delta (step 7).
    Rerun each failed CI test file locally. Fix the failures the code causes, and

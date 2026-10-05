@@ -586,16 +586,22 @@ function WorkToolTab({
         data-tool-tab-close-mode={showLabel ? "inline" : "corner"}
         className={cn(
           "absolute inline-flex items-center justify-center rounded-[4px]",
-          "text-muted-fg opacity-0 transition-opacity duration-[120ms] ease-out",
+          "text-muted-fg transition-opacity duration-[120ms] ease-out",
           "hover:bg-white/[0.09] hover:text-fg",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-          // Invisible AND untouchable. `opacity-0` alone still hit-tests, which
-          // is how the centred icon-only ✕ used to swallow the tab's own click.
-          "pointer-events-none group-hover/tab:pointer-events-auto",
           "group-hover/tab:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
+          // A labelled tab has a reserved slot, so its ✕ is always there and
+          // always clickable: a close button that only appears on hover is one
+          // people never find. The 24px icon-only tab keeps its ✕ out of the
+          // way (invisible AND untouchable; `opacity-0` alone still hit-tests,
+          // which is how the centred ✕ once swallowed the tab's own click)
+          // except on the active tab, where it is the obvious way out.
           showLabel
-            ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4"
-            : "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
+            ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4 opacity-60"
+            : cn(
+              "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
+              active ? "opacity-60" : "pointer-events-none opacity-0 group-hover/tab:pointer-events-auto",
+            ),
         )}
       >
         <X size={10} weight="bold" />

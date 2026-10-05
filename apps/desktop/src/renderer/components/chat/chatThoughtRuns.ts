@@ -59,6 +59,8 @@ export function transcriptEventDrawsNothing(
       // Queued steers live in the composer's staging area only.
       return event.deliveryState === "queued" && Boolean(event.steerId);
     case "codex_moderation_metadata":
+    // The order of the composer's staging area; nothing in the timeline.
+    case "queue_reordered":
     case "conversation_reset":
     case "api_retry":
     case "step_boundary":

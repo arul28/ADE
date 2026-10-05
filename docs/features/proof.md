@@ -46,7 +46,7 @@ promotes any of them after the fact.
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
 | `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
-| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, and the two engine clients. |
+| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the two engine clients, and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
 
 ## Runtime ownership
@@ -345,8 +345,9 @@ recorded.
 ### How it works
 
 1. `record start` begins a raw recording at wall clock with nothing drawn:
-   an MP4 from the Swift recorders, or an `.aderaw` capture (JPEG frames or
-   H.264 access units) from the Chromium-side recorders. It sits beside the
+   an MP4 from the Swift recorders and the Windows desktop driver (Media
+   Foundation, H.264), or an `.aderaw` capture (JPEG frames or H.264 access
+   units) from the Chromium-side recorders. It sits beside the
    final path as `<name>.raw.<ext>`.
 2. While it runs, the process that owns the recording logs a track
    (`demoTrackRegistry.ts`): every action with its point and element, page
@@ -368,13 +369,39 @@ same on every OS:
   and MOV, runs in the headless brain, and ships to remote Macs with the other
   native helpers.
 - **The Chromium engine** (`chromiumDemoEngine.ts`), in the ADE desktop app on
-  any OS. It reads `.aderaw`, decodes and encodes with WebCodecs, and muxes
-  with `mp4-muxer`. The brain reaches it over the desktop bridge.
+  any OS. It reads `.aderaw` and H.264 MP4/MOV, decodes and encodes with
+  WebCodecs, and muxes with `mp4-muxer`. An MP4 is read by
+  `demoMp4Source.ts`: it parses the movie's sample tables and streams the
+  samples to the hidden renderer as `.aderaw` records (Annex-B, SPS/PPS in
+  front of each key frame), so there is no ffmpeg, no temporary file and no
+  re-encode before the render. It reads a finished, non-fragmented movie with
+  one H.264 track; anything else falls back as below. The brain reaches it
+  over the desktop bridge, which takes `.aderaw`, `.mp4`, `.mov` and `.m4v`
+  inputs under a project's `.ade/artifacts/computer-use`. Both the brain and
+  Electron main give the Mac/Windows Desktop service this engine after
+  `ade-media`, so on Windows a lane recording becomes a demo whenever the
+  desktop app is attached; on macOS `ade-media` still goes first.
 
 When no engine can read the raw file, an MP4 is filed as recorded and the
-metadata says why (`fallbackReason`); an `.aderaw` capture cannot be played,
-so the stop reports the failure and files nothing. A demo render that fails is
-tried once more as a plain render first.
+metadata says why (`fallbackReason`); its length comes from the movie's own
+index, never 0. When the missing engine is the desktop app's, the reason says
+so ("the ADE desktop app was not connected to make the demo", with the cause
+when one is known, such as a desktop app running as administrator on Windows),
+and the stop's result carries the same sentence as `demoNote`, which `ade screen
+record stop` prints on its `demo` line. The brain attaches to the desktop app
+when the app connects to it, retrying a slow answer for about a minute; a
+refused pipe or token is not retried and is logged as
+`built_in_browser_bridge.runtime_auth_configured` with `verified: false` and a
+`reason`. An MP4 that holds nothing (empty, never finalised, no frames)
+is not filed: the stop reports `The recording was not filed. <reason>` and
+deletes it. An `.aderaw` capture cannot be played, so the stop reports the
+failure and files nothing. A demo render that fails is tried once more as a
+plain render first.
+
+Windows and macOS produce the same demo from the same plan: cuts, sped-up
+waits, zoom, the drawn pointer and click rings, step captions, the skip badge,
+and `metadata.demo.steps` as the player's chapters. Chapters live in the proof
+metadata on both, not in the MP4 container.
 
 ### Limits every recording shares
 

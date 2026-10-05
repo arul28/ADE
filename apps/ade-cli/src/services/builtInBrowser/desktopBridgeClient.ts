@@ -5,6 +5,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../../desktop/src/shared/demoVideo/demoContract";
+import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../../desktop/src/shared/types/builtInBrowser";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserBridgeServedMethod,
@@ -283,33 +284,86 @@ function bridgeCallTimeoutMs(method: string, params: unknown): number {
   return Math.min(MAX_HANDOFF_WAIT_MS, Math.max(REQUEST_TIMEOUT_MS, window)) + REQUEST_TIMEOUT_MS;
 }
 
-export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {
+/**
+ * Budget for one bridge-auth check. Generous on purpose: the check runs while
+ * the brain is still opening the project, and a Node timer that expires during
+ * an event-loop stall fires before the pipe's answer is read — a 3 s budget
+ * turned a 3.9 s stall on a Windows PC into a permanent "no desktop".
+ */
+const AUTH_CHECK_TIMEOUT_MS = 15_000;
+
+/** Why the brain could not attach to the desktop app, when it could not. */
+export type DesktopBridgeAuthCheck =
+  | { verified: true }
+  | {
+    verified: false;
+    /** `access_denied` and `rejected` do not change on a retry; the rest may. */
+    kind: "access_denied" | "rejected" | "unreachable" | "timeout";
+    /** One plain sentence for logs, `record stop` and proof metadata. */
+    reason: string;
+  };
+
+function bridgeAuthFailure(error: unknown): DesktopBridgeAuthCheck & { verified: false } {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  // Windows reports a pipe whose DACL refuses this process as EPERM/EACCES.
+  // The one way that happens between two ADE processes of the same user is an
+  // ADE desktop app started as administrator: its pipe admits administrators
+  // only, and the background service runs as the plain user.
+  if (code === "EPERM" || code === "EACCES" || /\b(?:EPERM|EACCES)\b/.test(message)) {
+    return {
+      verified: false,
+      kind: "access_denied",
+      reason: process.platform === "win32"
+        ? `${ELEVATED_DESKTOP_TITLE}. ${ELEVATED_DESKTOP_MESSAGE}`
+        : "the ADE desktop app's bridge socket refused the background service",
+    };
+  }
+  if (/timed out/i.test(message)) {
+    return { verified: false, kind: "timeout", reason: "the ADE desktop app did not answer in time" };
+  }
+  return { verified: false, kind: "unreachable", reason: `the ADE desktop app could not be reached (${message})` };
+}
+
+/**
+ * Checks a desktop's bridge token by asking the desktop to accept it, and says
+ * why not when it does not. Never throws.
+ */
+export async function checkBuiltInBrowserDesktopBridgeAuth(args: {
   socketPath: string;
   authToken: string;
-}): Promise<boolean> {
+  timeoutMs?: number;
+}): Promise<DesktopBridgeAuthCheck> {
   const authToken = args.authToken.trim();
-  if (!authToken) return false;
+  if (!authToken) return { verified: false, kind: "rejected", reason: "the ADE desktop app sent no bridge token" };
+  const timeoutMs = args.timeoutMs ?? AUTH_CHECK_TIMEOUT_MS;
   let client: JsonRpcClient | null = null;
   try {
     client = await raceWithTimeout(
       JsonRpcClient.connect(args.socketPath),
-      CONNECT_TIMEOUT_MS,
+      timeoutMs,
       "Timed out validating desktop browser bridge authentication.",
     );
     const result = await raceWithTimeout(
       client.request("built_in_browser.authenticate", {
         [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: authToken,
       }),
-      CONNECT_TIMEOUT_MS,
+      timeoutMs,
       "Timed out validating desktop browser bridge authentication.",
     );
-    return Boolean(
+    if (
       result
       && typeof result === "object"
       && (result as { authenticated?: unknown }).authenticated === true
-    );
-  } catch {
-    return false;
+    ) {
+      return { verified: true };
+    }
+    return { verified: false, kind: "rejected", reason: "the ADE desktop app did not accept its own bridge token" };
+  } catch (error) {
+    if (/authentication failed/i.test(error instanceof Error ? error.message : String(error))) {
+      return { verified: false, kind: "rejected", reason: "the ADE desktop app did not accept its own bridge token" };
+    }
+    return bridgeAuthFailure(error);
   } finally {
     client?.close();
   }

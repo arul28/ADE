@@ -186,6 +186,9 @@ export type SubagentSpawnAnchorRenderEvent = {
   agentType: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   /**
    * Explicit display name from the lifecycle events (Claude Task `name`, Codex
    * nickname, Cursor label). The card title comes from
@@ -234,6 +237,9 @@ export type SubagentResultCardRenderEvent = {
   agentType?: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider?: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   background?: boolean;
   label?: string | null;
   status: SubagentCardTerminalStatus;
@@ -414,6 +420,8 @@ export type SpawnWakeDividerRenderEvent = {
   spawnKind: AgentChatSpawnKind;
   status: "completed" | "failed" | "stopped";
   summary: string | null;
+  /** Set when the child ran on another machine than this chat. */
+  childMachineName?: string;
   turnId?: string;
 };
 
@@ -462,6 +470,25 @@ export type TurnFoldRenderEvent = {
   /** Background jobs in the span, and how many failed (`· 5 jobs (1 failed)`). */
   jobCount?: number;
   failedJobCount?: number;
+};
+
+/**
+ * The one row a run of self-paced wake-up checks folds into (every check but
+ * the latest). Presentation only, produced after the turn fold by
+ * `applyWakeChains`. Row key: `wake-chain:${firstTurnId}`.
+ */
+export type WakeChainRenderEvent = {
+  type: "wake_chain";
+  chainId: string;
+  checkCount: number;
+  firstAt: string;
+  lastAt: string;
+};
+
+/** Presentation only: marks where rows that arrived while the reader was away begin. */
+export type NewSinceDividerRenderEvent = {
+  type: "new_since_divider";
+  sinceMs: number;
 };
 
 export type TurnDiagnosticsEvent = Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
@@ -595,7 +622,9 @@ export type ChatTranscriptGroupedEnvelope = {
     | SubagentStoppedGroupEvent
     | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | TurnFoldRenderEvent;
+    | TurnFoldRenderEvent
+    | WakeChainRenderEvent
+    | NewSinceDividerRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
@@ -661,6 +690,9 @@ type SubagentAnchorState = {
   label: string | null;
   agentType: string | null;
   provider: string | null;
+  /** The model and effort the agent reported; null until it does. */
+  model: string | null;
+  reasoningEffort: string | null;
   taskType: string | null;
   command: string | null;
   background: boolean;
@@ -2136,6 +2168,8 @@ function spawnAnchorEvent(
     description: subagentTitleDescription(state) ?? "Subagent task",
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     label: state.label,
     background: state.background,
     status: "running",
@@ -2177,6 +2211,9 @@ function enrichSubagentStateFromEvent(
   if (!state.label) state.label = subagentText(event.label);
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
   state.provider = subagentText(record.provider) ?? state.provider;
+  const model = subagentText((event as { model?: unknown }).model);
+  if (model && model !== "inherit") state.model = model;
+  state.reasoningEffort = subagentText((event as { reasoningEffort?: unknown }).reasoningEffort) ?? state.reasoningEffort;
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
@@ -2275,6 +2312,8 @@ function handleSubagentLifecycleEvent(
       label: null,
       agentType: null,
       provider: null,
+      model: null,
+      reasoningEffort: null,
       taskType: null,
       command: null,
       background: false,
@@ -2462,6 +2501,8 @@ function handleSubagentLifecycleEvent(
     description: subagentTitleDescription(state),
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     background: state.background,
     label: state.label,
     status: terminalStatus,
@@ -2614,6 +2655,7 @@ export function appendCollapsedChatTranscriptEvent(
             spawnKind,
             status,
             summary: completion.summary?.trim() || null,
+            ...(completion.childMachineName?.trim() ? { childMachineName: completion.childMachineName.trim() } : {}),
             ...(event.turnId ? { turnId: event.turnId } : {}),
           },
         });

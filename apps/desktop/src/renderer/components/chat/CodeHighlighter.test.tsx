@@ -4,13 +4,24 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
 
-const codeToHtml = vi.fn((code: string) => `<pre class="shiki" style="background-color:#22272e"><code><span class="line">${code}</span></code></pre>`);
+const { codeToHtml } = vi.hoisted(() => ({ codeToHtml: vi.fn() }));
 
-vi.mock("shiki", () => ({
-  createHighlighter: vi.fn(async () => ({ codeToHtml })),
-  createJavaScriptRegexEngine: vi.fn(() => ({})),
-}));
+// The real highlighter, with its whole-block render counted.
+vi.mock("shiki", async (importOriginal) => {
+  const shiki = await importOriginal<typeof import("shiki")>();
+  return {
+    ...shiki,
+    createHighlighter: async (options: Parameters<typeof shiki.createHighlighter>[0]) => {
+      const highlighter = await shiki.createHighlighter(options);
+      const render = highlighter.codeToHtml.bind(highlighter);
+      codeToHtml.mockImplementation(render);
+      highlighter.codeToHtml = codeToHtml as unknown as typeof highlighter.codeToHtml;
+      return highlighter;
+    },
+  };
+});
 
+import { createHighlighter, createJavaScriptRegexEngine } from "shiki";
 import { HighlightedCode } from "./CodeHighlighter";
 
 describe("HighlightedCode", () => {
@@ -56,5 +67,43 @@ describe("HighlightedCode", () => {
     expect(view.container.querySelector("pre")?.textContent).toBe("let a = 1;\nlet b = 2;");
     await waitFor(() => expect(view.container.querySelector(".shiki-highlighted pre.shiki")?.textContent)
       .toBe("let a = 1;\nlet b = 2;"));
+  });
+
+  it("highlights a streaming block the same as a whole-block render at every frame", async () => {
+    const reference = await createHighlighter({
+      themes: ["github-dark-dimmed"],
+      langs: ["typescript"],
+      engine: createJavaScriptRegexEngine(),
+    });
+    // A template literal and a block comment span lines, so a frame is only
+    // right when the grammar state carries across the lines already rendered.
+    const lines = [
+      "const greeting = `hello",
+      "  ${name} and",
+      "  more`;",
+      "/* opens a comment",
+      "   still a comment */",
+      "function add(a: number, b: number) {",
+      "  return a + b;",
+      "}",
+    ];
+    const frames: string[] = [];
+    for (let i = 1; i <= lines.length; i++) {
+      const text = lines.slice(0, i).join("\n");
+      frames.push(text.slice(0, -3), text, `${text}\n\n`);
+    }
+
+    const view = render(<HighlightedCode code={frames[0]!} language="typescript" />);
+    const expected = document.createElement("div");
+    for (const frame of frames) {
+      view.rerender(<HighlightedCode code={frame} language="typescript" />);
+      // The block drops one trailing newline before it highlights.
+      const shown = frame.replace(/\n$/, "");
+      expected.innerHTML = reference.codeToHtml(shown, { lang: "typescript", theme: "github-dark-dimmed" });
+      await waitFor(() => expect(view.container.querySelector(".shiki-highlighted pre.shiki")?.textContent).toBe(shown));
+      expect(view.container.querySelector(".shiki-highlighted")?.innerHTML, `frame ${JSON.stringify(frame)}`)
+        .toBe(expected.innerHTML);
+    }
+    expect(view.container.querySelectorAll(".shiki-highlighted .line").length).toBe(lines.length + 1);
   });
 });

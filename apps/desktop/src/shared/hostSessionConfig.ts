@@ -222,7 +222,7 @@ export const PERMISSION_POLICY_SUPPORT = {
   // write inside the thread's cwd, `$TMPDIR`, or `/tmp` raises no approval at
   // all, so the policy is never consulted for it. The policy governs the
   // requests Codex does raise: the sandbox escapes, and — measured on
-  // @openai/codex 0.156.1 with approvalPolicy on-request — every MCP tool call,
+  // @openai/codex 0.156.1 and 0.160.0 with approvalPolicy on-request — every MCP tool call,
   // which Codex asks about as an `mcpServer/elicitation/request` carrying
   // `_meta.codex_approval_kind: "mcp_tool_call"`.
   codex: {

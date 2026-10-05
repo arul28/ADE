@@ -17,6 +17,7 @@ import {
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -2003,7 +2004,10 @@ describe("TopBar", () => {
     expect(window.location.hash).toBe("#/work");
   });
 
-  it("reveals Linear quick view after a later connection refresh", async () => {
+  it.each([
+    ["window focus", "focus"],
+    ["a Settings connection change", LINEAR_CONNECTION_CHANGED_EVENT],
+  ])("reveals Linear quick view after a later connection refresh on %s", async (_trigger, eventName) => {
     const disconnected = {
       tokenStored: true,
       connected: false,
@@ -2039,7 +2043,7 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
     await waitFor(() => {
@@ -2048,14 +2052,54 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
 
     expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
   });
 
-  it("keeps button hidden while disconnected but retries on a 3s interval", async () => {
+  it("re-checks a Settings connection change that arrives while a check is in flight", async () => {
+    const disconnected = {
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: null,
+    };
+    let finishStaleCheck!: (status: typeof disconnected) => void;
+    const getLinearConnectionStatus = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishStaleCheck = resolve; }))
+      .mockResolvedValue({ ...disconnected, connected: true, viewerId: "user-1", viewerName: "Arul" });
+    globalThis.window.ade.cto = { getLinearConnectionStatus } as any;
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+
+    render(<TopBar />);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await flushMicrotasks();
+    });
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+
+    // The key is saved while the first check is still waiting on the brain.
+    await act(async () => {
+      window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      finishStaleCheck(disconnected);
+      await flushMicrotasks(4);
+    });
+
+    expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps button hidden while disconnected and retries only on the slow backstop", async () => {
     vi.useFakeTimers();
     const getLinearConnectionStatus = vi.fn(async () => ({
       tokenStored: true,
@@ -2084,7 +2128,13 @@ describe("TopBar", () => {
 
       const callsBefore = getLinearConnectionStatus.mock.calls.length;
       await act(async () => {
-        vi.advanceTimersByTime(6_000);
+        vi.advanceTimersByTime(30_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus.mock.calls.length).toBe(callsBefore);
+
+      await act(async () => {
+        vi.advanceTimersByTime(31_000);
         await flushMicrotasks(2);
       });
       expect(getLinearConnectionStatus.mock.calls.length).toBeGreaterThan(callsBefore);

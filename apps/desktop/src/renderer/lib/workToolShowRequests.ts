@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { waitForWorkSurfaceOnScreen } from "./workToolOnScreen";
+import { isAddressedToThisDesktop } from "./desktopClient";
 import type {
   WorkToolShowAck,
   WorkToolShowRequest,
@@ -103,6 +104,9 @@ type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened">;
  * for an automatic offer nobody took.
  */
 export async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<ShowAnswer | null> {
+  // Meant for the desktop the user is talking from. Not marked seen: if that
+  // desktop does not answer, the brain sends the same request to everyone.
+  if (!isAddressedToThisDesktop(request.targetClientId)) return null;
   if (seen.has(request.requestId)) return null;
   seen.add(request.requestId);
   if (seen.size > SEEN_CAP) {

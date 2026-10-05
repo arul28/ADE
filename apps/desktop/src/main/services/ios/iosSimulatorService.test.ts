@@ -637,6 +637,16 @@ describe("iosSimulatorService shutdown contract", () => {
       expect(await service.shutdown({ chatSessionId: "chat-B", ignoreOwnership: true }))
         .toMatchObject({ released: true, previousSession: { chatSessionId: "chat-A" } });
       expect((await service.getStatus()).activeSession).toBeNull();
+
+      // A person freeing the device from the session they SAW: if it changed
+      // hands meanwhile, nothing is released and the new holder keeps it.
+      await launchAsChatA();
+      expect(await service.shutdown({ ignoreOwnership: true, expectedChatSessionId: "remote:device-x:chat-X" }))
+        .toMatchObject({ released: false, previousSession: { chatSessionId: "chat-A" } });
+      expect((await service.getStatus()).activeSession).toMatchObject({ chatSessionId: "chat-A" });
+      expect(await service.shutdown({ ignoreOwnership: true, expectedChatSessionId: "chat-A" }))
+        .toMatchObject({ released: true, previousSession: { chatSessionId: "chat-A" } });
+      expect((await service.getStatus()).activeSession).toBeNull();
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });

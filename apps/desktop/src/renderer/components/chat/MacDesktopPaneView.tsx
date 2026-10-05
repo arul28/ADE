@@ -12,9 +12,12 @@ import {
   Record,
   Stop,
   WarningCircle,
+  WindowsLogo,
 } from "@phosphor-icons/react";
 import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
-import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
+import { desktopSeatKind, type MacDesktopWindow } from "../../../shared/types/macDesktop";
+import { desktopToolProductName } from "../terminals/workTools";
+import { STOP_CONFIRM_COPY } from "./MacDesktopStopConfirm";
 import { cn } from "../ui/cn";
 import { MakingDemoPill, RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import {
@@ -26,6 +29,7 @@ import {
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
+import { Banner } from "../ui/notice";
 import { H264StreamView } from "./H264StreamView";
 import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
@@ -34,7 +38,6 @@ import { MAC_DESKTOP_NOT_ANSWERING } from "./macDesktopStatusStore";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
-  MAC_DESKTOP_LIST_ROW,
   MAC_DESKTOP_LIST_TITLE,
   MacDesktopAppIcon,
   MacDesktopMinimizedBadge,
@@ -55,6 +58,7 @@ import {
   type MacDesktopPanelController,
 } from "./useMacDesktopPanelController";
 import { MacDesktopFullscreenView } from "./MacDesktopFullscreenView";
+import { WindowsDesktopStateCard } from "./WindowsDesktopStateCard";
 
 const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
 
@@ -80,7 +84,8 @@ type MacDesktopWindowCardProps = {
   /** Resolved PNG for this app. The window row may not carry one of its own. */
   iconPng: string | null;
   onSelect: (windowId: number) => void;
-  onRelease: (windowId: number) => void;
+  /** Absent where a window cannot leave the lane's screen (a private Windows screen). */
+  onRelease?: (windowId: number) => void;
 };
 
 const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
@@ -122,31 +127,46 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
           windows of one app apart, and it does not fit on the face. */}
       <span className={cn(MAC_DESKTOP_LIST_TITLE, "text-[11.5px]")}>{entry.appName}</span>
       {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
-      <MacDesktopRowAction
-        label="Release"
-        testId="mac-desktop-window-release"
-        title={`Send “${title}” back to your main screen`}
-        onClick={() => onRelease(entry.id)}
-      />
+      {onRelease ? (
+        <MacDesktopRowAction
+          label="Release"
+          testId="mac-desktop-window-release"
+          title={`Send “${title}” back to your main screen`}
+          onClick={() => onRelease(entry.id)}
+        />
+      ) : null}
     </div>
   );
 });
 
 export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanelController }) {
   const {
-    laneId, laneName, sessionId, runtimePin, machineFacts, status, setStatus, statusError, setStatusError, readError,
-    unconfirmed, refreshStatus, stopDisplay, stopping, start, starting, gaveUp, cursor, notParked, dismissNotParked,
+    laneId, laneName, sessionId, runtimePin, machineFacts, status, statusError, setStatusError, readError,
+    unconfirmed, stopDisplay, stopping, start, starting, gaveUp, notParked, dismissNotParked,
     appsLeftOpen, dismissAppLeftOpen, pickerOpen, setPickerOpen, claimable, claimableLoading, claimError, expanded,
-    setExpanded, paneMaximize, busy, setBusy, checkingPermissions, setCheckingPermissions, captureError, setCaptureError,
-    captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId, setSelectedWindowId,
-    lastObservation, surfaceNode, videoHost, canvasSlot, attachCanvasSlot, attachSurface, errorText, display, lease, windows,
+    setExpanded, paneMaximize, busy, checkingPermissions, captureError, setCaptureError,
+    captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId,
+    lastObservation, videoHost, attachCanvasSlot, attachSurface, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, permissionCheck, confirmStop, setConfirmStop,
     restartingCapture, restartCapture,
-    connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
+    connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
-    saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
+    saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool,
   } = controller;
+  const windowsHost = desktopTool === "windows-desktop" || status?.platform === "win32";
+  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop");
+  /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
+  const seatKind = desktopSeatKind({
+    platform: windowsHost ? "win32" : status?.platform,
+    display,
+    windowsDesktop: display ? status?.windowsDesktop : null,
+  });
+  const windowsShared = Boolean(display) && seatKind === "windows-shared";
+  // A private Windows screen is another Windows session: a window cannot move
+  // between it and the user's screen, so the two "move" controls are not drawn.
+  const windowsMovable = seatKind !== "windows-private";
+  const { action: stopLabel, consequence: stopConsequence } = STOP_CONFIRM_COPY[seatKind];
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
   // when the answer arrived.
@@ -154,7 +174,8 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     return (
       <WorkToolEmptyLine
         testId="mac-desktop-unsupported"
-        title={status?.unsupportedReason ?? "This lane's runtime host cannot host a Mac display."}
+        title={status?.unsupportedReason
+          ?? (windowsHost ? "This lane's host cannot run a Windows Desktop screen." : "This lane's runtime host cannot host a Mac display.")}
       />
     );
   }
@@ -178,7 +199,27 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   // listing the display until the stop lands, and showing it live meanwhile is
   // the flicker a reopened tab used to have.
   if (stopping) {
-    return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title="Stopping Mac Desktop…" />);
+    return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title={`Stopping ${desktopName}…`} />);
+  }
+
+  // Windows hosts have four states macOS does not — setup, held, locked, and a
+  // shared seat — and they all live on their own card. Only ever reached on a
+  // Windows host, because `status.windowsDesktop` is null elsewhere.
+  if (!display && status?.windowsDesktop) {
+    return idle(
+      <WindowsDesktopStateCard
+        laneId={laneId}
+        laneName={laneName}
+        sessionId={sessionId}
+        windows={status.windowsDesktop}
+        driver={status.driver}
+        runtimePin={runtimePin}
+        starting={starting}
+        startError={statusError}
+        onDismissStartError={() => setStatusError(null)}
+        onChanged={() => void readAgain()}
+      />,
+    );
   }
 
   if (!display) {
@@ -191,7 +232,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         Not answering  the newest read failed: Try again, or Reset
         Permissions    a grant is off: the permission card
         Failed    a Start that failed: the reason, and Start again
-        Off       "Mac Desktop is off" and Start
+        Off       Desktop is off and Start
 
       Watching never creates a display, and nothing on this list starts one
       except the person's Start. That is the fix for a pane that went from Off
@@ -214,20 +255,20 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         <MacDesktopStateCard
           testId="mac-desktop-starting"
           tone="busy"
-          title="Starting Mac Desktop…"
+          title={`Starting ${desktopName}…`}
           detail="Making a private screen for this lane."
         />
       );
     }
     if (status == null || (unconfirmed && readError)) {
       if (!readError) {
-        return idle(<MacDesktopStateCard testId="mac-desktop-checking" tone="busy" title="Checking Mac Desktop…" />);
+        return idle(<MacDesktopStateCard testId="mac-desktop-checking" tone="busy" title={`Checking ${desktopName}…`} />);
       }
       return idle(
         <MacDesktopStateCard
           testId="mac-desktop-unreachable"
           tone="error"
-          title="Can't reach Mac Desktop"
+          title={`Can't reach ${desktopName}`}
           detail={readError}
           actions={(
             <>
@@ -267,7 +308,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         <MacDesktopStateCard
           testId="mac-desktop-failed"
           tone="error"
-          title={gaveUp ? "Mac Desktop did not start" : "Something went wrong"}
+          title={gaveUp ? `${desktopName} did not start` : "Something went wrong"}
           detail={statusError}
           actions={(
             <button
@@ -287,7 +328,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <MacDesktopStateCard
         testId="mac-desktop-off"
         tone="idle"
-        title="Mac Desktop is off"
+        title={`${desktopName} is off`}
         detail="A private screen for this lane's apps."
         footer={appsLeftOpen.length > 0 ? (
           /* The apps the stop could not quit, in the driver's own sentence.
@@ -344,14 +385,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   const selectedRect = selectedWindow
     ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
     : null;
+  // Moving a window to the user's screen needs a local host and a seat that can move it.
+  const canMoveWindows = Boolean(status?.hostIsLocal) && windowsMovable;
   const presentAction = macDesktopPresentAction({
-    hostIsLocal: Boolean(status?.hostIsLocal),
+    hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
   const controls = macDesktopStripControls({
     expanded,
-    hostIsLocal: Boolean(status?.hostIsLocal),
+    hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
@@ -470,7 +513,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {/* Always here while a display exists: the way out that does not
               depend on the picture, the lease or the video working. */}
           <WorkToolChromeButton
-            label="Stop Mac Desktop"
+            label={stopLabel}
             onClick={() => setConfirmStop(true)}
             disabled={stopping}
             active={confirmStop}
@@ -579,7 +622,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           >
             {/* Without a start in flight the display is already up and only the
                 video is connecting, as on the Apple pane. */}
-            {starting ? "Starting Mac Desktop…" : "Connecting video"}
+            {starting ? `Starting ${desktopName}…` : "Connecting video"}
           </p>
         ) : null}
 
@@ -663,7 +706,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       return {
         key: `unconfirmed:${readError ?? ""}`,
         tone: "error",
-        sentence: "Mac Desktop is not answering. This picture may be out of date.",
+        sentence: `${desktopName} is not answering. This picture may be out of date.`,
         detail: readError === MAC_DESKTOP_NOT_ANSWERING ? null : readError,
         actions: [
           { label: "Try again", onClick: () => void readAgain() },
@@ -746,7 +789,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           <p className="text-[12px] leading-5 text-muted-fg">
             {restartingCapture
               ? "Restarting the capture…"
-              : stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
+              : stopped ? `${desktopName} is still running.` : `${desktopName} is up, but no video has arrived yet.`}
           </p>
           {restartingCapture ? null : (
           <div className="flex items-center gap-3">
@@ -809,20 +852,20 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   ) : null);
 
   /**
-   * "Stop Mac Desktop?", asked in the pane like the Apple pane asks before it
+   * Stop confirmation, asked in the pane like the Apple pane asks before it
    * switches devices. Stop quits the apps the lane opened and sends the
    * windows it borrowed back to the main screen.
    */
   const renderStopConfirm = () => (confirmStop ? (
     <div
       role="alertdialog"
-      aria-label="Stop Mac Desktop?"
+      aria-label={`${stopLabel}?`}
       data-testid="mac-desktop-stop-confirm"
       className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
     >
       <span className="min-w-0 flex-1">
-        <span className="font-medium">Stop Mac Desktop?</span>
-        <span className="text-muted-fg"> Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.</span>
+        <span className="font-medium">{stopLabel}?</span>
+        <span className="text-muted-fg"> {stopConsequence}</span>
       </span>
       <button
         type="button"
@@ -946,6 +989,23 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
+      {/* Windows Mode B: the seat is the user's own desktop, so the pane keeps a
+          reminder and a Stop for as long as it is live. A state, so a banner. */}
+      {windowsShared ? (
+        <Banner
+          layout="inline"
+          testId="windows-desktop-shared-reminder"
+          model={{
+            id: "windows-desktop-shared",
+            tone: "warning",
+            icon: <WindowsLogo size={16} aria-hidden="true" />,
+            title: "Using your main Windows desktop",
+            detail: "ADE takes over the window you are using while it acts. Stop gives your desktop back.",
+            // Same confirmation as the chrome-row Stop: it quits the lane's apps.
+            actions: [{ label: "Stop", onClick: () => setConfirmStop(true) }],
+          }}
+        />
+      ) : null}
       {/* ── The one strip ─────────────────────────────────────────────
           A missing grant, a refused action, or a stopped video, one at a
           time and each with the button that fixes it. */}
@@ -1000,23 +1060,25 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 selected={entry.id === selectedWindowId}
                 iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
                 onSelect={selectWindow}
-                onRelease={releaseWindowById}
+                onRelease={windowsMovable ? releaseWindowById : undefined}
               />
             ))}
-            <button
-              type="button"
-              data-testid="mac-desktop-add-app"
-              onClick={() => setPickerOpen(true)}
-              title="Add an app to this desktop"
-              className={cn(
-                "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
-                "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
-                "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
-              )}
-            >
-              <Plus size={12} />
-              {parkedWindows.length ? <span className="sr-only">Add app</span> : "Add app"}
-            </button>
+            {windowsMovable ? (
+              <button
+                type="button"
+                data-testid="mac-desktop-add-app"
+                onClick={() => setPickerOpen(true)}
+                title="Add an app to this desktop"
+                className={cn(
+                  "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
+                  "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
+                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+                )}
+              >
+                <Plus size={12} />
+                {parkedWindows.length ? <span className="sr-only">Add app</span> : "Add app"}
+              </button>
+            ) : null}
           </div>
 
         </div>

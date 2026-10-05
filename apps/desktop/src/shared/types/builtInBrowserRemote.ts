@@ -19,6 +19,11 @@ export type BuiltInBrowserRemoteRequest = {
   chatSessionId: string | null;
   openPanel: boolean;
   requestedAt: string;
+  /**
+   * The desktop that sent the chat its last message. Only that desktop takes
+   * the request; null means any desktop holding a pin on this machine does.
+   */
+  targetClientId?: string | null;
 };
 
 export type BuiltInBrowserRemoteRequestEvent = {

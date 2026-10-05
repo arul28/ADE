@@ -89,6 +89,7 @@ import {
   type PrCardDataSource,
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
+import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -168,6 +169,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
   captureSessionImportAnalytics,
@@ -193,15 +195,17 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
-  verifyBuiltInBrowserDesktopBridgeAuth,
+  checkBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
+import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -212,6 +216,18 @@ import {
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
+import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
+import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
+import {
+  getSessionInputOrigin,
+  RECENT_INPUT_ORIGIN_MS,
+} from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { probeLocalhostPort } from "../../desktop/src/main/services/probeLocalhostPort";
+import {
+  DEV_SERVER_EVENT,
+  type DevServerEvent,
+  type DevServerRecord,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -263,6 +279,7 @@ import {
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
 import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
 import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
@@ -958,7 +975,8 @@ export async function createAdeRuntime(args: {
 
     const operationService = createOperationService({ db, projectId });
     const keybindingsService = createKeybindingsService({ db });
-    const eventBuffer = createEventBuffer();
+    // Screencast frames reach live viewers but are never kept for replay.
+    const eventBuffer = createEventBuffer(undefined, { isTransient: isHighVolumeRuntimeEvent });
 
     function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
       eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
@@ -1586,7 +1604,16 @@ export async function createAdeRuntime(args: {
           // video was a colour that appears nowhere in the product.
           accentColor: () => ADE_ACCENT_COLOR,
         },
-        onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        onEvent: (event) => pushEvent("runtime", {
+          type: "ios_simulator_event",
+          // An agent revealing the device opens it where the user is talking from.
+          event: event.type === "drawer-open-requested" && event.chatSessionId
+            ? {
+              ...event,
+              targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
+            }
+            : event,
+        }),
         // Lane-device cleanup and idle power-off for this project.
         backgroundMaintenance: true,
       });
@@ -1644,7 +1671,9 @@ export async function createAdeRuntime(args: {
       /** The desktop's Chromium demo engine, over the same bridge. */
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       isAttached: () => boolean;
-    } = { current: null, demoEngine: null, isAttached: () => false };
+      /** Why a desktop that tried to attach could not; null otherwise. */
+      unattachedReason: () => string | null;
+    } = { current: null, demoEngine: null, isAttached: () => false, unattachedReason: () => null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1725,11 +1754,31 @@ export async function createAdeRuntime(args: {
      * false` off macOS, which is what lets a Windows desktop hide the tab by
      * reading rather than by catching a throw.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMacDesktopMachineLogger());
     const macDesktopService = chatOnlyRuntime
       ? null
       : createMacDesktopService({
         projectRoot,
-        logger: createMacDesktopLogger(logger, getMacDesktopMachineLogger()),
+        logger: macDesktopLogger,
+        // Windows hosts reuse the whole seat service; only the helper, the
+        // provider, and the permission story differ. `adeHome` is what the
+        // helper's host mode takes as `--ade-home`.
+        seat: process.platform === "win32"
+          ? createWindowsDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: resolveMachineAdeLayout().adeDir,
+          })
+          : null,
+        adeHome: resolveMachineAdeLayout().adeDir,
+        // `ade-media` on macOS; the attached desktop's Chromium engine (over
+        // the desktop bridge) everywhere, which is what turns a Windows lane's
+        // MP4 recording into its demo. Read per stop: a desktop may attach late.
+        demoEngines: createDemoEngineSet({
+          logger: macDesktopLogger,
+          getChromiumDemoEngine: () =>
+            desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
+          getChromiumUnavailableReason: () => desktopBridgeHolder.unattachedReason(),
+        }),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
           try {
@@ -1748,6 +1797,7 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
         // A lane may not claim another lane's App Control app onto its screen.
         appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
           appControlService?.laneForAppProcess(pid) ?? null,
@@ -1774,6 +1824,14 @@ export async function createAdeRuntime(args: {
     // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
     // ADE home.
     let builtInBrowserBridgeAuthToken: string | null = null;
+    let builtInBrowserBridgeAuthAttempt = 0;
+    /**
+     * Why no desktop app is attached, once one tried and failed. Null while
+     * none has tried (a headless brain) or once one is attached.
+     */
+    let desktopBridgeUnattached: { kind: string; reason: string } | null = null;
+    desktopBridgeHolder.unattachedReason = () =>
+      builtInBrowserBridgeAuthToken ? null : desktopBridgeUnattached?.reason ?? null;
     const builtInBrowserBridgeSocketPath =
       process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveMachineAdeLayout().desktopBridgeSocketPath;
@@ -1785,6 +1843,7 @@ export async function createAdeRuntime(args: {
       : createRemoteBrowserForwarder({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
       });
     if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
     const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
@@ -1819,6 +1878,34 @@ export async function createAdeRuntime(args: {
       builtInBrowserBridge?.dispose();
     });
 
+    // Dev servers this project's lanes run: what terminals and agent shells
+    // printed, plus what the listener scan finds. Published on the runtime
+    // stream so a desktop on another machine lights up its Browser the same
+    // way one on this machine does.
+    const devServerWatcher = chatOnlyRuntime
+      ? null
+      : createDevServerWatcher({
+        registry: devServerRegistry,
+        projectRoot,
+        listLaneRoots: async () =>
+          (await laneService.list({ includeArchived: false, includeStatus: false }))
+            .map((lane) => ({ laneId: lane.id, root: lane.worktreePath })),
+        logger,
+      });
+    if (devServerWatcher) {
+      const publishDevServer = (kind: DevServerEvent["kind"]) => (record: DevServerRecord) => {
+        if (!devServerWatcher.ownsRecord(record)) return;
+        pushEvent("runtime", { type: DEV_SERVER_EVENT, event: { kind, server: record } satisfies DevServerEvent });
+      };
+      const stopDetected = devServerRegistry.onDetected(publishDevServer("detected"));
+      const stopRemoved = devServerRegistry.onRemoved(publishDevServer("removed"));
+      teardown.push(() => {
+        stopDetected();
+        stopRemoved();
+        devServerWatcher.dispose();
+      });
+    }
+
     // Read-only view of the Work tools pane for iOS and the hosted web client.
     // Built here because it is the first point where BOTH of its sources exist:
     // the in-process App Control service and the desktop browser bridge.
@@ -1846,7 +1933,22 @@ export async function createAdeRuntime(args: {
       showRequests: createWorkToolShowRequests({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        // Show it on the screen of whoever is talking to the chat.
+        resolveTargetClientId: (chatSessionId, kind) => getSessionInputOrigin(
+          chatSessionId,
+          kind === "auto" ? { maxAgeMs: RECENT_INPUT_ORIGIN_MS } : {},
+        )?.clientId ?? null,
       }),
+      devServers: devServerWatcher
+        ? {
+          list: async (args) => {
+            // Someone is looking at a Browser: make the answer current first.
+            await devServerWatcher.refresh();
+            return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
+          },
+          probePort: (port) => probeLocalhostPort(port),
+        }
+        : null,
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());
@@ -1965,6 +2067,7 @@ export async function createAdeRuntime(args: {
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
+        machineAdeHome: resolveMachineAdeLayout().adeDir,
         runtimeBudget: chatRuntimeBudget,
         browserActorCapabilityIssuer,
         projectRoot,
@@ -2055,6 +2158,11 @@ export async function createAdeRuntime(args: {
           properties,
         }),
         onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          provider,
+        }),
+        onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
           analytics: productAnalyticsService,
           surface: "api",
           provider,
@@ -2553,6 +2661,21 @@ export async function createAdeRuntime(args: {
       getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
 
+    // PR Watch / Ship: wakes a chat on this brain when its watched PR changes.
+    const chatForPrWatch = agentChatService;
+    const prWatchService = chatForPrWatch
+      ? createPrWatchService({
+        logger,
+        prService: headlessLinearServices.prService,
+        sessionService,
+        messageSession: (args) => chatForPrWatch.messageSession(args),
+        emitPrEvent,
+        getGithubBackgroundPauseUntilMs: () =>
+          headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
+      })
+      : null;
+    if (prWatchService) teardown.push(() => prWatchService.dispose());
+
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own
     // the background polling loop that emits `prs-updated` — otherwise PR state
@@ -2582,6 +2705,7 @@ export async function createAdeRuntime(args: {
             previousReviewStatus,
           });
         }
+        prWatchService?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         await emitRuntimePrCardsForChanges({
           changes,
           dataSource: headlessLinearServices.prService,
@@ -2593,6 +2717,7 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => prPollingService.dispose());
     prPollingService.start();
+    prWatchService?.start();
     prPollingServiceForIngress = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {
@@ -2927,6 +3052,7 @@ export async function createAdeRuntime(args: {
               getStatus: appControlService.getStatus,
               subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
               getLatestFrame: appControlService.getLatestFrame,
+              setFrameDemand: appControlService.setFrameDemand,
             }
           : null,
         appleDeviceService: iosSimulatorService,
@@ -3002,6 +3128,7 @@ export async function createAdeRuntime(args: {
         if (event.type === "prs-updated") {
           for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
         }
+        prWatchService?.onPrEvent(event);
       },
     ));
     externalSessionsService = createExternalSessionsService({
@@ -3106,16 +3233,51 @@ export async function createAdeRuntime(args: {
           });
           return false;
         }
-        const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
-          socketPath: builtInBrowserBridgeSocketPath,
-          authToken,
-        });
-        if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
-        logger.info("built_in_browser_bridge.runtime_auth_configured", {
-          socketPath: builtInBrowserBridgeSocketPath,
-          projectRoot,
-          verified,
-        });
+        // A newer token supersedes a retry still running for an older one.
+        const attempt = ++builtInBrowserBridgeAuthAttempt;
+        const check = async () => {
+          const result = await checkBuiltInBrowserDesktopBridgeAuth({
+            socketPath: builtInBrowserBridgeSocketPath,
+            authToken,
+          });
+          if (attempt !== builtInBrowserBridgeAuthAttempt) return result;
+          if (result.verified) {
+            builtInBrowserBridgeAuthToken = authToken.trim();
+            desktopBridgeUnattached = null;
+          } else if (!builtInBrowserBridgeAuthToken) {
+            desktopBridgeUnattached = { kind: result.kind, reason: result.reason };
+          }
+          logger[result.verified ? "info" : "warn"]("built_in_browser_bridge.runtime_auth_configured", {
+            socketPath: builtInBrowserBridgeSocketPath,
+            projectRoot,
+            verified: result.verified,
+            ...(result.verified ? {} : { kind: result.kind, reason: result.reason }),
+          });
+          return result;
+        };
+        const first = await check();
+        const verified = first.verified;
+        if (!verified) {
+          // A timeout or a refused connect can be the brain or the desktop
+          // still starting up; a denied pipe or a rejected token cannot.
+          // Retried in the background so `ade/initialize` is not held up.
+          // An older verified token does not end the retry: after a desktop
+          // relaunch that token is stale, and this one is the live desktop's.
+          void (async () => {
+            let last: Awaited<ReturnType<typeof check>> = first;
+            for (const delayMs of [2_000, 10_000, 30_000]) {
+              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
+              if (!last.verified && (last.kind === "access_denied" || last.kind === "rejected")) return;
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, delayMs);
+                timer.unref?.();
+              });
+              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
+              last = await check();
+              if (last.verified) return;
+            }
+          })().catch(() => {});
+        }
         return verified;
       },
       eventBuffer,

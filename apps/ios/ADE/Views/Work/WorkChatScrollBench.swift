@@ -233,6 +233,10 @@ struct WorkChatScrollBenchOptions {
   /// Open the last finished turn's fold and one of its disclosures
   /// (`tools`, `files` or `proof`), as if the reader had tapped them.
   var openLastTurn: String?
+  /// Pre-expand one transcript card by its stable id, as if the reader had
+  /// tapped it. Used to screenshot a card's expanded body (e.g. the folded
+  /// startup-diagnostics disclosure) with no interaction.
+  var expandCardId: String?
 
   static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments)
     -> WorkChatScrollBenchOptions
@@ -251,6 +255,7 @@ struct WorkChatScrollBenchOptions {
     options.compactComposer = arguments.contains("-adeBenchCompactComposer")
     options.proofTurns = value("-adeBenchProof").flatMap(Int.init) ?? 0
     options.openLastTurn = value("-adeBenchOpenLastTurn")
+    options.expandCardId = value("-adeBenchExpandCard")
     return options
   }
 }
@@ -394,6 +399,7 @@ struct WorkChatScrollBenchScreen: View {
       onEditSteer: { _, _ in },
       onDispatchSteerInline: nil,
       onDispatchSteerInterrupt: nil,
+      onMoveSteer: nil,
       onSelectModel: { _ in },
       onSelectRuntimeMode: { _ in true },
       onSelectEffort: { _ in },
@@ -497,6 +503,12 @@ struct WorkChatScrollBenchScreen: View {
       }
       cardExpansion = WorkCardExpansionState(expandedIds: ids)
       model.updateOverlays { $0.expandedTurnIds = [turnId] }
+    }
+    if let expandCardId = options.expandCardId,
+       !expandCardId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      var ids = cardExpansion.expandedIds
+      ids.insert(expandCardId)
+      cardExpansion = WorkCardExpansionState(expandedIds: ids)
     }
     registry.routeSnapshot(
       ChatThreadSnapshotInput(

@@ -363,6 +363,24 @@ export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnD
   return summaries;
 }
 
+/** Same summaries field for field: `files` is the source event's own array. */
+export function sameTurnDiffSummaries(previous: readonly TurnDiffSummary[], next: readonly TurnDiffSummary[]): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    const a = previous[index]!;
+    const b = next[index]!;
+    if (
+      a.turnId !== b.turnId
+      || a.beforeSha !== b.beforeSha
+      || a.afterSha !== b.afterSha
+      || a.files !== b.files
+      || a.totalAdditions !== b.totalAdditions
+      || a.totalDeletions !== b.totalDeletions
+    ) return false;
+  }
+  return true;
+}
+
 export type SubagentTimelineEntry = {
   timestamp: string;
   type: "started" | "progress" | "result";

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -8,6 +9,7 @@ import {
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
@@ -37,6 +39,7 @@ import {
   type MachineBranchState,
 } from "../../../shared/laneDivergence";
 import type {
+  BranchDiffChanges,
   DiffChanges,
   FileChange,
   GitCommitSummary,
@@ -652,12 +655,12 @@ export function LaneGitActionsPane({
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
   onViewRebaseDetails?: (laneId?: string | null) => void;
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
-  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   /** Clears file + commit diff selection (back to file list in this section). */
   onClearDiffSelection?: () => void;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | null;
+  selectedMode: LaneDiffMode | null;
   /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
@@ -734,6 +737,15 @@ export function LaneGitActionsPane({
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
+  // Branch scope: everything the lane changed since its base, commits and
+  // uncommitted together. `null` means the user has not picked: the panel opens
+  // on Uncommitted while there is something to commit and on Branch when the
+  // tree is clean, which is exactly when Uncommitted would read "+0 -0" for a
+  // lane full of committed work.
+  const [scopeChoice, setScopeChoice] = useState<"branch" | "uncommitted" | null>(null);
+  const [branchChanges, setBranchChanges] = useState<BranchDiffChanges | null>(null);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const [branchSupported, setBranchSupported] = useState(() => typeof window.ade?.diff?.getBranchChanges === "function");
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(
@@ -766,6 +778,7 @@ export function LaneGitActionsPane({
   );
   const stagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.staged), [changes.staged]);
   const unstagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.unstaged), [changes.unstaged]);
+  const branchChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(branchChanges?.files ?? []), [branchChanges]);
   const hiddenStagedChangeCount = Math.max(0, changes.staged.length - visibleStagedChanges.length);
   const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
   const responsiveMode = getResponsiveMode(paneWidth);
@@ -884,6 +897,45 @@ export function LaneGitActionsPane({
   useEffect(() => {
     setShowAdvanced(false);
   }, [laneId]);
+
+  const hasUncommittedChanges = changes.staged.length + changes.unstaged.length > 0;
+  const gitScope: "branch" | "uncommitted" = !branchSupported
+    ? "uncommitted"
+    : scopeChoice ?? (hasUncommittedChanges ? "uncommitted" : "branch");
+
+  useEffect(() => {
+    setScopeChoice(null);
+    setBranchChanges(null);
+    setBranchError(null);
+  }, [laneId]);
+
+  // Re-read on every refresh of the working tree (`changes`) and of history
+  // (`commitTimelineKey`): a commit moves files between the two scopes.
+  useEffect(() => {
+    if (gitScope !== "branch" || !laneId) return;
+    const getBranchChanges = window.ade?.diff?.getBranchChanges;
+    if (!getBranchChanges) return;
+    let cancelled = false;
+    getBranchChanges({ laneId }, pin)
+      .then((result) => {
+        if (cancelled) return;
+        // Null is a host that predates branch diffs: Uncommitted only.
+        if (result == null) {
+          setBranchSupported(false);
+          return;
+        }
+        setBranchChanges(result);
+        setBranchError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (isBranchDiffUnsupported(error)) setBranchSupported(false);
+        else setBranchError(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [changes, commitTimelineKey, gitScope, laneId, pin]);
 
   useEffect(() => {
     if (!showAdvanced) return;
@@ -1644,8 +1696,43 @@ export function LaneGitActionsPane({
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
 
-  const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
+  const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
+    if (mode === "branch") {
+      // Read-only: staging and discarding belong to Uncommitted.
+      return (
+        <div
+          key={`branch:${file.path}`}
+          className="flex items-center gap-2 cursor-pointer transition-all duration-150"
+          style={{
+            padding: "7px 8px",
+            fontSize: 12,
+            fontFamily: MONO_FONT,
+            borderLeft: rowSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+            background: rowSelected ? COLORS.accentSubtle : "transparent",
+            color: rowSelected ? COLORS.textPrimary : COLORS.textMuted,
+          }}
+          onClick={() => {
+            onSelectCommit(null);
+            onSelectFile(file.path, "branch");
+          }}
+          onMouseEnter={(event) => {
+            if (!rowSelected) event.currentTarget.style.background = COLORS.hoverBg;
+          }}
+          onMouseLeave={(event) => {
+            if (!rowSelected) event.currentTarget.style.background = "transparent";
+          }}
+        >
+          <span className="shrink-0" title={`${file.kind} file`} style={{ width: 7, height: 7, borderRadius: "50%", background: getFileKindColor(file.kind) }} />
+          <span className="truncate flex-1" style={{ fontSize: 11 }} title={file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}>
+            {file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}
+          </span>
+          {file.additions != null && file.additions > 0 ? <span style={{ fontSize: 10, color: COLORS.success }}>+{file.additions}</span> : null}
+          {file.deletions != null && file.deletions > 0 ? <span style={{ fontSize: 10, color: COLORS.danger }}>-{file.deletions}</span> : null}
+          {file.isBinary ? <span style={inlineBadge(COLORS.textDim, { fontSize: 9 })}>binary</span> : null}
+        </div>
+      );
+    }
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
     const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
     const kindColor = getFileKindColor(file.kind);
@@ -1800,7 +1887,7 @@ export function LaneGitActionsPane({
 
   const renderChangeTreeNode = (
     node: ChangeTreeNode,
-    mode: "staged" | "unstaged",
+    mode: LaneDiffMode,
     depth: number,
     statsByPath: Map<string, ChangeTreeStats>,
   ): React.ReactNode[] => {
@@ -1860,7 +1947,7 @@ export function LaneGitActionsPane({
     return rows;
   };
 
-  const renderChangeTree = (files: FileChange[], mode: "staged" | "unstaged", statsByPath: Map<string, ChangeTreeStats>) => {
+  const renderChangeTree = (files: FileChange[], mode: LaneDiffMode, statsByPath: Map<string, ChangeTreeStats>) => {
     const tree = buildChangeTree(files);
     return renderChangeTreeNode(tree, mode, 0, statsByPath);
   };
@@ -2733,6 +2820,52 @@ export function LaneGitActionsPane({
               )}
             </div>
 
+            {branchSupported ? (
+              <div className="flex items-center gap-2" style={{ padding: "2px 0 4px" }} data-testid="git-pane-scope">
+                <div role="radiogroup" aria-label="Changes scope" className="inline-flex overflow-hidden rounded-md" style={{ border: `1px solid ${COLORS.border}` }}>
+                  {(["branch", "uncommitted"] as const).map((scope) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      role="radio"
+                      aria-checked={gitScope === scope}
+                      onClick={() => setScopeChoice(scope)}
+                      style={{
+                        padding: "3px 10px",
+                        fontSize: 11,
+                        fontFamily: MONO_FONT,
+                        background: gitScope === scope ? COLORS.accentSubtle : "transparent",
+                        color: gitScope === scope ? COLORS.textPrimary : COLORS.textMuted,
+                        border: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {scope === "branch" ? "Branch" : "Uncommitted"}
+                    </button>
+                  ))}
+                </div>
+                {gitScope === "branch" && branchChanges ? (
+                  <span className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }} title={`Since ${branchChanges.mergeBase.slice(0, 9)}, where this lane left ${branchChanges.baseRef}`}>
+                    vs {branchChanges.baseRef} · <span style={{ color: COLORS.success }}>+{branchChanges.additions}</span>{" "}
+                    <span style={{ color: COLORS.danger }}>-{branchChanges.deletions}</span> · {branchChanges.files.length} file{branchChanges.files.length === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {gitScope === "branch" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
+                {branchError ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">{branchError}</div>
+                ) : !branchChanges ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">Reading branch changes…</div>
+                ) : branchChanges.files.length === 0 ? (
+                  <div className="px-1 py-3 text-[12px] text-muted-fg">No changes since {branchChanges.baseRef}.</div>
+                ) : (
+                  renderChangeTree(branchChanges.files, "branch", branchChangeTreeStatsByPath)
+                )}
+              </div>
+            ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }}>
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -2786,6 +2919,7 @@ export function LaneGitActionsPane({
                   </div>
               ) : null}
             </div>
+            )}
             </>
             )}
           </SectionCard>

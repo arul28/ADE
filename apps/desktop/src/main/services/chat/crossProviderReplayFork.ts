@@ -334,3 +334,44 @@ export function toReplayForkDisclosure(fit: TranscriptReplayFit): AgentChatRepla
     keptTurnCount: fit.keptTurnCount,
   };
 }
+
+/** Where a "fork from here" cuts the source transcript. */
+export type TranscriptForkPoint = {
+  /** Envelopes up to and including the last one of the chosen turn. */
+  envelopes: AgentChatEventEnvelope[];
+  /** The first later turn, or null when the chosen turn is the latest. */
+  nextTurnId: string | null;
+};
+
+/**
+ * Cut `envelopes` after turn `turnId`, for a fork that keeps the conversation
+ * only up to that turn. Null when the transcript holds no such turn. A turn
+ * that never ended (no `done`) cannot be forked from: its result is unknown,
+ * so the caller refuses it rather than fork half a turn.
+ */
+export function sliceTranscriptThroughTurn(
+  envelopes: readonly AgentChatEventEnvelope[],
+  turnId: string,
+): TranscriptForkPoint | null {
+  const turnOf = (envelope: AgentChatEventEnvelope): string | null => {
+    const id = (envelope.event as { turnId?: unknown }).turnId;
+    return typeof id === "string" && id.length ? id : null;
+  };
+  let last = -1;
+  let finished = false;
+  for (let index = 0; index < envelopes.length; index += 1) {
+    if (turnOf(envelopes[index]!) !== turnId) continue;
+    last = index;
+    if (envelopes[index]!.event.type === "done") finished = true;
+  }
+  if (last === -1 || !finished) return null;
+  let nextTurnId: string | null = null;
+  for (let index = last + 1; index < envelopes.length; index += 1) {
+    const id = turnOf(envelopes[index]!);
+    if (id && id !== turnId) {
+      nextTurnId = id;
+      break;
+    }
+  }
+  return { envelopes: envelopes.slice(0, last + 1), nextTurnId };
+}

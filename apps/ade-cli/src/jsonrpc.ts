@@ -14,7 +14,28 @@ export type JsonRpcTransport = {
   onData(callback: (chunk: Buffer) => void): void;
   write(data: string): void;
   close(): void;
+  /** Bytes written but not yet taken by the peer, when the transport knows. */
+  pendingWriteBytes?(): number;
+  /** Called each time the peer has taken everything written so far. */
+  onDrain?(callback: () => void): void;
 };
+
+export type JsonRpcNotifyOptions = {
+  /**
+   * The notification may be skipped when the peer is behind, as a newer
+   * screencast frame supersedes an older one.
+   */
+  droppable?: boolean;
+  /**
+   * Droppable notifications with one key supersede each other. The newest one
+   * skipped goes out once the peer catches up, so the last picture before an
+   * app goes still is never lost; nothing else queues.
+   */
+  supersedeKey?: string;
+};
+
+/** Queue depth past which a droppable notification is skipped, not queued. */
+export const JSON_RPC_DROPPABLE_NOTIFY_PENDING_LIMIT_BYTES = 1024 * 1024;
 
 export type JsonRpcRequest = {
   jsonrpc?: string;
@@ -547,7 +568,7 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 const MAX_BATCH_SIZE = 100;
 
 export type JsonRpcServerHandle = (() => void) & {
-  notify: (method: string, params?: unknown) => void;
+  notify: (method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void;
   waitForIdle: () => Promise<void>;
 };
 
@@ -685,14 +706,20 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
 
   transport.onData(onData);
 
+  /** supersedeKey → the newest droppable notification skipped under that key. */
+  const skippedDroppable = new Map<string, { method: string; params: unknown }>();
+
   const stop = (() => {
+    skippedDroppable.clear();
     activeDispatches.clear();
     resolveIdleWaiters();
     closeTransport();
   }) as JsonRpcServerHandle;
 
-  stop.notify = (method: string, params?: unknown): void => {
-    if (stopped) return;
+  const peerIsBehind = (): boolean =>
+    (transport.pendingWriteBytes?.() ?? 0) > JSON_RPC_DROPPABLE_NOTIFY_PENDING_LIMIT_BYTES;
+
+  const writeNotification = (method: string, params: unknown): void => {
     try {
       writeMessage({
         jsonrpc: "2.0",
@@ -703,6 +730,25 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       reportError(error, "write");
       closeTransport();
     }
+  };
+
+  transport.onDrain?.(() => {
+    for (const [key, notification] of skippedDroppable) {
+      if (stopped || peerIsBehind()) return;
+      skippedDroppable.delete(key);
+      writeNotification(notification.method, notification.params);
+    }
+  });
+
+  stop.notify = (method: string, params?: unknown, notifyOptions?: JsonRpcNotifyOptions): void => {
+    if (stopped) return;
+    const key = notifyOptions?.droppable ? notifyOptions.supersedeKey : undefined;
+    if (notifyOptions?.droppable && peerIsBehind()) {
+      if (key !== undefined) skippedDroppable.set(key, { method, params });
+      return;
+    }
+    if (key !== undefined) skippedDroppable.delete(key);
+    writeNotification(method, params);
   };
 
   stop.waitForIdle = (): Promise<void> => {

@@ -168,6 +168,9 @@ export type WorkFilterPanelProps = {
   sortModes?: readonly WorkLaneSortMode[];
   sortLabels?: Record<WorkLaneSortMode, string>;
   onSortModeChange?: (next: WorkLaneSortMode) => void;
+  /** By-lane only: whether busy lanes fold into the Working shelf. */
+  foldBusyLanes?: boolean;
+  onFoldBusyLanesChange?: (enabled: boolean) => void;
   filters: WorkSessionFilters;
   onFiltersChange?: (update: (prev: WorkSessionFilters) => WorkSessionFilters) => void;
   machines: readonly WorkFilterMachineOption[];
@@ -184,6 +187,8 @@ export function WorkFilterPanel({
   sortModes,
   sortLabels,
   onSortModeChange,
+  foldBusyLanes,
+  onFoldBusyLanesChange,
   filters,
   onFiltersChange,
   machines,
@@ -223,6 +228,18 @@ export function WorkFilterPanel({
               value={sortMode}
               onChange={onSortModeChange}
             />
+          </div>
+        ) : null}
+        {foldBusyLanes !== undefined && onFoldBusyLanesChange ? (
+          <div className="flex items-center gap-1.5">
+            <span className={ROW_LABEL_CLASS}>Focus</span>
+            <FilterChip
+              on={foldBusyLanes}
+              title="Lanes with nothing waiting on you fold into a Working section. They come back out when something needs you or finishes."
+              onClick={() => onFoldBusyLanesChange(!foldBusyLanes)}
+            >
+              <span className="truncate">Fold busy lanes</span>
+            </FilterChip>
           </div>
         ) : null}
       </div>

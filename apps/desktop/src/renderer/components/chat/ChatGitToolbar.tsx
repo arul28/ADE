@@ -35,6 +35,7 @@ import { requestChatPrSelection } from "./chatPrPaneRequests";
 import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { PrWatchPill } from "./PrWatchPill";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -715,6 +716,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       {prBadge ? (
         <div className="flex items-center gap-1.5">
           {prBadge}
+          {sessionId && linkedPr && !linkedPr.unmapped ? (
+            <PrWatchPill sessionId={sessionId} pr={linkedPr} runtimePin={runtimePin} />
+          ) : null}
           <AnimatePresence initial={false}>
             {prMenuOpen ? prMenu : null}
           </AnimatePresence>

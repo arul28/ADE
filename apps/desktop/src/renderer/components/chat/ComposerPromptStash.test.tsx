@@ -556,7 +556,7 @@ describe("ComposerPromptStash", () => {
       <ComposerPromptStash
         draft="Keep the remote image"
         attachments={[{
-          path: "/remote/source-project/design.png",
+          path: "/remote/source-project/design-remote-owner.png",
           type: "image",
         }]}
         composerMachineBinding={composerMachineBinding}
@@ -571,7 +571,7 @@ describe("ComposerPromptStash", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("source runtime unavailable");
     expect(runtimeRead).toHaveBeenCalledWith(
-      "/remote/source-project/design.png",
+      "/remote/source-project/design-remote-owner.png",
       composerMachineBinding,
     );
     expect(localRead).not.toHaveBeenCalled();

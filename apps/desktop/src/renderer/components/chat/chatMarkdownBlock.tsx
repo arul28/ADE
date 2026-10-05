@@ -4,7 +4,8 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
-import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
+import { openFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
+import { MermaidDiagram } from "../shared/MermaidDiagram";
 import {
   parseProofCitationUrl,
   parseProofCompareBlock,
@@ -25,6 +26,7 @@ import { MosaicCard } from "./MosaicCard";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chipFromDeeplinkTarget } from "../../../shared/chips";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import {
@@ -228,13 +230,19 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // Every scene in the body is held while the last one is open; a message with
   // two scenes mounts both a tick later rather than mounting one against a
   // document that is still arriving.
-  const sceneStreaming = Boolean(sceneLive)
-    && hasOpenSceneFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown);
+  const openTail = sceneLive ? openFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown) : null;
+  const sceneStreaming = openTail?.language === SCENE_FENCE_LANGUAGE;
+  // A mermaid fence still arriving is shown as its source: half a diagram
+  // either fails to parse or draws the wrong graph. Only that fence holds;
+  // the diagrams above it, already closed, stay drawn.
+  const streamingMermaidBody = openTail?.language === "mermaid" ? openTail.body.trimEnd() : null;
   const chromeTint = useChatChromeTint();
   const neu = bubble || chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
+  // A `localhost` link in this reply means the chat's machine.
+  const runtimePin = useChatRuntimeScope().pin;
   // Lanes, chats, models and the rest that this reply names. The lookup only
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
@@ -349,6 +357,18 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           />
         );
       }
+      // Replies draw their diagrams; a fence in the user's own message stays the
+      // source they wrote (and a diagram has no background that suits the
+      // accent bubble). Tool calls render elsewhere and are untouched.
+      if (isBlock && language === "mermaid" && !bubble && text.trimEnd() !== streamingMermaidBody) {
+        return (
+          <MermaidDiagram
+            source={text}
+            variant="chat"
+            renderCode={(code) => <HighlightedCode code={code} language="mermaid" />}
+          />
+        );
+      }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />
       ) : pathIsClickable ? (
@@ -409,7 +429,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           rel="noreferrer"
           onClick={(event) => {
             event.preventDefault();
-            openUrlInAdeBrowser(href);
+            openUrlInAdeBrowser(href, { runtimePin });
           }}
           className={
             neu
@@ -421,7 +441,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, thought]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought]);
 
   return (
     <div

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppleLogo } from "../ui/appleIcons";
-import { IOS_RUNTIME_UNSUPPORTED_REASON, isReadOnlyWorkTool, workToolAvailability, workToolCardLabel, workToolLabel, WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
+import { IOS_RUNTIME_UNSUPPORTED_REASON, isReadOnlyWorkTool, visibleWorkToolDefinitions, workToolAvailability, workToolCardLabel, workToolLabel, WORK_TOOL_DEFINITIONS, type WorkToolContext } from "./workTools";
 
 const LOCAL_MAC: WorkToolContext = {
   supportsIosSimulator: true,
@@ -119,6 +119,26 @@ describe("Mac Desktop tool availability", () => {
     expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: true })).available).toBe(true);
     // A non-Mac host hides it for every chat, remote or local.
     expect(workToolAvailability("mac-desktop", context({ supportsMacDesktop: false })).available).toBe(false);
+  });
+
+  it.each([
+    // [case, context, the host-bound cards shown]
+    ["a Mac whose driver is missing", { hostPlatform: "darwin", supportsMacDesktop: false, macDesktopUnsupportedReason: "The native desktop driver is missing.", supportsIosSimulator: true }, ["ios", "mac-desktop"]],
+    ["a Windows host", { hostPlatform: "win32", supportsWindowsDesktop: true, supportsMacDesktop: false }, ["windows-desktop"]],
+    ["a Linux host", { hostPlatform: "linux", supportsMacDesktop: false, supportsWindowsDesktop: false }, []],
+    ["a host that has not answered", { hostPlatform: null }, ["ios", "mac-desktop", "windows-desktop"]],
+  ] as const)("shows a lane-screen card only on its own host platform: %s", (_case, overrides, shown) => {
+    const ctx = context(overrides as Partial<WorkToolContext>);
+    const hostBound = new Set(["ios", "mac-desktop", "windows-desktop"]);
+    const visible = visibleWorkToolDefinitions(ctx).map((definition) => definition.id).filter((id) => hostBound.has(id));
+    expect(visible).toEqual(shown);
+    // Tools that need no particular host are never hidden.
+    expect(visibleWorkToolDefinitions(ctx).some((definition) => definition.id === "browser")).toBe(true);
+    // A shown card the host cannot run right now is disabled with the host's
+    // own reason, not hidden: the user can fix a missing driver.
+    if (overrides.hostPlatform === "darwin") {
+      expect(workToolAvailability("mac-desktop", ctx)).toEqual({ available: false, reason: "The native desktop driver is missing." });
+    }
   });
 
   it("is watchable but not drivable from the hosted web client", () => {

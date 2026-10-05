@@ -306,6 +306,7 @@ export function createMacDesktopOwnershipRegistry(options: { now?: () => number 
         displayId: display.displayId,
         windowCount: countWindows(display.laneId),
         streaming: isStreaming(display.laneId),
+        ...(display.seatMode ? { seatMode: display.seatMode } : {}),
       }));
     },
 

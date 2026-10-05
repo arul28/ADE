@@ -8,6 +8,7 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
 import { COLORS } from "../laneDesignTokens";
+import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
@@ -145,11 +146,16 @@ function AgentCluster({
         </span>
       ) : null}
       {/* Same status marks as the Work list: a filled amber dot when it is
-          your move, the dashed "working" circle otherwise. */}
+          your move, the dashed "working" circle otherwise. The spin sits on an
+          HTML wrapper, not the SVG: Chromium repaints an animated SVG every
+          frame on the main thread. 180 steps over 3 s is a 2° turn 60 times a
+          second, where a smooth spin ticks at the display's rate. */}
       {attention ? (
         <span aria-hidden className="inline-block h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: COLORS.warning }} />
       ) : (
-        <CircleDashed size={12} weight="bold" aria-hidden className="shrink-0 text-sky-400 motion-safe:animate-[spin_3s_linear_infinite]" />
+        <span aria-hidden className="inline-flex shrink-0 motion-safe:animate-[spin_3s_steps(180)_infinite]">
+          <CircleDashed size={12} weight="bold" className="text-sky-400" />
+        </span>
       )}
     </span>
   );
@@ -159,7 +165,11 @@ function RebaseHint({
   lane,
   rebaseSuggestion,
   autoRebaseStatus,
-}: Pick<LaneSidebarRowProps, "lane" | "rebaseSuggestion" | "autoRebaseStatus">) {
+  foreign = false,
+}: Pick<LaneSidebarRowProps, "lane" | "rebaseSuggestion" | "autoRebaseStatus" | "foreign">) {
+  // While this machine's lane status is unconfirmed (a read is out, or
+  // failed), the behind count shows quietly rather than as current.
+  const statusStale = useAppStore((s) => s.laneStatusStale) && !foreign;
   const broken = autoRebaseStatus?.state === "rebaseConflict" || autoRebaseStatus?.state === "rebaseFailed";
   if (broken) {
     return (
@@ -175,9 +185,10 @@ function RebaseHint({
   const base = rebaseSuggestion.baseLabel?.trim() || laneBranchLabel(lane.baseRef) || "base";
   return (
     <span
-      className="inline-flex shrink-0 items-center text-[10.5px] tabular-nums"
+      className={cn("inline-flex shrink-0 items-center text-[10.5px] tabular-nums transition-opacity duration-150", statusStale && "opacity-50")}
       title={`Needs rebase: ${behind} commit${behind === 1 ? "" : "s"} behind ${base}`}
       style={{ color: COLORS.warning }}
+      data-stale={statusStale || undefined}
     >
       <ArrowDown size={10} weight="bold" />
       {behind}
@@ -345,7 +356,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               <span className="min-w-0 truncate">{branch}</span>
             </span>
             <span className="min-w-0 flex-1" />
-            <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} />
+            <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} foreign={foreign} />
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span

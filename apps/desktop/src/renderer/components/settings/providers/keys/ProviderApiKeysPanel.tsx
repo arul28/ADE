@@ -258,9 +258,13 @@ export function ProviderApiKeysPanel({
   if (bridgeMissing) return null;
 
   return (
+    <>
     <ProviderPanel
       title="API keys"
       count={credentials.length}
+      // Nothing saved is nothing to read: fold to the header until a key exists.
+      autoCollapsed={!loading && credentials.length === 0 && !error && !writeError}
+      summary="None saved"
       actions={
         <button
           type="button"
@@ -301,16 +305,17 @@ export function ProviderApiKeysPanel({
           />
         ))
       )}
-
-      {sheet ? (
-        <AddApiKeySheet
-          spec={spec}
-          providerLabel={providerLabel}
-          existing={sheet.existing}
-          onSave={persist}
-          onClose={() => setSheet(null)}
-        />
-      ) : null}
     </ProviderPanel>
+    {/* Outside the panel: a folded panel must still open its own sheet. */}
+    {sheet ? (
+      <AddApiKeySheet
+        spec={spec}
+        providerLabel={providerLabel}
+        existing={sheet.existing}
+        onSave={persist}
+        onClose={() => setSheet(null)}
+      />
+    ) : null}
+    </>
   );
 }

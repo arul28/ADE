@@ -13,7 +13,8 @@ export type TrustedWindowsTool =
   | "schtasks"
   | "tar"
   | "taskkill"
-  | "icacls";
+  | "icacls"
+  | "whoami";
 
 const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
   powercfg: "powercfg.exe",
@@ -26,6 +27,7 @@ const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
   tar: "tar.exe",
   taskkill: "taskkill.exe",
   icacls: "icacls.exe",
+  whoami: "whoami.exe",
 };
 
 /**

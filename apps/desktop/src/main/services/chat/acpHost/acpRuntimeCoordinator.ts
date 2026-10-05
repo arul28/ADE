@@ -407,6 +407,14 @@ export async function createAcpRuntime<TSteer>(
   args.runtimeBudget.enforce(args.owner.session.id);
 
   let runtime: AcpRuntimeState<TSteer> | null = null;
+  /**
+   * An agent can send `available_commands_update` in the same stdout chunk as
+   * the `session/new` response, before `runtime` is assigned. The translator
+   * dedupes by content, so dropping that first list would lose the agent's
+   * commands for the session's life. Buffer it and replay once the runtime
+   * exists.
+   */
+  let pendingSlashCommands: AcpSlashCommand[] | null = null;
   let session: AcpSession;
   try {
     session = await openAcpSession({
@@ -428,7 +436,10 @@ export async function createAcpRuntime<TSteer>(
         onEvents: (events) => args.callbacks.onEvents(runtime, events),
         onPermissionRequested: (pending) => args.callbacks.onPermissionRequested(runtime, pending),
         onPermissionSettled: (requestId) => args.callbacks.onPermissionSettled(runtime, requestId),
-        onSlashCommands: (commands) => args.callbacks.onSlashCommands(runtime, commands),
+        onSlashCommands: (commands) => {
+          if (runtime) args.callbacks.onSlashCommands(runtime, commands);
+          else pendingSlashCommands = commands;
+        },
         onConfigOptions: (snapshot) => args.callbacks.onConfigOptions(runtime, snapshot),
         onSessionInfo: (info) => args.callbacks.onSessionInfo(runtime, info),
         onProcessExit: (detail) => args.callbacks.onProcessExit(runtime, detail),
@@ -459,6 +470,10 @@ export async function createAcpRuntime<TSteer>(
   };
   args.callbacks.onRuntimeCreated(runtime);
   const createdRuntime = runtime as AcpRuntimeState<TSteer>;
+  if (pendingSlashCommands) {
+    args.callbacks.onSlashCommands(runtime, pendingSlashCommands);
+    pendingSlashCommands = null;
+  }
 
   // Grok declares session config for model and effort only. Its permission
   // posture rides spawn flags, so it gets no `mode` call.

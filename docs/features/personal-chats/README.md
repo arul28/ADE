@@ -234,6 +234,15 @@ repairs older non-automation rows whose marker is missing or stale before
 listing, reading, or continuing them. A missing marker must not hide an intact
 transcript from the conversation rail.
 
+A personal chat's shell runs the `ade` CLI at role `agent`, like any chat
+(the CTO's included; its extra power is its own tool set, not its shell). With
+`--project-root <path>` it lists, reads, creates and messages chats in any
+project on this machine, and with `--machine` on the account's other machines.
+A child it starts in a project reports back to it through the brain's
+cross-scope router (see
+[Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)). It
+cannot settle sessions or run CTO-only actions, and it has no durable memory.
+
 Personal chat creation strips or overrides project-only fields such as a
 caller-supplied lane/cwd, automation ownership, and persistent project
 identity. The CLI separately rejects Linear attachment flags. Machine RPC actions are

@@ -17,6 +17,7 @@ import {
   isEnoentError,
   isWithinDir,
   resolvePathWithinRoot,
+  signalProcessGroup,
   type DirtyFileTextLookup,
 } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
@@ -1392,7 +1393,7 @@ function createBashTool(
       const killProc = (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGTERM"): void => {
         if (process.platform !== "win32" && typeof proc.pid === "number") {
           try {
-            process.kill(-proc.pid, signal);
+            signalProcessGroup(proc.pid, signal);
             return;
           } catch {
             // Fall back to killing the direct child when process-group teardown is unavailable.

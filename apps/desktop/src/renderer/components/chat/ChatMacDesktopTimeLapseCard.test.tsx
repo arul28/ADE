@@ -3,7 +3,13 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MacDesktopEventPayload } from "../../../shared/types/macDesktop";
-import { noteWorkSurfaceMounted, resetWorkToolOnScreenForTests, workSurfaceKey } from "../../lib/workToolOnScreen";
+import {
+  noteFloatingWorkSurfaceShown,
+  noteWorkSurfaceMounted,
+  resetWorkToolOnScreenForTests,
+  workSurfaceKey,
+} from "../../lib/workToolOnScreen";
+import { MAC_DESKTOP_CARD_ON_SCREEN_KEY } from "../work/macDesktopCardGrants";
 import { ChatMacDesktopTimeLapseCard, resolveMacDesktopTimeLapseSrc } from "./ChatMacDesktopTimeLapseCard";
 import type { OpenProjectBinding } from "../../../shared/types";
 
@@ -59,29 +65,43 @@ describe("ChatMacDesktopTimeLapseCard next to the pane", () => {
     await waitFor(() => expect(screen.getByTestId("mac-desktop-time-lapse")).toBeTruthy());
   });
 
-  it("regression: never pops up while the tools pane shows the lane's Mac Desktop", async () => {
-    // The owner's 2026-09-24 report: the agent finished, and a second picture
-    // of the desktop popped up in the thread next to the open pane.
-    const pane = document.createElement("div");
-    const unmount = noteWorkSurfaceMounted(workSurfaceKey("mac-desktop", "bound", "lane-1"), pane);
+  /*
+   * Two surfaces already show the lane's desktop live: the tools pane, and the
+   * floating player over the chat. While either does, the turn's clip is a
+   * second picture of the same screen (the owner's reports of 2026-09-24 and
+   * 2026-10-05), so it never pops up and goes away when one appears.
+   */
+  const SURFACES = [
+    ["the tools pane", () => noteWorkSurfaceMounted(workSurfaceKey("mac-desktop", "bound", "lane-1"), document.createElement("div"))],
+    ["the floating player", () => noteFloatingWorkSurfaceShown(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, "bound", "lane-1"))],
+  ] as const;
+
+  /** Lets the clip's source resolve, so an absent card is absent for its own reason. */
+  async function settle(): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it.each(SURFACES)("never pops up while %s shows the lane's desktop, and does not pop up after", async (_label, show) => {
+    const hide = show();
     mount();
     emitTimeLapse();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settle();
     expect(screen.queryByTestId("mac-desktop-time-lapse")).toBeNull();
 
-    // The clip that arrived while the pane showed the desktop is not saved
-    // for later: closing the pane does not pop it up after the fact.
-    act(() => unmount());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The clip that arrived meanwhile is not saved for later.
+    act(() => hide());
+    await settle();
     expect(screen.queryByTestId("mac-desktop-time-lapse")).toBeNull();
   });
 
-  it("goes away when the pane opens on the lane's desktop", async () => {
+  it.each(SURFACES)("goes away when %s starts showing the lane's desktop", async (_label, show) => {
     mount();
     emitTimeLapse();
     await waitFor(() => expect(screen.getByTestId("mac-desktop-time-lapse")).toBeTruthy());
     act(() => {
-      noteWorkSurfaceMounted(workSurfaceKey("mac-desktop", "bound", "lane-1"), document.createElement("div"));
+      show();
     });
     await waitFor(() => expect(screen.queryByTestId("mac-desktop-time-lapse")).toBeNull());
   });

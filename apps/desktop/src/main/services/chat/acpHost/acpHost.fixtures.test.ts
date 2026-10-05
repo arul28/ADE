@@ -1,16 +1,15 @@
 /**
  * Dialect claims vs captured initialize responses from real binaries.
  *
- * These fixtures were recorded on 2026-09-18 against Copilot CLI 1.0.86,
- * ACP agent 1.0.4, Grok 1.0.13, Qwen Code 0.24.0, and the Kimi Code 0.39.1
- * compatibility baseline. Kimi Code 2.0.0's current ACP reference is covered
- * by the dialect contract assertions below.
- * Qwen Code 0.24.0 was captured separately on 2026-09-18.
+ * These fixtures were recorded on 2026-10-05 against the latest CLI releases:
+ * Copilot 1.0.91, Grok 1.0.46, Qwen Code 0.25.0, Kimi Code 2.1.1, and Devin
+ * 3000.11.3. Each one was diffed against the older build installed on the
+ * capture machine; the handshakes differ only in the version string.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { copilotDialect, grokDialect, kimiDialect, qwenDialect, readGrokPromptUsage } from "./acpDialects";
+import { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect, readGrokPromptUsage } from "./acpDialects";
 import { normalizeAcpConfigOptions, type AcpInitializeResponse } from "./acpProtocolTypes";
 
 const fixturesDir = path.join(__dirname, "fixtures");
@@ -20,10 +19,10 @@ function loadFixture<T>(name: string): T {
 }
 
 describe("captured initialize fixtures", () => {
-  it("copilot 1.0.86 advertises load, close, MCP, and image, not resume", () => {
+  it("copilot 1.0.91 advertises load, close, MCP, and image, not resume", () => {
     const init = loadFixture<AcpInitializeResponse>("copilot.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("1.0.86");
+    expect(init.agentInfo?.version).toBe("1.0.91");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
     expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
@@ -130,10 +129,10 @@ describe("captured initialize fixtures", () => {
     expect(options.find((option) => option.id === "allow_all")?.value).toBe("off");
   });
 
-  it("qwen 0.24.0 advertises resume and image/audio, not close", () => {
+  it("qwen 0.25.0 advertises resume and image/audio, not close", () => {
     const init = loadFixture<AcpInitializeResponse>("qwen.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("0.24.0");
+    expect(init.agentInfo?.version).toBe("0.25.0");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.promptCapabilities).toEqual({
       image: true,
@@ -143,18 +142,19 @@ describe("captured initialize fixtures", () => {
     expect(init.agentCapabilities?.mcpCapabilities).toEqual({ sse: true, http: true });
     expect(init.agentCapabilities?.sessionCapabilities).toEqual({ list: {}, resume: {} });
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
-    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai", "openai-responses"]);
+    expect(init.authMethods?.map((method) => method.id)).toEqual(["openai"]);
     expect(qwenDialect.closeStyle).toBe("kill_process");
     expect(qwenDialect.oneProcessPerSession).toBe(true);
     expect(qwenDialect.loadPolicy).toBe("resume_preferred");
     expect(qwenDialect.imagePrompts.declared).toBe(true);
     expect(qwenDialect.authProbe.methodId).toBe("openai");
+    expect(qwenDialect.cancelStyle).toBe("notification");
   });
 
-  it("kimi 0.39.1 baseline advertises close, login terminal-auth, and reads usage_update", () => {
+  it("kimi 2.1.1 advertises close, login terminal-auth, and reads usage_update", () => {
     const init = loadFixture<AcpInitializeResponse>("kimi.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("0.39.1");
+    expect(init.agentInfo?.version).toBe("2.1.1");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.promptCapabilities).toEqual({
       image: true,
@@ -178,5 +178,31 @@ describe("captured initialize fixtures", () => {
     expect(kimiDialect.imagePrompts.declared).toBe(true);
     expect(kimiDialect.sessionConfig.declared).toBe(true);
     expect([...kimiDialect.configOptionIds]).toEqual(["mode", "model", "thinking"]);
+    expect(kimiDialect.cancelStyle).toBe("notification");
+  });
+
+  it("devin 3000.11.3 advertises load and list, not resume, close, or set_model", () => {
+    const init = loadFixture<AcpInitializeResponse>("devin.initialize.json");
+    expect(init.protocolVersion).toBe(1);
+    expect(init.agentCapabilities?.loadSession).toBe(true);
+    expect(init.agentCapabilities?.promptCapabilities).toEqual({
+      image: true,
+      audio: false,
+      embeddedContext: true,
+    });
+    expect(init.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
+    expect(init.agentCapabilities?.sessionCapabilities).toMatchObject({ list: {}, delete: {} });
+    expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("resume");
+    expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
+    expect(devinDialect.closeStyle).toBe("kill_process");
+    // With no close, ending a chat can only end its session by ending the process.
+    expect(devinDialect.oneProcessPerSession).toBe(true);
+    expect(devinDialect.loadPolicy).toBe("load_only");
+    expect(devinDialect.resumeSession.declared).toBe(false);
+    expect(devinDialect.cancelStyle).toBe("notification");
+    // Devin has no `session/set_model`; the model is the `model` config option.
+    expect(devinDialect.modelSelection.declared).toBe(false);
+    expect(devinDialect.sessionConfig.declared).toBe(true);
+    expect(devinDialect.imagePrompts.declared).toBe(true);
   });
 });

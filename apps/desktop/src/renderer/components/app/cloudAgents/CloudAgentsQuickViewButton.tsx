@@ -8,6 +8,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../../lib/workSidebarBrowserResize";
 import { subscribeOpenCloudAgentsPanel } from "../../../lib/cloudAgentsEvents";
+import { AI_STATUS_CACHE_INVALIDATED_EVENT, type AiStatusCacheInvalidatedEventDetail } from "../../../lib/aiDiscoveryCache";
 import { cn } from "../../ui/cn";
 import { CloudAgentsPanel } from "./CloudAgentsPanel";
 import { CLOUD_PROVIDER_BRANDS, type CloudProviderBrand } from "./cloudAgentsModel";
@@ -16,7 +17,11 @@ import { CLOUD_PROVIDER_BRANDS, type CloudProviderBrand } from "./cloudAgentsMod
 // integrations are connection-gated and should appear/disappear together
 // while a provider key is being verified or a remote runtime reconnects.
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
-const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+// A backstop for a key added outside this window (the CLI, another device).
+// A provider key saved in this window's Settings invalidates the AI status
+// cache, which re-checks below, and window focus re-checks too, so the button
+// does not ask the brain every 3 s while the provider is disconnected.
+const VISIBILITY_RETRY_INTERVAL_MS = 60_000;
 const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
@@ -55,7 +60,12 @@ function readVisibilityCached(
     ? existing
     : { reader, value: false, checkedAtMs: 0, inFlight: null };
   visibilityCache.set(key, entry);
-  if (entry.inFlight) return entry.inFlight;
+  if (entry.inFlight) {
+    if (!force) return entry.inFlight;
+    // A forced read follows a change (a key saved, a project switched); the
+    // read in flight may have started before it, so read again once it settles.
+    return entry.inFlight.then(() => readVisibilityCached(args));
+  }
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
 
@@ -180,10 +190,18 @@ export function CloudAgentsQuickViewButton({
         if (!cancelled) setVisible(next);
       });
     };
+    // Settings saves and clears provider keys with an all-projects
+    // invalidation; a project switch's own invalidation is already covered
+    // by the switch re-check above.
+    const refreshOnKeyChange = (event: Event) => {
+      if ((event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail?.allProjects) refresh();
+    };
     window.addEventListener("focus", refresh);
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, refreshOnKeyChange);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, refreshOnKeyChange);
     };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
 

@@ -8,6 +8,7 @@ import {
   createAcpSessionPool,
   createMockAcpAgent,
   createService,
+  fs,
   getDynamicAcpModelDescriptors,
   getModelById,
   path,
@@ -15,6 +16,7 @@ import {
   respondWithSession,
   spawn,
   startup,
+  tmpRoot,
   waitFor,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
@@ -994,6 +996,113 @@ describe("acp chat runtime", () => {
     expect(names.filter((name) => name === "/review")).toHaveLength(1);
     expect(names).not.toContain("/diff");
     expect(names).not.toContain("/login");
+  });
+
+  describe("leading-slash prompts", () => {
+    // Only a command the agent advertised reaches it as a command. Kimi answers
+    // any other `/word` itself ("Unknown ACP command") with no model turn, and
+    // Qwen fails the turn for a name it knows only from its terminal UI.
+    it.each([
+      {
+        label: "expands an ADE skill the agent does not advertise",
+        sends: ["/ship resume for lane x"],
+        advertised: ["compact"],
+        expectStart: "Ship the lane.",
+      },
+      {
+        label: "sends an unadvertised name as text",
+        sends: ["/nonexistentcmd hello"],
+        advertised: ["compact"],
+        expectStart: "The user's message below starts with",
+        expectContains: "/nonexistentcmd hello",
+      },
+      {
+        label: "sends an advertised command bare",
+        sends: ["/compact now"],
+        advertised: ["compact"],
+        expectExact: "/compact now",
+      },
+      {
+        label: "runs the agent's own command over a same-named ADE skill on the first turn",
+        sends: ["/ship resume for lane x"],
+        advertised: ["compact", "ship"],
+        expectExact: "/ship resume for lane x",
+      },
+      {
+        label: "sends an advertised command bare after an earlier turn",
+        sends: ["hello", "/compact now"],
+        advertised: ["compact"],
+        expectExact: "/compact now",
+      },
+    ])("$label", async ({ sends, advertised, expectStart, expectContains, expectExact }) => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        "---\nname: ship\ndescription: Ship the lane\n---\n\nShip the lane.\n\nTask: $ARGUMENTS\n",
+      );
+      const harness = await openAcpHarness({
+        provider: "kimi",
+        model: "kimi-for-coding",
+        modelId: "moonshot/kimi-for-coding",
+      });
+      // The agent advertises its commands just after `session/new` answers.
+      harness.agent.on("session/new", () => {
+        setTimeout(() => agentEmitCommands(
+          harness.agent,
+          "acp-session-1",
+          advertised.map((name) => ({ name, description: name })),
+        ), 0);
+        return { result: { sessionId: "acp-session-1" } };
+      });
+      scriptPrompt(harness.agent, []);
+
+      for (const [index, text] of sends.entries()) {
+        await harness.service.sendMessage({ sessionId: harness.session.id, text });
+        await vi.waitFor(() => {
+          expect(eventsOfType(harness, "done")).toHaveLength(index + 1);
+        });
+      }
+
+      const prompts = harness.agent.received.filter((entry) => entry.method === "session/prompt");
+      const sent = ((prompts.at(-1)?.params as { prompt: Array<{ type: string; text?: string }> }).prompt)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n");
+      if (expectExact) expect(sent).toBe(expectExact);
+      if (expectStart) expect(sent.startsWith(expectStart)).toBe(true);
+      if (expectContains) expect(sent).toContain(expectContains);
+    });
+
+    it("recognizes a command list delivered in the same turn as the session/new result", async () => {
+      // The agent can write its first `available_commands_update` in the same
+      // stdout chunk as the `session/new` response. The runtime object does not
+      // exist yet, so the coordinator buffers the list and replays it; without
+      // that, an advertised command would be sent as text with the "not a
+      // command" note.
+      const harness = await openAcpHarness({
+        provider: "kimi",
+        model: "kimi-for-coding",
+        modelId: "moonshot/kimi-for-coding",
+      });
+      harness.agent.on("session/new", () => {
+        agentEmitCommands(harness.agent, "acp-session-1", [{ name: "compact", description: "compact" }]);
+        return { result: { sessionId: "acp-session-1" } };
+      });
+      scriptPrompt(harness.agent, []);
+
+      await harness.service.sendMessage({ sessionId: harness.session.id, text: "/compact now" });
+      await vi.waitFor(() => {
+        expect(eventsOfType(harness, "done")).toHaveLength(1);
+      });
+
+      const prompts = harness.agent.received.filter((entry) => entry.method === "session/prompt");
+      const sent = ((prompts.at(-1)?.params as { prompt: Array<{ type: string; text?: string }> }).prompt)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n");
+      expect(sent).toBe("/compact now");
+    });
   });
 
   it("emits one visible error and a terminal done when the agent cannot start", async () => {

@@ -10,6 +10,16 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  MACHINE_ROW_KEY,
+  createMachineRemoteConnection,
+  executePlanAcrossMachines,
+  extractMachineTargeting,
+  formatMachineFanOut,
+  formatMachinesRoster,
+  isMachineFanOutResult,
+  withMachineColumns,
+} from "./cliMachineTargeting";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -168,11 +178,14 @@ import {
   IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
+  ADE_USAGE_COST_BREAKDOWN_BY,
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
   isAdeUsageRangePreset,
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
+import { parseCostSplit, sumCostSplitsOrNull } from "../../desktop/src/shared/usageCostSplit";
 import {
   ADE_TURN_USAGE_GROUP_BY,
   ADE_TURN_USAGE_MAX_DAYS,
@@ -242,6 +255,7 @@ import {
   type JsonRpcHandler,
   type JsonRpcId,
   type JsonRpcInternalErrorReport,
+  type JsonRpcNotifyOptions,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -280,17 +294,24 @@ import {
   MAC_DESKTOP_VALUE_CARRIER_FLAGS,
   MAC_DESKTOP_VALUE_FLAGS,
   buildMacDesktopPlan,
+  macDesktopSocketPlacementWarning,
+} from "./cliMacDesktop";
+import {
   formatMacDesktopAction,
+  formatMacDesktopLease,
   formatMacDesktopObservation,
+  formatMacDesktopOpen,
   formatMacDesktopProofFiled,
   formatMacDesktopRecording,
+  formatMacDesktopScreenshot,
   formatMacDesktopStatus,
   formatMacDesktopStop,
+  formatMacDesktopWindowAction,
   formatMacDesktopWindows,
   macDesktopErrorHint,
   macDesktopRecordingDurationMs,
-  macDesktopSocketPlacementWarning,
-} from "./cliMacDesktop";
+  recordingStopLeftNoFile,
+} from "./cliMacDesktopFormat";
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
@@ -415,7 +436,7 @@ type SyncWebPairingCliOutput = {
   relayEnabled: boolean;
 };
 
-type GlobalOptions = {
+export type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
   role: "cto" | "agent" | "external" | "evaluator";
@@ -425,6 +446,18 @@ type GlobalOptions = {
   pretty: boolean;
   text: boolean;
   timeoutMs: number;
+  /**
+   * Run the command on another machine on the account (`--machine <name>`).
+   * Read out of the command's own arguments by `extractMachineTargeting`, only
+   * for the commands that support it.
+   */
+  machine?: string | null;
+  /** `--all-machines`: run a list command on every machine and merge the rows. */
+  allMachines?: boolean;
+  /** The project on the other machine, by id, display name, or root path. */
+  machineProject?: string | null;
+  /** `--clone`: set the repository up on that machine when it is missing. */
+  machineClone?: boolean;
 };
 
 async function withAdeDefaultRole<T>(
@@ -441,7 +474,7 @@ async function withAdeDefaultRole<T>(
   }
 }
 
-type ParsedCli = {
+export type ParsedCli = {
   options: GlobalOptions;
   command: string[];
 };
@@ -469,6 +502,7 @@ export type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "machines-roster"
   | "account-machine-rename"
   | "account-machine-remove"
   | "account-machine-reconnect"
@@ -493,6 +527,7 @@ export type FormatterId =
   | "chat-models"
   | "chat-resume-now"
   | "chat-continue-on-account"
+  | "chat-switch-account"
   | "chat-launch"
   | "chat-launches"
   | "session-lifecycle"
@@ -519,6 +554,10 @@ export type FormatterId =
   | "mac-desktop-action"
   | "mac-desktop-recording"
   | "mac-desktop-proof"
+  | "mac-desktop-open"
+  | "mac-desktop-screenshot"
+  | "mac-desktop-lease"
+  | "mac-desktop-window-action"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -567,7 +606,12 @@ export type FormatterId =
   | "sync-pin"
   | "sync-devices"
   | "usage-snapshot"
+  | "usage-stats"
+  | "usage-cost-breakdown"
+  | "usage-model-detail"
+  | "usage-prices"
   | "router-efficiency"
+  | "router-shadow"
   | "update-status";
 
 type ChatWaitTarget =
@@ -624,6 +668,13 @@ export type CliPlan =
        * and prints the full launch timeline once the action returns.
        */
       progressNotice?: string;
+      /**
+       * The list this plan returns, so `--all-machines` can merge it across
+       * the account's machines (see `cliMachineTargeting.ts`).
+       */
+      machineList?: "chats" | "lanes" | "projects";
+      /** `--machine a,b` starts this plan once per machine (`chat create`). */
+      machineFanOut?: boolean;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -730,7 +781,7 @@ export type CliPlan =
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
   | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
 
-type CliConnection = {
+export type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
   projectRoot: string;
   workspaceRoot: string;
@@ -993,8 +1044,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade mac-desktop start | observe | click | proof
-                                                     Drive this lane's private macOS display
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
+                                                     or Windows Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -1123,6 +1174,16 @@ function commandHelpText(key: string): string | undefined {
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
     );
+  }
+  if (
+    key === "screen" || key === "windows-desktop" || key === "windows-desk"
+    // On a Windows host the Mac name is an alias of the same Windows screen,
+    // and the Mac page (virtual display, ⌘, System Settings) would mislead.
+    || (process.platform === "win32" && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
+  ) {
+    // The neutral family and the Windows name share one host-neutral help; the
+    // Mac-only name keeps its own.
+    return HELP_BY_COMMAND["screen"];
   }
   return HELP_BY_COMMAND[key];
 }
@@ -1263,6 +1324,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines list --projects --text          Agent-safe roster with each machine's projects
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
@@ -1845,6 +1907,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
     $ ade prs link-chat --pr <ade-pr-id> --session <id>    Link a pull request to a chat
     $ ade prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+    $ ade prs watch <pr> [--chat <id>]     Wake the chat on each PR change (failed check, checks passed, comments, conflict, merge)
+    $ ade prs ship <pr> [--chat <id>]      Watch + standing instructions to take the PR to merged; waits for CI and review bots
+    $ ade prs unwatch <pr> [--chat <id>]   Stop watching. <pr> is an ADE PR id, a PR number, or a PR URL
+    $ ade prs watch-status [--chat <id>]   The chat's live watches. --chat defaults to $ADE_CHAT_SESSION_ID
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
@@ -1962,6 +2028,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --lane <lane> --text            List chat sessions (archived chats hidden)
     $ ade chat list --include-archived --text       Also list archived chats ('ade archive list' for all archived items)
     $ ade chat list --personal --text               List machine personal chats (no project required)
+    $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
+    $ ade chat list --all-machines --text           Every machine in one table, with a machine column
+    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+                                                    Start a child on another machine; it wakes you when done.
+                                                    --project <name|path|id> picks the project there, --clone
+                                                    sets a missing GitHub repo up, "a,b" starts one per machine.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -2002,6 +2074,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
+    $ ade chat switch-account <session> --account <id>  Move a Claude or Codex chat to another account; same thread
+                                                    Account ids: ade providers accounts list. Exit 1 when refused.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
@@ -2031,6 +2105,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
+    $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
+                                                    Return now; ADE wakes this chat when all (or any) of them get there
+    $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
+    $ ade chat waits [<session>]                    Waits this chat armed or is a target of
+    $ ade chat wait --cancel <waitId>               Cancel an armed wait
+    $ ade chat wait --background [--job <id>[,<id>]]
+                                                    Wake this chat when its background jobs end (Codex; Claude/OpenCode do it natively)
     $ ade chat recover <session> --turn <turn-id> --action nudge
                                                     Recover a stalled provider turn: wait, nudge, retry, or resume
     $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
@@ -2047,6 +2128,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Brief handoff into a different lane (same project)
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <session> --model <model> --through-turn <turn-id>
+                                                    Fork from an earlier finished turn; later turns are left out
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
@@ -2072,8 +2155,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat interrupt <session> --stop-background
                                                     Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --stop-children  Also stop the chats this chat spawned (depth-first); add --stop-background for everything
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+                                                    | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
+    $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
@@ -2550,6 +2636,89 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   "proof --out" write inside the lane worktree or the OS temp dir ($TMPDIR);
   anywhere else is refused.
 `,
+  "screen": `${ADE_BANNER}
+  Screen
+
+  One screen per lane, on the runtime host. On macOS it is Mac Desktop, a
+  private virtual display. On Windows it is Windows Desktop, with two seats:
+    private  A separate Windows session of the user's own account. It shows
+             their wallpaper and taskbar, but it has its own pointer and
+             keyboard and it is NOT the user's screen. No lease is needed.
+    shared   The user's main desktop, only after the user says yes in your
+             chat. Actions take over the window they are using.
+  The verbs are the same on both hosts.
+
+  Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` and
+  \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
+  desktop-app launcher, not this.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID, and a
+  chat-bound caller is pinned to its chat's lane. Output flags (--text, --json)
+  may come last, even after \`--\`.
+
+  Screen:
+    $ ade screen status --text                      Product, seat, holder, next step
+    $ ade screen start --text                       Create this lane's screen (private)
+    $ ade screen start --shared --reason "<why>" --text
+                                                    Windows: ask the user, in this chat,
+                                                    for their main desktop
+    $ ade screen stop --text                        Stop it (quits apps the lane opened)
+    $ ade screen show --text                        Show it to the user (--floating: card)
+
+  The user's steps (Windows; an agent asks, it cannot do these):
+    $ ade screen setup --allow-prompt --text        One-time admin step
+    $ ade screen setup --allow-prompt --save-password --text   Save the Windows password
+    $ ade screen takeover --text                    Take the private screen from another lane
+
+  Apps and windows:
+    $ ade screen open <app|path|url> --text         Launch onto the screen; prints its windows
+    $ ade screen open notepad -- C:\\tmp\\proof.txt --text   App args after --
+    $ ade screen windows --text                     List windows
+    $ ade screen focus --window <id> --text         Windows: raise one of this lane's windows
+    $ ade screen minimize --window <id> --text      Windows: minimize it
+    $ ade screen close --window <id> --text         Windows: close it (it may ask to save)
+    $ ade screen claim --window <id> --text         Move an existing window here
+    $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
+    $ ade screen quit [app] --text                  Quit apps the lane opened
+
+  Observe, then act by handle:
+    $ ade screen observe --text                     Screenshot + numbered elements
+    $ ade screen click <handle> --text              Click what you observed
+    $ ade screen click --x 400 --y 300 --text       Click a point (real input)
+    $ ade screen type "hello" --submit --text       Type, then press Return
+    $ ade screen press s --ctrl --text              One key, with modifiers
+    $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen wait --label "Done" --timeout 8000 --text
+
+  Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
+  On Windows --cmd is sent as Ctrl and --opt as Alt; on a Mac --cmd is ⌘.
+
+  Real input (a point click, a drag, --real): a Windows private seat needs no
+  lease. A Mac and the Windows shared seat do: on a Mac run
+  \`ade screen lease --reason "<why>"\` once per chat; on the shared seat the
+  user's yes covers it.
+
+  Capture:
+    $ ade screen screenshot --out shot.png --text   Capture without filing proof
+    $ ade screen record start --caption "<what>"    Record; a caption files it
+    $ ade proof step "<what happens next>"          A caption and chapter in the video
+    $ ade screen record stop --text                 Prints the duration and a cite line
+    $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
+  --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
+
+  Errors (each prints its next step):
+    WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
+    WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
+                                     the user to take over, or start --shared
+    WINDOWS_DESKTOP_LOCKED           ask the user to unlock the PC
+    WINDOWS_DESKTOP_NOT_CONSOLE_SESSION  private unavailable; start --shared
+    WINDOWS_DESKTOP_CONSENT_REQUIRED the user did not allow the main desktop
+    MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: ade screen lease
+  Setup, takeover and shared consent belong to the user; an agent cannot
+  pass --allow-prompt or --consent itself.
+
+  For the full Mac surface, run \`ade mac-desktop --help\`; the verbs match.
+`,
   "app-control": `${ADE_BANNER}
   App Control
 
@@ -2590,6 +2759,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control observe --no-dom --text      Screenshot only, no element list
     $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
     $ ade app-control click --text-match "Save"    Click by visible label
+    $ ade app-control right-click --text-match "Row"  Right-click by label (same as click --button right)
     $ ade app-control click 120 420 --coords viewport
     $ ade app-control hover --test-id row-3
     $ ade app-control fill --selector "#name" --value "Ada"
@@ -2690,13 +2860,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
-    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
+    $ ade --socket browser dev-servers --text      Dev servers running in this lane
     $ ade --socket browser actions --text          List built_in_browser actions
 
-  "dev-servers" reports what ADE passively noticed in its own terminal output
-  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
-  lane. An empty list means nothing printed a line ADE recognised, not that
-  nothing is listening — start the server in an ADE shell, or just open the URL.
+  "dev-servers" lists the dev servers this machine's runtime knows for the
+  calling chat's lane: ready lines ("Local: http://localhost:5173") printed in
+  ADE terminals or in an agent's own shell, plus listening ports whose process
+  runs from the lane's worktree (a server started in the background shows up a
+  few seconds after the command that started it returns). It needs no desktop.
+  ADE never connects to a port to find it.
 
   No desktop on this machine
 
@@ -2952,6 +3124,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
     $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
+    $ ade usage stats --by lane --preset 30d --text  ADE chat spend by chat, lane, or account
+    $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
+    $ ade usage prices --text                       Custom model prices and Map to mappings
+    $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
+    $ ade --role cto usage prices set local-x --input 1 --output 4      Price a model per 1M tokens
     $ ade --role cto usage refresh --text           Refresh live provider quota only
     $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
@@ -3768,7 +3945,10 @@ function readLaneId(args: string[]): string | null {
 
 function normalizeChatStopMode(value: unknown): AgentChatStopMode {
   if (isAgentChatStopMode(value)) return value;
-  throw new CliUsageError("chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background.");
+  throw new CliUsageError(
+    "chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, stop_and_clear_and_background, "
+    + "stop_and_clear_and_children, or stop_everything_and_children.",
+  );
 }
 
 function readChatStopMode(args: string[]): AgentChatStopMode {
@@ -3776,13 +3956,20 @@ function readChatStopMode(args: string[]): AgentChatStopMode {
   const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
   const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
   const stopBackground = readFlag(args, ["--stop-background"]);
-  if (explicitMode && (keepQueue || clearQueue || stopBackground)) {
-    throw new CliUsageError("Use --mode or the queue/background flags, not both.");
+  const stopChildren = readFlag(args, ["--stop-children", "--children"]);
+  if (explicitMode && (keepQueue || clearQueue || stopBackground || stopChildren)) {
+    throw new CliUsageError("Use --mode or the queue/background/children flags, not both.");
   }
   if (keepQueue && clearQueue) {
     throw new CliUsageError("Use only one of --keep-queue or --clear-queue.");
   }
   if (explicitMode) return normalizeChatStopMode(explicitMode);
+  if (stopChildren) {
+    // Child chats stop with their queue cleared; keeping the queue is not a
+    // combination the Stop menu offers.
+    if (keepQueue) throw new CliUsageError("--stop-children always clears the queue; drop --keep-queue.");
+    return stopBackground ? "stop_everything_and_children" : "stop_and_clear_and_children";
+  }
   if (keepQueue && stopBackground) return "stop_and_background";
   if (clearQueue && stopBackground) return "stop_and_clear_and_background";
   if (stopBackground) return "stop_and_background";
@@ -4658,6 +4845,11 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
   return lines.join("\n");
 }
 
+/** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
+const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+  "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
+]);
+
 function parseCliArgs(argv: string[]): ParsedCli {
   const command: string[] = [];
   const options: GlobalOptions = {
@@ -4676,7 +4868,21 @@ function parseCliArgs(argv: string[]): ParsedCli {
     const token = argv[index]!;
     const inGlobalPrefix = command.length === 0;
     if (token === "--") {
-      command.push(token, ...argv.slice(index + 1));
+      const rest = argv.slice(index + 1);
+      // `ade screen open <app> -- <app args> --text`: everything after `--` is
+      // the launched app's, except a trailing --text/--json, which is always
+      // the caller's output choice. Only for the screen family, whose `open`
+      // documents this; elsewhere `--` passes everything through untouched.
+      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "")) {
+        let decided = false;
+        while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
+          const flag = rest.pop();
+          // The rightmost one wins, as it does before `--`.
+          if (!decided) options.text = flag === "--text";
+          decided = true;
+        }
+      }
+      command.push(token, ...rest);
       break;
     }
     const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
@@ -4953,6 +5159,7 @@ function buildLanePlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "lanes list",
+      machineList: "lanes",
       steps: [actionCallStep("result", "list_lanes", input)],
       visualizer: visual || !noVisual ? "lanes" : undefined,
     };
@@ -7009,10 +7216,13 @@ function buildDiffPlan(args: string[]): CliPlan {
       laneId ?? readValue(args, ["--lane", "--lane-id"]),
       "laneId",
     );
+    // `--mode branch`: everything the lane changed since its base, not only
+    // what is uncommitted.
+    const branch = readValue(args, ["--mode"]) === "branch" || readFlag(args, ["--branch"]);
     return {
       kind: "execute",
       label: "diff changes",
-      steps: [actionArgsListStep("result", "diff", "getChanges", [id])],
+      steps: [actionArgsListStep("result", "diff", branch ? "getBranchChanges" : "getChanges", [id])],
     };
   }
   if (sub === "file") {
@@ -7293,6 +7503,38 @@ function buildPrPlan(args: string[]): CliPlan {
             prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "watch" || sub === "ship" || sub === "unwatch" || sub === "watch-status") {
+    // A tracked agent shell watches for its own chat by default.
+    const explicitSessionId = readValue(args, ["--session", "--session-id", "--chat"]);
+    const sessionId = explicitSessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    if (sub === "watch-status") {
+      const input: JsonObject = {};
+      maybePut(input, "sessionId", sessionId ?? undefined);
+      maybePut(input, "prId", prId ?? firstPositional(args) ?? undefined);
+      return {
+        kind: "execute",
+        label: "PR watch status",
+        steps: [actionStep("result", "pr", "getChatWatches", input)],
+      };
+    }
+    const target = requireValue(
+      prId ?? firstPositional(args),
+      "prId (an ADE PR id, a PR number, or a PR URL)",
+    );
+    return {
+      kind: "execute",
+      label: sub === "unwatch" ? "PR unwatch" : sub === "ship" ? "PR ship" : "PR watch",
+      steps: [
+        actionStep("result", "pr", "setChatWatch", {
+          prId: target,
+          sessionId: requireValue(sessionId, "sessionId (--chat, or run from a tracked agent shell)"),
+          mode: sub === "unwatch" ? null : sub,
+          // From an agent's own shell the agent armed it; the chat header says so.
+          armedBy: explicitSessionId ? "user" : "agent",
+        }),
       ],
     };
   }
@@ -8899,6 +9141,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat list",
+      machineList: "chats",
       steps: [
         actionStep(
           "result",
@@ -8990,6 +9233,25 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [
         actionStep("result", "chat", "continueUsageLimitOnAlternate", {
           sessionId: requireValue(sessionId, "sessionId"),
+        }),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result"])
+          ?? (isRecord(result) ? result : {});
+        return record.ok === true ? 0 : 1;
+      },
+    };
+  // Move the chat to another signed-in account of its provider, keeping its
+  // thread. Exit 1 when the host refuses (a turn is running, signed out).
+  if (sub === "switch-account")
+    return {
+      kind: "execute",
+      label: "chat switch-account",
+      formatter: "chat-switch-account",
+      steps: [
+        actionStep("result", "chat", "switchAccount", {
+          sessionId: requireValue(sessionId, "sessionId"),
+          instanceId: requireValue(readValue(args, ["--account", "--instance"]), "--account"),
         }),
       ],
       exitCodeFromResult: (result) => {
@@ -9228,6 +9490,7 @@ function buildChatPlan(args: string[]): CliPlan {
         return {
           kind: "execute",
           label: "chat create",
+          machineFanOut: true,
           steps: [
             { ...createStep, key: "session" },
             {
@@ -9256,7 +9519,7 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", steps: [createStep] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, steps: [createStep] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -9307,7 +9570,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -9321,11 +9584,33 @@ function buildChatPlan(args: string[]): CliPlan {
         "--print must be set at session creation time. Use `ade chat create --print ...`.",
       );
     }
+    const afterValue = readValue(args, ["--after"]);
+    // Read before the text: whatever flags are left become the prompt.
+    const afterWaitFor = afterValue ? readValue(args, ["--for", "--until"]) : null;
     const sendText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
     );
     const targetSession = requireValue(sessionId, "sessionId");
+    if (afterValue) {
+      // "Start B after A": a durable wait that sends this prompt to B once
+      // every chat named in --after is idle.
+      const afterIds = afterValue.split(",").map((id) => id.trim()).filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat send after",
+        steps: [
+          actionStep("result", "chat", "armWait", {
+            targetSessionIds: afterIds,
+            mode: "all",
+            waitFor: normalizeChatWaitTarget(afterWaitFor),
+            sendToSessionId: targetSession,
+            text: sendText,
+            ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
+          }),
+        ],
+      };
+    }
     const messageArgs = withSession({
       sessionId: targetSession,
       text: sendText,
@@ -9404,7 +9689,59 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "waits") {
+    const input: JsonObject = {};
+    maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
+    return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if ((sub === "wait" || sub === "watch") && readFlag(args, ["--background"])) {
+    // Wake me when my background jobs end: every running job, or the ones
+    // named with --job id[,id].
+    const jobs = (readValue(args, ["--job", "--jobs", "--task"]) ?? "")
+      .split(",").map((id) => id.trim()).filter(Boolean);
+    const ownSession = sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    return {
+      kind: "execute",
+      label: "chat wait background",
+      steps: [actionStep("result", "chat", "holdBackgroundWork", {
+        sessionId: requireValue(ownSession, "sessionId (run from a chat, or pass the chat id)"),
+        ...(jobs.length ? { taskIds: jobs } : {}),
+      })],
+    };
+  }
   if (sub === "wait" || sub === "watch") {
+    const cancelId = readValue(args, ["--cancel", "--cancel-wait"]);
+    if (cancelId) {
+      return { kind: "execute", label: "chat wait cancel", steps: [actionStep("result", "chat", "cancelWait", { waiterId: cancelId })] };
+    }
+    if (readFlag(args, ["--async"])) {
+      // Arm a durable wait and return at once; ADE wakes the calling chat
+      // when all (or any) of the chats reach the state.
+      // Flags first: what is left are the chat ids to wait on.
+      const any = readFlag(args, ["--any"]);
+      readFlag(args, ["--all"]);
+      const waitForValue = readValue(args, ["--for", "--state", "--until"]);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
+        throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
+      }
+      const caller = readValue(args, ["--caller", "--wake"]) ?? asString(process.env.ADE_CHAT_SESSION_ID);
+      const targets = [sessionId, ...args.filter((value) => !value.startsWith("-"))]
+        .flatMap((value) => (value ? value.split(",") : []))
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat wait async",
+        steps: [actionStep("result", "chat", "armWait", {
+          callerSessionId: requireValue(caller, "caller chat (run from a chat, or pass --caller <sessionId>)"),
+          targetSessionIds: targets,
+          mode: any ? "any" : "all",
+          waitFor: normalizeChatWaitTarget(waitForValue),
+          timeoutMinutes,
+        })],
+      };
+    }
     const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
@@ -9434,6 +9771,23 @@ function buildChatPlan(args: string[]): CliPlan {
           "chat",
           "interrupt",
           interruptArgs,
+        ),
+      ],
+    };
+  }
+  if (sub === "restart" || sub === "restart-session") {
+    return {
+      kind: "execute",
+      label: "chat restart session",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "restartSession",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            ...(readFlag(args, ["--stop", "--stop-first"]) ? { stopFirst: true } : {}),
+          }),
         ),
       ],
     };
@@ -9616,6 +9970,10 @@ function buildChatPlan(args: string[]): CliPlan {
     const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
     const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
     const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
+    if (throughTurnId !== null && mode !== "fork") {
+      throw new CliUsageError("--through-turn only applies to chat fork.");
+    }
     return {
       kind: "execute",
       label: mode === "fork" ? "chat fork" : "chat handoff",
@@ -9636,6 +9994,7 @@ function buildChatPlan(args: string[]): CliPlan {
             ...(codexSandbox !== null ? { codexSandbox } : {}),
             ...(codexConfigSource !== null ? { codexConfigSource } : {}),
             ...(handoffNote !== null ? { handoffNote } : {}),
+            ...(throughTurnId !== null ? { throughTurnId } : {}),
           }),
         ),
       ],
@@ -10827,6 +11186,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // Flags first: they take their values out of `args`, and every word
     // left is the step's text.
     const owner = proofOwnerBase();
+    // `--lane` names the lane like every screen verb's flag; left in `args`
+    // its value became the end of the caption.
+    const laneId = readValue(args, ["--lane", "--lane-id"]);
     const flagText = readValue(args, ["--text", "--caption"]);
     const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
     if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
@@ -10837,6 +11199,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         actionCallStep("result", "note_demo_step", {
           ...owner,
           ...proofCallerRootArgs(),
+          ...(laneId ? { laneId } : {}),
           text,
         }),
       ],
@@ -12585,7 +12948,14 @@ function buildAppControlRecordPlan(
     );
   }
   if (mode === "stop" || mode === "end" || mode === "finish") {
-    return plan("app-control record stop", "stopRecording");
+    return {
+      kind: "execute",
+      label: "app-control record stop",
+      formatter: "app-control-recording",
+      steps: [step("result", "stopRecording", collectGenericObjectArgs(args, {}))],
+      // Same rule as `screen record stop`: no file plus an error is a failure.
+      exitCodeFromResult: (result: unknown) => (recordingStopLeftNoFile(result) ? 1 : 0),
+    };
   }
   if (mode === "status" || mode === "state") {
     return plan("app-control record status", "getRecordingStatus");
@@ -12933,7 +13303,9 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "click" || sub === "tap") {
+  if (sub === "click" || sub === "tap" || sub === "right-click" || sub === "context-click") {
+    const rightClick = sub === "right-click" || sub === "context-click";
+    const verb = rightClick ? "right-click" : "click";
     const targetArgs = readBrowserClickTargetArgs(args);
     const actionArgs = readAppControlAgentActionArgs(args);
     const hasTarget = Object.keys(targetArgs).length > 0;
@@ -12941,12 +13313,12 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
     if (!hasTarget && (x == null || y == null)) {
       throw new CliUsageError(
-        "app-control click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.",
+        `app-control ${verb} requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.`,
       );
     }
     return {
       kind: "execute",
-      label: "App Control click",
+      label: `App Control ${verb}`,
       steps: [
         appControlStep("result", "agentClick",
           collectGenericObjectArgs(args, {
@@ -12956,8 +13328,8 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
             ...(y == null ? {} : { y }),
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
-            button: readValue(args, ["--button"]),
-            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+            button: rightClick ? "right" : readValue(args, ["--button"]),
+            clickCount: rightClick ? 1 : readNumberOption(args, ["--click-count", "--count"]),
           }),
         ),
       ],
@@ -13579,10 +13951,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   // The launchpad chips the Browser pane renders, as a list. An agent that just
-  // ran `npm run dev` in an ADE shell reads the port from here instead of
-  // guessing it or grepping the terminal. Scope is not an argument: the daemon
-  // drops any caller-supplied `laneId` and the desktop bridge substitutes the
-  // actor capability's lane, so this always answers for the calling chat.
+  // ran `npm run dev` reads the port from here instead of guessing it or
+  // grepping the terminal. Served by the runtime, which hosts the lane's
+  // terminals and agents, so it answers with no desktop attached. Scope is not
+  // an argument for an agent: the daemon pins `laneId` to the calling chat's lane.
   if (
     sub === "dev-servers" ||
     sub === "dev-server" ||
@@ -13596,8 +13968,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       steps: [
         actionStep(
           "result",
-          "built_in_browser",
-          "getDevServers",
+          "work_tools",
+          "listDevServers",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -14953,6 +15325,7 @@ function buildRouterPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "router shadow",
+      formatter: "router-shadow",
       steps: [actionStep("result", "usage", "getRouterShadowSummary", days != null ? { days: Number(days) } : {})],
     };
   }
@@ -15021,6 +15394,53 @@ function buildUsagePlan(args: string[]): CliPlan {
     if (until != null && Number.isNaN(Date.parse(until))) {
       throw new CliUsageError("usage stats --until must be an ISO timestamp.");
     }
+    // `--by chat|lane|account` ranks ADE chat spend from the per-turn ledger
+    // instead of printing the page summary.
+    const by = readValue(args, ["--by"]);
+    if (by != null) {
+      if (!isAdeUsageCostBreakdownBy(by)) {
+        throw new CliUsageError(`usage stats --by must be one of ${ADE_USAGE_COST_BREAKDOWN_BY.join(", ")}.`);
+      }
+      const laneId = readValue(args, ["--lane"]);
+      const limit = readValue(args, ["--limit"]);
+      if (limit != null && !(Number.isInteger(Number(limit)) && Number(limit) > 0)) {
+        throw new CliUsageError("usage stats --limit must be a positive whole number.");
+      }
+      return {
+        kind: "execute",
+        label: "usage cost breakdown",
+        steps: [
+          actionStep("result", "usage", "getCostBreakdown", {
+            by,
+            ...(preset != null ? { preset } : {}),
+            ...(since != null ? { since } : {}),
+            ...(until != null ? { until } : {}),
+            ...(laneId != null ? { laneId } : {}),
+            ...(limit != null ? { limit: Number(limit) } : {}),
+          }),
+        ],
+      };
+    }
+    // `--model <name>` prints one model's detail: trend, cache hit rate, price.
+    const model = readValue(args, ["--model"]);
+    if (model != null) {
+      const provider = readValue(args, ["--provider"]);
+      if (!provider) throw new CliUsageError("usage stats --model needs --provider (claude, codex, ...).");
+      return {
+        kind: "execute",
+        label: "usage model detail",
+        steps: [
+          actionStep("result", "usage", "getModelDetail", {
+            provider,
+            model,
+            ...(preset != null ? { preset } : {}),
+            ...(isAdeUsageScope(scope) ? { scope } : {}),
+            ...(since != null ? { since } : {}),
+            ...(until != null ? { until } : {}),
+          }),
+        ],
+      };
+    }
     // Only meaningful for --scope account: it bypasses the fan-out's rate
     // floor, which exists so a page that reads on every update cannot loop.
     const force = readFlag(args, ["--force", "--refresh"]);
@@ -15064,6 +15484,51 @@ function buildUsagePlan(args: string[]): CliPlan {
         }),
       ],
     };
+  }
+  // Prices the user set, and "Map to" mappings. `set <model>` with
+  // `--input/--output` (USD per million tokens), `--map-to <model>`, or
+  // `--automatic` to go back to the list price.
+  if (sub === "prices" || sub === "price") {
+    const mode = firstPositional(args) ?? "list";
+    if (mode === "list" || mode === "get") {
+      return { kind: "execute", label: "usage prices", steps: [actionStep("result", "usage", "getModelPriceOverrides", {})] };
+    }
+    if (mode === "set") {
+      // Value flags come out first, so the model id is the one positional left.
+      const input = readValue(args, ["--input"]);
+      const output = readValue(args, ["--output"]);
+      const cacheRead = readValue(args, ["--cache-read"]);
+      const cacheWrite = readValue(args, ["--cache-write"]);
+      const mapTo = readValue(args, ["--map-to"]);
+      const automatic = readFlag(args, ["--automatic", "--clear"]);
+      const unmap = readFlag(args, ["--unmap"]);
+      const model = firstPositional(args);
+      if (!model) throw new CliUsageError("usage prices set needs a model id.");
+      const rate = (value: string | null, flag: string): number | undefined => {
+        if (value == null) return undefined;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) throw new CliUsageError(`usage prices ${flag} must be a number of USD per million tokens.`);
+        return parsed;
+      };
+      const change: Record<string, unknown> = { model };
+      if (automatic) change.price = null;
+      else if (input != null || output != null) {
+        if (input == null || output == null) throw new CliUsageError("usage prices set needs both --input and --output.");
+        change.price = {
+          input: rate(input, "--input"),
+          output: rate(output, "--output"),
+          ...(cacheRead != null ? { cacheRead: rate(cacheRead, "--cache-read") } : {}),
+          ...(cacheWrite != null ? { cacheWrite: rate(cacheWrite, "--cache-write") } : {}),
+        };
+      }
+      if (mapTo != null) change.mapTo = mapTo.trim() || null;
+      if (unmap) change.mapTo = null;
+      if (!("price" in change) && !("mapTo" in change)) {
+        throw new CliUsageError("usage prices set needs --input/--output, --map-to, --unmap, or --automatic.");
+      }
+      return { kind: "execute", label: "usage prices", steps: [actionStep("result", "usage", "setModelPriceOverride", change)] };
+    }
+    throw new CliUsageError("usage prices takes list or set.");
   }
   if (sub === "refresh" || sub === "poll") {
     const history = args.includes("--history");
@@ -16775,6 +17240,14 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--delivery",
   "--file",
   "--for",
+  // `ade chat wait/send` (waits): values, so a chat id positional is never swallowed.
+  "--cancel",
+  "--cancel-wait",
+  "--job",
+  "--jobs",
+  "--after",
+  "--caller",
+  "--timeout-minutes",
   "--fps",
   "--bitrate",
   "--bitrate-kbps",
@@ -16799,6 +17272,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--input-text",
   "--interval-ms",
   "--instance",
+  "--account",
   "--instance-id",
   "--preset",
   "--preset-id",
@@ -16945,6 +17419,23 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   ...SPAWN_TYPE_FLAGS,
   ...CHAT_PARENT_FLAGS,
   ...DEFAULT_PARENT_FLAGS,
+  // `ade chat handoff` / `ade chat fork` value flags (read before the positional session).
+  "--target-lane",
+  "--target-lane-id",
+  "--reasoning-effort",
+  "--effort",
+  "--codex-approval-policy",
+  "--approval-policy",
+  "--codex-sandbox",
+  "--sandbox",
+  "--codex-config-source",
+  "--config-source",
+  "--handoff-note",
+  "--note",
+  "--through-turn",
+  "--from-turn",
+  "--target-model",
+  "--target-model-id",
 ]);
 
 /**
@@ -17391,11 +17882,15 @@ function buildCliPlan(
   )
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   // `ade desktop` is the ADE desktop-app launcher and stays that way; the Mac
-  // Desktop family is `ade mac-desktop`.
+  // Desktop family is `ade mac-desktop`. `ade screen` is the neutral spelling
+  // the plan adds for both operating systems, and its verbs are the same ones.
   if (
     primary === "mac-desktop" ||
     primary === "mac-desk" ||
-    primary === "desk"
+    primary === "desk" ||
+    primary === "screen" ||
+    primary === "windows-desktop" ||
+    primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
   if (
@@ -18809,9 +19304,18 @@ type HeadlessRpcServerState = {
 
 type NotifiableJsonRpcHandler = JsonRpcHandler & {
   setNotifier?: (
-    notify: ((method: string, params?: unknown) => void) | null,
+    notify: ((method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void) | null,
   ) => void;
 };
+
+/**
+ * Bytes a local client may leave unread before the brain drops it. Socket
+ * writes queue on the brain's heap, so a client that stops reading -- a stalled
+ * desktop, an `ade` process blocked on a full stdout pipe -- otherwise grows the
+ * brain until V8 aborts and every chat on the machine dies with it. Dropped,
+ * the client reconnects and resumes from its event cursor.
+ */
+const HEADLESS_RPC_MAX_PENDING_WRITE_BYTES = 64 * 1024 * 1024;
 
 function reportContainedJsonRpcError(
   error: unknown,
@@ -18975,10 +19479,25 @@ function createHeadlessRpcServer(
         );
       },
       write(data) {
+        if (conn.destroyed) return;
+        // Judged before the write, so one large reply still goes out whole.
+        if (conn.writableLength > HEADLESS_RPC_MAX_PENDING_WRITE_BYTES) {
+          try {
+            process.stderr.write(
+              `ade jsonrpc client dropped: ${conn.writableLength} bytes unread (limit ${HEADLESS_RPC_MAX_PENDING_WRITE_BYTES})\n`,
+            );
+          } catch {}
+          conn.destroy();
+          return;
+        }
         conn.write(data);
       },
       close() {
         if (!conn.destroyed) conn.destroy();
+      },
+      pendingWriteBytes: () => conn.writableLength,
+      onDrain(callback) {
+        conn.on("drain", callback);
       },
     };
     const stop = startJsonRpcServer(handler, transport, {
@@ -18986,8 +19505,8 @@ function createHeadlessRpcServer(
       onError: reportContainedJsonRpcError,
       onInternalError: reportInternalJsonRpcError,
     });
-    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
-      stop.notify(method, params),
+    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params, options) =>
+      stop.notify(method, params, options),
     );
     activeStops.add(stop);
     let cleanedUp = false;
@@ -19133,6 +19652,8 @@ async function initializeConnection(
 
 function isMachineRuntimeScopedMethod(method: string): boolean {
   return (
+    method === "machines.call" ||
+    method === "machines.list" ||
     method === "ade/initialize" ||
     method === "ade/initialized" ||
     method === "ping" ||
@@ -19168,8 +19689,22 @@ export function automaticProjectRegistrationParams(rootPath: string): {
 function buildMachinesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") {
+    const includeProjects = readFlag(args, ["--projects", "--with-projects"]);
     if (firstStandalonePositional(args)) {
       throw new CliUsageError("machines list does not accept a machine selector.");
+    }
+    // An agent's shell reads the agent-safe roster: names, presence, platform
+    // and projects, with no device ids, routes or tokens. The account
+    // directory itself (`account.listMachines`) stays the person's.
+    if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
+      return {
+        kind: "execute",
+        label: "machines roster",
+        formatter: "machines-roster",
+        machineOnly: true,
+        machineAutoStart: true,
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+      };
     }
     return {
       kind: "execute",
@@ -19507,6 +20042,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects list",
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     };
@@ -19656,6 +20192,8 @@ async function createConnection(
     needsLiveRuntime?: string;
   } = {},
 ): Promise<CliConnection> {
+  const remoteMachine = options.machine?.trim() || null;
+  if (remoteMachine) return await createMachineRemoteConnection(options, remoteMachine);
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
@@ -22568,9 +23106,59 @@ async function runServe(
     });
   };
 
-  const createHandler = () =>
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
+  const getAgentMachineBridge = () => {
+    agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
+      ({ createAgentMachineBridge }) => createAgentMachineBridge({
+        appVersion: VERSION,
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        logger: headlessProjectLogger,
+      }),
+    );
+    return agentMachineBridge;
+  };
+  const agentMachineBridgeProxy: import("./multiProjectRpcServer").MultiProjectRpcHandlerOptions["agentMachineBridge"] = embedded
+    ? null
+    : {
+      call: async (input) => (await getAgentMachineBridge()).call(input),
+      listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
+    };
+
+  // Children reporting to parents outside their own scope: another project,
+  // the personal scope, or another machine. The brain owns the outbox; each
+  // project's chat service hands such completions to its router.
+  let crossScopeChats: import("./services/chat/crossScopeChats").CrossScopeChats | null = null;
+  if (!embedded) {
+    const [{ createCrossScopeChats }, externalChats] = await Promise.all([
+      import("./services/chat/crossScopeChats"),
+      import("../../desktop/src/main/services/chat/externalChats"),
+    ]);
+    const crossMachineStateDir = path.join(layout.adeDir, "cross-machine");
+    externalChats.configureExternalChatStore(path.join(crossMachineStateDir, "external-chats.json"));
+    crossScopeChats = createCrossScopeChats({
+      projectRegistry,
+      scopeRegistry: {
+        get: (projectId) => scopeRegistry.get(projectId),
+        getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+      },
+      personalChatScope,
+      deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
+      stateDir: crossMachineStateDir,
+      logger: headlessProjectLogger,
+    });
+    externalChats.setExternalParentRouter(crossScopeChats.router);
+    crossScopeChats.start();
+  }
+
+  const createHandler = (context?: { peerDeviceId: string | null }) =>
     createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
+      peerDeviceId: context?.peerDeviceId ?? null,
+      agentMachineBridge: agentMachineBridgeProxy,
+      crossScopeChats,
       projectRegistry,
       scopeRegistry,
       personalChatScope,
@@ -22749,8 +23337,8 @@ async function runServe(
       // another brain legitimately held the lease. Throwing here is correct:
       // the startup loop treats a conflict as retryable and waits the other
       // brain out.
-      const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
-      brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
+      const { acquireSyncHostSingletonAsync } = await import("./services/sync/syncHostSingleton");
+      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
       const listenerPort = await sharedSyncListener.ensureListening(
         Array.from(
           { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
@@ -24006,6 +24594,15 @@ function renderLaneGraph(result: unknown): string {
     isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
   const lanes = lanesRaw.filter(isRecord);
   if (lanes.length === 0) return "ADE lanes\n(no lanes)";
+  if (lanes.some((lane) => MACHINE_ROW_KEY in lane)) {
+    // `--all-machines`: lanes on different machines have no shared graph.
+    const table = withMachineColumns(["lane", "name", "branch"], lanes, (lane) => [
+      lane.id,
+      lane.name,
+      lane.branchRef ?? lane.branch,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE lanes\n(no lanes)", { fullColumns: ["lane"] });
+  }
 
   const byParent = new Map<string, JsonObject[]>();
   const byId = new Map<string, JsonObject>();
@@ -24327,6 +24924,150 @@ type UsageAccountTextLine = {
   machines: string;
 };
 
+function usdText(value: unknown): string {
+  const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : `$${amount.toFixed(2)}`;
+}
+
+function tokensText(value: unknown): string {
+  const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+/** The `AdeUsageCostSplit` lines: by token type, then the speed premium. */
+function costSplitLines(split: unknown): string[] {
+  if (!isRecord(split)) return [];
+  const n = (key: string) => (typeof split[key] === "number" ? split[key] as number : 0);
+  const types = [["input", "Input"], ["cacheRead", "Cache read"], ["cacheWrite", "Cache write"], ["output", "Output"], ["other", "Other"]] as const;
+  const typeText = types.filter(([key]) => n(key) > 0).map(([key, label]) => `${label} ${usdText(n(key))}`).join(" · ");
+  const premium = n("fastPremium") + n("ultrafastPremium");
+  const total = types.reduce((sum, [key]) => sum + n(key), 0);
+  const lines = typeText ? [`By type   ${typeText}`] : [];
+  if (total > 0) {
+    lines.push(premium > 0
+      ? `By speed  Standard ${usdText(total - premium)} · Fast premium ${usdText(n("fastPremium"))} · Ultrafast premium ${usdText(n("ultrafastPremium"))}`
+      : "By speed  All standard");
+  }
+  return lines;
+}
+
+/** `ade usage stats --text`: the spend summary the Usage page leads with. */
+export function formatUsageStats(value: unknown): string {
+  const stats = isRecord(value) ? value : {};
+  const summary = isRecord(stats.summary) ? stats.summary : {};
+  const range = isRecord(stats.range) ? stats.range : {};
+  const providers = Array.isArray(stats.providers) ? stats.providers.filter(isRecord) : [];
+  const models = Array.isArray(stats.models) ? stats.models.filter(isRecord) : [];
+  const lines = [
+    `Spend · ${asString(range.preset) ?? "range"} · ${asString(stats.scope) ?? "machine"}`,
+    `${usdText(summary.observedProviderCostRangeUsd)}  API-equivalent · ${tokensText(summary.observedProviderTokens)} tokens`,
+  ];
+  // The page total's split is the providers' splits added up, and only when
+  // every provider with a cost brought one; a partial split would mislead.
+  const total = sumCostSplitsOrNull(
+    providers.filter((provider) => Number(provider.rangeCostUsd) > 0).map((provider) => parseCostSplit(provider.costSplit)),
+  );
+  if (total) lines.push(...costSplitLines(total));
+  lines.push("", renderTable(
+    ["provider", "cost", "tokens", "premium"],
+    providers.map((provider) => {
+      const split = isRecord(provider.costSplit) ? provider.costSplit : {};
+      const premium = (Number(split.fastPremium) || 0) + (Number(split.ultrafastPremium) || 0);
+      return [asString(provider.provider) ?? "", usdText(provider.rangeCostUsd), tokensText(provider.totalTokens), premium > 0 ? usdText(premium) : "-"];
+    }),
+    "No provider usage in this range.",
+  ));
+  const topModels = [...models].sort((a, b) => (Number(b.costUsd) || 0) - (Number(a.costUsd) || 0)).slice(0, 10);
+  if (topModels.length) {
+    lines.push("", renderTable(
+      ["model", "provider", "cost", "tokens", "$/1M"],
+      topModels.map((model) => {
+        const tokens = Number(model.totalTokens) || 0;
+        const cost = Number(model.costUsd) || 0;
+        return [asString(model.model) ?? "", asString(model.provider) ?? "", usdText(cost), tokensText(tokens), tokens > 0 ? `$${((cost / tokens) * 1e6).toFixed(2)}` : "-"];
+      }),
+      "",
+    ));
+  }
+  const notes = Array.isArray(stats.sourceNotes) ? stats.sourceNotes.map((note) => asString(note)).filter(Boolean) : [];
+  if (notes.length) lines.push("", ...notes.map((note) => `· ${note}`));
+  lines.push("", "Costs are at public list prices. Plan value is not your bill.");
+  return lines.join("\n");
+}
+
+/** `ade usage stats --by chat|lane|account --text`. */
+export function formatUsageCostBreakdown(value: unknown): string {
+  const breakdown = isRecord(value) ? value : {};
+  if (breakdown.available === false) return "This host keeps no per-turn ledger, so ADE chat spend is not available.";
+  const rows = Array.isArray(breakdown.rows) ? breakdown.rows.filter(isRecord) : [];
+  const totals = isRecord(breakdown.totals) ? breakdown.totals : {};
+  const by = asString(breakdown.by) ?? "chat";
+  const table = renderTable(
+    [by, by === "account" ? "kind" : "detail", "value", "billed", "plan value", "tokens", "turns"],
+    rows.map((row) => [
+      asString(row.label) ?? "",
+      by === "account" ? asString(row.accountKind) ?? "" : asString(row.detail) ?? "",
+      usdText(row.costUsd),
+      usdText(row.billedUsd),
+      usdText(row.planValueUsd),
+      tokensText(row.totalTokens),
+      String(row.turns ?? 0),
+    ]),
+    "No ADE chat turns in this range.",
+  );
+  const other = isRecord(breakdown.other) ? breakdown.other : null;
+  return [
+    `ADE chat spend by ${by} · ${usdText(totals.costUsd)} API-equivalent · billed ${usdText(totals.billedUsd)} · plan value ${usdText(totals.planValueUsd)}`,
+    "",
+    table,
+    ...(other ? [`Other (${String(other.count)}): ${usdText(other.costUsd)}`] : []),
+    "",
+    "From ADE's per-turn ledger: chats ADE ran on this machine, kept for three months.",
+  ].join("\n");
+}
+
+/** `ade usage stats --model <m> --provider <p> --text`. */
+export function formatUsageModelDetail(value: unknown): string {
+  const detail = isRecord(value) ? value : {};
+  const price = isRecord(detail.price) ? detail.price : {};
+  const hit = typeof detail.cacheHitRate === "number" ? `${Math.round(detail.cacheHitRate * 100)}%` : "-";
+  const perM = typeof detail.costPerMillionUsd === "number" ? `$${detail.costPerMillionUsd.toFixed(2)}/1M` : "-";
+  const priceText = price.unpriced === true
+    ? "unpriced (set one with ade usage prices set)"
+    : `${asString(price.source) ?? "list"} · $${Number(price.input) || 0} in / $${Number(price.output) || 0} out per 1M`;
+  const daily = Array.isArray(detail.daily) ? detail.daily.filter(isRecord) : [];
+  return [
+    `${asString(detail.model) ?? ""} · ${asString(detail.provider) ?? ""}`,
+    `${usdText(detail.costUsd)} · ${tokensText(detail.totalTokens)} tokens · ${perM} · ${hit} cache hit`,
+    ...costSplitLines(detail.costSplit),
+    `Price     ${priceText}`,
+    ...(asString(detail.mapTo) ? [`Maps to   ${asString(detail.mapTo)}`] : []),
+    ...(Array.isArray(detail.mappedFrom) && detail.mappedFrom.length ? [`Also here ${detail.mappedFrom.map(String).join(", ")}`] : []),
+    "",
+    renderTable(["day", "cost", "tokens"], daily.map((day) => [asString(day.date) ?? "", usdText(day.costUsd), tokensText(day.totalTokens)]), "No usage in this range."),
+  ].join("\n");
+}
+
+/** `ade usage prices --text`. */
+export function formatUsagePrices(value: unknown): string {
+  const overrides = isRecord(value) ? value : {};
+  const prices = isRecord(overrides.prices) ? overrides.prices : {};
+  const aliases = isRecord(overrides.aliases) ? overrides.aliases : {};
+  const priceRows = Object.entries(prices).filter(([, price]) => isRecord(price)).map(([model, price]) => {
+    const record = price as Record<string, unknown>;
+    const opt = (key: string) => (typeof record[key] === "number" ? `$${record[key]}` : "= input");
+    return [model, `$${record.input}`, `$${record.output}`, opt("cacheRead"), opt("cacheWrite")];
+  });
+  return [
+    renderTable(["model", "input /1M", "output /1M", "cache read", "cache write"], priceRows, "No custom prices. Every model is priced from models.dev."),
+    "",
+    renderTable(["model", "counts as"], Object.entries(aliases).map(([from, to]) => [from, String(to)]), "No models mapped."),
+  ].join("\n");
+}
+
 /**
  * `ade usage snapshot --text` (and the two refresh verbs, which return the same
  * snapshot) — the quota half of the desktop Limits band.
@@ -24572,9 +25313,10 @@ function formatRouterEfficiency(value: unknown): string {
       ["turns", `${count(threads.turns)} (${count(threads.pricedTurns)} priced)`],
       ["segments", count(threads.segments)],
       ["actual", usd(threads.actualUsd)],
+      ["same model", dollars(threads.sameModelUsd, threads.sameModelSaving)],
       ["same harness", dollars(threads.sameHarnessUsd, threads.sameHarnessSaving)],
       ["any harness", dollars(threads.anyHarnessUsd, threads.anyHarnessSaving)],
-      ["switched", `${count(switched.sameHarness)} same harness, ${count(switched.anyHarness)} any harness`],
+      ["switched", `${count(switched.sameModel)} same model, ${count(switched.sameHarness)} same harness, ${count(switched.anyHarness)} any harness`],
     ]),
     "",
     renderKeyValues("Segments by start", [
@@ -24595,15 +25337,16 @@ function formatRouterEfficiency(value: unknown): string {
     };
     sections.push(
       "",
-      "By billing (percent = share of the plan's longest window)",
+      "By billing (percent = share of the account's longest window)",
       renderTable(
-        ["billing", "actual", "same harness", "any harness"],
+        ["billing", "actual", "same model", "same harness", "any harness"],
         billing.map((entry) => {
           const cell = (usdValue: unknown, percentValue: unknown) =>
             [usd(usdValue), percent(percentValue)].filter(Boolean).join(" / ");
           return [
             asString(entry.billing) ?? "",
             cell(entry.actualUsd, entry.actualPercent),
+            cell(entry.sameModelUsd, entry.sameModelPercent),
             cell(entry.sameHarnessUsd, entry.sameHarnessPercent),
             cell(entry.anyHarnessUsd, entry.anyHarnessPercent),
           ];
@@ -24633,6 +25376,7 @@ function formatRouterEfficiency(value: unknown): string {
 
   const topMoves = isRecord(threads.topMoves) ? threads.topMoves : {};
   for (const [label, moves] of [
+    ["Moves (same model)", topMoves.sameModel],
     ["Moves (same harness)", topMoves.sameHarness],
     ["Moves (any harness)", topMoves.anyHarness],
   ] as const) {
@@ -24660,13 +25404,14 @@ function formatRouterEfficiency(value: unknown): string {
       "",
       "Top threads by cost",
       renderTable(
-        ["session", "route", "turns", "segments", "actual", "same harness", "any harness"],
+        ["session", "route", "turns", "segments", "actual", "same model", "same harness", "any harness"],
         topThreads.map((thread) => [
           `${asString(thread.sessionId) ?? ""}${thread.parentSessionId ? " (child)" : ""}`,
           `${asString(thread.provider) ?? ""} ${asString(thread.model) ?? ""}`.trim(),
           count(thread.turns),
           count(thread.segments),
           usd(thread.actualUsd),
+          usd(thread.sameModelUsd),
           usd(thread.sameHarnessUsd),
           usd(thread.anyHarnessUsd),
         ]),
@@ -24679,17 +25424,87 @@ function formatRouterEfficiency(value: unknown): string {
     "",
     renderKeyValues("Subagents (shadow log)", [
       ["decisions", `${count(subagents.decisions)} (${count(subagents.withOutcome)} with outcome)`],
-      ["same picks", count(subagents.sameHarnessPicks)],
-      ["any picks", count(subagents.anyHarnessPicks)],
+      ["legacy skipped", `${count(subagents.legacyDecisionsSkipped)} (logged before effort and brief were known)`],
+      ["picks", `${count(subagents.sameModelPicks)} same model, ${count(subagents.sameHarnessPicks)} same harness, ${count(subagents.anyHarnessPicks)} any harness`],
       ["tokens", count(subagents.tokens)],
-      ["same saving", `${pct(subagents.sameHarnessSaving) || "n/a"} (by tokens)`],
-      ["any saving", `${pct(subagents.anyHarnessSaving) || "n/a"} (by tokens)`],
+      ["same model", `${pct(subagents.sameModelSaving) || "n/a"} (by tokens)`],
+      ["same harness", `${pct(subagents.sameHarnessSaving) || "n/a"} (by tokens)`],
+      ["any harness", `${pct(subagents.anyHarnessSaving) || "n/a"} (by tokens)`],
       ["priced subagents", count(subagents.pricedSubagents)],
       ["actual", usd(subagents.actualUsd)],
-      ["same harness", usd(subagents.sameHarnessUsd)],
-      ["any harness", usd(subagents.anyHarnessUsd)],
+      ["same model $", usd(subagents.sameModelUsd)],
+      ["same harness $", usd(subagents.sameHarnessUsd)],
+      ["any harness $", usd(subagents.anyHarnessUsd)],
     ]),
   );
+  return sections.join("\n");
+}
+
+/**
+ * The router's shadow log: what ran for each subagent and what the router
+ * would have picked. The source counts say how each fact was known, so a
+ * guessed effort or kind shows up instead of hiding in the picks.
+ */
+function formatRouterShadow(value: unknown): string {
+  const summary = isRecord(value) ? value : {};
+  const num = (input: unknown): number => (typeof input === "number" && Number.isFinite(input) ? input : 0);
+  const share = (input: unknown): string =>
+    typeof input === "number" && Number.isFinite(input) ? `${(input * 100).toFixed(1)}%` : "";
+  const counts = (input: unknown): string => isRecord(input)
+    ? Object.entries(input).sort((a, b) => num(b[1]) - num(a[1])).map(([key, amount]) => `${key} ${num(amount)}`).join(", ")
+    : "";
+  const sources = isRecord(summary.sources) ? summary.sources : {};
+  const sections: string[] = [
+    renderKeyValues(`Model router shadow log (${num(summary.days)} days)`, [
+      ["decisions", `${num(summary.decisions)} (${num(summary.withOutcome)} with outcome)`],
+      ["legacy skipped", `${num(summary.legacyDecisionsSkipped)} (logged before effort and brief were known)`],
+      ["outcomes", counts(summary.outcomes)],
+      ["kind from", counts(sources.kind)],
+      ["effort from", counts(sources.effort)],
+      ["model from", counts(sources.model)],
+    ]),
+  ];
+  const byKind = isRecord(summary.byKind) ? Object.entries(summary.byKind).filter(([, entry]) => isRecord(entry)) : [];
+  if (byKind.length) {
+    sections.push(
+      "",
+      "By kind (picks, mean saving)",
+      renderTable(
+        ["kind", "decisions", "same model", "same harness", "any harness"],
+        byKind
+          .sort((a, b) => num((b[1] as Record<string, unknown>).decisions) - num((a[1] as Record<string, unknown>).decisions))
+          .map(([kind, raw]) => {
+            const entry = raw as Record<string, unknown>;
+            const cell = (picks: unknown, saving: unknown) => [String(num(picks)), share(saving)].filter(Boolean).join(" / ");
+            return [
+              kind,
+              String(num(entry.decisions)),
+              cell(entry.sameModelPicks, entry.meanSameModelSaving),
+              cell(entry.sameHarnessPicks, entry.meanSameHarnessSaving),
+              cell(entry.anyHarnessPicks, entry.meanAnyHarnessSaving),
+            ];
+          }),
+        "",
+      ),
+    );
+  }
+  const ran = Array.isArray(summary.ran) ? summary.ran.filter(isRecord) : [];
+  if (ran.length) {
+    sections.push("", "What ran (harness|model|effort)", renderTable(["route", "count"], ran.map((row) => [asString(row.route) ?? "", String(num(row.count))]), ""));
+  }
+  for (const [label, moves] of [
+    ["Top picks (same model)", summary.topSameModelPicks],
+    ["Top picks (same harness)", summary.topSameHarnessPicks],
+    ["Top picks (any harness)", summary.topAnyHarnessPicks],
+  ] as const) {
+    const rows = Array.isArray(moves) ? moves.filter(isRecord) : [];
+    if (!rows.length) continue;
+    sections.push("", label, renderTable(["from", "to", "count"], rows.map((row) => [asString(row.from) ?? "", asString(row.to) ?? "", String(num(row.count))]), ""));
+  }
+  const kept = Array.isArray(summary.keptReasons) ? summary.keptReasons.filter(isRecord) : [];
+  if (kept.length) {
+    sections.push("", "Kept", renderTable(["reason", "count"], kept.map((row) => [asString(row.reason) ?? "", String(num(row.count))]), ""));
+  }
   return sections.join("\n");
 }
 
@@ -25299,6 +26114,11 @@ function formatLastFailureLine(report: AdeLastFailureReport): string {
 export function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
+  /**
+   * Labels whose values are never clipped: a citation, a command to run next,
+   * or a sentence the caller must read whole. A clipped `cite` is unusable.
+   */
+  fullLabels: readonly string[] = [],
 ): string {
   const rows = entries.filter(
     ([, value]) => value !== undefined && value !== null && value !== "",
@@ -25313,7 +26133,7 @@ export function renderKeyValues(
     title,
     ...rows.map(
       ([label, value]) =>
-        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) ? 4096 : 96)}`,
+        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) || fullLabels.includes(label) ? 4096 : 96)}`,
     ),
   ].join("\n");
 }
@@ -25668,16 +26488,24 @@ function formatFilesSearch(value: unknown): string {
 
 function formatDiffSummary(value: unknown): string {
   const files = firstArray(value, ["files", "changes", "items"]);
-  return renderTable(
+  const table = renderTable(
     ["status", "file", "+", "-"],
     files.map((file) => [
-      file.status ?? file.changeType ?? file.type,
+      file.status ?? file.changeType ?? file.type ?? file.kind,
       file.path ?? file.filePath ?? file.newPath ?? file.oldPath,
       file.additions ?? file.added ?? "",
       file.deletions ?? file.deleted ?? "",
     ]),
     "ADE diff\n(no changed files)",
+    // Paths are what the next command takes; a shortened one is a wrong one.
+    { fullColumns: ["file"] },
   );
+  // A branch diff names what it compared with.
+  const record = isRecord(value) ? value : {};
+  const baseRef = asString(record.baseRef);
+  if (!baseRef) return table;
+  const mergeBase = asString(record.mergeBase) ?? "";
+  return `vs ${baseRef} (from ${mergeBase.slice(0, 9)}) · +${String(record.additions ?? 0)} -${String(record.deletions ?? 0)} · ${files.length} file${files.length === 1 ? "" : "s"}\n\n${table}`;
 }
 
 function formatSearchResults(value: unknown): string {
@@ -25936,6 +26764,21 @@ export function formatChatContinueOnAccount(value: unknown): string {
   return reason.replace(/\s+/g, " ").trim();
 }
 
+export function formatChatSwitchAccount(value: unknown): string {
+  const record = firstRecord(value, ["result"])
+    ?? (isRecord(value) ? value : null);
+  if (record?.ok === true) {
+    const instanceId = asString(record.instanceId);
+    return instanceId ? `Switched to account ${instanceId}` : "Switched account.";
+  }
+  const error = isRecord(record?.error) ? asString(record.error.message) : null;
+  const reason = asString(record?.message)
+    ?? asString(record?.reason)
+    ?? error
+    ?? "ADE could not switch this chat's account.";
+  return reason.replace(/\s+/g, " ").trim();
+}
+
 export function formatChatResumeNow(value: unknown): string {
   const record = firstRecord(value, ["result"])
     ?? (isRecord(value) ? value : null);
@@ -25957,23 +26800,20 @@ function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   const hasCliRows = sessions.some((session) => session.kind === "cli");
   if (!hasCliRows) {
-    return renderTable(
-      ["session", "provider", "lane", "title"],
-      sessions.map((session) => [
-        session.id ?? session.sessionId,
-        session.provider ?? session.modelId,
-        session.laneId,
-        session.title,
-      ]),
-      "ADE chats\n(no sessions)",
-      { fullColumns: ["session"] },
-    );
+    const table = withMachineColumns(["session", "provider", "lane", "title"], sessions, (session) => [
+      session.id ?? session.sessionId,
+      session.provider ?? session.modelId,
+      session.laneId,
+      session.title,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session"] });
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
   // a chat's; its parent column is what an agent polling its children needs.
-  return renderTable(
+  const table = withMachineColumns(
     ["session", "provider", "lane", "title", "kind", "parent"],
-    sessions.map((session) => {
+    sessions,
+    (session) => {
       const cli = session.kind === "cli";
       const exitCode = typeof session.exitCode === "number" ? ` (exit ${session.exitCode})` : "";
       return [
@@ -25984,10 +26824,9 @@ function formatChatList(value: unknown): string {
         cli ? `cli · ${String(session.status ?? "unknown")}${exitCode}` : "chat",
         cli ? session.parentSessionId : session.orchestrationParentSessionId,
       ];
-    }),
-    "ADE chats\n(no sessions)",
-    { fullColumns: ["session", "parent"] },
+    },
   );
+  return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session", "parent"] });
 }
 
 function formatChatSummary(value: unknown): string {
@@ -26242,7 +27081,6 @@ function formatLaneDrift(value: unknown): string {
       ["resolution", resolution],
       ["previous branch", record.previousBranchRef],
       ["branch", record.branchRef],
-      ["previous lane name", record.previousLaneName],
       ["lane name", record.laneName],
     ]);
   }
@@ -27230,15 +28068,20 @@ export function formatActionAnswerLines(
   const effect = isRecord(result.effect) ? result.effect : options.fallbackEffect ?? null;
   const status = asString(effect?.status);
   const reason = asString(effect?.reason) ?? "";
+  const next = isRecord(result.effect) && isRecord(result.effect.next) ? result.effect.next : null;
+  const nextReason = asString(next?.reason);
   let effectLine: string;
   if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
   else if (status === "unconfirmed") {
-    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+    // A `next:` line replaces the generic advice with the specific step.
+    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}${nextReason ? "" : "; observe again before you continue"}`;
   } else if (status === "waiting_for_approval") {
     effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
   } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
   else effectLine = "effect: not checked — this ADE did not report an effect";
-  return [hit, effectLine];
+  if (!nextReason) return [hit, effectLine];
+  const nextCommand = asString(next?.command);
+  return [hit, effectLine, `next: ${nextReason}${nextCommand ? ` — run: ${nextCommand}` : ""}`];
 }
 
 /** The rows of a DOM element list, shared by the browser and App Control. */
@@ -27731,6 +28574,8 @@ function formatProviderAccounts(value: unknown): string {
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
       ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
+      ["same login as", instance.sameLoginAs],
+      ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
@@ -27794,7 +28639,9 @@ function formatProviderAccounts(value: unknown): string {
       instance.label,
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? (isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes")
+        ? `${isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes"}${
+          typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""
+        }`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),
@@ -27809,9 +28656,10 @@ function formatProjectsList(value: unknown): string {
     : isRecord(value) && value.projectId
       ? [value]
       : firstArray(value, ["projects", "items"]);
-  return renderTable(
+  const table = withMachineColumns(
     ["project", "name", "path", "visibility", "git origin", "last opened"],
-    projects.map((project) => [
+    projects,
+    (project) => [
       project.projectId,
       project.displayName,
       project.rootPath,
@@ -27820,10 +28668,11 @@ function formatProjectsList(value: unknown): string {
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()
         : "",
-    ]),
-    "ADE projects\n(no projects registered)",
-    { fullColumns: ["project"] },
+    ],
+    // A projects row is a project; it has no other project to name.
+    { projectColumn: false },
   );
+  return renderTable(table.headers, table.rows, "ADE projects\n(no projects registered)", { fullColumns: ["project"] });
 }
 
 function formatLinearQuickView(value: unknown): string {
@@ -28275,6 +29124,8 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "machines-roster":
+      return formatMachinesRoster(value);
     case "account-machine-rename": {
       const machine = parseAccountMachine(value);
       if (!machine) return "Machine renamed.";
@@ -28349,6 +29200,8 @@ function formatTextOutput(
       return formatChatResumeNow(value);
     case "chat-continue-on-account":
       return formatChatContinueOnAccount(value);
+    case "chat-switch-account":
+      return formatChatSwitchAccount(value);
     case "chat-launch":
       return formatChatLaunch(value);
     case "chat-launches":
@@ -28433,6 +29286,14 @@ function formatTextOutput(
       return formatMacDesktopRecording(value);
     case "mac-desktop-proof":
       return formatMacDesktopProofFiled(value);
+    case "mac-desktop-open":
+      return formatMacDesktopOpen(value);
+    case "mac-desktop-screenshot":
+      return formatMacDesktopScreenshot(value);
+    case "mac-desktop-lease":
+      return formatMacDesktopLease(value);
+    case "mac-desktop-window-action":
+      return formatMacDesktopWindowAction(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -28517,8 +29378,18 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "usage-snapshot":
       return formatUsageSnapshot(value);
+    case "usage-stats":
+      return formatUsageStats(value);
+    case "usage-cost-breakdown":
+      return formatUsageCostBreakdown(value);
+    case "usage-model-detail":
+      return formatUsageModelDetail(value);
+    case "usage-prices":
+      return formatUsagePrices(value);
     case "router-efficiency":
       return formatRouterEfficiency(value);
+    case "router-shadow":
+      return formatRouterShadow(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":
@@ -28565,6 +29436,7 @@ function inferFormatter(
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
   if (label === "chat continue-on-account") return "chat-continue-on-account";
+  if (label === "chat switch-account") return "chat-switch-account";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";
@@ -28678,14 +29550,18 @@ function inferFormatter(
   if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
   if (label === "update status") return "update-status";
-  // All three verbs return the same `UsageSnapshot`; `usage stats` does not
-  // (it is the spend half) and keeps the generic renderer.
+  // All three verbs return the same `UsageSnapshot`; `usage stats` is the
+  // spend half and has its own renderers.
   if (
     label === "usage snapshot"
     || label === "usage refresh"
     || label === "usage history refresh"
   )
     return "usage-snapshot";
+  if (label === "usage stats") return "usage-stats";
+  if (label === "usage cost breakdown") return "usage-cost-breakdown";
+  if (label === "usage model detail") return "usage-model-detail";
+  if (label === "usage prices") return "usage-prices";
   if (label.endsWith("actions")) return "actions-list";
   const firstStep = plan.steps[0];
   const params = typeof firstStep?.params === "object" && firstStep.params != null
@@ -29701,6 +30577,8 @@ async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
+  const acrossMachines = await executePlanAcrossMachines(plan, options);
+  if (acrossMachines) return acrossMachines.value;
   let connection: CliConnection;
   const baseConnectionOptions =
     plan.machineOnly
@@ -29949,9 +30827,45 @@ async function runChatWaitCommand(
     return unwrapped;
   };
 
+  // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
+  // long-poll per call); an older brain without it is polled as before.
+  let serverWaitSupported = true;
+  const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
+    try {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "waitFor",
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+        },
+      });
+      const result = unwrapActionEnvelope(unwrapToolResult(raw));
+      if (!isRecord(result)) return "unsupported";
+      if (result.missing === true) return null;
+      return isRecord(result.summary) ? result.summary : null;
+    } catch {
+      // An older brain has no `chat.waitFor`. Any failure here falls back to
+      // polling, which surfaces a real problem through its own reads.
+      return "unsupported";
+    }
+  };
+
   try {
     while (true) {
-      const summary = await readSummary();
+      const remainingMs = Math.max(1, plan.timeoutMs - (Date.now() - startedAt));
+      let summary: JsonObject | null;
+      if (serverWaitSupported) {
+        const waited = await serverWait(Math.min(25_000, remainingMs));
+        if (waited === "unsupported") {
+          serverWaitSupported = false;
+          summary = await readSummary();
+        } else {
+          summary = waited;
+        }
+      } else {
+        summary = await readSummary();
+      }
       const elapsedMs = Date.now() - startedAt;
       if (!summary) {
         const result = {
@@ -29985,7 +30899,9 @@ async function runChatWaitCommand(
         };
         return { output: formatOutput(result, options), exitCode: 1 };
       }
-      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      if (!serverWaitSupported) {
+        await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      }
     }
   } finally {
     await connection.close();
@@ -30056,6 +30972,7 @@ function formatOutput(
   formatter?: FormatterId,
 ): string {
   if (options.text) {
+    if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
     return `${formatTextOutput(value, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
@@ -30189,7 +31106,24 @@ async function runResetCommand(
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = parseCliArgs(argv);
+  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  if (!parsed.options.machine) return await runParsedCli(parsed);
+  // This shell's lane is a lane on THIS machine. Plan builders that default
+  // to it would name a lane the other machine has never heard of; there the
+  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
+  // target pick, as `ade chat launch` does with a new lane. Only for this run.
+  const laneId = process.env.ADE_LANE_ID;
+  delete process.env.ADE_LANE_ID;
+  try {
+    return await runParsedCli(parsed);
+  } finally {
+    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
+  }
+}
+
+async function runParsedCli(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   const primary = parsed.command[0]?.toLowerCase();
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
@@ -30733,4 +31667,13 @@ export {
   startHeadlessRpcTcpServer,
   summarizeExecution,
   unwrapToolResult,
+  CliExecutionError,
+  connectMachineRuntimeDaemon,
+  executePlan,
+  getGitRemote,
+  isMachineRuntimeScopedMethod,
+  resolveMachineRuntimeSocketPath,
+  sessionIdFromCreateChatValue,
+  withProjectId,
+  SocketJsonRpcClient,
 };

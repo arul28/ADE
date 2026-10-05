@@ -406,6 +406,26 @@ describe("providerInstanceStore", () => {
     expect(reused?.loginBroken).toBeUndefined();
   });
 
+  it("gives a shared login to the first working account, not a broken one", async () => {
+    const { store } = makeStore({
+      readAccount: async (_provider, configHome) => (
+        configHome.includes("provider-homes") ? { email: "shared@example.com" } : {}
+      ),
+    });
+    const first = store.create({ provider: "claude", label: "First" });
+    const second = store.create({ provider: "claude", label: "Second" });
+    await store.refreshAccounts();
+
+    // With both working, the first in list order owns the shared email.
+    expect(store.get(first.instance.id)?.sameLoginAs).toBeUndefined();
+    expect(store.get(second.instance.id)?.sameLoginAs).toBe(first.instance.id);
+
+    // The owner's login breaks: the working copy now owns the email instead.
+    store.setLoginBroken(first.instance.id, true);
+    expect(store.get(first.instance.id)?.sameLoginAs).toBe(second.instance.id);
+    expect(store.get(second.instance.id)?.sameLoginAs).toBeUndefined();
+  });
+
   it("keeps a listener that throws from rolling back the write", () => {
     const { store } = makeStore();
     store.onChange(() => {

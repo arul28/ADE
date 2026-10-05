@@ -66,37 +66,36 @@ export function shouldKeepPinnedThroughViewportShrink({
   return nextClientHeight < previousClientHeight - 0.5;
 }
 
-export function calculateVirtualWindow({
-  rowCount,
+/**
+ * The mounted window for `scrollTop`, over row start offsets the caller already
+ * holds (`offsets[i]` = sum of `rowHeight(j) + rowGap` for j < i, as
+ * `computeRowStartOffsets` builds them). O(log n) to find the first visible
+ * row, so a scroll handler can ask "would the mounted rows change?" every frame
+ * without rebuilding the offsets.
+ */
+export function calculateVirtualWindowFromOffsets({
+  offsets,
   scrollTop,
   containerHeight,
   rowHeight,
   overscan = CHAT_TRANSCRIPT_OVERSCAN,
-  rowGap = CHAT_TIMELINE_ROW_GAP_PX,
 }: {
-  rowCount: number;
+  offsets: readonly number[];
   scrollTop: number;
   containerHeight: number;
   rowHeight: (index: number) => number;
   overscan?: number;
-  rowGap?: number;
 }): {
   startIndex: number;
   endIndex: number;
   totalHeight: number;
   offsetTop: number;
 } {
+  const rowCount = offsets.length;
   if (rowCount <= 0) {
     return { startIndex: 0, endIndex: 0, totalHeight: 0, offsetTop: 0 };
   }
-
-  let cumulative = 0;
-  const offsets: number[] = new Array(rowCount);
-  for (let i = 0; i < rowCount; i += 1) {
-    offsets[i] = cumulative;
-    cumulative += rowHeight(i) + rowGap;
-  }
-  const totalHeight = cumulative - rowGap;
+  const totalHeight = offsets[rowCount - 1]! + rowHeight(rowCount - 1);
   const viewTop = scrollTop;
   const viewBottom = scrollTop + containerHeight;
 

@@ -836,6 +836,11 @@ export function accountMachineAdoptionRoutes(
   ];
 }
 
+/** The query names more than one machine; the message lists them by key. */
+export class AmbiguousAccountMachineError extends Error {
+  readonly code = "machine_ambiguous";
+}
+
 export function selectAccountMachine(
   machines: AdeAccountMachine[],
   query: string,
@@ -852,7 +857,7 @@ export function selectAccountMachine(
     const choices = byStableId.map(
       (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
     );
-    throw new Error(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+    throw new AmbiguousAccountMachineError(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
 
   const byName = machines.filter((machine) =>
@@ -865,7 +870,7 @@ export function selectAccountMachine(
     const choices = byName.map(
       (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
     );
-    throw new Error(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+    throw new AmbiguousAccountMachineError(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
   throw new Error(`Account machine not found: ${query}`);
 }

@@ -491,6 +491,29 @@ samp {
   font-family: var(--font-mono);
 }
 
+/* lib/xtermCursorBlink.ts drives a focused cursor's blink: xterm's own
+   `step-end` keyframes stay, held paused at 25% (on) or 75% (off) and flipped
+   every 500 ms, so the cursor looks the same without a running animation
+   re-styling it every display frame. */
+.ade-xterm-blink-clock .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-play-state: paused !important;
+  animation-delay: -250ms !important;
+}
+.ade-xterm-blink-clock.ade-xterm-blink-off .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-delay: -750ms !important;
+}
+
+/* The app's text selection color. Chromium inherits ::selection from the
+   parent's ::selection, so one rule on the app root colors every descendant,
+   and a nested `selection:` class still wins for its own subtree. Tailwind's
+   `selection:bg-accent/30` compiles to `.x *::selection`, a descendant rule
+   matched against every element on every restyle, so do not use the variant
+   on a large container. The accent resolves on the root; nothing below it
+   overrides --color-accent. */
+.ade-app-selection::selection {
+  background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+}
+
 /* Keep xterm glyph metrics isolated from global typography rules. */
 .xterm,
 .xterm .xterm-helper-textarea,
@@ -2338,15 +2361,54 @@ button, [role="button"] {
 /* The Work sidebar's "Working" status label breathes — the one row state that
    is actively changing under you gets the only ambient motion in the list.
    Amplitude is deliberately small: this is a sign of life, not an alert, and
-   `motion-safe:` gates it away entirely for reduced-motion users. */
+   `motion-safe:` gates it away entirely for reduced-motion users.
+
+   The breathe is an `ease-in-out` 1 -> 0.62 -> 1 opacity cycle held at
+   0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
+   the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
+   changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
+   smooth opacity animation makes the compositor draw every display frame. To
+   change the range, re-derive the stops from the same curve. */
 @keyframes ade-session-working-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.62;
-  }
+  0% { opacity: 1.00; }
+  5.76% { opacity: 0.98; }
+  9.84% { opacity: 0.96; }
+  12.61% { opacity: 0.94; }
+  14.87% { opacity: 0.92; }
+  16.85% { opacity: 0.90; }
+  18.64% { opacity: 0.88; }
+  20.32% { opacity: 0.86; }
+  21.92% { opacity: 0.84; }
+  23.47% { opacity: 0.82; }
+  25% { opacity: 0.80; }
+  26.53% { opacity: 0.78; }
+  28.08% { opacity: 0.76; }
+  29.68% { opacity: 0.74; }
+  31.36% { opacity: 0.72; }
+  33.15% { opacity: 0.70; }
+  35.13% { opacity: 0.68; }
+  37.39% { opacity: 0.66; }
+  40.16% { opacity: 0.64; }
+  44.24% { opacity: 0.62; }
+  55.76% { opacity: 0.64; }
+  59.84% { opacity: 0.66; }
+  62.61% { opacity: 0.68; }
+  64.87% { opacity: 0.70; }
+  66.85% { opacity: 0.72; }
+  68.64% { opacity: 0.74; }
+  70.32% { opacity: 0.76; }
+  71.92% { opacity: 0.78; }
+  73.47% { opacity: 0.80; }
+  75% { opacity: 0.82; }
+  76.53% { opacity: 0.84; }
+  78.08% { opacity: 0.86; }
+  79.68% { opacity: 0.88; }
+  81.36% { opacity: 0.90; }
+  83.15% { opacity: 0.92; }
+  85.13% { opacity: 0.94; }
+  87.39% { opacity: 0.96; }
+  90.16% { opacity: 0.98; }
+  94.24% { opacity: 1.00; }
 }
 
 /* Session row detail tooltips render a key/value list, one pair per line.
@@ -3306,6 +3368,30 @@ button, [role="button"] {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
+}
+
+/* The composer floats over the bottom of the transcript (ChatSurfaceShell
+   `overlayFooter`). Only its own controls take the pointer: the gaps around and
+   between them leave the thread underneath selectable and clickable. */
+[data-chat-composer-overlay] {
+  pointer-events: none;
+  /* Docked banners in the stack float over transcript text, so their card is
+     mixed over the canvas instead of over transparency (noticeTones.ts). */
+  --notice-docked-bg: color-mix(in srgb, var(--color-card) 72%, var(--chat-canvas-bg));
+}
+[data-chat-composer-overlay] [data-chat-composer-dock] > * {
+  pointer-events: auto;
+}
+[data-chat-composer-overlay] [data-chat-composer-chip-row],
+[data-chat-composer-overlay] [data-status-strip] {
+  pointer-events: none;
+}
+/* Status chips (and the docked Jump to Latest pill) float over transcript text
+   there, so each gets an opaque plate under its tint instead of reading
+   through to the words behind it. */
+[data-chat-composer-overlay] [data-overlay-plate] {
+  background-color: var(--chat-canvas-bg);
+  background-image: linear-gradient(var(--status-chip-fill), var(--status-chip-fill));
 }
 
 /* New-chat prompt + shelf sit a step darker than in-session composer chrome. */
@@ -5344,17 +5430,6 @@ button, [role="button"] {
   animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
 }
 
-/* Project and route surfaces stay mounted for fast switching. Pause their CSS
-   animations while parked so hidden keep-alive trees cannot keep rendering. */
-[data-ade-animation-state="paused"],
-[data-ade-animation-state="paused"] *,
-[data-ade-animation-state="paused"]::before,
-[data-ade-animation-state="paused"]::after,
-[data-ade-animation-state="paused"] *::before,
-[data-ade-animation-state="paused"] *::after {
-  animation-play-state: paused !important;
-}
-
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
   transition: none;
@@ -5853,7 +5928,10 @@ html[data-motion="reduced"] *::after {
 }
 
 @container settings-column (max-width: 999px) {
-  .ade-settings-column--wide > * {
+  /* The rail layout keeps the full width it was given — capping it would put
+     the rail and the content in a column narrower than the page. Every other
+     child keeps the narrow measure. */
+  .ade-settings-column--wide > :not(.ade-settings-layout) {
     width: 100%;
     max-width: 860px;
     margin-inline: auto;
@@ -6170,12 +6248,58 @@ html[data-motion="reduced"] *::after {
 }
 
 /* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   column that becomes two balanced columns on a wide page. A `full` item
-   spans both. */
+   single-column list of named blocks, top to bottom. The even two-column grid
+   was tried and read as two columns of uneven height, so it is gone. */
 .ade-settings-flow {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 48px;
+}
+
+/* One named block: a heading with its icon and one line, then its sections. */
+.ade-settings-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  scroll-margin-top: 12px;
+}
+
+.ade-settings-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-settings-group-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.ade-settings-group-description {
+  margin: 3px 0 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-muted-fg);
+}
+
+/* The danger zone says so before anything in it is read. */
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head {
+  border-bottom-color: color-mix(in srgb, var(--color-error) 35%, transparent);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
+  color: var(--color-error);
+}
+
+.ade-settings-rail svg {
+  width: 14px;
+  height: 14px;
 }
 
 .ade-settings-flow-item {
@@ -6185,29 +6309,29 @@ html[data-motion="reduced"] *::after {
   min-width: 0;
 }
 
-@container settings-column (min-width: 1180px) {
-  /* Rows, not masonry: each pair of sections starts on the same line, and the
-     panels in a row stretch to the same height, so headings and edges align. */
-  .ade-settings-flow {
+/* A sticky list of the page's own sections, beside the content on a page wide
+   enough for it. Below that width the list is not drawn at all. */
+.ade-settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-rail {
+  display: none;
+}
+
+@container settings-column (min-width: 900px) {
+  .ade-settings-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    align-items: stretch;
-    gap: 32px 28px;
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: start;
+    gap: 40px;
   }
-  .ade-settings-flow-item {
-    display: flex;
-    flex-direction: column;
-  }
-  .ade-settings-flow-item[data-span="full"] {
-    grid-column: 1 / -1;
-  }
-  .ade-settings-flow-item {
-    gap: 32px;
-  }
-  /* Every heading in a row takes the same height (a title and one line), so
-     panels side by side start level whether or not a heading has a caption. */
-  .ade-settings-flow-item:not([data-span="full"]) .ade-settings-head {
-    min-height: 42px;
+  .ade-settings-rail {
+    display: block;
+    position: sticky;
+    top: 8px;
   }
 }
 

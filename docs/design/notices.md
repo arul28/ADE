@@ -25,6 +25,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | An app-wide state that lasts: signed out, update stuck, relay down, integration broken | `useAppBanner(model)` (docked, the default) |
 | A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` (`updatePrompt` keeps a ready-to-install update ahead of generic prompts) |
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
+| A short state of the chat a composer writes to: settled, snoozed, the lane is on another branch | `<StatusChip tone ...>` inside the composer's one `<StatusStrip>` (chips sit side by side; the explanation goes in `tooltip`) |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
 | Yes/no before an action | `await confirmDialog({...})` |
 | One line of text input | `await promptDialog({...})` |

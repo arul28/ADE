@@ -2787,6 +2787,108 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  describe("App Control frame demand", () => {
+    function makeFrameService() {
+      const demand = new Map<string, unknown>();
+      return {
+        demand,
+        setFrameDemand: (sourceId: string, value: unknown) => {
+          if (value === null) demand.delete(sourceId);
+          else demand.set(sourceId, value);
+        },
+      };
+    }
+
+    function makeScopes(projectRoot: string, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const added = registry.add(projectRoot);
+      let service = makeFrameService();
+      const disposeListeners: Array<(projectId: string) => void> = [];
+      let nextGet: Promise<void> | null = null;
+      const scopeRegistry = {
+        get: vi.fn(async () => {
+          const gate = nextGet;
+          nextGet = null;
+          const current = service;
+          if (gate) await gate;
+          return {
+            registryProjectId: added.projectId,
+            record: added,
+            runtime: { eventBuffer: createEventBuffer(), appControlService: current, dispose: vi.fn() },
+            dispose: vi.fn(),
+          };
+        }),
+        onDispose: (listener: (projectId: string) => void) => {
+          disposeListeners.push(listener);
+          return () => {};
+        },
+        ensureSyncHost: vi.fn(),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      return {
+        added,
+        scopeRegistry,
+        service: () => service,
+        holdNextLookup: (gate: Promise<void>) => { nextGet = gate; },
+        restartScope: () => {
+          service = makeFrameService();
+          for (const listener of disposeListeners) listener(added.projectId);
+        },
+      };
+    }
+
+    async function connect(scopeRegistry: ProjectScopeRegistry, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+      handler.setNotifier(vi.fn());
+      await handler({ jsonrpc: "2.0", id: 0, method: "ade/initialize", params: {} });
+      let id = 1;
+      return {
+        handler,
+        call: (method: string, params: Record<string, unknown>) => handler({ jsonrpc: "2.0", id: id++, method, params }),
+      };
+    }
+
+    it("keeps every lane streaming for an undeclared frame subscriber until it declares, and releases on close", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { handler, call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual(["all"]);
+
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["lane-1"] });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      // A declared connection never falls back to every lane.
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      handler.dispose();
+      expect(scopes.service().demand.size).toBe(0);
+    });
+
+    it("lands declarations in call order and replays them onto a restarted scope", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      let releaseFirst!: () => void;
+      scopes.holdNextLookup(new Promise<void>((resolve) => { releaseFirst = resolve; }));
+      const first = call("appControl.setFrameDemand", { projectId, laneIds: ["old-pane"] });
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["new-pane"] });
+      releaseFirst();
+      await first;
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+
+      scopes.restartScope();
+      expect(scopes.service().demand.size).toBe(0);
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+    });
+  });
+
   it("subscribes to project runtime events and emits JSON-RPC notifications", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
@@ -3557,5 +3659,172 @@ describe("projects.setIcon / projects.removeIcon", () => {
     expect(fs.existsSync(path.join(importedDir, importedFiles[0]!))).toBe(false);
 
     handler.dispose();
+  });
+});
+
+describe("calls from another machine's agents", () => {
+  const AGENT_REMOTE_INIT = {
+    clientName: "ade-agent-remote",
+    clientInfo: { name: "ade-agent-remote", version: "test" },
+    identity: { role: "agent" },
+  };
+
+  function makeTarget(options: { peerDeviceId: string | null; initialize?: Record<string, unknown> }) {
+    const { projectRoot, registry } = createRegistry();
+    const project = registry.add(projectRoot);
+    const runtime = makeRuntime("target") as ReturnType<typeof makeRuntime> & {
+      agentChatService: Record<string, ReturnType<typeof vi.fn>>;
+    };
+    runtime.agentChatService = {
+      getSessionSummary: vi.fn(async () => null),
+      getChatTranscript: vi.fn(async (args: Record<string, unknown>) => ({
+        sessionId: args.sessionId,
+        entries: [],
+        totalEntries: 0,
+        truncated: false,
+      })),
+    };
+    const scopeRegistry = {
+      get: vi.fn(async () => ({ registryProjectId: project.projectId, record: project, runtime, dispose: vi.fn() })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      peerDeviceId: options.peerDeviceId,
+      agentMachineBridge: { call: vi.fn(), listMachines: vi.fn() },
+    });
+    const init = handler({
+      jsonrpc: "2.0",
+      id: 0,
+      method: "ade/initialize",
+      params: options.initialize ?? AGENT_REMOTE_INIT,
+    });
+    const readTranscript = (chatSessionId: string | null, id: number) => handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: project.projectId,
+        remoteCaller: { chatSessionId },
+        name: "run_ade_action",
+        arguments: { domain: "chat", action: "readTranscript", args: { sessionId: "target-chat" } },
+      },
+    });
+    return { handler, init, runtime, readTranscript, project };
+  }
+
+  it("attributes each call to its own chat on the paired machine, and ignores the claim from anyone else", async () => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    await remote.readTranscript("chat-1", 1);
+    await remote.readTranscript("chat-2", 2);
+    const callers = remote.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(callers).toEqual(expect.arrayContaining(["remote:device-a:chat-1", "remote:device-a:chat-2"]));
+    expect(remote.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "target-chat" }),
+    );
+    remote.handler.dispose();
+
+    // A desktop over the same paired channel cannot borrow the claim to pass
+    // as another machine's chat.
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await desktop.readTranscript("chat-1", 1);
+    const desktopCallers = desktop.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(desktopCallers.some((caller) => String(caller).startsWith("remote:"))).toBe(false);
+    desktop.handler.dispose();
+  });
+
+  it("makes a remote caller the parent of the child it starts here, keeps its token, and refuses any other parent", async () => {
+    const { childWakeToken, configureExternalChatStore, externalChatContext } = await import(
+      "../../desktop/src/main/services/chat/externalChats"
+    );
+    configureExternalChatStore(null);
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    const createSession = vi.fn(async (args: Record<string, unknown>) => ({ id: "child-1", ...args }));
+    remote.runtime.agentChatService.createSession = createSession;
+    await remote.init;
+    const create = (parent: string, id: number) => remote.handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: remote.project.projectId,
+        remoteCaller: {
+          chatSessionId: "chat-1",
+          machineKey: "machine-a",
+          machineName: "MacBook Pro",
+          permissionLevel: "auto-edit",
+          wakeToken: "token-for-child-1",
+        },
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "createSession",
+          args: { provider: "claude", model: "anthropic/claude-opus-5", orchestrationParentSessionId: parent, spawnKind: "subagent" },
+        },
+      },
+    });
+
+    await create("chat-1", 1);
+    // A chat here (or another machine's) can't be made the one a remote
+    // caller's child reports to.
+    await expect(create("someone-else", 2)).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+
+    expect(createSession.mock.calls.map((call) => call[0]?.orchestrationParentSessionId)).toEqual([
+      "remote:device-a:chat-1",
+    ]);
+    expect(externalChatContext("remote:device-a:chat-1")).toMatchObject({
+      machineKey: "machine-a",
+      machineName: "MacBook Pro",
+      permissionLevel: "auto-edit",
+    });
+    expect(childWakeToken("child-1")).toBe("token-for-child-1");
+    remote.handler.dispose();
+  });
+
+  it("refuses another machine's agents without a paired peer to attribute them to", async () => {
+    const local = makeTarget({ peerDeviceId: null });
+    await local.init;
+    await expect(local.readTranscript("chat-1", 1)).rejects.toThrow(/must arrive over a paired connection/);
+    expect(local.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+    local.handler.dispose();
+  });
+
+  it.each([
+    ["sync.getStatus", false],
+    ["account.call", false],
+    ["projects.add", false],
+    ["machine.updateAndRestart", false],
+    ["machines.call", false],
+    ["projects.list", true],
+  ])("lets another machine's agents call machine method %s: %s", async (method, allowed) => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    const call = remote.handler({ jsonrpc: "2.0", id: 1, method, params: { action: "status" } });
+    if (allowed) await expect(call).resolves.toBeDefined();
+    else await expect(call).rejects.toThrow(/isn't available to agents on another machine/);
+    remote.handler.dispose();
+  });
+
+  it("does not relay a request that came from another machine on to a third", async () => {
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await expect(desktop.handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "machines.call",
+      params: { machine: "Mac mini", scope: { kind: "machine" }, request: { method: "projects.list" } },
+    })).rejects.toThrow(/can't be relayed to a third one/);
+    desktop.handler.dispose();
   });
 });

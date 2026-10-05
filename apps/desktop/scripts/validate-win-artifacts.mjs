@@ -259,6 +259,8 @@ function validatePreflight() {
   // SOURCE is present - the .exe does not exist yet at this point in dist:win.
   // The release-mode check below asserts the built binary actually shipped.
   requireFile("native/ADECaptureHelperWin/src/main.cpp", "Windows capture helper source");
+  requireFile("native/ADEDesktopDriverWin/src/main.cpp", "Windows Desktop driver source");
+  requireFile("scripts/build-windows-desktop-driver.mjs", "Windows Desktop driver build");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -269,10 +271,10 @@ function validatePreflight() {
     .find((entry) => entry?.to === "native");
   if (!captureHelperResource
     || !Array.isArray(captureHelperResource.filter)
-    || !captureHelperResource.filter.includes("ade-capture-helper.exe")) {
+    || !captureHelperResource.filter.includes("ade-capture-helper.exe")
+    || !captureHelperResource.filter.includes("ade-desktop-driver.exe")) {
     fail(
-      "package.json build.extraResources must ship resources/native -> native including ade-capture-helper.exe; "
-      + "without it the Windows package has no capture gesture.",
+      "package.json build.extraResources must ship the Windows capture helper and Desktop driver from resources/native -> native.",
     );
   }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
@@ -632,6 +634,7 @@ async function validatePackagedRuntime(appDir) {
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
+  const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -656,10 +659,11 @@ async function validatePackagedRuntime(appDir) {
   // release must never ship without the capture gesture by accident.
   if (isLocalWindowsTestBuild && process.env.ADE_SKIP_CAPTURE_HELPER_BUILD === "1") {
     console.warn(
-      "[validate-win-artifacts] Local test build without the capture helper (ADE_SKIP_CAPTURE_HELPER_BUILD=1): the capture gesture is unavailable.",
+      "[validate-win-artifacts] Local test build without native helpers (ADE_SKIP_CAPTURE_HELPER_BUILD=1): capture and Windows Desktop are unavailable.",
     );
   } else {
     await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
+    await assertPathExists(desktopDriverExePath, "packaged Windows Desktop driver");
   }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
@@ -762,6 +766,20 @@ async function validatePackagedRuntime(appDir) {
     env: { ...process.env },
   });
   assertAdeCliHelp(defaultHelp.stdout, "Bundled ADE CLI wrapper");
+
+  // Agents read the exit code. The wrapper once returned 0 for every command,
+  // so a failed one looked like a success.
+  const unknownCommand = await runCommand(adeCliBinPath, ["ade-validate-unknown-command"], {
+    cwd: resourcesPath,
+    env: { ...process.env },
+  }).then(() => null, (error) => error);
+  if (!unknownCommand) {
+    fail("Bundled ADE CLI wrapper returned exit code 0 for an unknown command.");
+  }
+  // The CLI exits 2 for an unknown command; a timeout or spawn error is not that.
+  if (!/Command failed \(2\)/.test(String(unknownCommand.message ?? unknownCommand))) {
+    fail(`Bundled ADE CLI wrapper did not return the CLI's exit code 2 for an unknown command: ${unknownCommand.message ?? unknownCommand}`);
+  }
 
   const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
   try {
@@ -954,6 +972,11 @@ async function validateReleaseArtifacts() {
   const appIdentity = await validateAuthenticodeSignature(
     path.join(appDir, `${productName}.exe`),
     "packaged Windows app executable",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-desktop-driver.exe"),
+    "Windows Desktop driver",
     expectedIdentity,
   );
   // Both artifacts are pinned to the same Subject above, but a Subject match

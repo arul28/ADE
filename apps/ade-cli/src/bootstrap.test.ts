@@ -464,6 +464,31 @@ describe("createEventBuffer", () => {
     expect(result.nextCursor).toBe(1);
   });
 
+  it("delivers transient events live but never replays them or reads their ids as a gap", () => {
+    const buffer = createEventBuffer(2, { isTransient: (event) => event.payload.frame === true });
+    const seen: number[] = [];
+    buffer.subscribe((event) => seen.push(event.id));
+    const push = (payload: Record<string, unknown>) =>
+      buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: "runtime", payload });
+
+    push({ frame: true }); // 1
+    push({ n: 1 }); // 2
+    push({ frame: true }); // 3
+    push({ n: 2 }); // 4
+
+    expect(seen).toEqual([1, 2, 3, 4]);
+    const fromStart = buffer.drain(0);
+    expect(fromStart.events.map((event) => event.id)).toEqual([2, 4]);
+    // Id 1 was never kept, so a client behind it has lost nothing.
+    expect(fromStart.gap).toBe(false);
+
+    push({ n: 3 }); // 5 evicts 2: a real loss, transients around it or not
+    const afterEviction = buffer.drain(1);
+    expect(afterEviction.events.map((event) => event.id)).toEqual([4, 5]);
+    expect(afterEviction.gap).toBe(true);
+    expect(buffer.drain(2).gap).toBe(false);
+  });
+
   it("reports a replay gap when an oversized event is skipped between retained events", () => {
     const buffer = createEventBuffer(10, { maxBytes: 4096, maxEventBytes: 180 });
 

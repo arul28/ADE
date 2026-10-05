@@ -6,7 +6,6 @@ import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { SettingsCard, SettingsGroup } from "./primitives";
-import { ResetAdeButton } from "../app/ResetAdeDialog";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -140,7 +139,7 @@ export function resolveAboutVersionState(
   };
 }
 
-export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) {
+export function AboutSection() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [latest, setLatest] = useState<LatestReleaseInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -196,7 +195,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
             anchor="about-app"
             icon={<Info size={15} weight="duotone" />}
             tone="blue"
-            title={embedded ? "App" : "ADE"}
+            title="ADE"
             description="Loading app info..."
           />
         </SettingsGroup>
@@ -248,7 +247,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <SettingsGroup title="About">
-        <SettingsCard anchor="about-app" icon={<Info size={15} weight="duotone" />} tone="blue" title={embedded ? "App" : "ADE"} control={pill}>
+        <SettingsCard anchor="about-app" icon={<Info size={15} weight="duotone" />} tone="blue" title="ADE" control={pill}>
           <div style={{ display: "grid", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
               <span style={labelStyle}>Running</span>
@@ -342,7 +341,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
             anchor="about-runtime-service"
             icon={<Cpu size={15} weight="duotone" />}
             tone="violet"
-            title={embedded ? "Background service" : "ADE runtime service"}
+            title="ADE runtime service"
             control={
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                 <span style={inlineBadge(runtimeServiceColor(info.localRuntime.serviceInstall.state))}>
@@ -441,22 +440,20 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
                   </div>
                 </div>
               ) : null}
-              {!embedded && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                  {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
-                    <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
-                  ) : null}
-                  {info.localRuntime.serviceInstall.exitCode != null ? (
-                    <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
-                  ) : null}
-                  {info.localRuntime.serviceHealth.checkedAt ? (
-                    <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
-                  ) : null}
-                  {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
-                    <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
-                  ) : null}
-                </div>
-              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+                {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
+                  <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
+                ) : null}
+                {info.localRuntime.serviceInstall.exitCode != null ? (
+                  <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
+                ) : null}
+                {info.localRuntime.serviceHealth.checkedAt ? (
+                  <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
+                ) : null}
+                {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
+                  <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
+                ) : null}
+              </div>
             </div>
           </SettingsCard>
         ) : null}
@@ -465,17 +462,6 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
       <SettingsGroup title="Updates" description="Choose whether ADE installs downloaded updates automatically.">
         <AutoUpdatesControls />
       </SettingsGroup>
-
-      {embedded ? null : (
-        <SettingsGroup title="Reset">
-          <SettingsCard
-            anchor="about.reset"
-            title="Reset ADE"
-            description="Removes everything ADE put on this computer, including ADE's data and lanes in every project, then reopens ADE as a new install. Your code and repositories stay."
-            control={<ResetAdeButton label="Reset ADE…" />}
-          />
-        </SettingsGroup>
-      )}
     </div>
   );
 }

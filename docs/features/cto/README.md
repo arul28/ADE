@@ -384,6 +384,9 @@ only the desktop user client can change it, and the phone sync command removes
 that field from incoming identity patches.
 
 The runtime bridge in `apps/ade-cli/src/services/account/ctoCrossMachineBridge.ts`
+is the CTO's wrapper over the shared connection pool in `machineBridge.ts`
+(ordinary agents have their own pool and identity; see
+[Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)). It
 reuses the paired-runtime connector with the distinct `ade-cto-remote` caller
 identity. It pools one connection per target, confirms mutating actions, refuses
 secret-bearing results on both the caller and target dispatch paths, and closes

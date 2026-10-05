@@ -50,6 +50,7 @@ let etag: string | null = null;
 let lastCheckedAtMs = 0;
 let lastFailureAtMs = 0;
 let inFlight: Promise<void> | null = null;
+let cacheLoadInFlight: Promise<void> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
@@ -155,6 +156,9 @@ async function fetchRemoteManifest(): Promise<void> {
  */
 export function refreshModelManifest(options?: { maxAgeMs?: number }): Promise<void> {
   if (!initialized || !enabled) return Promise.resolve();
+  const pendingCacheLoad = cacheLoadInFlight;
+  // Compare the network copy only after the last known good disk copy is active.
+  if (pendingCacheLoad) return pendingCacheLoad.then(() => refreshModelManifest(options));
   if (inFlight) return inFlight;
   const now = Date.now();
   const maxAgeMs = options?.maxAgeMs ?? 0;
@@ -205,9 +209,12 @@ export function initializeModelManifestService(args: {
   enabled = args.fetchRemote !== false;
   // Re-gate the bundled copy for this build's real version.
   applyModelManifest(getActiveModelManifest()?.manifest ?? BUNDLED_MODEL_MANIFEST, { adeVersion });
-  void loadCachedManifest().then(() => {
-    if (enabled) startPolling();
+  const epoch = manifestEpoch;
+  const cacheLoad = loadCachedManifest().finally(() => {
+    if (cacheLoadInFlight === cacheLoad) cacheLoadInFlight = null;
+    if (epoch === manifestEpoch && initialized && enabled) startPolling();
   });
+  cacheLoadInFlight = cacheLoad;
 }
 
 function startPolling(): void {
@@ -230,4 +237,5 @@ export function shutdownModelManifestService(): void {
   lastCheckedAtMs = 0;
   lastFailureAtMs = 0;
   inFlight = null;
+  cacheLoadInFlight = null;
 }

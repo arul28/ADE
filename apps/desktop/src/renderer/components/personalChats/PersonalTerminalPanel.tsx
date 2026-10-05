@@ -9,6 +9,7 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   useAppStore,
 } from "../../state/appStore";
+import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 
 type TerminalCreateResult = {
   ptyId: string;
@@ -87,6 +88,7 @@ export function PersonalTerminalPanel({
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    const cursorBlinkClock = attachCursorBlinkClock(terminal, host);
     terminalRef.current = terminal;
     fitRef.current = fit;
 
@@ -204,6 +206,7 @@ export function PersonalTerminalPanel({
       if (fitFrame != null) window.cancelAnimationFrame(fitFrame);
       resizeObserver.disconnect();
       dataSubscription.dispose();
+      cursorBlinkClock.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;

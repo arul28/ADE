@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
+  captureChatAccountSwitchedAnalytics,
   captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
   captureSessionImportAnalytics,
@@ -118,6 +119,19 @@ describe("captureFeatureUsedAnalytics", () => {
 });
 
 describe("captureSessionImportAnalytics", () => {
+  it("records an account switch with only the provider family, and the allowlist keeps it", () => {
+    const { analytics, captured } = recorder();
+    captureChatAccountSwitchedAnalytics({ analytics, surface: "api", provider: "codex" });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      event: "ade_feature_used",
+      dedupeKey: "feature:chat:account_switched:completed:codex",
+      properties: { feature: "chat", action: "account_switched", outcome: "completed", provider: "codex" },
+    });
+    const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
+  });
+
   it("records how an external session came in, with only closed values that survive the allowlist", () => {
     const { analytics, captured } = recorder();
     captureSessionImportAnalytics({ analytics, surface: "desktop", target: "chat", mode: "resume", outcome: "completed", provider: "claude" });

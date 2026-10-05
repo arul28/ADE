@@ -110,6 +110,9 @@ extension WorkRootListScreen {
     // the top tier and keeps its header, singleton or not. Same store the Lanes
     // tab writes, so one pin means one thing across both surfaces.
     let pinnedLaneIdsSnapshot = workPinnedLaneIds
+    let foldBusyLanesSnapshot = foldBusyLanes
+    let seenAtSnapshot = WorkSeenStore.load()
+    let laneReturnStateSnapshot = bookkeeping.laneReturnState
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
       try? await Task.sleep(for: .milliseconds(40))
@@ -129,10 +132,14 @@ extension WorkRootListScreen {
         pullRequests: pullRequestsSnapshot,
         githubPrs: githubPrsSnapshot,
         deletingLaneIds: deletingLaneIds,
-        pinnedLaneIds: pinnedLaneIdsSnapshot
+        pinnedLaneIds: pinnedLaneIdsSnapshot,
+        foldBusyLanes: foldBusyLanesSnapshot,
+        seenAtBySessionId: seenAtSnapshot,
+        laneReturnState: laneReturnStateSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
+        bookkeeping.laneReturnState = nextPresentation.laneReturnState
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
         }

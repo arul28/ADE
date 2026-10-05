@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
-import type { AppControlStatus } from "../../../../desktop/src/shared/types";
+import type { AppControlStatus, DevServerRecord, DevServersArgs, DevServersResult } from "../../../../desktop/src/shared/types";
 import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared/types/builtInBrowserRuntimeStatus";
 // Shared, not main: this is a plain Node process, and a value-import of an
 // Electron-main module would pull `electron` into it.
@@ -174,6 +174,14 @@ export type WorkToolsStateServiceArgs = {
    * screen. Absent on a runtime that publishes no runtime events.
    */
   showRequests?: WorkToolShowRequests | null;
+  /**
+   * Dev servers this runtime's lanes are running. Read by every desktop on the
+   * project, including one on another machine, which has no other way to know.
+   */
+  devServers?: {
+    list(args: DevServersArgs): Promise<DevServerRecord[]>;
+    probePort(port: number): Promise<boolean>;
+  } | null;
 };
 
 /**
@@ -234,6 +242,10 @@ export type WorkToolsStateService = {
   show(args: unknown): Promise<WorkToolShowResult>;
   /** A desktop renderer answering {@link show}. User clients only. */
   acknowledgeShow(args: unknown): { ok: boolean };
+  /** Dev servers this machine's lanes are running, for the Browser on any machine. */
+  listDevServers(args?: DevServersArgs | null): Promise<DevServersResult>;
+  /** Is anything listening on this machine's loopback port? Never sends it a byte. */
+  probePort(args: { port?: unknown } | null): Promise<boolean>;
   /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
   noteAgentAppleActivity(args: AgentDeviceActivity): boolean;
   /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
@@ -473,6 +485,9 @@ function summarizeMacDesktop(
     lease: status.lease,
     stream: status.stream,
     permissions: status.permissions,
+    // Windows-only host facts; null on a Mac host. A mirror uses this to render
+    // the held/locked/setup cards for a Windows-held lane.
+    windowsDesktop: status.windowsDesktop ?? null,
     // A frame captured before the display went away describes a screen that no
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
@@ -520,6 +535,9 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
       return event.timeLapse.laneId;
     case "permission-changed":
     case "driver-health":
+    // Windows host state is host-wide too: a lock, a holder change, or setup
+    // completing changes every lane's answer at once.
+    case "windows-desktop-changed":
       return null;
     default: {
       // A new event type is a compile error here until someone decides whether
@@ -960,6 +978,18 @@ export function createWorkToolsStateService(
 
     acknowledgeShow(input) {
       return args.showRequests?.acknowledgeShow(input) ?? { ok: false };
+    },
+
+    async listDevServers(input) {
+      if (!args.devServers) return { servers: [] };
+      const laneId = typeof input?.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
+      return { servers: await args.devServers.list({ laneId }) };
+    },
+
+    async probePort(input) {
+      const port = Number(input?.port);
+      if (!args.devServers || !Number.isInteger(port) || port < 1 || port > 65_535) return false;
+      return await args.devServers.probePort(port);
     },
 
     noteAgentAppleActivity(input) {

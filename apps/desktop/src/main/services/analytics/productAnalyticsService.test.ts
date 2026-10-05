@@ -23,6 +23,7 @@ import {
   capturePendingInputDismissedAnalytics,
   capturePresetAnalytics,
   providerAccountAnalyticsCapture,
+  captureModelPriceAnalytics,
   captureResetCreditAnalytics,
   coarseProviderFamily,
 } from "./featureProductAnalytics";
@@ -1591,8 +1592,9 @@ describe("product analytics producers", () => {
       action: "start",
       outcome: "completed",
     });
+    captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: "disabled" });
 
-    expect(captures).toHaveLength(6);
+    expect(captures).toHaveLength(7);
     for (const capture of captures) {
       expect(capture.event).toBe("ade_feature_used");
       expect(capture.dedupeKey).toMatch(/^feature:[a-z_]+:[a-z_]+:[a-z_]+(?::[a-z_]+)?$/);

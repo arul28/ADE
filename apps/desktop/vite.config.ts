@@ -9,6 +9,13 @@ export default defineConfig({
   root: "src/renderer",
   base: "./",
   plugins: [react()],
+  optimizeDeps: {
+    // Loaded lazily by the first terminal, so the dep scan misses it; found at
+    // runtime, Vite re-optimizes and the open page's import fails with
+    // "504 Outdated Optimize Dep" until a reload, leaving terminals on the
+    // DOM renderer.
+    include: ["@xterm/addon-webgl"],
+  },
   server: {
     // Default `localhost` can bind ::1 only on macOS; then http://127.0.0.1:5173
     // refuses. Listening on all interfaces fixes 127.0.0.1 and "localhost" equally.

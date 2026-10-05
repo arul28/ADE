@@ -1,4 +1,5 @@
 import type { PrLaneNextStep } from "../prNextStep";
+import type { PrChatWatchSummary } from "../prWatch";
 
 // ---------------------------------------------------------------------------
 // PR types
@@ -507,6 +508,13 @@ export type PrEventPayload =
       type: "prs-updated";
       polledAt: string;
       prs: PrSummary[];
+    }
+  | {
+      /** A chat's PR Watch / Ship started, switched, told the agent, or stopped. */
+      type: "pr-chat-watch-changed";
+      sessionId: string;
+      prId: string;
+      watch: PrChatWatchSummary | null;
     }
   | {
       type: "pr-sessions-auto-settled";

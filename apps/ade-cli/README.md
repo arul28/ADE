@@ -558,6 +558,13 @@ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --a
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
+ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
+ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
+ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
+ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat send <B> --after <A> "start the review"             # send B this once A is idle
+ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
@@ -618,6 +625,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
 ade chat resume-now session-id --text                        # alias `resume`: send the usage-limit continue prompt now instead of waiting for the reset
+ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
 ade chat message session-id --kind auto --text "status/context"
@@ -652,6 +660,7 @@ ade chat promote [session-id]                                    # restore a pee
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
@@ -716,7 +725,7 @@ ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text  
 ade --socket ios-sim assert-visible --label "Order confirmed" --text
 ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
 ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
-ade mac-desktop start --text                          # create the lane's virtual display (macOS runtime host only)
+ade mac-desktop start --text                          # create the lane's virtual display (on a Windows host this is Windows Desktop; see ade screen)
 ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
 ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
 ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
@@ -729,6 +738,11 @@ ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --t
 ade mac-desktop record stop --text                    # duration, real time, and idle cut
 ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
 ade mac-desktop actions --text                        # full mac_desktop action inventory
+ade screen status --text                              # host-neutral name: Mac Desktop on macOS, Windows Desktop on Windows (aliases mac-desktop, windows-desktop); product, seat, holder, next step
+ade screen start --text                               # Windows: the private seat (a separate session of the user's account)
+ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
+ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
+ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text
@@ -749,7 +763,7 @@ ade --socket browser authorize --text                             # ask the user
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
-ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
+ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed
 ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
                                                                   # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
 ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end

@@ -129,6 +129,7 @@ export function buildLaneActionClearedSearch(search: string): string {
   next.delete("action");
   next.delete("laneId");
   next.delete("laneIds");
+  next.delete("manageTab");
   const query = next.toString();
   return query ? `?${query}` : "";
 }

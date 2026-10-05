@@ -26,6 +26,7 @@ import {
   Tag,
   TextT,
   Trash,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 import type {
   AgentChatSessionMetadataField,
@@ -61,6 +62,7 @@ import {
   automationRulesReadable,
   removeAutomationRules,
   setSessionSettleOverride,
+  restartAgentSession,
   setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
@@ -747,6 +749,19 @@ function SessionContextMenuPanel({
               </button>
             ) : null}
           </MenuSubmenu>
+        ) : null}
+
+        {isChat ? (
+          <button
+            type="button"
+            data-testid="session-menu-restart-agent"
+            className={MENU_ITEM_CLASS}
+            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
+            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Restart agent session
+          </button>
         ) : null}
 
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (

@@ -63,6 +63,7 @@ function collectDesktopRuntimeExecutableCandidates(rootPath) {
   for (const helperName of [
     "ade-capture-helper",
     "ade-capture-helper.exe",
+    "ade-desktop-driver.exe",
     "ade-sim-helper",
     "ade-attention-notch",
     "ade-media",

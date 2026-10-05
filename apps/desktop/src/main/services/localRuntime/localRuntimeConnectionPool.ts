@@ -1,3 +1,4 @@
+import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -1088,6 +1089,8 @@ function serviceHealthState(
   return "unknown";
 }
 
+const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
+
 export class LocalRuntimeConnectionPool {
   private disposed = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
@@ -1166,6 +1169,14 @@ export class LocalRuntimeConnectionPool {
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
+  /** Lanes whose App Control frames this desktop's windows show. */
+  private appControlFrameLanes: AppControlFrameDemand = [];
+  /**
+   * projectId → the client that project's event subscriptions run on, and how
+   * many are live. Several subscriptions to one project share a connection;
+   * the project stops being declared only when the last one ends.
+   */
+  private readonly frameDemandClients = new Map<string, { client: RuntimeRpcClient; refs: number }>();
 
   constructor(
     private readonly appVersion: string,
@@ -2130,7 +2141,65 @@ export class LocalRuntimeConnectionPool {
   ): Promise<() => void> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    return await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
+    // The subscription asks for frames. Saying first which lanes are actually
+    // shown keeps the brain from treating this as a client from before frame
+    // demand and streaming every lane's screencast until the declaration lands.
+    const held = this.frameDemandClients.get(project.projectId);
+    // A different client is a reconnect: the old connection's subscriptions are gone with it.
+    const holder = held?.client === entry.client ? held : { client: entry.client, refs: 0 };
+    holder.refs += 1;
+    this.frameDemandClients.set(project.projectId, holder);
+    const release = (): void => {
+      holder.refs -= 1;
+      if (holder.refs <= 0 && this.frameDemandClients.get(project.projectId) === holder) {
+        this.frameDemandClients.delete(project.projectId);
+        // The brain keeps this connection's demand until told otherwise; with
+        // no subscription left, nothing here paints the project's frames.
+        void this.declareAppControlFrameDemand(holder.client, project.projectId, []);
+      }
+    };
+    let unsubscribe: () => void;
+    try {
+      await this.declareAppControlFrameDemand(entry.client, project.projectId);
+      unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      unsubscribe();
+      release();
+    };
+  }
+
+  /**
+   * Which lanes' App Control frames this desktop shows, across its windows.
+   * The brain streams a lane's screencast only while something shows it.
+   */
+  setAppControlFrameLanes(lanes: AppControlFrameDemand): void {
+    this.appControlFrameLanes = lanes;
+    for (const [projectId, { client }] of this.frameDemandClients) {
+      void this.declareAppControlFrameDemand(client, projectId);
+    }
+  }
+
+  private async declareAppControlFrameDemand(
+    client: RuntimeRpcClient,
+    projectId: string,
+    demand: AppControlFrameDemand = this.appControlFrameLanes,
+  ): Promise<void> {
+    await client.call(
+      "appControl.setFrameDemand",
+      appControlFrameDemandParams(projectId, demand),
+      // A subscription waits on this, so a slow brain costs it at most this long.
+      { timeoutMs: APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS },
+    ).catch(() => {
+      // An older brain has no demand and streams every lane, as before; a
+      // closed client is replaced on the next subscription.
+    });
   }
 
   async callSyncForRoot<T>(

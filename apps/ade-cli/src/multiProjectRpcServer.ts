@@ -5,7 +5,7 @@ import {
   PROJECT_ICON_TYPE_ERROR,
   REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
 } from "../../desktop/src/shared/projectIcons";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -37,15 +37,18 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
-import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
+import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
   type JsonRpcHandler,
+  type JsonRpcNotifyOptions,
   type JsonRpcRequest,
 } from "./jsonrpc";
+import { createConnectionFrameDemand } from "./connectionFrameDemand";
+import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   importProjectIconBytes,
@@ -57,6 +60,7 @@ import {
   ProjectRegistry,
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectId,
+  type ProjectRecord,
   type ProjectRegistrationIntent,
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
@@ -100,13 +104,35 @@ import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectles
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import {
+  REMOTE_CALLER_PARAM,
+  foreignCallerSessionId,
+  isAgentRemoteClientName,
+  isRemoteBrainCallerClientName,
+} from "../../desktop/src/shared/runtimeClientNames";
+import type { AgentMachineBridge } from "./services/account/agentMachineBridge";
+import type { CrossScopeChats } from "./services/chat/crossScopeChats";
+import {
+  rememberChildWakeToken,
+  rememberExternalChat,
+} from "../../desktop/src/main/services/chat/externalChats";
+import {
+  AGENT_REMOTE_MACHINE_METHODS,
+  MAX_FOREIGN_CALLER_HANDLERS,
+  childParentSlot,
+  createdChatSessionId,
+  omitRemoteCaller,
+  readMachineCallScope,
+} from "./services/account/agentRemoteRpc";
+import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
+import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
 };
 
 type RuntimeEventCategory = BufferedEvent["category"];
-type JsonRpcNotifier = (method: string, params?: unknown) => void;
+type JsonRpcNotifier = (method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void;
 type RuntimeEventSubscription = {
   id: string;
   /**
@@ -245,6 +271,27 @@ export function createProviderStatusService(): ProviderStatusService {
 
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
+  /**
+   * The paired device a sync-channel peer authenticated as, or null for a
+   * local socket. Only a paired peer can speak for another machine's agents
+   * (`AGENT_REMOTE_CLIENT_NAME`); their calls are attributed to this device.
+   */
+  peerDeviceId?: string | null;
+  /**
+   * Backs `machines.call` / `machines.list`: this brain's agents reaching the
+   * account's other machines. Absent on embedded and test runtimes, which then
+   * refuse both methods.
+   */
+  agentMachineBridge?: Pick<AgentMachineBridge, "call" | "listMachines"> | null;
+  /**
+   * Chats starting children outside their own scope (another project, the
+   * personal scope, another machine) and the wakes that come back. Absent on
+   * embedded and test runtimes: children then report only within one scope.
+   */
+  crossScopeChats?: Pick<
+    CrossScopeChats,
+    "rememberLocalCaller" | "recordRemoteChild" | "acceptRemoteWake" | "locateChat"
+  > | null;
   projectRegistry?: ProjectRegistry;
   scopeRegistry?: ProjectScopeRegistry;
   disposeScopesOnDispose?: boolean;
@@ -361,6 +408,10 @@ export async function readMachineRuntimeActivitySummary(args: {
 }
 
 const RUNTIME_METHODS = new Set([
+  "machines.call",
+  "machines.list",
+  "machines.deliverWake",
+  "machines.cloneForAgent",
   "ade/initialize",
   "ade/initialized",
   "ping",
@@ -396,6 +447,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "appControl.setFrameDemand",
   "sync.switchHost",
   "sync.getStatus",
   "sync.runSelfProbe",
@@ -960,6 +1012,45 @@ function omitProjectId(
   return rest;
 }
 
+
+/**
+ * Set a repository up on this machine for another machine's agent
+ * (`ade chat create --machine <here> --clone`). The same rules as a
+ * cross-machine handoff's destination: GitHub only (cloned from its canonical
+ * URL, never the caller's, so no credential travels), the default projects
+ * folder, the storage preflight, this machine's own Git credentials, and the
+ * clone service's rollback on failure. An already registered checkout wins.
+ */
+async function cloneRepositoryForRemoteAgent(
+  projectRegistry: ProjectRegistry,
+  originUrl: string | undefined,
+): Promise<ProjectRecord> {
+  const identity = normalizeGitRemoteIdentity(originUrl);
+  const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(identity) : null;
+  if (!identity || !match) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "Only GitHub repositories can be set up automatically on another machine. Clone it there by hand.",
+    );
+  }
+  const existing = projectRegistry.list()
+    .find((record) => normalizeGitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
+  if (existing) return existing;
+  const repoName = match[2]!;
+  const parentDir = defaultParentDir(projectRegistry);
+  fs.mkdirSync(parentDir, { recursive: true });
+  const preflight = await inspectHandoffStorage({ parentDir, repoName });
+  if (preflight.blockingErrors.length) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, `Can't set up ${identity} here: ${preflight.blockingErrors.join(" ")}`);
+  }
+  const result = await createMachineProjectScaffoldService().cloneRepository({
+    url: `https://github.com/${match[1]}/${repoName}.git`,
+    parentDir,
+    name: repoName,
+  });
+  return projectRegistry.add(result.rootPath);
+}
+
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
   return isRemoteRuntimeEventCategory(value) ? value : null;
 }
@@ -1008,6 +1099,14 @@ export function createMultiProjectRpcRequestHandler(
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const providerStatus = options.providerStatus ?? createProviderStatusService();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
+  /**
+   * Project handlers for callers on another machine, keyed by project and the
+   * caller's foreign session id. Each is initialized as that one caller, so
+   * ownership checks (PTYs, devices, proof) see a distinct, non-local chat.
+   */
+  const foreignHandlers = new Map<string, Promise<HandlerEntry>>();
+  const foreignHandlerKey = (projectId: ProjectId, foreignSessionId: string): string =>
+    `${projectId}\u0000${foreignSessionId}`;
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
   /**
    * Set by `handler.dispose`. Both subscribe paths await before registering, so
@@ -1015,11 +1114,18 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
+    frameDemand.forgetProject(projectId);
     const cached = handlers.get(projectId);
     handlers.delete(projectId);
     if (cached) {
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
+    }
+    for (const [key, foreign] of [...foreignHandlers.entries()]) {
+      if (!key.startsWith(`${projectId}\u0000`)) continue;
+      foreignHandlers.delete(key);
+      void foreign.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }
     for (const subscription of [...eventSubscriptions.values()]) {
       if (subscription.projectId !== projectId) continue;
@@ -1038,6 +1144,16 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
+  /** The name this connection's client gave itself in `ade/initialize`. */
+  const callerClientName = (): string | null =>
+    isRecord(initializedParams) && typeof initializedParams.clientName === "string"
+      ? initializedParams.clientName
+      : null;
+  /** The chat this connection's caller claims to be, as every local `ade` call does. */
+  const callerChatSessionId = (): string | null => {
+    const identity = callerIdentity();
+    return identity && typeof identity.chatSessionId === "string" ? identity.chatSessionId.trim() || null : null;
+  };
   const callerIdentity = (): Record<string, unknown> | null =>
     isRecord(initializedParams) && isRecord(initializedParams.identity)
       ? initializedParams.identity
@@ -1066,13 +1182,23 @@ export function createMultiProjectRpcRequestHandler(
     event: BufferedEvent,
     eventEpoch: string,
   ): void => {
-    notifier?.("runtime/event", {
+    const params = {
       subscriptionId,
       projectId,
       scope: projectId == null ? "personal" : "project",
       event,
       eventEpoch,
-    });
+    };
+    // A frame is skipped for a client that is behind; the newest skipped frame
+    // of each lane follows once it catches up.
+    if (isHighVolumeRuntimeEvent(event)) {
+      notifier?.("runtime/event", params, {
+        droppable: true,
+        supersedeKey: `${subscriptionId}:${runtimeEventFrameLaneId(event) ?? ""}`,
+      });
+    } else {
+      notifier?.("runtime/event", params);
+    }
   };
 
   const getProjectHandler = async (
@@ -1103,6 +1229,94 @@ export function createMultiProjectRpcRequestHandler(
       return await pending;
     } catch (error) {
       handlers.delete(projectId);
+      throw error;
+    }
+  };
+
+  /**
+   * The foreign session id for this request, when it comes from another
+   * machine's agent bridge. Null for every other caller: a local process may
+   * name itself `AGENT_REMOTE_CLIENT_NAME`, but without a paired peer there is
+   * no machine to attribute it to, so it is refused rather than trusted.
+   */
+  const resolveForeignCaller = (params: Record<string, unknown>): string | null => {
+    if (!isAgentRemoteClientName(callerClientName())) return null;
+    const peerDeviceId = options.peerDeviceId?.trim() || "";
+    if (!peerDeviceId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "Calls from another machine's agents must arrive over a paired connection.",
+      );
+    }
+    const claim = isRecord(params[REMOTE_CALLER_PARAM]) ? params[REMOTE_CALLER_PARAM] : {};
+    const chatSessionId = typeof claim.chatSessionId === "string" ? claim.chatSessionId : null;
+    const foreignId = foreignCallerSessionId(peerDeviceId, chatSessionId);
+    if (!foreignId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "The remote caller's chat id is not valid.");
+    }
+    // Where to send a child's report and how far a child may go. Recorded for
+    // every remote chat caller; the store skips unchanged entries.
+    if (chatSessionId) {
+      rememberExternalChat(foreignId, {
+        scope: null,
+        machineKey: typeof claim.machineKey === "string" ? claim.machineKey.trim().slice(0, 200) || null : null,
+        machineName: typeof claim.machineName === "string" ? claim.machineName.trim().slice(0, 120) || null : null,
+        permissionLevel: readPermissionLevel(claim.permissionLevel),
+      });
+    }
+    return foreignId;
+  };
+
+  /** A field of this request's remote claim (calling chat, wake token). */
+  const claimField = (params: Record<string, unknown>, field: "chatSessionId" | "wakeToken"): string | null => {
+    const claim = isRecord(params[REMOTE_CALLER_PARAM]) ? params[REMOTE_CALLER_PARAM] : {};
+    const value = claim[field];
+    return typeof value === "string" ? value.trim().slice(0, 200) || null : null;
+  };
+
+  const getForeignCallerProjectHandler = async (
+    projectId: ProjectId,
+    foreignSessionId: string,
+  ): Promise<HandlerEntry> => {
+    const key = foreignHandlerKey(projectId, foreignSessionId);
+    const cached = foreignHandlers.get(key);
+    if (cached) {
+      // Refresh recency: Map iteration order is insertion order.
+      foreignHandlers.delete(key);
+      foreignHandlers.set(key, cached);
+      return await cached;
+    }
+    while (foreignHandlers.size >= MAX_FOREIGN_CALLER_HANDLERS) {
+      const [oldestKey, oldest] = foreignHandlers.entries().next().value as [string, Promise<HandlerEntry>];
+      foreignHandlers.delete(oldestKey);
+      void oldest.then((entry) => entry.handler.dispose?.()).catch(() => {});
+    }
+    const pending = (async () => {
+      const scope = await scopeRegistry.get(projectId);
+      const handler = createAdeRpcRequestHandler({
+        runtime: scope.runtime,
+        serverVersion: options.serverVersion,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: "initialize-foreign-caller-scope",
+        method: "ade/initialize",
+        params: {
+          ...(initializedParams ?? {}),
+          identity: {
+            role: "agent",
+            callerId: foreignSessionId,
+            chatSessionId: foreignSessionId,
+          },
+        },
+      });
+      return { handler };
+    })();
+    foreignHandlers.set(key, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      if (foreignHandlers.get(key) === pending) foreignHandlers.delete(key);
       throw error;
     }
   };
@@ -1310,10 +1524,20 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
+    const frameService = scope.runtime.appControlService ?? null;
+    // A scope that restarted under this connection has a fresh service with no
+    // demand; this puts back what the connection last declared for it.
+    frameDemand.apply(projectId, frameService);
+    const releaseLegacyFrameDemand = includeHighVolumeEvents && frameService
+      ? frameDemand.holdForLegacySubscription(subscriptionId, frameService)
+      : null;
     eventSubscriptions.set(subscriptionId, {
       id: subscriptionId,
       projectId,
-      unsubscribe,
+      unsubscribe: () => {
+        unsubscribe();
+        releaseLegacyFrameDemand?.();
+      },
     });
 
     const replayResult = replay
@@ -1409,6 +1633,25 @@ export function createMultiProjectRpcRequestHandler(
       gap: subscribed.replay.gap === true,
       oldestCursor: subscribed.replay.oldestCursor ?? null,
     };
+  };
+
+  /** Which lanes' App Control frames this connection shows, for one project. */
+  const setAppControlFrameDemand = async (params: Record<string, unknown>) => {
+    const projectId = readProjectId(params);
+    if (!projectId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "appControl.setFrameDemand requires projectId.",
+      );
+    }
+    // Recorded before the scope lookup, so a slower lookup for an older call
+    // applies this newer demand rather than its own.
+    frameDemand.declare(projectId, readAppControlFrameDemand(params));
+    const scope = await scopeRegistry.get(projectId);
+    if (disposed) return { applied: false };
+    const service = scope.runtime.appControlService ?? null;
+    frameDemand.apply(projectId, service);
+    return { applied: service != null };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -1604,6 +1847,10 @@ export function createMultiProjectRpcRequestHandler(
             listChanged: true,
           },
           projects: true,
+          // Calls from another machine's agents are attributed per request
+          // (`REMOTE_CALLER_PARAM`). A caller must not send them to a runtime
+          // that would silently ignore the claim.
+          agentRemoteCallers: true,
           machineProjects: {
             browseDirectories: true,
             getDetail: true,
@@ -1639,6 +1886,20 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ping") {
       return { pong: true, at: new Date().toISOString() };
+    }
+
+    // Another machine's agents reach projects, `projects.list` and personal
+    // chats here, and nothing machine-wide: no sync, account, update or
+    // registry writes, whatever the calling brain sends.
+    if (
+      isAgentRemoteClientName(callerClientName())
+      && RUNTIME_METHODS.has(method)
+      && !AGENT_REMOTE_MACHINE_METHODS.has(method)
+    ) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        `${method} isn't available to agents on another machine.`,
+      );
     }
 
     if (method === "runtime/info" || method === "machineInfo.get") {
@@ -2081,6 +2342,120 @@ export function createMultiProjectRpcRequestHandler(
       return unsubscribeRuntimeEvents(params);
     }
 
+    if (method === "machines.cloneForAgent") {
+      // `ade chat create --machine <here> --clone`: another machine's agent
+      // needs this repository here and asked for it explicitly.
+      if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
+      }
+      return await decorateProjectWithIcon(
+        await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl)),
+      );
+    }
+
+    if (method === "machines.deliverWake") {
+      if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Only another machine's ADE delivers a child's report here.",
+        );
+      }
+      const service = options.crossScopeChats;
+      if (!service) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This ADE runtime can't take reports from other machines.");
+      }
+      // Validated there: an unknown child, a wrong token or a malformed wake
+      // is answered "refused", which the sender stops retrying.
+      return await service.acceptRemoteWake(params.payload);
+    }
+
+    if (method === "machines.call" || method === "machines.list") {
+      const bridge = options.agentMachineBridge ?? null;
+      if (!bridge) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          "This ADE runtime can't reach other machines.",
+        );
+      }
+      const clientName = callerClientName();
+      // One hop only. A call that already came from another machine must not
+      // be relayed on to a third: its caller is attributed to the machine it
+      // came from, and a relay would launder that attribution.
+      if (isRemoteBrainCallerClientName(clientName) || options.peerDeviceId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "A request from another machine can't be relayed to a third one.",
+        );
+      }
+      if (method === "machines.list") {
+        return await bridge.listMachines({ includeProjects: params.includeProjects === true });
+      }
+      const machine = typeof params.machine === "string" ? params.machine.trim() : "";
+      const requestParams = isRecord(params.request) ? params.request : {};
+      const forwardMethod = typeof requestParams.method === "string" ? requestParams.method.trim() : "";
+      if (!machine || !forwardMethod) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "machines.call requires machine and request.method.",
+        );
+      }
+      const scope = readMachineCallScope(params.scope);
+      if (!scope) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "machines.call scope must be repo (originUrl), project (selector), personal, or machine.",
+        );
+      }
+      // The caller's chat is this connection's own claim, exactly the trust
+      // every local `ade` call already carries; never a request field.
+      const callerChat = callerChatSessionId();
+      const located = callerChat
+        ? await options.crossScopeChats?.locateChat(callerChat, { boot: false }).catch(() => null) ?? null
+        : null;
+      const forwardParams = isRecord(requestParams.params) ? omitProjectId(requestParams.params) : {};
+      const parentSlot = childParentSlot(forwardMethod, forwardParams);
+      // A child this chat starts there gets a token that machine must hand
+      // back with every report; only that report is accepted here.
+      const startsOwnChild = Boolean(callerChat && parentSlot?.read() === callerChat);
+      const wakeToken = startsOwnChild ? randomBytes(24).toString("base64url") : null;
+      try {
+        const answer = await bridge.call({
+          machine,
+          scope,
+          method: forwardMethod,
+          params: forwardParams,
+          caller: {
+            chatSessionId: callerChat,
+            permissionLevel: located?.runtime.agentChatService?.permissionLevelOf(callerChat ?? "") ?? null,
+            ...(wakeToken ? { wakeToken } : {}),
+          },
+          timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+          clone: params.clone === true,
+        });
+        // A child this chat started there: remember it, so that machine's
+        // report of its finished turns is accepted here and nowhere else.
+        const childSessionId = startsOwnChild ? createdChatSessionId(answer.result) : null;
+        if (callerChat && wakeToken && childSessionId) {
+          options.crossScopeChats?.recordRemoteChild({
+            parentChatSessionId: callerChat,
+            parentScope: located?.scope ?? null,
+            childSessionId,
+            machineKey: answer.machine.machineKey,
+            machineName: answer.machine.name,
+            wakeToken,
+          });
+        }
+        return answer;
+      } catch (error) {
+        const code = isRecord(error) && typeof error.code === "string" ? error.code : null;
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          error instanceof Error ? error.message : String(error),
+          code ? { code } : undefined,
+        );
+      }
+    }
+
     if (method === "runtime.activitySummary") {
       return await readMachineRuntimeActivitySummary({
         projectRegistry,
@@ -2267,6 +2642,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtimeEvents.unsubscribe") {
       return unsubscribeRuntimeEvents(params);
+    }
+
+    if (method === "appControl.setFrameDemand") {
+      return await setAppControlFrameDemand(params);
     }
 
     if (method === "sync.getStatus") {
@@ -2490,6 +2869,36 @@ export function createMultiProjectRpcRequestHandler(
         `Method ${method} requires params.projectId.`,
       );
     }
+    const foreignCaller = resolveForeignCaller(params);
+    const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
+      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target)
+    );
+    let forwardedParams = omitProjectId(omitRemoteCaller(params));
+    const parentSlot = childParentSlot(method, forwardedParams);
+    // The token a remote caller's child will carry back with its reports.
+    let childWakeTokenFromCaller: string | null = null;
+    if (parentSlot) {
+      const parent = parentSlot.read();
+      if (foreignCaller && parent) {
+        // A remote caller names its parent by its own machine's id, and may
+        // parent a child only to itself: it cannot make a chat here, or
+        // another machine's, the one its child reports to and wakes.
+        if (parent !== claimField(params, "chatSessionId")) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "A chat on another machine can start a child only for itself. Leave the parent unset, or name your own chat.",
+          );
+        }
+        forwardedParams = parentSlot.write(foreignCaller);
+        childWakeTokenFromCaller = claimField(params, "wakeToken");
+      } else if (!foreignCaller) {
+        const callerChat = callerChatSessionId();
+        if (parent && callerChat && parent === callerChat) {
+          await options.crossScopeChats?.rememberLocalCaller(callerChat, { kind: "project", projectId })
+            .catch(() => null);
+        }
+      }
+    }
 
     const actionEnvelope = method === "ade/actions/call" && params.name === "run_ade_action"
       ? safeParams(params.arguments)
@@ -2512,14 +2921,14 @@ export function createMultiProjectRpcRequestHandler(
         projectId,
       );
       if (ownerProjectId) {
-        const entry = await getProjectHandler(ownerProjectId);
+        const entry = await handlerFor(ownerProjectId);
         return entry.handler({
           ...request,
-          params: omitProjectId(params),
+          params: forwardedParams,
         });
       }
     }
-    if (actionDomain === "search" && actionName === "query" && actionEnvelope) {
+    if (actionDomain === "search" && actionName === "query" && actionEnvelope && !foreignCaller) {
       return aggregateProjectSearch({
         request,
         params,
@@ -2529,11 +2938,16 @@ export function createMultiProjectRpcRequestHandler(
       });
     }
 
-    const entry = await getProjectHandler(projectId);
-    return await entry.handler({
+    const entry = await handlerFor(projectId);
+    const result = await entry.handler({
       ...request,
-      params: omitProjectId(params),
+      params: forwardedParams,
     });
+    if (childWakeTokenFromCaller) {
+      const childSessionId = createdChatSessionId(result);
+      if (childSessionId) rememberChildWakeToken(childSessionId, childWakeTokenFromCaller);
+    }
+    return result;
   }) as JsonRpcHandler & {
     dispose: () => void;
     setNotifier: (notify: JsonRpcNotifier | null) => void;
@@ -2545,10 +2959,15 @@ export function createMultiProjectRpcRequestHandler(
       subscription.unsubscribe();
     }
     eventSubscriptions.clear();
+    frameDemand.dispose();
     for (const cached of handlers.values()) {
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }
     handlers.clear();
+    for (const cached of foreignHandlers.values()) {
+      void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
+    }
+    foreignHandlers.clear();
     removeScopeDisposeListener?.();
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();

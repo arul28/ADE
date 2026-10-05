@@ -1,4 +1,5 @@
 import type {
+  AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatScheduledWorkItem,
   AgentChatScheduledWorkKind,
@@ -32,6 +33,70 @@ export type ChatScheduledWorkSnapshot = {
   updatedAt: string;
 };
 
+type ScheduledWorkUpdateEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
+
+/** Scheduled work that has not fired, stopped, or failed yet. */
+export const SCHEDULED_WORK_PENDING_STATUSES: ReadonlySet<AgentChatScheduledWorkStatus> = new Set([
+  "scheduled",
+  "paused",
+  "running",
+]);
+
+/**
+ * Claude fires one-shots on minute boundaries and may run a little ahead of
+ * the stored fire time. Within this window of its fire time a wake-up that
+ * left the provider's inventory was delivered, not dropped.
+ */
+export const SCHEDULED_WAKE_FIRE_TOLERANCE_MS = 30_000;
+
+/**
+ * True when a one-shot `cancelled` update really records a delivery. Older brains
+ * settled a wake-up that Claude fired on its own as cancelled
+ * (it left the provider inventory). That update names no tool call and no
+ * stop source, and arrives at or after the fire time. A real cancel (the
+ * agent's CronDelete, a user's Cancel) carries one of the two.
+ */
+export function cancelRecordsDelivery(
+  previous: Pick<ScheduledWorkUpdateEvent, "kind" | "nextRunAt"> | undefined,
+  next: ScheduledWorkUpdateEvent,
+  nextTimestamp: string,
+): boolean {
+  if (next.status !== "cancelled" || next.sourceToolUseId || next.stopSource) return false;
+  const kind = previous?.kind ?? next.kind;
+  if (kind !== "wakeup" && kind !== "loop") return false;
+  const dueAt = previous?.nextRunAt ? Date.parse(previous.nextRunAt) : Number.NaN;
+  const at = Date.parse(nextTimestamp);
+  // Old brains only reconciled after the woken turn ended, so a cancel before
+  // the due time is always a real one.
+  return Number.isFinite(dueAt) && Number.isFinite(at) && at >= dueAt;
+}
+
+/**
+ * One schedule's latest state from its previous update and a new one. Later
+ * updates often carry fewer fields (an inventory snapshot, a cancel), so the
+ * new one patches the old: a reason or fire time a reader already saw is
+ * never dropped. The turn id is the new update's own; a settled schedule
+ * keeps no stale next-run time.
+ */
+export function mergeScheduledWorkEvent(
+  previous: ScheduledWorkUpdateEvent | undefined,
+  next: ScheduledWorkUpdateEvent,
+  nextTimestamp: string,
+): ScheduledWorkUpdateEvent {
+  if (!previous) return next;
+  const defined = Object.fromEntries(
+    Object.entries(next).filter(([, value]) => value !== undefined),
+  ) as ScheduledWorkUpdateEvent;
+  const merged: ScheduledWorkUpdateEvent = { ...previous, ...defined };
+  if (!next.turnId) delete merged.turnId;
+  if (cancelRecordsDelivery(previous, next, nextTimestamp)) {
+    merged.status = "completed";
+    merged.firedAt = merged.firedAt ?? previous.nextRunAt;
+  }
+  if (!SCHEDULED_WORK_PENDING_STATUSES.has(merged.status) && next.nextRunAt === undefined) delete merged.nextRunAt;
+  return merged;
+}
+
 function defaultScheduledWorkTitle(kind: AgentChatScheduledWorkKind): string {
   switch (kind) {
     case "wakeup":
@@ -57,10 +122,11 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
     const event = envelope.event;
     if (event.type !== "scheduled_work_update") continue;
     const existing = snapshots.get(event.id);
+    const deliveredNotCancelled = cancelRecordsDelivery(existing, event, envelope.timestamp);
     snapshots.set(event.id, {
       id: event.id,
       kind: event.kind,
-      status: event.status,
+      status: deliveredNotCancelled ? "completed" : event.status,
       origin: event.origin ?? existing?.origin,
       title: event.title?.trim() || existing?.title || defaultScheduledWorkTitle(event.kind),
       summary: event.summary?.trim() || existing?.summary || null,
@@ -69,7 +135,7 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
       cron: event.cron ?? existing?.cron,
       nextRunAt: event.nextRunAt ?? existing?.nextRunAt,
       lastRunAt: event.lastRunAt ?? existing?.lastRunAt,
-      firedAt: event.firedAt ?? existing?.firedAt,
+      firedAt: event.firedAt ?? existing?.firedAt ?? (deliveredNotCancelled ? existing?.nextRunAt : undefined),
       late: event.late ?? existing?.late,
       recurring: event.recurring ?? existing?.recurring,
       durable: event.durable ?? existing?.durable,

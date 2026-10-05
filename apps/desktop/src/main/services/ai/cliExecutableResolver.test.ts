@@ -182,6 +182,30 @@ describe("cliExecutableResolver", () => {
     ]);
   });
 
+  // Windows reads no login shell, so there is no probe to retry or reuse.
+  it.skipIf(process.platform === "win32")("retries a login-shell PATH probe that failed and reuses one that answered", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-shell-probe-"));
+    const answers = path.join(tempRoot, "shell-answers");
+    const fakeShell = path.join(tempRoot, "fake-login-shell");
+    fs.writeFileSync(
+      fakeShell,
+      `#!/bin/sh\n[ -f "${answers}" ] || exit 1\nexport PATH="/fake/login/bin:$PATH"\nexec /bin/sh "$@"\n`,
+      "utf8",
+    );
+    fs.chmodSync(fakeShell, 0o755);
+    const env = { SHELL: fakeShell, HOME: tempRoot, PATH: `/usr/bin${currentPathDelimiter()}/bin` };
+    const probe = () => augmentProcessPathWithShellAndKnownCliDirs({ env }).split(currentPathDelimiter());
+
+    // A shell that fails (a timeout under load, a broken rc file) is not remembered...
+    expect(probe()).not.toContain("/fake/login/bin");
+    fs.writeFileSync(answers, "", "utf8");
+    // ...so the next agent env asks again and gets the login PATH.
+    expect(probe()).toContain("/fake/login/bin");
+    // An answer is reused instead of spawning a shell per turn.
+    fs.rmSync(answers);
+    expect(probe()).toContain("/fake/login/bin");
+  });
+
   it("augments PATH with known CLI dirs on Windows", () => {
     setPlatform("win32");
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-path-"));

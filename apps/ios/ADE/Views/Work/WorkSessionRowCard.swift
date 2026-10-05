@@ -124,6 +124,34 @@ func workLinkifiedPreview(_ text: String, linkify: Bool) -> AttributedString {
   return result
 }
 
+/// The chat's live goal for its Work row (desktop `projectActiveGoal`): read
+/// off the chat summary when the phone has one, since database-backed rows
+/// drop the host's `activeGoal` projection; the wire row's copy otherwise.
+func workSessionActiveGoal(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?
+) -> SessionActiveGoal? {
+  guard let summary else { return session.activeGoal }
+  if let codex = summary.codexGoal, codex.isLive {
+    return SessionActiveGoal(
+      provider: "codex",
+      objective: codex.objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      status: codex.status ?? "active"
+    )
+  }
+  let condition = summary.claudeGoal?.condition.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !condition.isEmpty {
+    return SessionActiveGoal(provider: "claude", objective: condition, status: "active")
+  }
+  return session.activeGoal
+}
+
+/// "Goal: …" or "Goal (paused): …", the row glyph's spoken and long-press text.
+func workSessionActiveGoalTitle(_ goal: SessionActiveGoal) -> String {
+  let status = goal.status == "active" ? "" : " (\(goal.status.replacingOccurrences(of: "_", with: " ")))"
+  return "Goal\(status): \(goal.objective)"
+}
+
 private struct WorkSessionRowRenderSignature: Equatable {
   let sessionId: String
   let title: String
@@ -186,6 +214,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
   /// Spawned BY the CTO. Held separately from `isSubagent` because it REPLACES
   /// it on screen rather than adding to it — see `lineageMark`.
   let isCtoChild: Bool
+  /// The chat's live goal; drawn as a quiet glyph on line 1.
+  let activeGoal: SessionActiveGoal?
   let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
@@ -291,6 +321,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // filtered out of every roster the phone holds — so there is no parent
     // summary here to ask, and nothing to derive it from.
     self.isCtoChild = session.isCtoChild
+    self.activeGoal = workSessionActiveGoal(session: session, summary: chatSummary)
     self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -526,6 +557,15 @@ struct WorkSessionRow: View, Equatable {
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize()
+      }
+      if let goal = renderSignature.activeGoal {
+        // Amber while the goal is active, muted when paused or limited — the
+        // same quiet glyph desktop's SessionCard draws.
+        Image(systemName: "target")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
+          .fixedSize()
+          .accessibilityHidden(true)
       }
       HStack(spacing: 5) {
         if showsLaneIdentity {
@@ -982,6 +1022,9 @@ struct WorkSessionRow: View, Equatable {
     }
     if let model = renderSignature.model, !model.isEmpty {
       parts.append(shortModelLabel(model))
+    }
+    if let goal = renderSignature.activeGoal {
+      parts.append(workSessionActiveGoalTitle(goal))
     }
     if let pullRequest {
       parts.append("pull request #\(pullRequest.githubPrNumber), \(lanePrStateLabel(pullRequest.state))")

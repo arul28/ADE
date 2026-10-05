@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
+import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -114,6 +115,7 @@ import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from 
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import { selectPrsForChat } from "../../../desktop/src/shared/prChatScope";
 import type { GitHubPrStackMembership, PrChecksStatus, PrSummary } from "../../../desktop/src/shared/types/prs";
+import type { PrChatWatchSummary, PrWatchMode } from "../../../desktop/src/shared/prWatch";
 import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
 import {
   pickPrimaryPrRecord,
@@ -135,6 +137,7 @@ import {
   enrichChatSessionsWithLifecycle,
   enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
+  getLaunchDefaults,
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
@@ -156,6 +159,9 @@ import {
   getSubagentTranscript,
   clearSessionWokeMarker,
   interruptChat,
+  getChatPrWatches,
+  restartChatSession,
+  setChatPrWatch,
   killDroidWorker,
   latestGoal,
   latestTokenStats,
@@ -188,6 +194,7 @@ import {
   respondToInput,
   resumeUsageLimitNow,
   continueUsageLimitOnAlternate,
+  switchChatAccount,
   runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
@@ -353,6 +360,7 @@ import {
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
   seedModelStateFromMemory,
+  modelMemoryFromLaunchDefaults,
   resolveCodexPreset,
   resolveCursorCliModelForLaunch,
   runtimeProviderForUiProvider,
@@ -1409,6 +1417,13 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
   if (cacheParts.length) parts.push(`(${cacheParts.join(" ")})`);
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
   return parts.length ? parts.join(" ") : null;
+}
+
+/** `#42 · watching` / `#42 · shipping (holding)` beside the header PR chip. */
+function formatChatPrHeaderWithWatch(label: string | null, watch: PrChatWatchSummary | null): string | null {
+  if (!label || !watch || watch.status === "stopped") return label;
+  const state = watch.mode === "ship" ? "shipping" : "watching";
+  return `${label} · ${state}${watch.holding ? " (holding)" : ""}`;
 }
 
 function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
@@ -3723,6 +3738,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const allPrsForChatRef = useRef<PrSummary[]>([]);
   const chatPrSessionIdRef = useRef<string | null>(null);
   const chatPrBranchRef = useRef<string | null>(null);
+  // PR Watch / Ship for the chat's primary PR (the one the header names).
+  const [chatPrWatch, setChatPrWatchState] = useState<PrChatWatchSummary | null>(null);
+  const chatPrWatchKeyRef = useRef<{ sessionId: string | null; prId: string | null }>({ sessionId: null, prId: null });
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   /**
@@ -3803,6 +3821,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [modelState, setModelState] = useState<AdeCodeModelState>(
     () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
   );
+  // The model the TUI opened on; the machine's launch defaults replace it only
+  // while it is still this one (see the connect path).
+  const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
   // ── Project-scoped model memory ───────────────────────────────────────────
   // Written on every successful chat start and on every /model commit; read
   // above to seed a new chat, and per-provider on wizard step 4.
@@ -4833,6 +4854,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       { currentBranch: activeLane?.branchRef ?? null },
     ));
   }, [activeLane?.branchRef, activeSession?.sessionId, activeSessionId]);
+  const chatPrWatchPrId = chatLinkedPrs[0]?.id ?? null;
+  const chatPrWatchSessionId = activeSession?.sessionId ?? activeSessionId ?? null;
+  chatPrWatchKeyRef.current = { sessionId: chatPrWatchSessionId, prId: chatPrWatchPrId };
+  useEffect(() => {
+    setChatPrWatchState(null);
+    if (!connection || !chatPrWatchSessionId || !chatPrWatchPrId) return;
+    let cancelled = false;
+    void getChatPrWatches(connection, chatPrWatchSessionId)
+      .then((watches) => {
+        if (cancelled) return;
+        const match = watches.find((entry) => entry.prId === chatPrWatchPrId && entry.status !== "stopped");
+        setChatPrWatchState(match ?? null);
+      })
+      // An older host has no watch actions; the header simply shows none.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [chatPrWatchPrId, chatPrWatchSessionId, connection]);
   useEffect(() => {
     const sessionId = activeSession?.sessionId;
     const agentId = activeSession?.cursorCloudAgentId?.trim();
@@ -8935,6 +8975,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setActiveProjectRoot(conn.projectRoot || project.projectRoot);
         setConnection(conn);
         setMode(conn.mode);
+        // A new chat opens on what this machine used last, from any client,
+        // unless the user already picked a model here.
+        void getLaunchDefaults(conn).then((defaults) => {
+          if (!defaults) return;
+          setModelState((prev) => {
+            if (prev.provider !== initialModelProviderRef.current.provider
+              || prev.modelId !== initialModelProviderRef.current.modelId) return prev;
+            const displayName = getModelById(defaults.modelId)?.displayName ?? defaults.modelId;
+            return seedModelStateFromMemory(prev, modelMemoryFromLaunchDefaults(defaults, prev, displayName));
+          });
+        });
         if (!analyticsAppOpenedRef.current) {
           analyticsAppOpenedRef.current = true;
           void captureTuiProductAnalytics(conn, {
@@ -9774,6 +9825,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (laneEvent?.type === "lane-branch-updated") {
           void refreshState({ hydrateHistory: false }).catch(() => undefined);
         }
+        return;
+      }
+      if (type === "pr-chat-watch-changed") {
+        const key = chatPrWatchKeyRef.current;
+        if (event.payload.sessionId !== key.sessionId || event.payload.prId !== key.prId) return;
+        const watch = event.payload.watch as PrChatWatchSummary | null | undefined;
+        setChatPrWatchState(watch && watch.status !== "stopped" ? watch : null);
         return;
       }
       if (type !== "prs-updated" && type !== "pr-notification") return;
@@ -12606,6 +12664,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       return;
     }
+    if (name === "/switch-account") {
+      const targetSessionId = activeSessionIdRef.current;
+      const accountId = args.trim();
+      if (!targetSessionId || !accountId) {
+        addNotice(targetSessionId ? "Usage: /switch-account <account-id> (ids: ade providers accounts list)" : "Open a chat first.", "info");
+        return;
+      }
+      try {
+        const result = await switchChatAccount(conn, targetSessionId, accountId);
+        if (!result.ok) {
+          addNotice(result.message, "info");
+          return;
+        }
+        addNotice(`Switched to account ${result.instanceId}.`, "success");
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
     if (name === "/resume-now" || name === "/chat resume-now" || name === "/chat auto-resume") {
       const targetSessionId = activeSessionIdRef.current;
       if (!targetSessionId) {
@@ -13119,13 +13197,67 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? resolveAgentChatStopModeAlias(normalizedMode)
         : "stop_and_clear";
       if (!mode) {
-        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background]", "error");
+        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background|children|everything]", "error");
         return;
       }
       setStreaming(false);
       setInterrupted(true);
       const result = await interruptChat(conn, sessionId, mode);
       addNotice(chatInterruptNotice(result), "info");
+      return;
+    }
+    if (name === "/restart") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      const confirmArg = args.trim().toLowerCase();
+      const stopFirst = confirmArg === "stop" || confirmArg === "confirm";
+      try {
+        const result = await restartChatSession(conn, sessionId, stopFirst);
+        const stopped = result.backgroundJobsStopped > 0
+          ? ` ${result.backgroundJobsStopped === 1 ? "1 background job" : `${result.backgroundJobsStopped} background jobs`} stopped.`
+          : "";
+        addNotice(`Agent session restarted. Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`, "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!stopFirst && isTurnInFlightError(error)) {
+          addNotice("The agent is mid-turn. Run /restart stop to stop the turn (and its background jobs) and restart. The conversation is kept.", "info");
+          return;
+        }
+        addNotice(`Restart agent session failed: ${message}`, "error");
+      }
+      return;
+    }
+    if (name === "/pr watch" || name === "/pr ship" || name === "/pr unwatch") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      // The PR the header shows, unless the user named one (an ADE PR id, a PR
+      // number, or a PR URL — the host resolves all three).
+      const target = args.trim().replace(/^#/, "") || chatLinkedPrs[0]?.id || "";
+      if (!target) {
+        addNotice(`This chat has no pull request. Usage: ${name} <pr-number|pr-url>`, "error");
+        return;
+      }
+      const mode: PrWatchMode | null = name === "/pr unwatch" ? null : name === "/pr ship" ? "ship" : "watch";
+      try {
+        const watch = await setChatPrWatch(conn, { prId: target, sessionId, mode });
+        const active = watch && watch.status !== "stopped" ? watch : null;
+        if (!args.trim() || active?.prId === chatLinkedPrs[0]?.id) setChatPrWatchState(active);
+        const label = active?.githubPrNumber ? `PR #${active.githubPrNumber}` : chatLinkedPrs[0]?.githubPrNumber && !args.trim() ? `PR #${chatLinkedPrs[0].githubPrNumber}` : "the PR";
+        addNotice(
+          mode === null
+            ? `Stopped watching ${label}.`
+            : mode === "ship"
+              ? `Shipping ${label}: the agent is woken on each change and takes it to merged.`
+              : `Watching ${label}: the agent is woken on each change.`,
+          "success",
+        );
+      } catch (error) {
+        addNotice(`${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
       return;
     }
     if (name === "/restore-queue") {
@@ -13274,7 +13406,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -18670,7 +18802,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
           remoteLabel={activeRemoteLabel}
           accountLabel={accountLabel}
-          prLabel={formatChatPrHeaderLabel(chatLinkedPrs)}
+          prLabel={formatChatPrHeaderWithWatch(formatChatPrHeaderLabel(chatLinkedPrs), chatPrWatch)}
         />
         {goalBannerText ? (
           <Box paddingX={1} flexShrink={0}>

@@ -201,6 +201,17 @@ Browser `window.ade` adapter:
   returns an empty list because dev-server discovery reads this machine's PTY
   output and a web tab has none. Everything else in the namespace is
   deliberately absent so a caller feature-detects instead of getting a fake.
+- `apps/desktop/src/renderer/webclient/adapter/providerAccounts.ts` - the host's
+  Claude and Codex logins, backing the web-only **AI accounts** card
+  (`agents.accounts`, the `providerInstances` namespace). Each member forwards to
+  the host's `providerAccounts.*` command (which runs the `provider_instances`
+  action) and unwraps its `{ instance }` / `{ login }` envelope into what the
+  desktop bridge returns. Reads may be answered from the last good reply while
+  the host is away; a change, or a running sign-in's status, goes to the host
+  every time. `loginCommand` and `setAccent` stay absent — a browser cannot run
+  the host's shell command, and no account screen offers a colour any more. A
+  host older than these commands rejects, and the panel shows its error rather
+  than an empty list that looks like "no accounts".
 - `apps/desktop/src/renderer/webclient/adapter/macDesktop.ts` - the lane's
   macOS screen as this surface can use it. `getStatus`/`start`/`stop` are the
   same `macDesktop.*` commands the desktop panel calls, and

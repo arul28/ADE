@@ -1,9 +1,10 @@
-import type { CSSProperties, DragEventHandler, ReactNode, Ref } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type DragEventHandler, type ReactNode, type Ref } from "react";
 import type { ChatChromeTint, ChatShellGeometry } from "../../state/appStore";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ChatChromeTintContext } from "./chatAppearance";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
+import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
 
 export type ChatSurfaceShellLayoutVariant = "standard" | "mobile";
 
@@ -20,6 +21,7 @@ export function ChatSurfaceShell({
   className,
   bodyClassName,
   footerClassName,
+  overlayFooter = false,
   containerRef,
   /** Legacy transform scale — prefer `--chat-font-size` on `[data-chat-appearance-root]` (usually `1`). */
   contentScale = 1,
@@ -45,6 +47,12 @@ export function ChatSurfaceShell({
   className?: string;
   bodyClassName?: string;
   footerClassName?: string;
+  /**
+   * Float the footer over the bottom of the body instead of stacking it below,
+   * so the transcript scrolls behind the composer. The body reads the footer's
+   * height from `ChatComposerOverlayContext` to keep its last row clear.
+   */
+  overlayFooter?: boolean;
   containerRef?: Ref<HTMLElement>;
   contentScale?: number;
   chromeTint?: ChatChromeTint;
@@ -78,6 +86,33 @@ export function ChatSurfaceShell({
     : undefined;
 
   const fill = canvasFill ?? "var(--chat-canvas-bg)";
+  const [overlay] = useState(createChatComposerOverlay);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const footerOverlaid = overlayFooter && footer != null;
+  useLayoutEffect(() => {
+    const el = footerRef.current;
+    if (!footerOverlaid || !el) {
+      overlay.footer.set(null);
+      overlay.inset.set(0);
+      return;
+    }
+    overlay.footer.set(el);
+    if (typeof ResizeObserver === "undefined") {
+      overlay.inset.set(el.offsetHeight);
+      return () => overlay.footer.set(null);
+    }
+    // The first observation lands before the first paint, so the transcript
+    // never paints a frame with its last row under the composer.
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.borderBoxSize?.[0];
+      overlay.inset.set(box ? box.blockSize : el.offsetHeight);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      overlay.footer.set(null);
+    };
+  }, [footerOverlaid, overlay]);
   const inner = (
     <>
       {header ? (
@@ -91,10 +126,13 @@ export function ChatSurfaceShell({
           bodyClassName,
         )}
       >
-        {children}
+        <ChatComposerOverlayContext.Provider value={overlayFooter ? overlay : null}>
+          {children}
+        </ChatComposerOverlayContext.Provider>
       </div>
       {footer ? (
         <div
+          ref={footerRef}
           /*
             The composer, in the layout that renders it as the shell's footer
             rather than inline. Marked so the Work tab's floating live card can
@@ -102,11 +140,13 @@ export function ChatSurfaceShell({
             and has no other way to find the one thing it must not cover.
           */
           data-work-live-card-avoid=""
+          data-chat-composer-overlay={footerOverlaid ? "" : undefined}
           className={cn(
-            "relative w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
+            "w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
+            footerOverlaid ? "absolute inset-x-0 bottom-0 z-20" : "relative",
             footerClassName,
           )}
-          style={{ background: fill }}
+          style={footerOverlaid ? undefined : { background: fill }}
         >
           {footer}
         </div>

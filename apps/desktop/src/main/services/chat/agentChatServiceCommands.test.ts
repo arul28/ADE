@@ -712,6 +712,125 @@ describe("createAgentChatService", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
+  describe("leading-slash prompts on OpenCode", () => {
+    // OpenCode fails the whole turn with "Command not found: <name>" for a
+    // name it does not list, so only its own commands may reach its command
+    // endpoint. ADE's skills arrive expanded; any other `/word` is text.
+    it.each([
+      {
+        label: "expands an ADE project skill",
+        text: "/ship resume for lane x",
+        prompt: "Ship the lane.\n\nTask: resume for lane x",
+      },
+      {
+        label: "sends an unknown name as the user's text",
+        text: "/nonexistentcmd hello",
+        prompt: "/nonexistentcmd hello",
+      },
+      {
+        label: "runs a command OpenCode lists",
+        text: "/init the repo",
+        command: { name: "init", text: "the repo" },
+      },
+      {
+        // The chat's first turn: nothing has listed OpenCode's commands yet.
+        label: "runs OpenCode's own command over a same-named ADE skill on the first turn",
+        text: "/ship resume for lane x",
+        openCodeCommands: ["init", "ship"],
+        command: { name: "ship", text: "resume for lane x" },
+      },
+    ])("$label", async ({ text, prompt, command, openCodeCommands }) => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+      mockState.openCodeCommands = openCodeCommands ?? ["init"];
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "done")).toBe(true);
+      });
+      expect(events.filter((entry) => entry.event.type === "error")).toEqual([]);
+      if (command) {
+        expect(mockState.openCodeCommandCalls).toEqual([expect.objectContaining(command)]);
+        expect(mockState.openCodePromptCalls).toEqual([]);
+      } else {
+        expect(mockState.openCodeCommandCalls).toEqual([]);
+        expect(mockState.openCodePromptCalls).toEqual([expect.objectContaining({ text: prompt })]);
+      }
+    });
+
+    it("logs a failed turn and does not call a harness refusal a missing CLI", async () => {
+      mockState.openCodePromptError = new Error("Command not found: ship");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "please ship it" }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "error")).toBe(true);
+      });
+      const error = events.find((entry) => entry.event.type === "error")!.event as any;
+      expect(error.errorInfo?.category).not.toBe("agent_cli_missing");
+      expect(error.errorInfo?.agentCli).toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith("agent_chat.turn_error", expect.objectContaining({
+        sessionId: session.id,
+        provider: "opencode",
+        category: expect.any(String),
+        message: expect.stringContaining("Command not found: ship"),
+      }));
+    });
+
+    it("redacts secrets in a failed turn's log and never logs the user prompt", async () => {
+      // Low-entropy and built at runtime: a real-looking key literal would trip
+      // the repo's gitleaks secret-scan, and `redactSecrets` still strips it.
+      const secret = "z".repeat(40);
+      mockState.openCodePromptError = new Error(`Command not found: ship — Bearer ${secret} rejected`);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "PROMPTMARKER please ship it" }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "error")).toBe(true);
+      });
+      const logCall = logger.warn.mock.calls.find(([event]) => event === "agent_chat.turn_error");
+      const logged = logCall?.[1] as { message?: string } | undefined;
+      expect(logged?.message, "the failed turn is logged").toBeTruthy();
+      expect(logged?.message).not.toContain(secret);
+      expect(logged?.message).not.toContain("PROMPTMARKER");
+      expect(logged?.message?.length).toBeLessThanOrEqual(300);
+    });
+  });
+
   describe("Codex 0.149 app-server composer commands", () => {
     const pin149 = () => {
       mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });

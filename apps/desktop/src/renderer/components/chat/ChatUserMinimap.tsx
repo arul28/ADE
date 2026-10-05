@@ -21,16 +21,6 @@ type ChatUserMinimapProps = {
   activeIndex: number | null;
   /** `entry` carries the row key and, for a row hidden in a closed turn fold, its fold. */
   onJumpToRow: (rowIndex: number, entry: ChatUserMinimapSourceEntry) => void;
-  /** Older transcript pages exist before the currently resident row window. */
-  hasOlderHistory?: boolean;
-  /** Keeps the continuation marker stable while its page is in flight. */
-  loadingOlderHistory?: boolean;
-  /** Retry detail for the continuation marker; exposed as a tooltip. */
-  olderHistoryError?: string | null;
-  /** Pages the next older transcript window without loading the whole file. */
-  onLoadOlderHistory?: () => void;
-  /** Immediately retries a failed older-history request. */
-  onRetryOlderHistory?: () => void;
   /** Measured width of the message-list root. */
   listWidthPx: number;
   /** Measured height of the message-list root. */
@@ -83,11 +73,6 @@ export function ChatUserMinimap({
   entries,
   activeIndex,
   onJumpToRow,
-  hasOlderHistory = false,
-  loadingOlderHistory = false,
-  olderHistoryError = null,
-  onLoadOlderHistory,
-  onRetryOlderHistory,
   listWidthPx,
   listHeightPx,
   columnWidthPx,
@@ -166,12 +151,12 @@ export function ChatUserMinimap({
     ? turnOutcomeLabel(previewEntry?.turnOutcome ?? null)
     : null;
 
-  // Keep a durable continuation marker when the resident tail has fewer than
-  // two user turns. Otherwise the whole rail disappears at the transcript
-  // cutoff and falsely implies that the loaded window is the complete chat.
+  // Older history backfills on its own (the message list pages it in during
+  // idle time), so the rail only ever shows what is resident and grows as
+  // earlier prompts arrive.
   if (
     !chatUserMinimapEnabled
-    || (itemCount < 2 && !hasOlderHistory)
+    || itemCount < 2
     || minimapRailInert(availablePx)
   ) {
     return null;
@@ -180,11 +165,6 @@ export function ChatUserMinimap({
   const ariaLabel = `Jump to message: ${previewEntry?.preview ?? "User message"}${
     previewOutcomeLabel ? ` (${previewOutcomeLabel})` : ""
   }`;
-  const continuationLabel = olderHistoryError
-    ? "Retry loading earlier message markers"
-    : loadingOlderHistory
-      ? "Loading earlier message markers"
-      : "Load earlier message markers";
 
   return (
     <div
@@ -200,27 +180,7 @@ export function ChatUserMinimap({
       style={{ top: 0, bottom: 0 }}
     >
       <div className="flex h-full w-full select-none items-center">
-        {hasOlderHistory ? (
-          <button
-            type="button"
-            aria-label={continuationLabel}
-            title={olderHistoryError ?? "Earlier messages are available"}
-            disabled={loadingOlderHistory}
-            data-minimap-history-continuation=""
-            className={cn(
-              "pointer-events-auto absolute left-3 top-1 z-10 flex h-5 w-6 items-start justify-start bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-              loadingOlderHistory ? "cursor-wait opacity-45" : "cursor-pointer opacity-70 hover:opacity-100",
-            )}
-            onClick={() => {
-              if (olderHistoryError) onRetryOlderHistory?.();
-              else onLoadOlderHistory?.();
-            }}
-          >
-            <span aria-hidden="true" className="absolute left-0 top-0 text-[9px] leading-none text-fg/50">↑</span>
-          </button>
-        ) : null}
-        {itemCount > 0 ? (
-          <button
+        <button
           type="button"
           aria-label={ariaLabel}
           className={cn(
@@ -329,8 +289,7 @@ export function ChatUserMinimap({
               </span>
             </span>
           ) : null}
-          </button>
-        ) : null}
+        </button>
       </div>
     </div>
   );

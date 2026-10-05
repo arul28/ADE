@@ -14,6 +14,8 @@ struct WorkFiltersSection: View {
   @Binding var selectedLaneId: String
   @Binding var selectedStatus: WorkSessionStatusFilter
   @Binding var organization: WorkSessionOrganization
+  /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
+  var foldBusyLanes: Binding<Bool>? = nil
   @Binding var filterOpen: Bool
   /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
   var machineFilter: Binding<String> = .constant("")
@@ -68,6 +70,22 @@ struct WorkFiltersSection: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+          }
+
+          if organization == .byLane, let foldBusyLanes {
+            filterRow("Focus") {
+              WorkFilterChip(
+                title: "Fold busy lanes",
+                selected: foldBusyLanes.wrappedValue,
+                tint: ADEColor.info,
+                systemImage: "rectangle.compress.vertical"
+              ) {
+                withAnimation(.snappy(duration: 0.18)) {
+                  foldBusyLanes.wrappedValue.toggle()
+                }
+              }
+              .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
+            }
           }
 
           Rectangle()
@@ -351,12 +369,30 @@ struct WorkSidebarSectionHeader: View {
   /// headers and orphaned sections.
   var lane: LaneSummary? = nil
   var laneMenu: WorkSessionLaneMenuActions? = nil
+  /// The first Snoozed/Settled shelf draws one heavier rule above itself, so the
+  /// quiet zone reads as its own region rather than one more lane. Same fence the
+  /// desktop sidebar draws (`renderQuietZone` in `SessionListPane.tsx`).
+  var startsQuietZone = false
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
   private var isQuietRow: Bool { group.isQuiet && collapsed }
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if startsQuietZone {
+        Rectangle()
+          .fill(ADEColor.textMuted.opacity(0.32))
+          .frame(height: 1)
+          .padding(.top, 14)
+          .padding(.bottom, 6)
+          .accessibilityHidden(true)
+      }
+      headerRow
+    }
+  }
+
+  private var headerRow: some View {
     HStack(spacing: isQuietRow ? 6 : 8) {
       Button(action: onToggle) {
         HStack(spacing: isQuietRow ? 6 : 8) {
@@ -371,6 +407,12 @@ struct WorkSidebarSectionHeader: View {
             .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
             .foregroundStyle(quietAwareLabelColor)
             .lineLimit(1)
+
+          // Beside the name, not in the trailing cluster: there it sat next to
+          // the amber "uncommitted changes" dot and read as the same fact.
+          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow {
+            WorkLaneFocusDot(status: laneFocus)
+          }
 
           Spacer(minLength: 0)
         }
@@ -407,20 +449,35 @@ struct WorkSidebarSectionHeader: View {
         .accessibilityHint("Opens in the PRs tab")
       }
 
-      if isQuietRow {
+      if isQuietRow, group.isShelf {
+        // A shelf names itself with its icon; the trailing slot says when the
+        // first row comes back (Snoozed) and how many rows it holds.
+        HStack(spacing: 6) {
+          if let detail = group.shelfDetail {
+            Text(detail)
+              .font(.caption2)
+              .lineLimit(1)
+          }
+          Text("\(group.displayCount)")
+            .font(.caption2.monospacedDigit().weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted.opacity(0.75))
+        .accessibilityHidden(true)
+      } else if isQuietRow {
         // Hollow ring + count: the settled tier's own language, matching the
-        // desktop sidebar's inline quiet counts.
+        // desktop sidebar's inline quiet counts. Only a settled-only LANE uses
+        // it; the Snoozed shelf used to borrow it and read as settled.
         HStack(spacing: 3) {
           Circle()
             .strokeBorder(ADEColor.textMuted.opacity(0.45), lineWidth: 1)
             .frame(width: 6, height: 6)
-          Text("\(group.sessions.count)")
+          Text("\(group.displayCount)")
             .font(.caption2.monospacedDigit().weight(.medium))
         }
         .foregroundStyle(ADEColor.textMuted.opacity(0.6))
         .accessibilityHidden(true)
       } else {
-        Text("\(group.sessions.count)")
+        Text("\(group.displayCount)")
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 7)
@@ -490,11 +547,22 @@ struct WorkSidebarSectionHeader: View {
   }
 
   private var accessibilityLabelText: String {
-    let count = group.sessions.count
+    let count = group.displayCount
     let noun = "session\(count == 1 ? "" : "s")"
     let action = collapsed ? "expand" : "collapse"
+    if group.id == workWorkingSectionId {
+      return "Working, \(count) lane\(count == 1 ? "" : "s") with nothing waiting on you. Tap to \(action)."
+    }
+    if group.id == workSnoozedSectionId {
+      let detail = group.shelfDetail.map { ", next \($0)" } ?? ""
+      return "Snoozed, \(count) snoozed \(noun)\(detail). Tap to \(action)."
+    }
     if isQuietRow {
       return "\(group.label), \(count) settled \(noun). Tap to \(action)."
+    }
+    if let laneFocus = group.laneStatus, group.laneId != nil {
+      let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
+      return "\(label), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
     }
     let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
     return "\(label), \(count) \(noun). Tap to \(action)."
@@ -514,6 +582,16 @@ struct WorkSidebarSectionHeader: View {
       Image(systemName: "exclamationmark.triangle")
         .font(.caption)
         .foregroundStyle(ADEColor.warning)
+        .frame(width: 12, height: 12)
+    case .snoozed:
+      Image(systemName: "moon.zzz.fill")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(group.tint)
+        .frame(width: 12, height: 12)
+    case .settled:
+      Image(systemName: "checkmark.circle")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(group.tint)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
@@ -1405,6 +1483,114 @@ struct WorkProviderLogo: View {
   }
 }
 
+/// The mark for Custom — ADE's own saved agent-plus-model setups. A port of
+/// `CustomToolMark.tsx`: a gear with a wrench inside it, drawn rather than
+/// imported so it lands on the same baseline as the provider marks beside it.
+/// Used by the Custom rail entry and by a preset whose picture (`upload` /
+/// `generated`) lives only on its own machine.
+struct WorkCustomToolMark: View {
+  /// The desktop mark's violet, `#a78bfa`.
+  static let defaultColor = Color(red: 0.655, green: 0.545, blue: 0.980)
+
+  var size: CGFloat = 18
+  var color: Color = WorkCustomToolMark.defaultColor
+
+  var body: some View {
+    Canvas { context, canvasSize in
+      let scale = min(canvasSize.width, canvasSize.height) / 24
+      func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        CGPoint(x: x * scale, y: y * scale)
+      }
+
+      // Gear ring — eight teeth, with the centre cut out (even-odd).
+      var gear = Path()
+      let teeth: [(CGFloat, CGFloat)] = [
+        (21.09, 10.04), (23.30, 10.48), (23.30, 13.52), (21.09, 13.96),
+        (19.81, 17.04), (21.06, 18.92), (18.92, 21.06), (17.04, 19.81),
+        (13.96, 21.09), (13.52, 23.30), (10.48, 23.30), (10.04, 21.09),
+        (6.96, 19.81), (5.08, 21.06), (2.94, 18.92), (4.19, 17.04),
+        (2.91, 13.96), (0.70, 13.52), (0.70, 10.48), (2.91, 10.04),
+        (4.19, 6.96), (2.94, 5.08), (5.08, 2.94), (6.96, 4.19),
+        (10.04, 2.91), (10.48, 0.70), (13.52, 0.70), (13.96, 2.91),
+        (17.04, 4.19), (18.92, 2.94), (21.06, 5.08), (19.81, 6.96),
+      ]
+      gear.move(to: point(teeth[0].0, teeth[0].1))
+      for tooth in teeth.dropFirst() {
+        gear.addLine(to: point(tooth.0, tooth.1))
+      }
+      gear.closeSubpath()
+      gear.addEllipse(in: CGRect(x: 5.6 * scale, y: 5.6 * scale, width: 12.8 * scale, height: 12.8 * scale))
+      context.fill(gear, with: .color(color), style: FillStyle(eoFill: true))
+
+      // Wrench head — the long arc under the slot, then down into the slot and
+      // back, so the head is one outline instead of a disc minus a rectangle.
+      let headRadius: CGFloat = 3.2
+      let halfChord: CGFloat = 1.1
+      let headCenterY = 6.8 + sqrt(headRadius * headRadius - halfChord * halfChord)
+      let headCenter = point(12, headCenterY)
+      var head = Path()
+      head.addArc(
+        center: headCenter,
+        radius: headRadius * scale,
+        startAngle: Angle(radians: atan2(6.8 - headCenterY, 10.9 - 12)),
+        endAngle: Angle(radians: atan2(6.8 - headCenterY, 13.1 - 12)),
+        clockwise: true
+      )
+      head.addLine(to: point(13.1, 9.5))
+      head.addLine(to: point(10.9, 9.5))
+      head.closeSubpath()
+      context.fill(head, with: .color(color))
+
+      // Wrench handle — from the head down into the gear ring.
+      var handle = Path()
+      handle.addRoundedRect(
+        in: CGRect(x: 10.75 * scale, y: 11.6 * scale, width: 2.5 * scale, height: 9.2 * scale),
+        cornerSize: CGSize(width: 1.1 * scale, height: 1.1 * scale)
+      )
+      context.fill(handle, with: .color(color))
+    }
+    .frame(width: size, height: size)
+    .accessibilityHidden(true)
+  }
+}
+
+/// A preset's mark, mirroring `HarnessLogo.tsx`: a provider's brand mark, or
+/// the Custom mark in the preset's own accent. An `upload`/`generated` picture
+/// never leaves its machine, so a remote surface draws the Custom mark for it
+/// rather than a wrong company's logo.
+struct WorkHarnessPresetMark: View {
+  let logo: SyncMachineInventoryPresetLogo?
+  let accentColor: String?
+  var size: CGFloat = 22
+
+  private var resolvedAccent: Color? {
+    LaneColorPalette.color(forHex: accentColor)
+  }
+
+  var body: some View {
+    let providerId = logo?.providerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    Group {
+      if logo?.kind == "provider", !providerId.isEmpty {
+        WorkProviderBareLogo(
+          provider: providerId,
+          fallbackSymbol: providerIcon(providerId),
+          tint: providerTint(providerId),
+          size: size
+        )
+      } else {
+        WorkCustomToolMark(size: size, color: resolvedAccent ?? WorkCustomToolMark.defaultColor)
+      }
+    }
+    .frame(width: size, height: size)
+    .overlay {
+      if let resolvedAccent {
+        Circle().stroke(resolvedAccent, lineWidth: 1.5)
+      }
+    }
+  }
+}
+
+
 /// Borderless provider mark — same asset as WorkProviderLogo but without the
 /// surrounding tinted square. Used inside the provider-tinted session card so
 /// the logo reads as part of the card itself, not a separate badge.
@@ -1743,5 +1929,27 @@ private struct WorkHeaderOverflowMenu: View {
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
     .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
+  }
+}
+
+/// A lane's rolled-up status as one dot in the board column's accent — the same
+/// accents as the status chips (`statusFilterTint`) and the desktop board.
+struct WorkLaneFocusDot: View {
+  let status: WorkLaneFocusStatus
+
+  var body: some View {
+    Circle()
+      .fill(color)
+      .frame(width: 6, height: 6)
+      .accessibilityHidden(true)
+  }
+
+  private var color: Color {
+    switch status {
+    case .needsYou: return ADEColor.warning
+    case .working: return ADEColor.info
+    case .waiting: return ADEColor.textMuted
+    case .done: return ADEColor.success
+    }
   }
 }

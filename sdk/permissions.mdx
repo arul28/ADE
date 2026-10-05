@@ -153,7 +153,7 @@ The SDK logs the same two shapes at open time: one line naming any server you su
 
 ### Codex MCP tool calls
 
-Codex (`@openai/codex` 0.156.1) asks before **every** MCP tool call. It sends an MCP elicitation with `_meta.codex_approval_kind: "mcp_tool_call"` and the message `Allow the <server> MCP server to run tool "<tool>"?`. Since runtime 1.2.81, the policy judges that request as `mcp:<server>:<tool>`, in the same order as on Claude:
+Codex (`@openai/codex` 0.156.1 through 0.160.0) asks before **every** MCP tool call. It sends an MCP elicitation with `_meta.codex_approval_kind: "mcp_tool_call"` and the message `Allow the <server> MCP server to run tool "<tool>"?`. Since runtime 1.2.81, the policy judges that request as `mcp:<server>:<tool>`, in the same order as on Claude:
 
 1. `deniedTools` → declined.
 2. `allowedTools` or `autoApproveMcpServers` → accepted. No card is shown, the same as a Claude auto-allow.

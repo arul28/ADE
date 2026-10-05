@@ -514,7 +514,7 @@ the engine never disagree about what a rule means.
 
 #### Codex MCP tool calls
 
-Measured on `@openai/codex` 0.156.1 with `approvalPolicy: on-request`: Codex
+Measured on `@openai/codex` 0.156.1 and again on 0.160.0 with `approvalPolicy: on-request`: Codex
 sends `mcpServer/elicitation/request` before EVERY MCP tool call, with
 `_meta.codex_approval_kind: "mcp_tool_call"`, an empty schema, and the message
 `Allow the <server> MCP server to run tool "<name>"?`. There is no tool-name
@@ -569,7 +569,7 @@ Two ways out. Answer it with the `approve` action
 `accept_for_session`, `decline`, `cancel`), or call `interrupt()`, which aborts
 the turn without answering. On a Codex MCP tool approval,
 `accept_for_session` sends `_meta.persist: "session"` when Codex offers it
-(0.156.1 offers `["session", "always"]`); before 1.2.81 it sent `"always"`,
+(0.156.1 through 0.160.0 offer `["session", "always"]`); before 1.2.81 it sent `"always"`,
 which Codex writes to the user's `config.toml` for every future chat. `"always"`
 is used only when it is the one scope offered (the Computer Use per-app
 prompt). On Claude, `accept_for_session` records the tool in the

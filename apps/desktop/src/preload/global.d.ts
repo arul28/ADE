@@ -1,4 +1,5 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -76,6 +77,9 @@ import type {
   MacDesktopWaitArgs,
   MacDesktopWaitResult,
   MacDesktopWindow,
+  WindowsDesktopSetupArgs,
+  WindowsDesktopSetupResult,
+  WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
   BuiltInBrowserRemoteRequest,
@@ -116,6 +120,11 @@ import type {
   ProviderInstanceRemoveResult,
   ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
+  ProviderInstanceDismissReplacedArgs,
+  ProviderLoginRefArgs,
+  ProviderLoginStartArgs,
+  ProviderLoginStatus,
+  ProviderLoginSubmitCodeArgs,
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
@@ -245,6 +254,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -282,6 +293,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -318,6 +331,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -462,6 +477,7 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -894,6 +910,7 @@ import type {
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
+  DevServerEvent,
   DevServersArgs,
   DevServersResult,
   BuiltInBrowserFindInPageResult,
@@ -1040,6 +1057,8 @@ declare global {
          * and first-render decisions.
          */
         runtimeTarget: { platform: string; arch: string };
+        /** This desktop install's id; absent on the web client. See `shared/sessionInputOrigin.ts`. */
+        desktopClientId?: string;
         /**
          * Release channel of this build, captured in preload from the argv the
          * main process injects. Synchronous for the same reason as
@@ -1127,6 +1146,8 @@ declare global {
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         readClipboardText: () => Promise<string>;
+        getElevatedDesktop: () => Promise<boolean>;
+        onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => () => void;
         hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{
           data: string;
@@ -1834,6 +1855,21 @@ declare global {
         consumeResetCredit?: (args: {
           accountId: string;
         }) => Promise<import("../shared/types").UsageResetCreditResult>;
+        /**
+         * Spend by chat, lane, or account, and one model's detail and price.
+         * Optional on the bridge: an older preload or web host may not expose
+         * them, and the Usage page hides what it cannot read.
+         */
+        getCostBreakdown?: (
+          args: import("../shared/types").GetAdeUsageCostBreakdownArgs,
+        ) => Promise<import("../shared/types").AdeUsageCostBreakdown | null>;
+        getModelDetail?: (
+          args: import("../shared/types").GetAdeUsageModelDetailArgs,
+        ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        setModelPriceOverride?: (
+          args: import("../shared/types").SetAdeUsageModelPriceArgs,
+        ) => Promise<import("../shared/types").AdeUsagePriceOverrides>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
@@ -2181,6 +2217,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
+        moveSteer: (
+          args: AgentChatMoveSteerArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         dispatchSteer: (
           args: AgentChatDispatchSteerArgs,
           pin?: OpenProjectBinding | null,
@@ -2197,6 +2237,11 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Stop the provider process, keep the conversation; the next message starts fresh. */
+        restartSession: (
+          args: AgentChatRestartSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatRestartSessionResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
           pin?: OpenProjectBinding | null,
@@ -2234,6 +2279,7 @@ declare global {
           args: AgentChatDismissPendingInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        launchDefaults: (pin?: OpenProjectBinding | null) => Promise<AgentChatLaunchDefaults | null>;
         models: (
           args: AgentChatModelsArgs,
           pin?: OpenProjectBinding | null,
@@ -2279,6 +2325,10 @@ declare global {
           args: AgentChatContinueUsageLimitOnAlternateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
+        switchAccount: (
+          args: AgentChatSwitchAccountArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatSwitchAccountResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
           pin?: OpenProjectBinding | null,
@@ -2895,6 +2945,18 @@ declare global {
           args: MacDesktopRequestPermissionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopPermissions>;
+        setupWindows: (
+          args: WindowsDesktopSetupArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<WindowsDesktopSetupResult>;
+        takeoverWindows: (
+          args: WindowsDesktopTakeoverArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        useSharedDesktop: (
+          args: { laneId: string; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
         start: (
           args: MacDesktopStartArgs,
           pin?: OpenProjectBinding | null,
@@ -3152,13 +3214,14 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         /**
-         * Web client only: a view that shows live frames holds this while it
-         * is on screen. Frames stream over the relay only while one is held;
-         * status-only `onEvent` listeners do not keep them flowing. Returns
-         * the release. The desktop gets frames from the local screencast and
-         * has no such member.
+         * A view that shows live frames holds this while it is on screen.
+         * Status-only `onEvent` listeners do not keep frames flowing: the web
+         * client streams them over the relay, and the desktop sends a window
+         * frames, only while a view holds them. On the desktop the hold is for
+         * `laneId`, and omitting it holds every lane; the web client ignores
+         * the lane. Returns the release.
          */
-        holdFrames?: () => () => void;
+        holdFrames?: (laneId?: string | null) => () => void;
       };
       /**
        * Always local IPC scoped by `projectRoot`; the optional `pin` only
@@ -3298,8 +3361,8 @@ declare global {
           args?: BuiltInBrowserSetZoomArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserZoomResult>;
-        /** Dev servers sniffed from terminal output; feature-detect before use. */
-        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
+        /** The lane machine's running dev servers (see `workTools.listDevServers`); feature-detect before use. */
+        getDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
         findInPage: (
           args: BuiltInBrowserFindInPageArgs,
           pin?: OpenProjectBinding | null,
@@ -3397,7 +3460,7 @@ declare global {
         ) => Promise<ChatTerminalReattachResult>;
       };
       localhost: {
-        probePort: (port: number) => Promise<boolean>;
+        probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;
@@ -3464,6 +3527,14 @@ declare global {
           args: ProviderInstanceSetAccentArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        dismissReplaced: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginCancel: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         getSettings: (
           args: ProviderInstanceGetSettingsArgs,
           pin?: OpenProjectBinding | null,
@@ -3522,6 +3593,15 @@ declare global {
           args: GetDiffChangesArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<DiffChanges>;
+        /**
+         * Every file the lane changed since its base (commits, uncommitted and
+         * untracked). Rejects when the base cannot be resolved; null, or a
+         * rejection naming an unknown action, from a host that predates it.
+         */
+        getBranchChanges?: (
+          args: GetDiffChangesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").BranchDiffChanges | null>;
         getFile: (
           args: GetFileDiffArgs,
           pin?: OpenProjectBinding | null,
@@ -3646,7 +3726,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
-          args: { laneId: string; limit?: number },
+          args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitCommitSummary[]>;
         listCommitFiles: (
@@ -4102,6 +4182,9 @@ declare global {
         ) => Promise<GitHubPrStack | null>;
         linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        /** PR Watch / Ship for one chat; `mode: null` stops it. */
+        setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary | null>;
+        getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary[]>;
         linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,
@@ -4232,6 +4315,13 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** Dev servers on the lane's machine, for the Browser on any machine. */
+        listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
+        /** A dev server started or stopped on the lane's machine. */
+        onDevServer: (
+          cb: (event: DevServerEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
         onShowRequest: (
           cb: (request: WorkToolShowRequest) => void,

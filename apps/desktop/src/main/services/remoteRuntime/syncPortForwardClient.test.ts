@@ -33,6 +33,11 @@ class FakeLocalSocket extends EventEmitter {
     return this;
   }
 
+  end(data?: Uint8Array): this {
+    if (data) this.writes.push(Buffer.from(data));
+    return this.destroy();
+  }
+
   send(data: Uint8Array): void {
     this.emit("data", Buffer.from(data));
   }
@@ -125,6 +130,35 @@ function createLoopbackConnection(options: {
   } as unknown as AuthenticatedSyncConnection;
 }
 
+/** A paired machine whose dial to the port fails: every `fwd_open` is answered with `fwd_close`. */
+function createRefusingConnection(): AuthenticatedSyncConnection {
+  const base = createLoopbackConnection();
+  const callbacks = new Set<(envelope: ParsedSyncEnvelope) => void>();
+  return {
+    ...base,
+    send(type: Parameters<AuthenticatedSyncConnection["send"]>[0], payload: unknown) {
+      if (type !== "fwd_open") return;
+      const forwardId = (payload as { forwardId: string }).forwardId;
+      const envelope = {
+        version: 1,
+        type: "fwd_close",
+        projectId: null,
+        requestId: null,
+        compression: "none",
+        payload: { forwardId, reason: "Nothing is listening on port 47180 (tried 127.0.0.1 and ::1)." },
+        raw: {} as never,
+      } as ParsedSyncEnvelope;
+      queueMicrotask(() => {
+        for (const callback of [...callbacks]) callback(envelope);
+      });
+    },
+    onEnvelope(callback: (envelope: ParsedSyncEnvelope) => void) {
+      callbacks.add(callback);
+      return () => callbacks.delete(callback);
+    },
+  } as unknown as AuthenticatedSyncConnection;
+}
+
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -203,6 +237,42 @@ describe("SyncPortForwardClient", () => {
     socket.send(bytes);
     await flushMicrotasks();
     expect(Buffer.concat(socket.writes)).toEqual(bytes);
+    client.dispose();
+  });
+
+  it.each([
+    ["an HTTP client that spoke first", "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", "before", true],
+    ["an HTTP client that spoke after the refusal", "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", "after", true],
+    ["a TLS client", "\u0016\u0003\u0001\u0002\u0000\u0001", "before", false],
+  ] as const)("answers a refused forward to %s", async (_label, request, order, expectsPage) => {
+    let server: FakeServer | null = null;
+    const createServer = ((callback: (socket: net.Socket) => void) => {
+      server = new FakeServer(callback);
+      return server as unknown as net.Server;
+    }) as typeof net.createServer;
+    const client = new SyncPortForwardClient(createRefusingConnection(), {
+      createServer,
+      machineLabel: "Mac Studio",
+    });
+    await client.ensureForward("127.0.0.1", 47180);
+    const socket = server!.accept();
+    if (order === "before") socket.send(Buffer.from(request, "latin1"));
+    await flushMicrotasks();
+    if (order === "after") socket.send(Buffer.from(request, "latin1"));
+    await flushMicrotasks();
+
+    // A refused dial used to close a socket that had sent nothing: Chromium's
+    // blank ERR_EMPTY_RESPONSE. An HTTP client now gets a page that names the
+    // machine and the port; anything else is just closed.
+    expect(socket.destroyed).toBe(true);
+    const written = Buffer.concat(socket.writes).toString("utf8");
+    if (expectsPage) {
+      expect(written.startsWith("HTTP/1.1 502 ")).toBe(true);
+      expect(written).toContain("47180");
+      expect(written).toContain("Mac Studio");
+    } else {
+      expect(written).toBe("");
+    }
     client.dispose();
   });
 

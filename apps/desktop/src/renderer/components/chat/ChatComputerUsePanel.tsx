@@ -26,6 +26,7 @@ import {
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { MediaLightbox } from "../ui/MediaLightbox";
+import { readDemoChapters } from "../../../shared/demoVideo/demoProofText";
 import { SectionHeader } from "./ChatSubagentsPanel";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
@@ -152,6 +153,7 @@ export function ArtifactLightbox({
       saveToDisk={saveToDisk}
       onMediaError={onMediaError}
       failureText={failed ? failureText : null}
+      chapters={video ? readDemoChapters(artifact.metadata) : undefined}
       onClose={onClose}
     />
   );

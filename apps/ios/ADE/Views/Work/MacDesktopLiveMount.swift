@@ -28,6 +28,7 @@ func mountMacDesktopLiveSession(
 func macDesktopStartDisplay(
   using syncService: SyncService,
   laneId: String,
+  hostIsWindows: Bool = false,
   starting: Binding<Bool>,
   errorText: Binding<String?>,
   refresh: @escaping @MainActor () async -> Void
@@ -37,10 +38,10 @@ func macDesktopStartDisplay(
   errorText.wrappedValue = nil
   Task { @MainActor in
     do {
-      try await syncService.macDesktopStart(laneId: laneId)
+      try await syncService.macDesktopStart(laneId: laneId, hostIsWindows: hostIsWindows)
       await refresh()
     } catch {
-      errorText.wrappedValue = macDesktopVisibleMessage(for: error)
+      errorText.wrappedValue = macDesktopVisibleMessage(for: error, hostIsWindows: hostIsWindows)
     }
     starting.wrappedValue = false
   }

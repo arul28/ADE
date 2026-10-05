@@ -175,6 +175,8 @@ import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
+import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -213,6 +215,7 @@ import {
   toRuntimeFileWatchArgs,
 } from "./actionArgs";
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
+import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -778,9 +781,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     },
     sendMessage: async (args?: unknown) => {
-      const record = readObjectActionArg(args, "chat.sendMessage");
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = readSendText(record);
+      // Which desktop is talking to this chat: "show this" requests go there.
+      noteSessionInputOrigin(sessionId, inputOrigin);
       await agentChatService.sendMessage({
         ...withoutHostOnlyChatMetadata(record),
         sessionId,
@@ -807,9 +812,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       } as never);
     },
     steer: async (args?: unknown) => {
-      const record = readObjectActionArg(args, "chat.steer");
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.steer");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = readSendText(record);
+      noteSessionInputOrigin(sessionId, inputOrigin);
       if (typeof agentChatService.steer !== "function") {
         throw new Error("Chat steer is not available in this runtime.");
       }
@@ -1010,6 +1016,15 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "chat.continueUsageLimitOnAlternate");
       return agentChatService.continueUsageLimitOnAlternate({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+      });
+    };
+  }
+  if (typeof base.switchAccount === "function") {
+    service.switchAccount = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.switchAccount");
+      return agentChatService.switchAccount({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        instanceId: requireNonEmptyString(record.instanceId, "instanceId"),
       });
     };
   }
@@ -3366,7 +3381,9 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
   } as OpaqueService;
 }
 
-function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService {
+export function buildProviderInstancesDomainService(
+  runtime: Pick<AdeRuntime, "productAnalyticsService" | "usageTrackingService">,
+): OpaqueService {
   // Machine-local by nature: the registry names directories on THIS machine, so
   // the store is reached through its own ADE-home accessor rather than through
   // the runtime graph. The runtime is used only for the brain-owned analytics
@@ -3417,6 +3434,26 @@ function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService
       capture("default_selected", "completed", instance.provider);
       return { instance };
     },
+    loginStart(args: unknown) {
+      return {
+        login: getMachineProviderLoginRunner().start(String((isRecord(args) ? args.id : "") ?? ""), {
+          deviceAuth: isRecord(args) && args.deviceAuth === true,
+        }),
+      };
+    },
+    loginStatus(args: unknown) {
+      return { login: getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? "")) };
+    },
+    loginSubmitCode(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      return { login: getMachineProviderLoginRunner().submitCode(String(input.loginId ?? ""), String(input.code ?? "")) };
+    },
+    loginCancel(args: unknown) {
+      return { login: getMachineProviderLoginRunner().cancel(String((isRecord(args) ? args.loginId : "") ?? "")) };
+    },
+    dismissReplaced(args: unknown) {
+      return { instance: store.dismissReplaced(String((isRecord(args) ? args.id : "") ?? "")) };
+    },
     setAccent(args: unknown) {
       const input = isRecord(args) ? args : {};
       const accent = input.accentColor;
@@ -3459,7 +3496,8 @@ function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService
     },
     async refresh(args: unknown) {
       const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
-      return { instances: await store.refreshAccounts(provider) };
+      const instanceId = isRecord(args) && typeof args.instanceId === "string" ? args.instanceId : undefined;
+      return { instances: await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService) };
     },
   } as OpaqueService;
 }

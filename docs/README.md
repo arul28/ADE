@@ -57,7 +57,7 @@ docs/
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
-    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade mac-desktop`
+    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade screen` / `ade mac-desktop`
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar
@@ -68,6 +68,7 @@ docs/
     ├── sync-and-multi-device/             # CRDT sync, account Activity, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
+    ├── windows-desktop/                   # per-lane Windows screen (private child session or the main desktop by consent), `ade screen`
 ```
 
 ## Conventions
