@@ -1812,6 +1812,8 @@ type PersistedChatState = {
   claudeBackgroundJobShort?: string;
   claudeBackgroundResumeSessionId?: string;
   claudeBackgroundLogText?: string;
+  /** Claude's last `total_cost_usd` for this transcript; see `ClaudeRuntime.resultCostBaseline`. */
+  claudeResultCostTotalUsd?: number;
   /** Cursor SDK agent/run ids for resume across app restarts. */
   cursorSdkAgentProtocolVersion?: number;
   cursorSdkAgentId?: string;
@@ -2400,6 +2402,12 @@ type ClaudeActiveSubagent = {
   nonAgentTaskRun?: boolean;
   /** Child model from Task/Agent input or SDK messages — never the parent session model. */
   model?: string;
+  /**
+   * The effort the child actually runs at. Claude's task frames carry none;
+   * the PostToolUse and SubagentStop hooks report it (`effort.level`, after
+   * any downgrade for the model), keyed by the child's `agent_id`.
+   */
+  reasoningEffort?: string;
 };
 
 type ClaudeContextGuardrailState = {
@@ -2473,6 +2481,13 @@ type ClaudeRuntime = {
   idleReaderPromise: Promise<void> | null;
   idleReaderGeneration: number;
   queryGeneration: number;
+  /**
+   * The last `total_cost_usd` Claude reported for this transcript. The figure
+   * is a running total, and a resumed or forked session continues from the
+   * total its transcript saved, so it is persisted with the chat and one
+   * result's own cost is the step from it.
+   */
+  resultCostBaseline: number | null;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -2504,6 +2519,12 @@ type ClaudeRuntime = {
    * matching tool-input stash — before the result event is emitted.
    */
   subagentLabelById: Map<string, string>;
+  /**
+   * The effort each child reported through a hook, by task id and agent id.
+   * Kept off `activeSubagents` for the same reason as `subagentLabelById`:
+   * terminal paths delete that entry before the result event is emitted.
+   */
+  subagentEffortById: Map<string, string>;
   /**
    * Per-workflow-task emit state for the SDK's undocumented
    * `workflow_progress` snapshot on system:task_progress. Keyed by the
@@ -5277,6 +5298,27 @@ function isCodexRpcMethodNotFound(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return /method not found/i.test(message);
+}
+
+/**
+ * One Claude result's own list-price cost. `total_cost_usd` is a running
+ * total, and a resumed or forked session continues from the total its
+ * transcript saved, so a ledger row that stored it counted every earlier turn
+ * again. The step from the last total is this result's cost. A lower total
+ * means a `/clear` reset it, so the whole total is new. A zero is a crash or
+ * startup-error result: it says nothing and leaves the baseline alone.
+ */
+function claudeResultCostUsd(runtime: Pick<ClaudeRuntime, "resultCostBaseline">, totalUsd: number): number {
+  if (!(totalUsd > 0)) return 0;
+  const baseline = runtime.resultCostBaseline;
+  runtime.resultCostBaseline = totalUsd;
+  return baseline != null && totalUsd >= baseline ? totalUsd - baseline : totalUsd;
+}
+
+/** The live effort a Claude hook reports, when the model takes an effort. */
+function hookEffortLevel(input: HookInput): string | null {
+  const effort = (input as { effort?: { level?: unknown } }).effort;
+  return stringOrNull(effort?.level);
 }
 
 function optionalSubagentModelFields(model?: string | null, reasoningEffort?: string | null): {
@@ -16788,6 +16830,9 @@ export function createAgentChatService(args: {
       ? selfChatRuntimeOwner()
       : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+    const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
+      ? managed.runtime.resultCostBaseline
+      : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
     const claudeBackgroundResumeSessionId = managed.session.provider === "claude"
       ? managed.claudeBackgroundResumeSessionId
         ?? prevPersisted?.claudeBackgroundResumeSessionId
@@ -17016,6 +17061,7 @@ export function createAgentChatService(args: {
       ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
         ? { claudeBackgroundResumeSessionId }
         : {}),
+      ...(claudeResultCostTotalUsd != null ? { claudeResultCostTotalUsd } : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundLogText
         ? { claudeBackgroundLogText: managed.claudeBackgroundLogText.slice(-64_000) }
         : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: prevPersisted.claudeBackgroundLogText.slice(-64_000) } : {}),
@@ -17602,6 +17648,10 @@ export function createAgentChatService(args: {
         ...(claudeBackgroundJobShort ? { claudeBackgroundJobShort } : {}),
         ...(claudeBackgroundResumeSessionId ? { claudeBackgroundResumeSessionId } : {}),
         ...(claudeBackgroundLogText ? { claudeBackgroundLogText } : {}),
+        ...(provider === "claude" && typeof record.claudeResultCostTotalUsd === "number"
+          && Number.isFinite(record.claudeResultCostTotalUsd) && record.claudeResultCostTotalUsd >= 0
+          ? { claudeResultCostTotalUsd: record.claudeResultCostTotalUsd }
+          : {}),
         ...(cursorSdkAgentProtocolVersion ? { cursorSdkAgentProtocolVersion } : {}),
         ...(cursorSdkAgentId ? { cursorSdkAgentId } : {}),
         ...(cursorSdkRunId ? { cursorSdkRunId } : {}),
@@ -21175,7 +21225,7 @@ export function createAgentChatService(args: {
             background: true,
             ...(existing.taskType ? { taskType: existing.taskType } : {}),
             ...(existing.workflowName ? { workflowName: existing.workflowName } : {}),
-            ...optionalSubagentModelFields(existing.model),
+            ...optionalSubagentModelFields(existing.model, existing.reasoningEffort),
             ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
             ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
           });
@@ -23307,6 +23357,7 @@ export function createAgentChatService(args: {
       );
       runtime.taskToolInputByToolUseId.clear();
       runtime.subagentLabelById.clear();
+      runtime.subagentEffortById.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
       settleClaudePendingApprovals(managed, runtime);
@@ -25536,7 +25587,7 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
-        ...(model ? { model } : {}),
+        ...optionalSubagentModelFields(model, existing?.reasoningEffort),
       });
       closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
         workflowName,
@@ -25605,7 +25656,7 @@ export function createAgentChatService(args: {
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
       ...(workflowProgress ? { workflowProgress } : {}),
-      ...(model ? { model } : {}),
+      ...optionalSubagentModelFields(model, existing?.reasoningEffort),
     });
     emitChatEvent(managed, {
       type: "subagent_progress",
@@ -26200,7 +26251,7 @@ export function createAgentChatService(args: {
         };
       }
       if (typeof resultMsg.total_cost_usd === "number") {
-        state.costUsd = resultMsg.total_cost_usd;
+        state.costUsd = claudeResultCostUsd(runtime, resultMsg.total_cost_usd);
       }
       const metadata = extractClaudeResultMetadata(resultMsg);
       logClaudeStartupFailure(logger, managed, metadata, turnId);
@@ -27505,7 +27556,7 @@ export function createAgentChatService(args: {
             ...(workflowProgress ?? existing?.workflowProgress
               ? { workflowProgress: workflowProgress ?? existing?.workflowProgress }
               : {}),
-            ...(model ? { model } : {}),
+            ...optionalSubagentModelFields(model, existing?.reasoningEffort),
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
           });
           emitChatEvent(managed, {
@@ -27626,7 +27677,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(workflowProgress ? { workflowProgress } : {}),
-              ...(model ? { model } : {}),
+              ...optionalSubagentModelFields(model, existing?.reasoningEffort),
             });
             closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
               workflowName,
@@ -27694,7 +27745,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(workflowProgress ? { workflowProgress } : {}),
-              ...(model ? { model } : {}),
+              ...optionalSubagentModelFields(model, existing?.reasoningEffort),
               ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             });
             emitChatEvent(managed, {
@@ -28521,7 +28572,7 @@ export function createAgentChatService(args: {
             usage = { ...usage, thinkingTokens: metadata.thinkingTokens };
           }
           if (typeof resultMsg.total_cost_usd === "number") {
-            costUsd = resultMsg.total_cost_usd;
+            costUsd = claudeResultCostUsd(runtime, resultMsg.total_cost_usd);
           }
           if (resultIsError && resultErrors.userFacing.length > 0) {
             // A logged-out result surfaces here as 401 / "invalid authentication
@@ -32602,9 +32653,52 @@ export function createAgentChatService(args: {
         ...(nextEntry.background !== undefined ? { background: nextEntry.background } : {}),
         ...(nextEntry.taskType ? { taskType: nextEntry.taskType } : {}),
         ...(nextEntry.workflowName ? { workflowName: nextEntry.workflowName } : {}),
-        ...optionalSubagentModelFields(nextEntry.model),
+        ...optionalSubagentModelFields(nextEntry.model, nextEntry.reasoningEffort),
         ...(correctionTurnId ? { turnId: correctionTurnId } : {}),
         ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
+      });
+    }
+  };
+
+  /**
+   * Record the effort a Claude child runs at, from a hook that fired inside it.
+   * The first report goes out as a progress row on the started agent, so the
+   * card, the drill-in composer and the model router all read the real level
+   * instead of guessing from the parent.
+   */
+  const noteClaudeSubagentEffort = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    agentId: string | undefined,
+    level: string | null,
+  ): void => {
+    if (!agentId || !level) return;
+    for (const [key, entry] of runtime.activeSubagents) {
+      if (key !== agentId && entry.agentId !== agentId) continue;
+      if (entry.reasoningEffort === level || entry.nonAgentTaskRun) continue;
+      const nextEntry = { ...entry, reasoningEffort: level };
+      runtime.activeSubagents.set(key, nextEntry);
+      for (const id of [key, nextEntry.taskId, nextEntry.agentId]) {
+        if (id) runtime.subagentEffortById.set(id, level);
+      }
+      if (
+        !runtime.emittedSubagentStartIds.has(entry.taskId)
+        && (!entry.agentId || !runtime.emittedSubagentStartIds.has(entry.agentId))
+      ) {
+        continue;
+      }
+      // A progress row, not a corrected start: a start renames the agent, and
+      // by now the entry's description is Claude's current activity.
+      emitChatEvent(managed, {
+        type: "subagent_progress",
+        taskId: nextEntry.taskId,
+        ...(nextEntry.agentId ? { agentId: nextEntry.agentId } : {}),
+        ...(nextEntry.agentType ? { agentType: nextEntry.agentType } : {}),
+        parentToolUseId: nextEntry.parentToolUseId ?? null,
+        summary: "",
+        ...(nextEntry.taskType ? { taskType: nextEntry.taskType } : {}),
+        ...optionalSubagentModelFields(nextEntry.model, nextEntry.reasoningEffort),
+        ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
       });
     }
   };
@@ -32623,15 +32717,21 @@ export function createAgentChatService(args: {
     const workflowProgress = event.workflowProgress
       ? finalizeClaudeWorkflowProgress(event.workflowProgress)
       : undefined;
+    const observedEffort = event.reasoningEffort
+      ?? runtime.subagentEffortById.get(event.taskId)
+      ?? (event.agentId ? runtime.subagentEffortById.get(event.agentId) : undefined);
     emitChatEvent(managed, {
       ...claudeSubagentLabelFields(runtime, [event.taskId, event.agentId]),
       ...event,
+      ...(observedEffort ? { reasoningEffort: observedEffort } : {}),
       ...(workflowProgress ? { workflowProgress } : {}),
     });
     runtime.emittedSubagentStartIds.delete(event.taskId);
     if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
     runtime.subagentLabelById.delete(event.taskId);
     if (event.agentId) runtime.subagentLabelById.delete(event.agentId);
+    runtime.subagentEffortById.delete(event.taskId);
+    if (event.agentId) runtime.subagentEffortById.delete(event.agentId);
   };
 
   /**
@@ -37385,7 +37485,7 @@ export function createAgentChatService(args: {
                 ...(existing?.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
                 ...(existing?.taskType ? { taskType: existing.taskType } : {}),
                 ...(existing?.workflowName ? { workflowName: existing.workflowName } : {}),
-                ...(resolvedModel ? { model: resolvedModel } : {}),
+                ...optionalSubagentModelFields(resolvedModel, existing?.reasoningEffort),
               });
             }
             return { continue: true };
@@ -37399,6 +37499,7 @@ export function createAgentChatService(args: {
             async (input: HookInput) => {
               if (input.hook_event_name === "SubagentStop") {
                 const agentId = input.agent_id;
+                noteClaudeSubagentEffort(managed, runtime, agentId, hookEffortLevel(input));
                 const finalSummary = input.last_assistant_message ?? "";
                 // The hook is keyed by agent_id, but task_* system messages key
                 // activeSubagents by task_id. Stamp finalSummary onto BOTH the
@@ -37416,6 +37517,7 @@ export function createAgentChatService(args: {
                   ...(existing?.agentType ? { agentType: existing.agentType } : {}),
                   ...(existing?.taskType ? { taskType: existing.taskType } : {}),
                   ...(existing?.command ? { command: existing.command } : {}),
+                  ...optionalSubagentModelFields(existing?.model, existing?.reasoningEffort),
                   finalSummary,
                 });
                 for (const [key, entry] of runtime.activeSubagents) {
@@ -37449,6 +37551,8 @@ export function createAgentChatService(args: {
             // Classifier context is computed first and returned on this same
             // PostToolUse completion. A late `{ async: true }` value is ignored.
             const toolUseId = input.hook_event_name === "PostToolUse" ? input.tool_use_id : undefined;
+            // A tool call inside a subagent carries that child's live effort.
+            noteClaudeSubagentEffort(managed, runtime, input.agent_id, hookEffortLevel(input));
             const pending = toolUseId
               ? runtime.pendingClassifierContextByToolUseId.get(toolUseId) ?? null
               : null;
@@ -38604,6 +38708,9 @@ export function createAgentChatService(args: {
       options.sessionId = runtime.sdkSessionId;
       persistChatState(managed);
     }
+    // A query without `resume` is a fresh transcript whose running cost starts
+    // at zero; a resumed or forked one continues the saved total.
+    if (!options.resume) runtime.resultCostBaseline = null;
 
     logger.info("agent_chat.claude_query_start", {
       sessionId: managed.session.id,
@@ -39342,6 +39449,7 @@ export function createAgentChatService(args: {
         idleReaderPromise: null,
         idleReaderGeneration: 0,
         queryGeneration: 0,
+        resultCostBaseline: persisted?.claudeResultCostTotalUsd ?? null,
         warmQuery: null,
       warmupDone: null,
       warmupCancel: null,
@@ -39351,6 +39459,7 @@ export function createAgentChatService(args: {
       detachedToolCalls: new Map(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
+      subagentEffortById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
       taskTodos: { seeded: false, byId: new Map() },
@@ -39695,6 +39804,7 @@ export function createAgentChatService(args: {
     spawnKind: "subagent" | "peer";
     provider: string;
     model: string | null | undefined;
+    reasoningEffort: string | null | undefined;
     resumed?: boolean;
   }): void => {
     if (!child.resumed) {
@@ -39728,7 +39838,7 @@ export function createAgentChatService(args: {
       background: false,
       taskType: "subagent",
       spawnKind: child.spawnKind,
-      ...optionalSubagentModelFields(child.model),
+      ...optionalSubagentModelFields(child.model, child.reasoningEffort),
     });
   };
 
@@ -39746,6 +39856,7 @@ export function createAgentChatService(args: {
       spawnKind,
       provider: child.session.provider,
       model: child.session.model,
+      reasoningEffort: child.session.reasoningEffort,
     });
   };
 
@@ -40413,6 +40524,7 @@ export function createAgentChatService(args: {
       spawnKind: lineage.spawnKind,
       provider: lineage.provider,
       model: lineage.model,
+      reasoningEffort: lineage.reasoningEffort,
       ...(options?.resumed ? { resumed: true } : {}),
     });
     logger.info("agent_chat.cli_child_spawn_routed", {

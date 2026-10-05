@@ -598,6 +598,7 @@ export type FormatterId =
   | "usage-model-detail"
   | "usage-prices"
   | "router-efficiency"
+  | "router-shadow"
   | "update-status";
 
 type ChatWaitTarget =
@@ -15020,6 +15021,7 @@ function buildRouterPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "router shadow",
+      formatter: "router-shadow",
       steps: [actionStep("result", "usage", "getRouterShadowSummary", days != null ? { days: Number(days) } : {})],
     };
   }
@@ -24970,9 +24972,10 @@ function formatRouterEfficiency(value: unknown): string {
       ["turns", `${count(threads.turns)} (${count(threads.pricedTurns)} priced)`],
       ["segments", count(threads.segments)],
       ["actual", usd(threads.actualUsd)],
+      ["same model", dollars(threads.sameModelUsd, threads.sameModelSaving)],
       ["same harness", dollars(threads.sameHarnessUsd, threads.sameHarnessSaving)],
       ["any harness", dollars(threads.anyHarnessUsd, threads.anyHarnessSaving)],
-      ["switched", `${count(switched.sameHarness)} same harness, ${count(switched.anyHarness)} any harness`],
+      ["switched", `${count(switched.sameModel)} same model, ${count(switched.sameHarness)} same harness, ${count(switched.anyHarness)} any harness`],
     ]),
     "",
     renderKeyValues("Segments by start", [
@@ -24993,15 +24996,16 @@ function formatRouterEfficiency(value: unknown): string {
     };
     sections.push(
       "",
-      "By billing (percent = share of the plan's longest window)",
+      "By billing (percent = share of the account's longest window)",
       renderTable(
-        ["billing", "actual", "same harness", "any harness"],
+        ["billing", "actual", "same model", "same harness", "any harness"],
         billing.map((entry) => {
           const cell = (usdValue: unknown, percentValue: unknown) =>
             [usd(usdValue), percent(percentValue)].filter(Boolean).join(" / ");
           return [
             asString(entry.billing) ?? "",
             cell(entry.actualUsd, entry.actualPercent),
+            cell(entry.sameModelUsd, entry.sameModelPercent),
             cell(entry.sameHarnessUsd, entry.sameHarnessPercent),
             cell(entry.anyHarnessUsd, entry.anyHarnessPercent),
           ];
@@ -25031,6 +25035,7 @@ function formatRouterEfficiency(value: unknown): string {
 
   const topMoves = isRecord(threads.topMoves) ? threads.topMoves : {};
   for (const [label, moves] of [
+    ["Moves (same model)", topMoves.sameModel],
     ["Moves (same harness)", topMoves.sameHarness],
     ["Moves (any harness)", topMoves.anyHarness],
   ] as const) {
@@ -25058,13 +25063,14 @@ function formatRouterEfficiency(value: unknown): string {
       "",
       "Top threads by cost",
       renderTable(
-        ["session", "route", "turns", "segments", "actual", "same harness", "any harness"],
+        ["session", "route", "turns", "segments", "actual", "same model", "same harness", "any harness"],
         topThreads.map((thread) => [
           `${asString(thread.sessionId) ?? ""}${thread.parentSessionId ? " (child)" : ""}`,
           `${asString(thread.provider) ?? ""} ${asString(thread.model) ?? ""}`.trim(),
           count(thread.turns),
           count(thread.segments),
           usd(thread.actualUsd),
+          usd(thread.sameModelUsd),
           usd(thread.sameHarnessUsd),
           usd(thread.anyHarnessUsd),
         ]),
@@ -25077,17 +25083,87 @@ function formatRouterEfficiency(value: unknown): string {
     "",
     renderKeyValues("Subagents (shadow log)", [
       ["decisions", `${count(subagents.decisions)} (${count(subagents.withOutcome)} with outcome)`],
-      ["same picks", count(subagents.sameHarnessPicks)],
-      ["any picks", count(subagents.anyHarnessPicks)],
+      ["legacy skipped", `${count(subagents.legacyDecisionsSkipped)} (logged before effort and brief were known)`],
+      ["picks", `${count(subagents.sameModelPicks)} same model, ${count(subagents.sameHarnessPicks)} same harness, ${count(subagents.anyHarnessPicks)} any harness`],
       ["tokens", count(subagents.tokens)],
-      ["same saving", `${pct(subagents.sameHarnessSaving) || "n/a"} (by tokens)`],
-      ["any saving", `${pct(subagents.anyHarnessSaving) || "n/a"} (by tokens)`],
+      ["same model", `${pct(subagents.sameModelSaving) || "n/a"} (by tokens)`],
+      ["same harness", `${pct(subagents.sameHarnessSaving) || "n/a"} (by tokens)`],
+      ["any harness", `${pct(subagents.anyHarnessSaving) || "n/a"} (by tokens)`],
       ["priced subagents", count(subagents.pricedSubagents)],
       ["actual", usd(subagents.actualUsd)],
-      ["same harness", usd(subagents.sameHarnessUsd)],
-      ["any harness", usd(subagents.anyHarnessUsd)],
+      ["same model $", usd(subagents.sameModelUsd)],
+      ["same harness $", usd(subagents.sameHarnessUsd)],
+      ["any harness $", usd(subagents.anyHarnessUsd)],
     ]),
   );
+  return sections.join("\n");
+}
+
+/**
+ * The router's shadow log: what ran for each subagent and what the router
+ * would have picked. The source counts say how each fact was known, so a
+ * guessed effort or kind shows up instead of hiding in the picks.
+ */
+function formatRouterShadow(value: unknown): string {
+  const summary = isRecord(value) ? value : {};
+  const num = (input: unknown): number => (typeof input === "number" && Number.isFinite(input) ? input : 0);
+  const share = (input: unknown): string =>
+    typeof input === "number" && Number.isFinite(input) ? `${(input * 100).toFixed(1)}%` : "";
+  const counts = (input: unknown): string => isRecord(input)
+    ? Object.entries(input).sort((a, b) => num(b[1]) - num(a[1])).map(([key, amount]) => `${key} ${num(amount)}`).join(", ")
+    : "";
+  const sources = isRecord(summary.sources) ? summary.sources : {};
+  const sections: string[] = [
+    renderKeyValues(`Model router shadow log (${num(summary.days)} days)`, [
+      ["decisions", `${num(summary.decisions)} (${num(summary.withOutcome)} with outcome)`],
+      ["legacy skipped", `${num(summary.legacyDecisionsSkipped)} (logged before effort and brief were known)`],
+      ["outcomes", counts(summary.outcomes)],
+      ["kind from", counts(sources.kind)],
+      ["effort from", counts(sources.effort)],
+      ["model from", counts(sources.model)],
+    ]),
+  ];
+  const byKind = isRecord(summary.byKind) ? Object.entries(summary.byKind).filter(([, entry]) => isRecord(entry)) : [];
+  if (byKind.length) {
+    sections.push(
+      "",
+      "By kind (picks, mean saving)",
+      renderTable(
+        ["kind", "decisions", "same model", "same harness", "any harness"],
+        byKind
+          .sort((a, b) => num((b[1] as Record<string, unknown>).decisions) - num((a[1] as Record<string, unknown>).decisions))
+          .map(([kind, raw]) => {
+            const entry = raw as Record<string, unknown>;
+            const cell = (picks: unknown, saving: unknown) => [String(num(picks)), share(saving)].filter(Boolean).join(" / ");
+            return [
+              kind,
+              String(num(entry.decisions)),
+              cell(entry.sameModelPicks, entry.meanSameModelSaving),
+              cell(entry.sameHarnessPicks, entry.meanSameHarnessSaving),
+              cell(entry.anyHarnessPicks, entry.meanAnyHarnessSaving),
+            ];
+          }),
+        "",
+      ),
+    );
+  }
+  const ran = Array.isArray(summary.ran) ? summary.ran.filter(isRecord) : [];
+  if (ran.length) {
+    sections.push("", "What ran (harness|model|effort)", renderTable(["route", "count"], ran.map((row) => [asString(row.route) ?? "", String(num(row.count))]), ""));
+  }
+  for (const [label, moves] of [
+    ["Top picks (same model)", summary.topSameModelPicks],
+    ["Top picks (same harness)", summary.topSameHarnessPicks],
+    ["Top picks (any harness)", summary.topAnyHarnessPicks],
+  ] as const) {
+    const rows = Array.isArray(moves) ? moves.filter(isRecord) : [];
+    if (!rows.length) continue;
+    sections.push("", label, renderTable(["from", "to", "count"], rows.map((row) => [asString(row.from) ?? "", asString(row.to) ?? "", String(num(row.count))]), ""));
+  }
+  const kept = Array.isArray(summary.keptReasons) ? summary.keptReasons.filter(isRecord) : [];
+  if (kept.length) {
+    sections.push("", "Kept", renderTable(["reason", "count"], kept.map((row) => [asString(row.reason) ?? "", String(num(row.count))]), ""));
+  }
   return sections.join("\n");
 }
 
@@ -28942,6 +29018,8 @@ function formatTextOutput(
       return formatUsagePrices(value);
     case "router-efficiency":
       return formatRouterEfficiency(value);
+    case "router-shadow":
+      return formatRouterShadow(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":

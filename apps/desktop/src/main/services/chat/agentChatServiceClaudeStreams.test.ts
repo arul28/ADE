@@ -3,6 +3,7 @@ import {
   claudeInputText,
   claudeNoticeMessages,
   claudeSdkCreateSessionCompat,
+  claudeSdkResumeSessionCompat,
   createAgentChatService,
   createClaudeStreamFixture,
   createMemoryTurnUsageLedger,
@@ -933,13 +934,14 @@ describe("createAgentChatService", () => {
             usage: { input_tokens: 220, output_tokens: 8 },
             session_id: "sdk-idle-ledger",
           };
-          // Background turn two: one request of its own.
+          // Background turn two: one request of its own. Claude reports the
+          // query's running total, so this turn's own cost is 0.03 - 0.02.
           yield requestStart("idle-2a", 140);
           yield {
             type: "result",
             subtype: "success",
             is_error: false,
-            total_cost_usd: 0.01,
+            total_cost_usd: 0.03,
             usage: { input_tokens: 140, output_tokens: 4 },
             session_id: "sdk-idle-ledger",
           };
@@ -972,11 +974,50 @@ describe("createAgentChatService", () => {
       });
       expect(idleDone[1]).toMatchObject({
         usage: { inputTokens: 140, requestCount: 1, contextTokens: 140 },
-        costUsd: 0.01,
         costSource: "list_price",
       });
+      expect(idleDone[1]?.costUsd).toBeCloseTo(0.01, 6);
       expect(rows.filter((row) => row.turnId.startsWith("claude-idle-")).map((row) => row.requestCount)).toEqual([2, 1]);
       service.forceDisposeAll();
+    });
+
+    it("prices a resumed Claude session's first turn from the running total it saved", async () => {
+      // A resumed session continues the total its transcript saved, so after a
+      // brain restart the first result already carries the earlier turns.
+      let total = 0.5;
+      const sdkSession = () => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-resume-cost", slash_commands: [] };
+          yield { type: "result", subtype: "success", is_error: false, total_cost_usd: total, usage: { input_tokens: 1, output_tokens: 1 }, session_id: "sdk-resume-cost" };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-resume-cost",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      }) as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(sdkSession);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(sdkSession);
+      const doneCosts = (events: AgentChatEventEnvelope[]) => events
+        .map((entry) => entry.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done")
+        .map((event) => event.costUsd);
+
+      const firstEvents: AgentChatEventEnvelope[] = [];
+      const first = createService({ onEvent: (event: AgentChatEventEnvelope) => firstEvents.push(event) });
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await first.service.runSessionTurn({ sessionId: session.id, text: "First turn." });
+      expect(doneCosts(firstEvents)).toEqual([0.5]);
+      expect(readPersistedChatState(session.id)).toMatchObject({ claudeResultCostTotalUsd: 0.5 });
+      first.service.forceDisposeAll();
+
+      total = 0.6;
+      const resumedEvents: AgentChatEventEnvelope[] = [];
+      const resumed = createService({ onEvent: (event: AgentChatEventEnvelope) => resumedEvents.push(event) });
+      await resumed.service.runSessionTurn({ sessionId: session.id, text: "Second turn after a restart." });
+      const resumedCosts = doneCosts(resumedEvents);
+      expect(resumedCosts).toHaveLength(1);
+      expect(resumedCosts[0]).toBeCloseTo(0.1, 6);
+      resumed.service.forceDisposeAll();
     });
 
     it("stamps user_message_uuid from the first assistant frame onto done", async () => {

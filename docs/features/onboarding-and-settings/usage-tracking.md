@@ -788,22 +788,44 @@ store at a local snapshot instead of the Worker.
 `routeCatalog` builds every route from the union of every open project's model
 list, newest project first — before, it read only the newest project's list,
 which dropped OpenCode routes whenever that project had never listed OpenCode
-models. `routerCore` classifies the task and picks the cheapest route that keeps
+models. `routerCore` classifies the task from its agent type, its short label,
+and its brief (the Agent tool's `prompt`, or an ADE child chat's first message).
+The brief decides most kinds: a brief that forbids edits ("Read-only", "Do not
+edit any files") is `review` or `read_only`, and an opening edit instruction
+("You implement", "Apply the verified fixes", "Fix …") is an edit. The label
+alone left about half the subagents `unknown`. It then picks the cheapest route that keeps
 the expected quality — within the task kind's tolerance of the model that would
 run it anyway, no more than 1.5× slower, and trusted (at least 30 own turns on the
 model, or a measured Artificial Analysis agent row). The efficiency replay
 gives a main chat thread the `lead` kind (tolerance 0.02) and a chat that another
 chat started the `unknown` kind (also 0.02), because the ledger holds no task
 description.
-Plan routes are priced from the ledger's burn rates (dollars per percent of each
-live window, weighted by how fast the window is being used), and a window at 95%
-or more blocks its plan. A cross-plan pick needs medium-or-better burn confidence
+Plan routes are priced from the ledger's burn rates (list dollars per percent of
+each live window), then in dollars of the plan's own price (`ROUTER_PLAN_MONTHLY_USD`,
+an assumed top-tier price per plan, divided over the window's share of a month),
+weighted by how fast the window is being used. A window at 95% or more blocks its
+plan. A cross-plan pick needs medium-or-better burn confidence
 on both plans.
 
-It is **shadow**: it changes no turn. Each subagent start writes one decision line
-to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` (the route it would have picked,
-the estimated saving, and why it kept the original) and the finish writes the
-outcome line. `routeCatalog` and `routerCore` are pure, and the service never
+It is **shadow**: it changes no turn. Each subagent writes one decision line and one
+outcome line to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` when it finishes
+(or after 6 hours with no result). The decision waits for the finish because the
+facts arrive late: Claude reports a child's effort only from inside it (the
+`effort.level` of the PostToolUse and SubagentStop hooks), and the brief can arrive
+after the start. A v2 line records what ran (`requested`: harness, model, effort,
+and whether each was `reported` by the child, `inherited` from the parent, or
+`unknown`), where the kind came from (`kindSource`), the label, the brief's length,
+and three picks: the same model at another effort (`sameModel`), the best route in
+the same harness, and the best route anywhere. An unknown effort is priced at the
+model's default effort, not guessed as `high`. A follow-up message to a finished
+Claude subagent reuses its task id; that run is logged as `<key>#<run>` with the
+first run's brief. When the follow-up starts before the first run's result
+arrives (another tool call), the first run is logged without an outcome, and a
+late result that names the replaced tool call is dropped. An hourly timer, as
+well as each event, gives up on a subagent after 6 hours, so a quiet brain still
+logs it. Briefs come from any subagent-spawning tool (`Agent`, `Task`,
+`spawn_agent`, `subagent`; `prompt`, `message`, `instructions`, or `task`). Reports skip v1 lines (from older builds): they guessed
+`high` for a Claude subagent that named a model and classified from the label only. `routeCatalog` and `routerCore` are pure, and the service never
 throws into the chat. Read it with `ade router shadow --days 7` (action
 `usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
 task with `ade router pick`, and force a fetch with `ade router refresh`.
@@ -818,7 +840,8 @@ cache is cold and a change costs no rebuild:
 - the first turn of the thread;
 - the turn after a context compaction;
 - a turn that starts after the cache expired;
-- a turn where the user changed the model or effort.
+- a turn where the user changed the model or effort, or the chat moved to another
+  account.
 
 The turns from one switch point to the next are a segment. Each segment gets one
 router decision, and its list-price cost scales by the picked route's cost per task
@@ -829,11 +852,15 @@ not a measured run. The replay ignores today's blocked plan windows: it asks whi
 route was cheaper at equal quality, and a window that has since reset says nothing
 about the past.
 
-The router picks plan routes in plan percent, not list dollars. So a move from a
-metered route onto a plan can raise list dollars and still be the cheaper pick. The
-`byBilling` part shows both currencies for each billing: the list dollars, and for a
-plan, the percent of its longest window (dollars divided by the ledger's dollars per
-percent). Read the cross-plan rows with the burn-rate limit below in mind.
+Each segment has three picks: `sameModel` (only the effort changes, the lowest-risk
+switch), `sameHarness`, and `anyHarness`. The router picks plan routes in plan
+percent, not list dollars. So a move from a metered route onto a plan can raise
+list dollars and still be the cheaper pick. The `byBilling` part has one row for
+each plan account (`claude plan · claude:beats`), because each login has its own
+window and burn rate: the list dollars, and the percent of that account's longest
+window. Over a 7-day report a weekly window can reset, so a row above 100% means
+more than one window. Read the cross-plan rows with the burn-rate limit below in
+mind.
 
 The report also summarizes the subagents in the shadow log. Claude reports no
 per-subagent price, so Claude subagents are weighted by tokens instead of dollars.
@@ -844,6 +871,12 @@ form.
 
 Known limits: burn rates count ADE turns only, so a plan also used outside ADE
 looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.
+On the Mac Studio (2026-10-04) the Codex and OpenCode Go rows show more than 100% of
+a window in a week, so most of their window use happens outside ADE. The local
+history scans (`usageLedgerScanners`) see that use, but their entries carry no
+account yet; feeding them to the burn rate is the next step. Briefs are missing
+for about 9% of Claude subagents whose Agent tool call never reached the
+transcript; those classify from the label.
 
 ## Daily usage research report
 
