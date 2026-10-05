@@ -14373,6 +14373,10 @@ export function AgentChatPane({
       : undefined,
   );
   const listRevealChatTerminal = useLatestCallback(revealChatTerminal);
+  // Both close over the draft, so each keystroke made them new and re-rendered
+  // every mounted transcript row.
+  const listInsertDraft = useLatestCallback(insertComposerDraft);
+  const listEditUnprocessedMessage = useLatestCallback(handleEditUnprocessedMessage);
   const listRewindFiles = useLatestCallback(
     selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined,
   );
@@ -16586,7 +16590,7 @@ export function AgentChatPane({
                         laneId={laneId}
                         sessionId={renderedSessionId}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
-                        onInsertDraft={insertComposerDraft}
+                        onInsertDraft={listInsertDraft}
                         onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
                         onRewindFiles={listRewindFiles}
@@ -16596,7 +16600,7 @@ export function AgentChatPane({
                         onCodexRecovery={handleListCodexRecovery}
                         onRecoverContinuity={recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
-                        onEditUnprocessedMessage={handleEditUnprocessedMessage}
+                        onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
