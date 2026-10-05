@@ -4150,12 +4150,11 @@ function readBrowserLeaseArgs(args: string[]): JsonObject {
   };
 }
 
-/** `--isolated` and `--profile <name>` (which implies it) for open/new-tab. */
+/** `--isolated` and `--profile <name>` for open/new-tab; the service treats a profile as isolated. */
 function readBrowserIsolationArgs(args: string[]): JsonObject {
   const profile = readValue(args, ["--profile"]);
-  const isolated = readFlag(args, ["--isolated"]);
   return {
-    ...(isolated || profile ? { isolated: true } : {}),
+    ...(readFlag(args, ["--isolated"]) ? { isolated: true } : {}),
     ...(profile ? { profile } : {}),
   };
 }
@@ -14173,8 +14172,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             unwrapToolResult: true,
             params: (values) => {
               const status = unwrapActionEnvelope(values.result);
+              // The tab the open drove: an agent's open stays in the background,
+              // so the active tab is often somebody else's.
               const resolvedTabId = tabId
-                ?? (isRecord(status) ? asString(status.activeTabId) : null);
+                ?? (isRecord(status) ? asString(status.targetTabId) ?? asString(status.activeTabId) : null);
               return {
                 name: "run_ade_action",
                 arguments: {
@@ -17131,6 +17132,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--path",
   "--position",
   "--preset",
+  "--profile",
   "--query",
   "--reason",
   "--ref",

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
-import type { BrowserWindow, DownloadItem, WebContents } from "electron";
+import type { BrowserWindow, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,7 +16,6 @@ import type {
   BuiltInBrowserClickArgs,
   BuiltInBrowserContextItem,
   BuiltInBrowserCreateTabArgs,
-  BuiltInBrowserIsolationArgs,
   BuiltInBrowserDiagnostics,
   BuiltInBrowserDispatchKeyArgs,
   BuiltInBrowserDomSnapshot,
@@ -195,6 +194,11 @@ import {
 } from "./builtInBrowserPermissions";
 import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
 import {
+  createBuiltInBrowserIsolatedSessions,
+  type BrowserDownloadListener,
+  type BrowserTabIsolation,
+} from "./builtInBrowserIsolation";
+import {
   createBuiltInBrowserStateStore,
   type BuiltInBrowserRestoredCollection,
 } from "./builtInBrowserStateStore";
@@ -347,17 +351,6 @@ function navigationApprovalEffect(
     reason: `the user blocked navigation to ${approval.origin} for this chat; the page did not leave`,
   };
 }
-
-/**
- * A tab's own throwaway sign-in: the in-memory partition it was created in and
- * the profile name the agent asked for. Null on a shared-profile tab.
- */
-export type BrowserTabIsolation = {
-  partition: string;
-  profile: string;
-  /** Names the (collection, chat or lane, profile) jar across generations. */
-  key: string;
-};
 
 export type BrowserTabState = {
   id: string;
@@ -521,11 +514,6 @@ type BrowserSessionState = {
 };
 
 export type BuiltInBrowserElementTargetInput = BuiltInBrowserObservationArgs & BuiltInBrowserElementTargetArgs;
-type BrowserDownloadListener = (
-  event: { preventDefault: () => void },
-  item: DownloadItem,
-  downloadWebContents: WebContents,
-) => void;
 
 type BrowserNetworkObserver = {
   onRequestStarted: (details: Record<string, unknown>) => void;
@@ -2620,20 +2608,12 @@ function createBuiltInBrowserWindowService(args: {
     && !tab.handoff?.previousOwner.laneId
     && !tab.handoff?.previousOwner.chatSessionId;
 
-  /**
-   * `partition`, when given, also requires the tab's sign-in to match: the
-   * shared profile for `null`, one isolated jar for its partition. `open`
-   * passes it so a chat never drifts between identities by reusing a tab.
-   */
   const reusableOwnedTabForInput = (
     input: BuiltInBrowserClaimArgs = {},
-    partition?: string | null,
+    accept: (tab: BrowserTabState) => boolean = () => true,
   ): BrowserTabState | null => {
     pruneDestroyedTabs();
-    const matches = (entry: BrowserTabState): boolean => (
-      tabMatchesOwnerInput(entry, input)
-      && (partition === undefined || (entry.isolation?.partition ?? null) === partition)
-    );
+    const matches = (entry: BrowserTabState): boolean => tabMatchesOwnerInput(entry, input) && accept(entry);
     // Prefer the tab the user most recently activated for this lane; otherwise
     // fall back to the newest matching tab (reverse creation order) so a lane
     // with multiple owned tabs doesn't keep driving the oldest one.
@@ -3379,7 +3359,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const createTabState = (isolation: BrowserTabIsolation | null = null): BrowserTabState => {
     configureBrowserSession();
-    if (isolation) configureIsolatedSession(isolation);
+    if (isolation) isolatedSessions.ensure(isolation, browserDownloadListener);
     return createTabStateForView(new WebContentsView({
       webPreferences: browserWebPreferences(isolation?.partition),
     }), isolation);
@@ -3868,89 +3848,34 @@ function createBuiltInBrowserWindowService(args: {
     browserDownloadListener = null;
   };
 
-  /**
-   * Isolated sign-ins this window created, by partition. A partition without
-   * `persist:` lives only in memory; it is also wiped when its last tab closes
-   * so "throwaway" holds within one run of the app, not just across runs.
-   */
-  const isolatedSessions = new Map<string, {
-    session: Electron.Session;
-    downloadListener: BrowserDownloadListener | null;
-    key: string;
-  }>();
-  /**
-   * Bumped each time a jar is thrown away, so the next tab with that profile
-   * gets a new partition rather than one whose wipe is still in flight.
-   */
-  const isolatedGenerations = new Map<string, number>();
-
-  const isolationForInput = (input: BuiltInBrowserIsolationArgs): BrowserTabIsolation | null => {
-    const requested = typeof input.profile === "string" ? input.profile.trim() : "";
-    if (!input.isolated && !requested) return null;
-    const profile = requested || "default";
-    if (!/^[A-Za-z0-9._-]{1,40}$/.test(profile)) {
-      throw new Error("An isolated browser profile name uses 1-40 letters, digits, '.', '_' or '-'.");
-    }
-    // One jar per (collection, chat or lane, name): two chats that both say
-    // "viewer" must not sign each other out.
-    const claim = input as BuiltInBrowserClaimArgs;
-    const scope = claim.chatSessionId?.trim() || claim.laneId?.trim() || "user";
-    const key = createHash("sha256")
-      .update(`${args.collection.key}\u0000${scope}\u0000${profile}`)
-      .digest("hex")
-      .slice(0, 24);
-    const generation = isolatedGenerations.get(key) ?? 0;
-    return { partition: `ade-browser-isolated-${key}-${generation}`, profile, key };
+  /** Session setup every tab's profile gets, shared or isolated. */
+  const configureTabSession = (browserSession: Electron.Session): void => {
+    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    args.permissionController.configureSession(browserSession);
+    args.networkRouter.configureSession(browserSession);
   };
 
-  const configureIsolatedSession = ({ partition, key }: BrowserTabIsolation): void => {
-    if (isolatedSessions.has(partition)) return;
-    const isolatedSession = session.fromPartition(partition);
-    args.permissionController.configureSession(isolatedSession);
-    args.networkRouter.configureSession(isolatedSession);
-    const downloadListener = browserDownloadListener;
-    if (downloadListener) isolatedSession.on("will-download", downloadListener);
-    isolatedSessions.set(partition, { session: isolatedSession, downloadListener, key });
-  };
+  const isolatedSessions = createBuiltInBrowserIsolatedSessions({
+    ownerKey: `${args.collection.key}\u0000${randomUUID()}`,
+    configureSession: configureTabSession,
+    logger,
+  });
 
   const releaseUnusedIsolatedSessions = (): void => {
-    if (!isolatedSessions.size) return;
-    const liveIsolations = tabs
-      .filter((tab) => !tab.webContents.isDestroyed())
-      .map((tab) => tab.isolation)
-      .filter((isolation): isolation is BrowserTabIsolation => Boolean(isolation));
-    const inUse = new Set(liveIsolations.map((isolation) => isolation.partition));
-    for (const [partition, { session: isolatedSession, downloadListener, key }] of isolatedSessions) {
-      if (inUse.has(partition)) continue;
-      isolatedSessions.delete(partition);
-      isolatedGenerations.set(key, (isolatedGenerations.get(key) ?? 0) + 1);
-      if (downloadListener) {
-        try {
-          isolatedSession.removeListener("will-download", downloadListener);
-        } catch {
-          // ignore session teardown races
-        }
-      }
-      void Promise.allSettled([
-        isolatedSession.clearStorageData(),
-        isolatedSession.clearCache(),
-      ]).then(() => {
-        logger()?.info("built_in_browser.isolated_profile_cleared", { partition });
-      });
-    }
+    isolatedSessions.release(new Set(tabs.flatMap((tab) => (
+      tab.isolation && !tab.webContents.isDestroyed() ? [tab.isolation.partition] : []
+    ))));
   };
 
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = browserSessionForProfile();
     configuredBrowserSession = browserSession;
-    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
-    args.permissionController.configureSession(browserSession);
+    configureTabSession(browserSession);
     unsubscribeNetworkObserver = args.networkRouter.subscribe({
       onRequestStarted: trackNetworkRequestStart,
       onRequestFinished: trackNetworkRequestEnd,
     });
-    args.networkRouter.configureSession(browserSession);
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) {
@@ -4734,11 +4659,15 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
-    const isolation = isolationForInput(input);
+    const isolation = isolatedSessions.forInput(input);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
-    const reusePartition = isolation?.partition ?? null;
-    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input, reusePartition) : null;
+    // A chat never drifts between identities by reusing a tab: only a tab in
+    // the sign-in this call asked for (the shared one when it asked for none).
+    const inRequestedSignIn = (tab: BrowserTabState): boolean => (
+      (tab.isolation?.partition ?? null) === (isolation?.partition ?? null)
+    );
+    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input, inRequestedSignIn) : null;
     // An isolated open never lands in whatever tab happens to be active: that
     // tab is in some other sign-in.
     let createNewTab = explicitNewTab
@@ -4776,7 +4705,7 @@ function createBuiltInBrowserWindowService(args: {
     // prompt. Deciding before the wait let each of them see "no owned tab yet"
     // and open its own — three example.com tabs for one intent.
     if (reuseOwnedTab && !reusableOwnedTab) {
-      const ownedNow = reusableOwnedTabForInput(input, reusePartition);
+      const ownedNow = reusableOwnedTabForInput(input, inRequestedSignIn);
       if (ownedNow) {
         assertHandoffAllowsAgentAction(ownedNow, input);
         assertTabLeaseAvailable(ownedNow, input);
@@ -4784,6 +4713,9 @@ function createBuiltInBrowserWindowService(args: {
         createNewTab = false;
       }
     }
+    // A sign-in whose last tab just closed is still being wiped; a tab made in
+    // it now would lose whatever it signs in to when the wipe lands.
+    if (createNewTab && isolation) await isolatedSessions.whenReady(isolation);
     const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
     const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
     const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
@@ -4825,8 +4757,10 @@ function createBuiltInBrowserWindowService(args: {
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
-    // Normalize URL up front so we don't leave an orphan tab on invalid input.
+    // Normalize URL and profile up front so we don't leave an orphan tab, or
+    // side effects, on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    const isolation = isolatedSessions.forInput(input);
     await args.agentAccessController.requireUrlAccess(
       normalizedUrl,
       input,
@@ -4838,7 +4772,8 @@ function createBuiltInBrowserWindowService(args: {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
     }
-    const tab = createTabState(isolationForInput(input));
+    if (isolation) await isolatedSessions.whenReady(isolation);
+    const tab = createTabState(isolation);
     // No URL means "give me somewhere to start": the tab stays on about:blank
     // and the pane renders its launchpad. ADE never picks a home page for you,
     // and never issues a request you did not ask for.

@@ -163,6 +163,10 @@ export function createRemoteBrowserForwarder(args: {
       // person's own call). An agent opening a tab for itself to drive is not
       // that and stays on this machine.
       const showToUser = method === "showPanel" || record.openPanel === true;
+      // An isolated sign-in exists only in this machine's desktop. A copy
+      // opened anywhere else would land in the user's own sign-in, which is
+      // exactly what an isolated tab is for avoiding.
+      const isolated = record.isolated === true || Boolean(stringOrNull(record.profile));
       // Revealing a panel on this machine has no use when the user is
       // elsewhere and nothing here loads a page an agent drives.
       let forwarded: BuiltInBrowserForwardedToDesktop | null = null;
@@ -179,9 +183,14 @@ export function createRemoteBrowserForwarder(args: {
         result = await call(localInput);
       } catch (error) {
         if (!(error instanceof DesktopBridgeUnavailableError)) throw error;
+        if (isolated) {
+          throw new Error(
+            "An isolated tab (--isolated or --profile) opens only in ADE Desktop on this machine, and none is attached. It was not forwarded, because another desktop would open it in the user's own sign-in. Open ADE Desktop here with this project.",
+          );
+        }
         return forwarded ?? await forwardToUser(input, remoteTargetId);
       }
-      if (showToUser && !forwarded && (remoteTargetId || !origin)) {
+      if (showToUser && !forwarded && !isolated && (remoteTargetId || !origin)) {
         // Also put it on the other screen: the one the user is talking from,
         // or every connected one when nobody can tell.
         void forwardToUser(input, remoteTargetId).catch(() => {});

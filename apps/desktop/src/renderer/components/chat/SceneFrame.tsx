@@ -227,8 +227,13 @@ async function captureSceneShell(
   return dataUrl ? { kind: "captured", dataUrl } : { kind: "empty" };
 }
 
-/** How long a capture thrown away for moving waits before it tries again. */
+/**
+ * How long a capture thrown away for moving waits before it tries again. It
+ * doubles per consecutive miss up to the cap: a pinned transcript scrolls every
+ * frame while a turn streams, and each try is a window grab plus a PNG encode.
+ */
 const SCENE_CAPTURE_RETRY_MS = 250;
+const SCENE_CAPTURE_RETRY_MAX_MS = 4_000;
 
 export function SceneFrame({
   source,
@@ -286,6 +291,8 @@ export function SceneFrame({
   const [stillAttempt, setStillAttempt] = useState(0);
   /** One still per mounted scene: a second capture would only cost a window grab. */
   const stillTakenRef = useRef(false);
+  /** Consecutive captures thrown away for moving; sets the retry backoff. */
+  const captureMissesRef = useRef(0);
 
   /**
    * Show the picture this scene already left behind, or run its code? The whole
@@ -427,6 +434,7 @@ export function SceneFrame({
   useEffect(() => {
     freezeDeadlineRef.current = null;
     stillTakenRef.current = false;
+    captureMissesRef.current = 0;
     setStill(null);
   }, [src]);
 
@@ -515,13 +523,15 @@ export function SceneFrame({
           // has gone off screen meanwhile.
           stillTakenRef.current = false;
           if (result.kind !== "empty") {
+            const misses = captureMissesRef.current++;
             retryTimer = window.setTimeout(
               () => setStillAttempt((attempt) => attempt + 1),
-              SCENE_CAPTURE_RETRY_MS,
+              Math.min(SCENE_CAPTURE_RETRY_MS * 2 ** misses, SCENE_CAPTURE_RETRY_MAX_MS),
             );
           }
           return;
         }
+        captureMissesRef.current = 0;
         const { dataUrl } = result;
         setStill(dataUrl);
         if (scopeKey) rememberSceneStill(scopeKey, { dataUrl });
