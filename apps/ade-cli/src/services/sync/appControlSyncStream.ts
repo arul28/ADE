@@ -110,7 +110,15 @@ export type AppControlSyncSource = {
    * publishes a fresh capture as a `frame` event, which fans out as usual.
    */
   getLatestFrame?: (args: { laneId: string }) => Promise<AppControlScreencastFrame | null>;
+  /**
+   * Which lanes this module has viewers for. The service streams a lane's
+   * screencast only while something wants its frames.
+   */
+  setFrameDemand?: (sourceId: string, laneIds: readonly string[]) => void;
 };
+
+/** This module's name in the service's frame-demand registry. */
+export const APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE = "sync-stream";
 
 export type AppControlSyncStreamDeps = {
   logger: Logger;
@@ -221,6 +229,11 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
   const pendingLimitBytes = Math.max(0, deps.pendingLimitBytes ?? APP_CONTROL_SYNC_STREAM_PENDING_LIMIT_BYTES);
 
   const subscriptions = new Map<string, Subscription>();
+  const reportFrameDemand = (): void => {
+    const laneIds = new Set<string>();
+    for (const subscription of subscriptions.values()) laneIds.add(subscription.laneId);
+    deps.source.setFrameDemand?.(APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE, [...laneIds]);
+  };
   /**
    * Subscribe calls still awaiting the status read. An unsubscribe or a
    * socket close that lands meanwhile marks the entry cancelled, so the call
@@ -379,6 +392,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
     if (subscription.ended) return;
     subscription.ended = true;
     subscriptions.delete(subscription.key);
+    reportFrameDemand();
     cancelTimer(subscription);
     subscription.pending = null;
     if (options.notify) {
@@ -583,6 +597,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
         ended: false,
       };
       subscriptions.set(key, subscription);
+      reportFrameDemand();
       deps.logger.debug("app_control.sync_stream_subscribed", {
         subscriptionId,
         laneId,

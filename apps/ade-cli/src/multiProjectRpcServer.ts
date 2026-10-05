@@ -405,6 +405,9 @@ export async function readMachineRuntimeActivitySummary(args: {
   };
 }
 
+/** Names each connection's entry in a project's App Control frame demand. */
+let nextFrameDemandConnectionId = 1;
+
 const RUNTIME_METHODS = new Set([
   "machines.call",
   "machines.list",
@@ -445,6 +448,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "appControl.setFrameDemand",
   "sync.switchHost",
   "sync.getStatus",
   "sync.runSelfProbe",
@@ -1139,6 +1143,24 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
+  /**
+   * This connection's say in which lanes' screencasts stream. A client that
+   * subscribes to frames without ever calling `appControl.setFrameDemand`
+   * predates demand and wants every lane, as before; the first declaration
+   * replaces that.
+   */
+  const frameDemandSource = `rpc-connection-${nextFrameDemandConnectionId++}`;
+  let frameDemandDeclared = false;
+  const legacyFrameDemandReleases = new Map<string, () => void>();
+  const declaredFrameDemandReleases = new Map<string, () => void>();
+  const releaseFrameDemands = (releases: Map<string, () => void>): void => {
+    for (const release of releases.values()) {
+      try {
+        release();
+      } catch {}
+    }
+    releases.clear();
+  };
   /** The name this connection's client gave itself in `ade/initialize`. */
   const callerClientName = (): string | null =>
     isRecord(initializedParams) && typeof initializedParams.clientName === "string"
@@ -1512,10 +1534,24 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
+    let releaseLegacyFrameDemand: (() => void) | null = null;
+    const frameService = scope.runtime.appControlService ?? null;
+    if (includeHighVolumeEvents && !frameDemandDeclared && frameService) {
+      const legacySource = `${frameDemandSource}:${subscriptionId}`;
+      frameService.setFrameDemand(legacySource, "all");
+      releaseLegacyFrameDemand = () => frameService.setFrameDemand(legacySource, null);
+      legacyFrameDemandReleases.set(legacySource, releaseLegacyFrameDemand);
+    }
     eventSubscriptions.set(subscriptionId, {
       id: subscriptionId,
       projectId,
-      unsubscribe,
+      unsubscribe: () => {
+        unsubscribe();
+        if (releaseLegacyFrameDemand) {
+          legacyFrameDemandReleases.delete(`${frameDemandSource}:${subscriptionId}`);
+          releaseLegacyFrameDemand();
+        }
+      },
     });
 
     const replayResult = replay
@@ -1611,6 +1647,31 @@ export function createMultiProjectRpcRequestHandler(
       gap: subscribed.replay.gap === true,
       oldestCursor: subscribed.replay.oldestCursor ?? null,
     };
+  };
+
+  /** Which lanes' App Control frames this connection shows, for one project. */
+  const setAppControlFrameDemand = async (params: Record<string, unknown>) => {
+    const projectId = readProjectId(params);
+    if (!projectId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "appControl.setFrameDemand requires projectId.",
+      );
+    }
+    // `all`: a view that shows whichever lane it is given, before it knows which.
+    const laneIds = params.all === true
+      ? "all" as const
+      : Array.isArray(params.laneIds)
+        ? params.laneIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : [];
+    frameDemandDeclared = true;
+    releaseFrameDemands(legacyFrameDemandReleases);
+    const scope = await scopeRegistry.get(projectId);
+    const service = scope.runtime.appControlService ?? null;
+    if (!service || disposed) return { applied: false };
+    service.setFrameDemand(frameDemandSource, laneIds);
+    declaredFrameDemandReleases.set(projectId, () => service.setFrameDemand(frameDemandSource, null));
+    return { applied: true };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -2603,6 +2664,10 @@ export function createMultiProjectRpcRequestHandler(
       return unsubscribeRuntimeEvents(params);
     }
 
+    if (method === "appControl.setFrameDemand") {
+      return await setAppControlFrameDemand(params);
+    }
+
     if (method === "sync.getStatus") {
       const scope = await scopeRegistry.resolveActiveSyncHost();
       const syncService = scope?.runtime.syncService ?? null;
@@ -2914,6 +2979,8 @@ export function createMultiProjectRpcRequestHandler(
       subscription.unsubscribe();
     }
     eventSubscriptions.clear();
+    releaseFrameDemands(legacyFrameDemandReleases);
+    releaseFrameDemands(declaredFrameDemandReleases);
     for (const cached of handlers.values()) {
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }

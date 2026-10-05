@@ -71,10 +71,38 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   /** laneId → that lane's session machinery. One service per project, one session per lane. */
   const controllers = new Map<string, AppControlLaneController>();
 
+  /**
+   * Who wants live frames, by source: a desktop's windows, the sync viewers, a
+   * client from before demand existed (`"all"`). A lane's screencast streams
+   * only while a source names it or it is recording; otherwise an attached app
+   * encodes nothing and this process forwards nothing.
+   */
+  const frameDemandBySource = new Map<string, ReadonlySet<string> | "all">();
+
+  const isFrameDemanded = (laneId: string): boolean => {
+    if (recording.isRecording(laneId)) return true;
+    for (const demand of frameDemandBySource.values()) {
+      if (demand === "all" || demand.has(laneId)) return true;
+    }
+    return false;
+  };
+
+  const setFrameDemand = (sourceId: string, laneIds: readonly string[] | "all" | null): void => {
+    const key = sourceId.trim();
+    if (!key) return;
+    const lanes = laneIds === "all" ? "all" : new Set((laneIds ?? []).map((id) => id.trim()).filter(Boolean));
+    if (lanes !== "all" && lanes.size === 0) frameDemandBySource.delete(key);
+    else frameDemandBySource.set(key, lanes);
+    for (const controller of controllers.values()) controller.refreshFrameDemand();
+  };
+
   const recording = createAppControlRecording({
     logger: args.logger,
     projectRoot: args.projectRoot,
-    emit: (payload) => args.onEvent?.(payload),
+    emit: (payload) => {
+      if (payload.type === "recording-changed") controllers.get(payload.laneId)?.refreshFrameDemand();
+      args.onEvent?.(payload);
+    },
     getSession: (laneId) => controllers.get(laneId)?.getSession() ?? null,
     getLastFrame: (laneId) => controllers.get(laneId)?.getLastFrame() ?? null,
     resolveAppProcessId: async (laneId) => await controllers.get(laneId)?.resolveAppProcessId() ?? null,
@@ -93,7 +121,10 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const controllerFor = (laneId: string): AppControlLaneController => {
     let controller = controllers.get(laneId);
     if (!controller) {
-      controller = createAppControlLaneController({ args, recording, sourceFileCache }, laneId);
+      controller = createAppControlLaneController(
+        { args, recording, sourceFileCache, isFrameDemanded: () => isFrameDemanded(laneId) },
+        laneId,
+      );
       controllers.set(laneId, controller);
     }
     return controller;
@@ -463,6 +494,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   return {
     getStatus,
+    setFrameDemand,
     claim,
     launch,
     launchInTerminal: launch,

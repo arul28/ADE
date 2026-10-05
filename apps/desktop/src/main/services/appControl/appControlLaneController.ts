@@ -1335,7 +1335,29 @@ export type AppControlLaneControllerContext = {
   recording: ReturnType<typeof createAppControlRecording>;
   /** The service's bounded source-file cache, shared by every lane. */
   sourceFileCache: Map<string, string[]>;
+  /**
+   * Whether anything shows or records this lane's frames. Absent means always:
+   * the screencast then streams whenever a session is attached.
+   */
+  isFrameDemanded?: () => boolean;
 };
+
+/**
+ * How long a lane keeps streaming after its last viewer goes, so a pane that
+ * remounts or a card that flips does not restart the screencast.
+ */
+const APP_CONTROL_FRAME_DEMAND_GRACE_MS = 5_000;
+
+const APP_CONTROL_SCREENCAST_PARAMS = {
+  format: "jpeg",
+  // 78 is the empirical sweet spot for JPEG over CDP — visibly clean text
+  // without ballooning per-frame payload (which would re-introduce lag
+  // through the IPC + base64 hop).
+  quality: 78,
+  maxWidth: 1600,
+  maxHeight: 1000,
+  everyNthFrame: 1,
+} as const;
 
 /**
  * One lane's App Control session and everything that hangs off it: the CDP
@@ -1344,6 +1366,7 @@ export type AppControlLaneControllerContext = {
  */
 export function createAppControlLaneController(context: AppControlLaneControllerContext, laneId: string) {
   const { args, recording, sourceFileCache } = context;
+  const isFrameDemanded = context.isFrameDemanded ?? (() => true);
   let activeSession: AppControlSession | null = null;
   let lastSelectedItem: AppControlContextItem | null = null;
   let cdpPollTimer: NodeJS.Timeout | null = null;
@@ -1355,6 +1378,11 @@ export function createAppControlLaneController(context: AppControlLaneController
   let screencastEndpoint: string | null = null;
   let screencastGeneration = 0;
   let lastScreencastFrame: AppControlScreencastFrame | null = null;
+  // The CDP client stays attached for diagnostics; only the frame stream
+  // follows demand. A paused stream costs the app no encoding and this
+  // process no frames.
+  let screencastStreaming = false;
+  let frameDemandPauseTimer: NodeJS.Timeout | null = null;
   // Agent-observation state. Diagnostics ride along on the persistent
   // screencast client so `observe` can report console errors, failed requests,
   // and in-flight request count without opening another socket per call.
@@ -1486,8 +1514,16 @@ export function createAppControlLaneController(context: AppControlLaneController
     ]);
   };
 
+  const clearFrameDemandPauseTimer = (): void => {
+    if (!frameDemandPauseTimer) return;
+    clearTimeout(frameDemandPauseTimer);
+    frameDemandPauseTimer = null;
+  };
+
   const stopScreencast = async () => {
     screencastGeneration += 1;
+    screencastStreaming = false;
+    clearFrameDemandPauseTimer();
     const client = screencastClient;
     screencastClient = null;
     screencastSessionId = null;
@@ -1681,6 +1717,8 @@ export function createAppControlLaneController(context: AppControlLaneController
     screencastTargetId = null;
     screencastEndpoint = null;
     lastScreencastFrame = null;
+    screencastStreaming = false;
+    clearFrameDemandPauseTimer();
     await closeScreencastClient(previousClient);
     let client: CdpClient;
     try {
@@ -1724,6 +1762,12 @@ export function createAppControlLaneController(context: AppControlLaneController
         return;
       }
       if (!params || typeof params !== "object") return;
+      if (!screencastStreaming) {
+        // A frame already in flight when the stream paused: ack it, keep none.
+        const late = (params as { sessionId?: unknown }).sessionId;
+        if (typeof late === "number") client.send("Page.screencastFrameAck", { sessionId: late }).catch(() => {});
+        return;
+      }
       const record = params as {
         data?: string;
         sessionId?: number;
@@ -1775,23 +1819,49 @@ export function createAppControlLaneController(context: AppControlLaneController
         client.send("Page.screencastFrameAck", { sessionId: ack }).catch(() => {});
       }
     });
+    if (!isFrameDemanded()) return;
+    screencastStreaming = true;
     try {
-      await client.send("Page.startScreencast", {
-        format: "jpeg",
-        // 78 is the empirical sweet spot for JPEG over CDP — visibly clean text
-        // without ballooning per-frame payload (which would re-introduce lag
-        // through the IPC + base64 hop).
-        quality: 78,
-        maxWidth: 1600,
-        maxHeight: 1000,
-        everyNthFrame: 1,
-      });
+      await client.send("Page.startScreencast", APP_CONTROL_SCREENCAST_PARAMS);
     } catch (error) {
+      if (screencastGeneration === generation && screencastClient === client) screencastStreaming = false;
       args.logger.debug?.("app_control.screencast_start_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       if (screencastGeneration === generation) await stopScreencast();
     }
+  };
+
+  /**
+   * Start or pause the frame stream to match demand. Starting is immediate; a
+   * pause waits out a short grace. A paused lane drops its cached frame so a
+   * screenshot or a new viewer captures the app as it is now, not as it was.
+   */
+  const refreshFrameDemand = (): void => {
+    const client = screencastClient;
+    if (!client || client.isClosed()) return;
+    if (isFrameDemanded()) {
+      clearFrameDemandPauseTimer();
+      if (screencastStreaming) return;
+      const generation = screencastGeneration;
+      screencastStreaming = true;
+      void client.send("Page.startScreencast", APP_CONTROL_SCREENCAST_PARAMS).catch((error) => {
+        if (screencastGeneration === generation && screencastClient === client) screencastStreaming = false;
+        args.logger.debug?.("app_control.screencast_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
+    if (!screencastStreaming || frameDemandPauseTimer) return;
+    frameDemandPauseTimer = setTimeout(() => {
+      frameDemandPauseTimer = null;
+      if (screencastClient !== client || !screencastStreaming || isFrameDemanded()) return;
+      screencastStreaming = false;
+      lastScreencastFrame = null;
+      void client.send("Page.stopScreencast").catch(() => {});
+    }, APP_CONTROL_FRAME_DEMAND_GRACE_MS);
+    frameDemandPauseTimer.unref?.();
   };
 
   const startCdpPoller = (sessionId: string, port: number) => {
@@ -3146,6 +3216,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     getSession: (): AppControlSession | null => activeSession,
     getLastFrame: (): AppControlScreencastFrame | null => lastScreencastFrame,
     getLatestFrame,
+    refreshFrameDemand,
     getLastSelectedItem: (): AppControlContextItem | null => lastSelectedItem,
     getTargetTitle: async (): Promise<string | null> => {
       const session = activeSession;

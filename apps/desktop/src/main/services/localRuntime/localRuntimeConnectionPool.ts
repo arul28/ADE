@@ -1166,6 +1166,10 @@ export class LocalRuntimeConnectionPool {
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
+  /** Lanes whose App Control frames this desktop's windows show. */
+  private appControlFrameLanes: readonly string[] | "all" = [];
+  /** projectId → the client that project's event subscription runs on. */
+  private readonly frameDemandClients = new Map<string, RuntimeRpcClient>();
 
   constructor(
     private readonly appVersion: string,
@@ -2130,7 +2134,35 @@ export class LocalRuntimeConnectionPool {
   ): Promise<() => void> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    return await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
+    const unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
+    // The subscription asks for frames; say at once which lanes are actually
+    // shown, so the brain does not stream every lane's screencast meanwhile.
+    this.frameDemandClients.set(project.projectId, entry.client);
+    this.declareAppControlFrameDemand(entry.client, project.projectId);
+    return unsubscribe;
+  }
+
+  /**
+   * Which lanes' App Control frames this desktop shows, across its windows.
+   * The brain streams a lane's screencast only while something shows it.
+   */
+  setAppControlFrameLanes(lanes: readonly string[] | "all"): void {
+    this.appControlFrameLanes = lanes === "all" ? "all" : [...lanes];
+    for (const [projectId, client] of this.frameDemandClients) {
+      this.declareAppControlFrameDemand(client, projectId);
+    }
+  }
+
+  private declareAppControlFrameDemand(client: RuntimeRpcClient, projectId: string): void {
+    const lanes = this.appControlFrameLanes;
+    void client.call(
+      "appControl.setFrameDemand",
+      { projectId, ...(lanes === "all" ? { all: true } : { laneIds: lanes }) },
+      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+    ).catch(() => {
+      // An older brain has no demand and streams every lane, as before; a
+      // closed client is replaced on the next subscription.
+    });
   }
 
   async callSyncForRoot<T>(

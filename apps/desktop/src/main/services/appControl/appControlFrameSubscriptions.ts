@@ -14,6 +14,38 @@ export const APP_CONTROL_FRAME_ALL_LANES = "*";
  */
 const laneIdsByWebContentsId = new Map<number, Set<string>>();
 const cleanupRegistered = new Set<number>();
+const changeListeners = new Set<() => void>();
+
+const notifyChanged = (): void => {
+  for (const listener of [...changeListeners]) {
+    try {
+      listener();
+    } catch {}
+  }
+};
+
+/**
+ * Every lane any window holds, or `"all"` when one holds every lane. This is
+ * what the screencast follows: a lane no window shows streams no frames.
+ */
+export function heldAppControlFrameLanes(): string[] | "all" {
+  const lanes = new Set<string>();
+  for (const held of laneIdsByWebContentsId.values()) {
+    for (const laneId of held) {
+      if (laneId === APP_CONTROL_FRAME_ALL_LANES) return "all";
+      lanes.add(laneId);
+    }
+  }
+  return [...lanes];
+}
+
+/** Called after any window's held lanes change, or a window goes away. */
+export function onAppControlFrameLanesChanged(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
 
 export function normalizeAppControlFrameLaneIds(value: unknown): Set<string> {
   const ids = new Set<string>();
@@ -32,11 +64,13 @@ export function setAppControlFrameLanesForSender(
 ): void {
   const webContentsId = sender.id;
   laneIdsByWebContentsId.set(webContentsId, laneIds);
+  notifyChanged();
   if (cleanupRegistered.has(webContentsId)) return;
   cleanupRegistered.add(webContentsId);
   sender.once("destroyed", () => {
     cleanupRegistered.delete(webContentsId);
     laneIdsByWebContentsId.delete(webContentsId);
+    notifyChanged();
   });
 }
 

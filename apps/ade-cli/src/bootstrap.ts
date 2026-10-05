@@ -3052,6 +3052,7 @@ export async function createAdeRuntime(args: {
               getStatus: appControlService.getStatus,
               subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
               getLatestFrame: appControlService.getLatestFrame,
+              setFrameDemand: appControlService.setFrameDemand,
             }
           : null,
         appleDeviceService: iosSimulatorService,

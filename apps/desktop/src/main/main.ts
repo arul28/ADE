@@ -144,10 +144,15 @@ import {
   shouldSendPtyDataToWebContents,
 } from "./services/pty/ptyDataSubscriptions";
 import {
+  heldAppControlFrameLanes,
   normalizeAppControlFrameLaneIds,
+  onAppControlFrameLanesChanged,
   setAppControlFrameLanesForSender,
   shouldSendAppControlFrameToWebContents,
 } from "./services/appControl/appControlFrameSubscriptions";
+
+/** The desktop's windows, in a project service's App Control frame demand. */
+const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
@@ -2101,6 +2106,15 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  // App Control screencasts follow what the windows show: a lane no window
+  // holds streams no frames, in the brain or in a project hosted here.
+  onAppControlFrameLanesChanged(() => {
+    const lanes = heldAppControlFrameLanes();
+    localRuntimePool.setAppControlFrameLanes(lanes);
+    for (const ctx of projectContexts.values()) {
+      ctx.appControlService?.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, lanes);
+    }
   });
   const accountVaultBridge = createAccountVaultBridge({
     getPool: () => localRuntimePool,
@@ -5128,6 +5142,7 @@ app.whenReady().then(async () => {
         return lane?.name ?? null;
       },
     });
+    appControlService.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, heldAppControlFrameLanes());
     // The session is per lane and owned by a chat: it goes when the chat ends
     // and when its lane is archived or deleted.
     agentChatService.registerChatSessionEndedListener((sessionId) => {
