@@ -169,12 +169,14 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   output so the renderer-less surfaces (TUI `TerminalPane`, mobile
   Work tab, `ade terminal preview`) can render a real xterm buffer
   snapshot without subscribing to the live data stream. Writes are
-  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500`) and flushed to
+  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000`, because each write
+  serializes the whole scrollback) and flushed to
   `.ade/cache/terminal-snapshots/<sessionId>.json` as a
   `TerminalSerializedSnapshot` (version 1: cols / rows / cursor /
   viewport / buffer-type / serialized scrollback + per-cell visible
-  rows). Flushed on PTY exit, on resize, and on every
-  `terminal.preview` call.
+  rows). Flushed on PTY exit, on dispose, on resize, and on every
+  `terminal.preview` call, so the debounce only bounds how stale the
+  file is when the brain dies.
 - initial input: `initialInputTimer` — deferred initial-input write for
   callers that pass `args.initialInput` with an `initialInputDelayMs`;
   `userInputGeneration` advances on every user write so a deferred launch

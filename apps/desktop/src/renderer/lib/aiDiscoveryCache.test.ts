@@ -284,14 +284,33 @@ describe("aiDiscoveryCache", () => {
     try {
       invalidateAiDiscoveryCache("/project/a");
       invalidateAiDiscoveryCache();
+      invalidateAiDiscoveryCache("/project/b", { force: false });
     } finally {
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, listener);
     }
 
     expect(events).toEqual([
-      { projectRoot: "/project/a", allProjects: false },
-      { projectRoot: null, allProjects: true },
+      { projectRoot: "/project/a", allProjects: false, force: true },
+      { projectRoot: null, allProjects: true, force: true },
+      { projectRoot: "/project/b", allProjects: false, force: false },
     ]);
+  });
+
+  it("revalidate skips a fresh cache entry without asking the brain to re-probe", async () => {
+    const status = { mode: "subscription", availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] };
+    getStatusMock.mockResolvedValue(status);
+
+    await getAiStatusCached({ projectRoot: "/project/a" });
+    await getAiStatusCached({ projectRoot: "/project/a" });
+    expect(getStatusMock).toHaveBeenCalledTimes(1);
+
+    await getAiStatusCached({ projectRoot: "/project/a", revalidate: true });
+    expect(getStatusMock).toHaveBeenCalledTimes(2);
+    expect(getStatusMock).toHaveBeenLastCalledWith({ force: false, refreshOpenCodeInventory: false });
+
+    await getAiStatusCached({ projectRoot: "/project/a", force: true });
+    expect(getStatusMock).toHaveBeenCalledTimes(3);
+    expect(getStatusMock).toHaveBeenLastCalledWith({ force: true, refreshOpenCodeInventory: false });
   });
 
   it("emits one project-scoped update after a fresh status request", async () => {
