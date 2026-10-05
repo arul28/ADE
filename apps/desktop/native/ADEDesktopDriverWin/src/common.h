@@ -77,6 +77,11 @@ struct DriverError {
 // nothing here may print a password, a token, or a window title.
 void logLine(const std::string& message);
 
+// Logs where another thread of this process is right now: one line of
+// module!export+offset frames. For a wedge report, so the log names the call a
+// hung thread is stuck in. x64 only; does nothing elsewhere.
+void logThreadStack(DWORD threadId, const std::string& label);
+
 // ISO-8601 UTC with milliseconds, e.g. 2026-09-30T12:00:00.000Z.
 std::string isoNow();
 std::string isoFromFileTime(const FILETIME& ft);

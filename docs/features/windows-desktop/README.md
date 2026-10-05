@@ -81,6 +81,16 @@ blank test document or app for proof; restored tabs can contain private files.
 Setup and sign-in leave status/ping responsive. The setup prompt is bounded to
 two minutes; password verification is bounded to 30 seconds after entry.
 
+## How the private screen comes up
+
+The driver signs a child session of the user's account in through the Remote
+Desktop control, then starts its engine inside it with a one-use per-user
+logon task (the startup entry and `child-launch.json` are the fallback;
+Explorer delays startup entries until the new session is idle). The control
+stays shown, outside every monitor and off the taskbar: hidden, Windows treats
+the session as minimized and drops every injected click and key. A start takes
+a few seconds after sign-in.
+
 ## Errors
 
 The driver's Windows-only codes are mirrored in `macDesktop.ts` and reach the

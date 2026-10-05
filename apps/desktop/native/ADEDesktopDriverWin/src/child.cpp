@@ -1,6 +1,7 @@
 // Child mode: the engine inside the private screen.
 //
-// Started by ADE's Run entry when Windows signs the child session in. It
+// Started by the host's logon task (or ADE's Run entry) when Windows signs
+// the child session in. It
 // connects back to the host over two named pipes and serves the engine's ops
 // for the one holder lane. v1 leaves the user's own startup apps alone
 // (decided 2026-09-30); the agent skill tells agents to ignore them.

@@ -473,14 +473,14 @@ bool sendKeys(const std::string& key, const std::vector<std::string>& modifiers)
 }
 
 bool sendText(const std::wstring& text) {
-  // Deliver each logical line before Enter. WinUI editors can rebuild their
-  // text control on Enter; one giant mixed VK_PACKET/Enter batch races that.
-  std::vector<INPUT> in;
-  auto flush = [&] { bool ok = sendAll(in); in.clear(); return ok; };
+  // One character per SendInput, with a pause. A VK_PACKET key carries its
+  // character in input state that a WinUI editor reads late, so a batch of
+  // them repeated the last one ("hello from ADE" arrived in Windows 11
+  // Notepad as "hello EEEEEEEE"); typing real keys with Shift raced the same
+  // way ("ADE" arrived as "ade" or "FROM").
   for (size_t i = 0; i < text.size(); ++i) {
     wchar_t c = text[i];
     if (c == L'\r' || c == L'\n' || c == L'\t') {
-      if (!flush()) return false;
       if (c == L'\r' && i + 1 < text.size() && text[i + 1] == L'\n') ++i;
       if (!sendKeys(c == L'\t' ? "tab" : "enter", {})) return false;
       // Let the receiving editor process the control key before its next line.
@@ -493,11 +493,11 @@ bool sendText(const std::wstring& text) {
     down.ki.dwFlags = KEYEVENTF_UNICODE;
     INPUT up = down;
     up.ki.dwFlags |= KEYEVENTF_KEYUP;
-    in.push_back(down);
-    in.push_back(up);
-    if (in.size() >= 256 && !flush()) return false;
+    std::vector<INPUT> in = {down, up};
+    if (!sendAll(in)) return false;
+    Sleep(12);
   }
-  return flush();
+  return true;
 }
 
 void releaseAllButtons() {
@@ -583,6 +583,9 @@ HWND currentForeground() { return GetForegroundWindow(); }
 
 bool forceForeground(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd)) return false;
+  // A minimized window can become the foreground window and stay minimized,
+  // and then the keys meant for it go nowhere.
+  if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
   if (GetForegroundWindow() == hwnd) return true;
   HWND fg = GetForegroundWindow();
   DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;

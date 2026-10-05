@@ -10835,6 +10835,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // Flags first: they take their values out of `args`, and every word
     // left is the step's text.
     const owner = proofOwnerBase();
+    // `--lane` names the lane like every screen verb's flag; left in `args`
+    // its value became the end of the caption.
+    const laneId = readValue(args, ["--lane", "--lane-id"]);
     const flagText = readValue(args, ["--text", "--caption"]);
     const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
     if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
@@ -10845,6 +10848,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         actionCallStep("result", "note_demo_step", {
           ...owner,
           ...proofCallerRootArgs(),
+          ...(laneId ? { laneId } : {}),
           text,
         }),
       ],

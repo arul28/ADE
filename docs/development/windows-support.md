@@ -89,6 +89,14 @@ logon sessions. Before starting a supervisor the launcher:
    the supervisor's lifetime; Windows releases it on exit. `Global\` excludes
    duplicates across sessions rather than just inside one session.
 
+`ade brain start` hands the launcher to a one-shot Scheduled Task (or, when
+that is refused, WMI `Win32_Process.Create`) so it escapes the caller's job
+object. The task is registered with priority 4, an ordinary app's. The Task
+Scheduler default, 7, starts the launcher below normal with low memory and I/O
+priority, and the brain and the desktop driver inherit both: on a PC under
+memory pressure Windows trims the brain first and pages it back in behind every
+other process, so its event loop stalled for seconds in page-in waits.
+
 Outside the console session the launcher reads
 `<ADE home>\windows-desktop\child-launch.json`, the Windows Desktop feature's
 launch request:
@@ -106,6 +114,15 @@ exists and ends in `ade-desktop-driver.exe`, the launcher starts it hidden with
 those arguments and no wait, so the driver can connect back to the console brain
 over the named pipe. It logs one line either way. That branch never starts a
 supervisor or a brain.
+
+That branch is the fallback. Explorer starts startup entries only once a new
+session settles, which on a busy PC took longer than the 30 s the driver waits,
+so for each private start the driver also registers a per-user logon task,
+`ADE private screen <home hash>` (no elevation needed for the user's own
+logon trigger). It runs the driver's child mode with the user's interactive
+token at priority 4 about two seconds into the sign-in. The task's trigger
+expires after three minutes and Windows then deletes it; the driver deletes it
+as soon as the child connects or the start is torn down.
 
 Install and repair treat the PID record as advisory. They also enumerate live
 supervisors by command line — PowerShell processes whose command line names this

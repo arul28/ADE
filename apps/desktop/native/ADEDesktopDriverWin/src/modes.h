@@ -4,9 +4,10 @@
 //       Started by the brain in the console session, NDJSON on stdin/stdout.
 //       Owns the private screen's lifecycle and the shared desktop.
 //   ade-desktop-driver.exe child --pipe <base>
-//       Started inside the private (child) session by ADE's Run entry, from
-//       <adeDir>\windows-desktop\child-launch.json. Serves the engine over
-//       two named pipes back to the host.
+//       Started inside the private (child) session by a one-use logon task
+//       the host registers (childtask.h), or, as a fallback, by ADE's Run
+//       entry from <adeDir>\windows-desktop\child-launch.json. Serves the
+//       engine over two named pipes back to the host.
 //   ade-desktop-driver.exe setup-elevated
 //       Started elevated by the host for the one-time setup: turns on child
 //       sessions and allows local Remote Desktop. Exit code 0 on success.

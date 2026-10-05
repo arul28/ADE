@@ -4,6 +4,7 @@
 #include "modes.h"
 #include "rdp.h"
 #include "credentials.h"
+#include "childtask.h"
 
 #include <sddl.h>
 #include <shellapi.h>
@@ -21,6 +22,13 @@
 namespace ade {
 namespace {
 constexpr UINT kUiTask = kHostUiTaskMessage;
+
+// One value per ADE home (channel): names the host lock and the child task.
+std::wstring homeKey(const std::wstring& home) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (wchar_t c : lower(home)) { hash ^= static_cast<uint64_t>(c); hash *= 1099511628211ULL; }
+  return std::to_wstring(hash);
+}
 // Teardown of the Remote Desktop control on the UI thread. Past this, the
 // worker stops waiting, signs the child out by id, and replies.
 constexpr int64_t kUiTeardownBudgetMs = 6'000;
@@ -73,7 +81,8 @@ LRESULT CALLBACK hostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 class Host {
  public:
   Host(HWND window, std::wstring home)
-      : window_(window), home_(std::move(home)), output_(GetStdHandle(STD_OUTPUT_HANDLE)),
+      : window_(window), uiThread_(GetCurrentThreadId()), home_(std::move(home)),
+        childTask_(L"ADE private screen " + homeKey(home_)), output_(GetStdHandle(STD_OUTPUT_HANDLE)),
         shared_(Engine::Mode::Shared, [this](const Json& e) { output_.write(e); }) {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&rdp_));
     refreshStatus();
@@ -96,6 +105,7 @@ class Host {
     if (result.wait_for(std::chrono::milliseconds(std::max<int64_t>(0, timeoutMs))) != std::future_status::ready) {
       if (markWedged) uiWedged_ = true;
       logLine(std::string("ui: ") + what + " did not finish within " + std::to_string(timeoutMs) + "ms" + (markWedged ? "; the UI thread is wedged" : ""));
+      logThreadStack(uiThread_, std::string("ui: ") + what);
       return false;
     }
     result.get();
@@ -491,6 +501,7 @@ class Host {
       // Captures only shared state and `this`: the worker stops waiting at the budget.
       if (!uiWithin([this, begun, credential] {
             ShowWindow(window_, SW_HIDE);
+            unparkHostWindow(1280, 800);
             begun->connected = rdp_.begin(window_, 1280, 800, &begun->error, credential.get());
             if (begun->connected) signInStarted_ = true;
           }, kUiBeginBudgetMs, "save: rdp begin"))
@@ -597,6 +608,10 @@ class Host {
       std::ofstream file(launchFile_, std::ios::binary | std::ios::trunc);
       file << launch.dump(); file.close();
       if (!file) fail(code::kDriverUnavailable, "Cannot write private screen launch descriptor.");
+      // The startup entry reads the descriptor too, as a fallback, but Explorer
+      // starts it only once the new session settles; the task fires at sign-in.
+      if (!registerChildLaunchTask(childTask_, exePath(), L"child --pipe " + base, 180))
+        logLine("start: no logon task; the startup entry will start the private screen engine");
       std::shared_ptr<WindowsCredential> credential = readCredential(credentialTarget(home_));
       if (uiWedged_) fail(code::kDriverUnavailable, "Windows Desktop is restarting its native host. Try again in a few seconds.");
       auto begun = std::make_shared<BeginOutcome>();
@@ -605,7 +620,7 @@ class Host {
       setSignInWaiting(!credential);
       setPhase(credential ? "verifying" : "prompt_open");
       if (!uiWithin([this, begun, credential, width, height] {
-            SetWindowPos(window_, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER);
+            unparkHostWindow(width, height);
             SetWindowTextW(window_, L"Sign in to your ADE private screen");
             ShowWindow(window_, credential ? SW_HIDE : SW_SHOWNORMAL);
             // Topmost while the user signs in: it must not open behind ADE.
@@ -657,7 +672,8 @@ class Host {
       privateActive_ = true;
       startChildReader();
       DeleteFileW(launchFile_.c_str());
-      uiWithin([this] { ShowWindow(window_, SW_HIDE); }, 2'000, "start: hide host window", false);
+      removeChildLaunchTask(childTask_);
+      uiWithin([this, width, height] { parkHostWindow(width, height); }, 2'000, "start: park host window", false);
     } catch (...) {
       setSignInWaiting(false);
       setPhase("cleaning_up");
@@ -830,10 +846,38 @@ class Host {
         "Sign it out in Task Manager > Users (or run `logoff " + std::to_string(existing) + "`), then try again, or use the shared desktop.");
   }
 
+  // Windows treats the private session as minimized while the Remote Desktop
+  // control that shows it is hidden: the session keeps drawing, but it drops
+  // every injected pointer and key event (SetCursorPos and SendInput change
+  // nothing, so no click, key or window activation reaches an app there). The
+  // control stays shown, at its full size, outside every monitor, and off the
+  // taskbar and Alt+Tab, so the session stays live and the user sees nothing.
+  void parkHostWindow(int width, int height) {
+    const LONG_PTR ex = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+    SetWindowLongPtrW(window_, GWL_EXSTYLE, (ex & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW)) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+    const int x = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN) + 64;
+    const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    SetWindowPos(window_, HWND_BOTTOM, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED);
+    logLine("start: host window parked outside the monitors");
+  }
+
+  // Undoes parkHostWindow before a sign-in, which may show this window to the
+  // user: on the primary monitor, on the taskbar.
+  void unparkHostWindow(int width, int height) {
+    const LONG_PTR ex = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+    SetWindowLongPtrW(window_, GWL_EXSTYLE, (ex | WS_EX_APPWINDOW) & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    SetWindowPos(window_, nullptr, work.left, work.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  }
+
   void stopPrivate() {
     logLine("teardown: begin child=" + std::to_string(childId_));
     if (executing_) setPhase("cleaning_up");
-    if (!launchFile_.empty()) DeleteFileW(launchFile_.c_str());
+    if (!launchFile_.empty()) {
+      DeleteFileW(launchFile_.c_str());
+      removeChildLaunchTask(childTask_);
+    }
     if (childOutput_) childOutput_->write(Json::Object{{"id", "shutdown"}, {"op", "child.quit"}});
     childReadRun_ = false;
     if (childReader_.joinable()) childReader_.join();
@@ -864,7 +908,9 @@ class Host {
   }
 
   HWND window_;
+  DWORD uiThread_;  // The thread that pumps window_ (constructed there).
   std::wstring home_, launchFile_;
+  const std::wstring childTask_;  // The logon task that starts the child engine.
   LineWriter output_;
   Engine shared_;
   bool sharedReady_ = false;
@@ -897,9 +943,7 @@ class Host {
 }  // namespace
 
 int runHost(const std::wstring& home) {
-  uint64_t homeHash = 14695981039346656037ULL;
-  for (wchar_t c : lower(home)) { homeHash ^= static_cast<uint64_t>(c); homeHash *= 1099511628211ULL; }
-  const auto mutexName = L"Local\\ade-screen-host-" + std::to_wstring(homeHash);
+  const auto mutexName = L"Local\\ade-screen-host-" + homeKey(home);
   HANDLE mutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
   if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
     if (mutex) CloseHandle(mutex);

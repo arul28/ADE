@@ -667,6 +667,12 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
     if (userForeground && currentForeground() != userForeground) forceForeground(userForeground);
   } else {
     for (auto& w : fresh) rememberProcess(*lane, w.pid, launched.pid);
+    // The private session is the lane's own, but the driver there is not the
+    // foreground process, so Windows may open the app behind whatever the
+    // user's startup apps put in front (a WSL console took the clicks and the
+    // keys meant for Notepad). An app the agent just opened is the one it
+    // acts on next: bring it to the front, as macOS does.
+    if (!fresh.empty() && !forceForeground(fresh.front().hwnd)) logLine("launch: the new window did not come to the front");
   }
   Json windows = Json::array();
   for (auto& w : fresh) {

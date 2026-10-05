@@ -569,7 +569,12 @@ export function buildWindowsStartTaskArgs(
     `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(windowsPowerShellCommand())} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
     // Far-future one-shot trigger: the task only ever runs because we start it.
     "$trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddDays(3650))",
-    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)",
+    // Priority 4 is an ordinary app's. The default, 7, starts the supervisor
+    // (and so the brain and the desktop driver, which inherit it) below normal
+    // with LOW memory and I/O priority: on a PC under memory pressure Windows
+    // trims the brain first and pages it back in behind every other process,
+    // and its event loop sat in PageIn waits for 2-45 s at a time.
+    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 4",
     [
       `try { Register-ScheduledTask -TaskName ${nameLiteral} -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null`,
       `Start-ScheduledTask -TaskName ${nameLiteral}`,

@@ -22,6 +22,94 @@ void logLine(const std::string& message) {
   }
 }
 
+namespace {
+#if defined(_M_X64)
+// Walks a suspended thread's stack. Plain data only: nothing here may allocate
+// or take a lock the suspended thread could hold, and a bad frame stops the
+// walk instead of crashing the driver.
+int unwindSuspended(CONTEXT* context, DWORD64* frames, int capacity) {
+  int count = 0;
+  __try {
+    while (count < capacity && context->Rip) {
+      frames[count++] = context->Rip;
+      DWORD64 imageBase = 0;
+      PRUNTIME_FUNCTION entry = RtlLookupFunctionEntry(context->Rip, &imageBase, nullptr);
+      if (!entry) {
+        context->Rip = *reinterpret_cast<DWORD64*>(context->Rsp);
+        context->Rsp += 8;
+        continue;
+      }
+      PVOID handlerData = nullptr;
+      DWORD64 establisher = 0;
+      RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context->Rip, entry, context, &handlerData, &establisher, nullptr);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return count;
+}
+#endif
+
+// module!export+0xoffset from the module's own export table: system DLLs carry
+// no symbols here, but their exports name the API a thread is blocked in.
+std::string describeAddress(DWORD64 address) {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCWSTR>(address), &module) || !module) {
+    char buffer[24]; std::snprintf(buffer, sizeof(buffer), "0x%llx", static_cast<unsigned long long>(address));
+    return buffer;
+  }
+  wchar_t path[MAX_PATH] = {};
+  GetModuleFileNameW(module, path, MAX_PATH);
+  std::wstring name = path;
+  const auto slash = name.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) name = name.substr(slash + 1);
+  std::string label(name.begin(), name.end());
+  const auto base = reinterpret_cast<const BYTE*>(module);
+  const DWORD rva = static_cast<DWORD>(address - reinterpret_cast<DWORD64>(module));
+  const char* best = nullptr;
+  DWORD bestRva = 0;
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+  const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+  if (dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE && directory.VirtualAddress) {
+    const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + directory.VirtualAddress);
+    const auto* names = reinterpret_cast<const DWORD*>(base + exports->AddressOfNames);
+    const auto* ordinals = reinterpret_cast<const WORD*>(base + exports->AddressOfNameOrdinals);
+    const auto* functions = reinterpret_cast<const DWORD*>(base + exports->AddressOfFunctions);
+    for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
+      const DWORD candidate = functions[ordinals[i]];
+      if (candidate <= rva && candidate > bestRva) { bestRva = candidate; best = reinterpret_cast<const char*>(base + names[i]); }
+    }
+  }
+  char offset[32];
+  std::snprintf(offset, sizeof(offset), "+0x%lx", static_cast<unsigned long>(best ? rva - bestRva : rva));
+  return label + (best ? std::string("!") + best : std::string()) + offset;
+}
+}  // namespace
+
+void logThreadStack(DWORD threadId, const std::string& label) {
+#if defined(_M_X64)
+  if (!threadId || threadId == GetCurrentThreadId()) return;
+  HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, threadId);
+  if (!thread) return;
+  DWORD64 frames[40];
+  int count = 0;
+  if (SuspendThread(thread) != static_cast<DWORD>(-1)) {
+    CONTEXT context;
+    ZeroMemory(&context, sizeof(context));
+    context.ContextFlags = CONTEXT_FULL;
+    if (GetThreadContext(thread, &context)) count = unwindSuspended(&context, frames, 40);
+    ResumeThread(thread);
+  }
+  CloseHandle(thread);
+  std::string line = label + " stack:";
+  for (int i = 0; i < count; ++i) line += " " + describeAddress(frames[i]);
+  logLine(line);
+#else
+  (void)threadId; (void)label;
+#endif
+}
+
 std::string isoFromFileTime(const FILETIME& ft) {
   SYSTEMTIME st;
   FileTimeToSystemTime(&ft, &st);
