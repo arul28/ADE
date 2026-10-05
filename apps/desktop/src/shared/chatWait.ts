@@ -55,8 +55,12 @@ export type ChatWaiter = {
   waitFor: ChatWaitTarget;
   action:
     | { kind: "wake" }
-    /** "Start B after A": send this prompt to `sessionId` once the targets match. */
-    | { kind: "send"; sessionId: string; text: string };
+    /**
+     * "Start B after A": send this prompt to `sessionId` once the targets match.
+     * `metadata` is the provenance the host derived when the wait was armed
+     * (never a caller's own), so B sees who it is from.
+     */
+    | { kind: "send"; sessionId: string; text: string; metadata?: Record<string, unknown> };
   createdAt: string;
   expiresAt: string;
 };
@@ -70,6 +74,8 @@ export type ArmChatWaitArgs = {
   /** Send this prompt to `sendToSessionId` instead of waking the caller. */
   sendToSessionId?: string | null;
   text?: string | null;
+  /** Host-derived provenance for the sent prompt; the RPC edge sets it, never a caller. */
+  sendMetadata?: Record<string, unknown> | null;
   /** Give up after this long (default 24 h). */
   timeoutMinutes?: number | null;
 };

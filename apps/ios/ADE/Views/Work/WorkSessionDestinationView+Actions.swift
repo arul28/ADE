@@ -1494,20 +1494,32 @@ extension WorkSessionDestinationView {
       lastToldSummary: watch?.lastToldSummary,
       armedByAgent: watch?.armedBy == "agent",
       busy: prChatWatchBusy,
-      error: prChatWatchError
+      error: prChatWatchError,
+      unknown: prChatWatchUnknown
     )
   }
 
-  /// Silent on failure: an older host or a dropped connection reads as Off.
+  /// A failed read cannot claim Off: the control shows it could not read the
+  /// watch, and Off still sends.
   @MainActor
   func refreshPrChatWatch() async {
     guard let pr = chatPrWatchTarget else {
       prChatWatch = nil
+      prChatWatchUnknown = false
       return
     }
     let session = sessionId
-    guard let watches = try? await syncService.fetchPrChatWatches(sessionId: session) else { return }
+    let watches: [PrChatWatchSummary]
+    do {
+      // nil: an older host with no PR Watch, which reads as Off.
+      watches = try await syncService.fetchPrChatWatches(sessionId: session) ?? []
+    } catch {
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+      prChatWatchUnknown = true
+      return
+    }
     guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+    prChatWatchUnknown = false
     prChatWatch = watches.first { $0.prId == pr.id && $0.isLive }
   }
 
@@ -1524,6 +1536,7 @@ extension WorkSessionDestinationView {
       // refresh owns what the control shows now.
       guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
       prChatWatch = next.flatMap { $0.isLive ? $0 : nil }
+      prChatWatchUnknown = false
       ADEHaptics.success()
     } catch {
       ADEHaptics.error()

@@ -484,6 +484,7 @@ struct WorkSessionDestinationView: View {
   @State var prChatWatch: PrChatWatchSummary?
   @State var prChatWatchBusy = false
   @State var prChatWatchError: String?
+  @State var prChatWatchUnknown = false
   /// "Restart agent session" was refused mid-turn; asks before stopping it.
   @State var restartStopTurnConfirmPresented = false
   @State var sessionActionRenamePresented = false

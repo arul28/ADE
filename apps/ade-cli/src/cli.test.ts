@@ -5570,7 +5570,7 @@ describe("ADE CLI", () => {
       "chat-1",
       "--arg",
       "mode=discard_everything",
-    ])).toThrow(/stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background/);
+    ])).toThrow(/--mode must be/);
     expect(() => buildCliPlan([
       "chat",
       "restore-queue",
@@ -6283,7 +6283,9 @@ describe("ADE CLI", () => {
         waitFor: "terminal",
         summary: { phase: "idle", cliSession: { status: "completed" } },
       });
-      expect(actions).toEqual(["getSessionSummary", "getTurnStatus"]);
+      // This brain has no `chat.waitFor`, so the CLI polls; a CLI child has no
+      // chat summary and answers through its turn status.
+      expect(actions).toContain("getTurnStatus");
     } finally {
       stop?.();
       fs.rmSync(root, { recursive: true, force: true });

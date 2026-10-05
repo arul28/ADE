@@ -34573,6 +34573,7 @@ export function createAgentChatService(args: {
       sessionId,
       kind: "wake",
       text: `${commands.length === 1 ? "A background command you were waiting on has finished" : "Background commands you were waiting on have finished"}:\n${list}\nCheck its output and carry on.`,
+      metadata: { hostContinuation: { reason: "background_work_ended" } },
     }).catch((error) => {
       logger.warn("agent_chat.held_background_wake_failed", {
         sessionId,
@@ -58386,6 +58387,7 @@ export function createAgentChatService(args: {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
     if (heldCodexTerminalTimer) clearInterval(heldCodexTerminalTimer);
@@ -58573,9 +58575,11 @@ export function createAgentChatService(args: {
    */
   const RESTART_RECOVERY_SWEEP_LIMIT = 25;
   let restartRecoverySweepTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set by dispose: a sweep in flight stops between rows and never reschedules. */
+  let restartRecoverySweepStopped = false;
   const runRestartRecoverySweep = async (): Promise<void> => {
     await scheduledWorkReady;
-    if (!continueAfterRestartEnabled()) return;
+    if (restartRecoverySweepStopped || !continueAfterRestartEnabled()) return;
     const cutoff = Date.now() - RESTART_RESUME_MAX_AGE_MS;
     const rows = sessionService
       .list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES })
@@ -58586,6 +58590,7 @@ export function createAgentChatService(args: {
       })
       .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
     for (const row of rows) {
+      if (restartRecoverySweepStopped) return;
       try {
         const loaded = managedSessions.get(row.id);
         if (!loaded) {
@@ -58618,7 +58623,7 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }).finally(() => {
-        if (again !== undefined) scheduleRestartRecoverySweep(again);
+        if (again !== undefined && !restartRecoverySweepStopped) scheduleRestartRecoverySweep(again);
       });
     }, delayMs);
     restartRecoverySweepTimer.unref?.();

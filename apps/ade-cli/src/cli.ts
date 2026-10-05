@@ -9576,6 +9576,9 @@ function buildChatPlan(args: string[]): CliPlan {
       readFlag(args, ["--all"]);
       const waitForValue = readValue(args, ["--for", "--state", "--until"]);
       const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
+        throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
+      }
       const caller = readValue(args, ["--caller", "--wake"]) ?? asString(process.env.ADE_CHAT_SESSION_ID);
       const targets = [sessionId, ...args.filter((value) => !value.startsWith("-"))]
         .flatMap((value) => (value ? value.split(",") : []))
@@ -9589,7 +9592,7 @@ function buildChatPlan(args: string[]): CliPlan {
           targetSessionIds: targets,
           mode: any ? "any" : "all",
           waitFor: normalizeChatWaitTarget(waitForValue),
-          ...(timeoutMinutes ? { timeoutMinutes } : {}),
+          timeoutMinutes,
         })],
       };
     }

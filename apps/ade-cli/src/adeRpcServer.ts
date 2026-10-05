@@ -3307,19 +3307,29 @@ function scopeChatAdeActionArgs(
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
   if (action === "armWait") {
-    // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
-    // ask to be woken itself. A send wait ("start B after A") wakes nobody.
-    if (isUnboundAdeCliCaller(session)) return chatArgs;
+    // Provenance on the prompt a send wait delivers is the host's to derive,
+    // never a caller's to assert.
+    const { sendMetadata: _callerProvenance, ...waitArgs } = chatArgs;
+    if (isUnboundAdeCliCaller(session)) return waitArgs;
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-    if (asOptionalTrimmedString(chatArgs.sendToSessionId)) {
-      // Recorded on the waiter (it lists under that chat): only ever the caller.
-      return { ...chatArgs, callerSessionId: callerChatSessionId ?? null };
+    const sendTo = asOptionalTrimmedString(waitArgs.sendToSessionId);
+    if (sendTo) {
+      // A send wait ("start B after A") wakes nobody; its prompt reaches B
+      // marked as from this agent, exactly as a direct send would be.
+      const derived = withTrustedAgentProvenance(runtime, session, { sessionId: sendTo }).metadata;
+      return {
+        ...waitArgs,
+        callerSessionId: callerChatSessionId ?? null,
+        ...(isRecord(derived) ? { sendMetadata: derived } : {}),
+      };
     }
-    const requestedCaller = asOptionalTrimmedString(chatArgs.callerSessionId);
+    // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
+    // ask to be woken itself.
+    const requestedCaller = asOptionalTrimmedString(waitArgs.callerSessionId);
     if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
       chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
     }
-    return { ...chatArgs, callerSessionId: callerChatSessionId };
+    return { ...waitArgs, callerSessionId: callerChatSessionId };
   }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;

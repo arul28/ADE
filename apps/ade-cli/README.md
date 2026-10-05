@@ -558,6 +558,13 @@ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --a
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
+ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
+ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
+ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
+ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat send <B> --after <A> "start the review"             # send B this once A is idle
+ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)

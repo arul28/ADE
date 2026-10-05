@@ -80,7 +80,12 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         logger.info("agent_chat.wait_send_expired", { waiterId: waiter.id, sessionId: waiter.action.sessionId });
         return;
       }
-      await deps.messageSession({ sessionId: waiter.action.sessionId, kind: "wake", text: waiter.action.text });
+      await deps.messageSession({
+        sessionId: waiter.action.sessionId,
+        kind: "wake",
+        text: waiter.action.text,
+        ...(waiter.action.metadata ? { metadata: waiter.action.metadata } : {}),
+      });
       return;
     }
     if (!waiter.callerSessionId) return;
@@ -93,6 +98,8 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       sessionId: waiter.callerSessionId,
       kind: "wake",
       text: [header, ...lines, "", "Read a chat with `ade chat read <id>` before acting on it."].join("\n"),
+      // ADE wrote this, not the user: it must not clear the chat's "Needs you".
+      metadata: { hostContinuation: { reason: "chat_wait" } },
     });
   };
 
@@ -100,8 +107,12 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
   const targetMatches = async (target: string, waiter: ChatWaiter): Promise<boolean> => {
     try {
       const summary = await deps.readSummary(target);
-      // A target that no longer exists is as finished as it will ever be.
-      return summary ? chatWaitTargetMatches(summary, waiter.waitFor) : true;
+      if (summary) return chatWaitTargetMatches(summary, waiter.waitFor);
+      // No summary for a chat that still exists is a read not ready yet. A
+      // deleted one is as finished as it will ever be — idle or terminal —
+      // but never "active" or "awaiting input".
+      if (deps.sessionExists(target)) return false;
+      return waiter.waitFor === "idle" || waiter.waitFor === "terminal";
     } catch {
       return false;
     }
@@ -233,7 +244,9 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         targetSessionIds: targets,
         mode: args.mode === "any" ? "any" : "all",
         waitFor: args.waitFor ?? "idle",
-        action: sendTo ? { kind: "send", sessionId: sendTo, text } : { kind: "wake" },
+        action: sendTo
+          ? { kind: "send", sessionId: sendTo, text, ...(args.sendMetadata ? { metadata: args.sendMetadata } : {}) }
+          : { kind: "wake" },
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(now + minutes * 60_000).toISOString(),
       };

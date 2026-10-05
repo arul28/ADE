@@ -822,6 +822,9 @@ struct WorkChatPrWatchModel: Equatable {
   let armedByAgent: Bool
   let busy: Bool
   let error: String?
+  /// The watch could not be read: no row is checked, and Off still sends
+  /// (desktop `PrWatchPill` `unknown`).
+  var unknown: Bool = false
 
   var systemImage: String {
     switch mode {
@@ -833,6 +836,7 @@ struct WorkChatPrWatchModel: Equatable {
 
   /// One short line, only while a watch is on (desktop `PrWatchPill.statusLine`).
   func statusLine(now: Date = Date()) -> String? {
+    if unknown { return "Couldn't read the watch. Pick one to set it." }
     guard mode != nil else { return nil }
     if holding { return "Holding for CI and reviews" }
     let by = armedByAgent ? " · on by agent" : ""
@@ -893,11 +897,11 @@ struct WorkChatPrWatchChip: View {
       Section("PR #\(model.prNumber)") {
         ForEach(Self.choices.reversed(), id: \.label) { choice in
           Button {
-            guard choice.mode != model.mode else { return }
+            guard choice.mode != model.mode || model.unknown else { return }
             ADEHaptics.light()
             onSelect(choice.mode)
           } label: {
-            if choice.mode == model.mode {
+            if !model.unknown, choice.mode == model.mode {
               Label("\(choice.label) — \(choice.hint)", systemImage: "checkmark")
             } else {
               Text("\(choice.label) — \(choice.hint)")

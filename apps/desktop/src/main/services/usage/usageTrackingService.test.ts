@@ -6299,8 +6299,11 @@ describe("ADE database usage aggregation", () => {
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.agentChat.promptStashes.create")).toBe("chat.createPromptStash");
     expect(isMeaningfulUsageAction("chat.createPromptStash")).toBe(true);
-    // The PR draft and auto-merge toggles are mutations on every transport.
-    for (const action of ["setDraft", "setAutoMerge"]) {
+    expect(usageActionFromIpcChannel("ade.agentChat.restartSession")).toBe("chat.restartSession");
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("chat", "restartSession"))).toBe(true);
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pr", "getChatWatches"))).toBe(false);
+    // The PR draft and auto-merge toggles, and the PR watch, are mutations on every transport.
+    for (const action of ["setDraft", "setAutoMerge", "setChatWatch"]) {
       expect(usageActionFromIpcChannel(`ade.prs.${action}`)).toBe(`prs.${action}`);
       expect(usageActionFromRpcDomain("pr", action)).toBe(`prs.${action}`);
       expect(isMeaningfulUsageAction(`prs.${action}`)).toBe(true);

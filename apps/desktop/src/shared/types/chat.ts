@@ -486,7 +486,11 @@ export type AgentChatHostContinuationMetadata = {
     | "plan_followup"
     | "interrupted_turn_recovery"
     | "continuity_recovery"
-    | "cto_intro";
+    | "cto_intro"
+    /** A chat wait the agent armed fired (`chat.armWait`). */
+    | "chat_wait"
+    /** A background job the agent was waiting on ended. */
+    | "background_work_ended";
 };
 
 export type AgentChatContinuityRecovery = {

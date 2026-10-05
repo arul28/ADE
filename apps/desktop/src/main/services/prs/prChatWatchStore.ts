@@ -238,12 +238,11 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
     }
     const before = get(input.watchId);
     if (!before || before.stoppedAt || before.startedAt !== input.expectedStartedAt) return false;
-    db.run(
+    return db.runChanged(
       `update pull_request_chat_watches set ${sets.join(", ")}
         where id = ? and project_id = ? and started_at = ? and stopped_at is null`,
       [...params, input.watchId, projectId, input.expectedStartedAt],
-    );
-    return get(input.watchId)?.updatedAt === now;
+    ) > 0;
   };
 
   const recordAdeComment = (prId: string, commentId: string | null | undefined): void => {
