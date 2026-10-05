@@ -30,6 +30,8 @@ type DeadlineState = {
   /** Time spent paused (an open approval card) so far, in ms. */
   pausedMs: number;
   pausedAt: number | null;
+  /** Open pauses; the clock runs only at zero. */
+  pauseDepth: number;
   /** Re-arms the expiry timer for whatever budget is left. */
   rearm: () => void;
   disarm: () => void;
@@ -72,6 +74,7 @@ export function runAdeToolWithDeadline<T>(budgetMs: number, work: () => Promise<
     const state: DeadlineState = {
       pausedMs: 0,
       pausedAt: null,
+      pauseDepth: 0,
       rearm: () => {
         if (settled) return;
         if (timer) clearTimeout(timer);
@@ -111,18 +114,26 @@ export function runAdeToolWithDeadline<T>(budgetMs: number, work: () => Promise<
 
 /**
  * Stop the calling tool's deadline clock while `work` runs. A no-op outside a
- * deadline (a headless caller, a test). Nested pauses count once.
+ * deadline (a headless caller, a test). Nested or overlapping pauses (two
+ * approval cards open at once) count once, and the clock restarts only when
+ * the last one ends.
  */
 export async function pauseAdeToolDeadline<T>(work: () => Promise<T>): Promise<T> {
   const state = activeDeadline.getStore();
-  if (!state || state.pausedAt !== null) return await work();
-  state.pausedAt = Date.now();
-  state.disarm();
+  if (!state) return await work();
+  if (state.pauseDepth === 0) {
+    state.pausedAt = Date.now();
+    state.disarm();
+  }
+  state.pauseDepth += 1;
   try {
     return await work();
   } finally {
-    state.pausedMs += Date.now() - state.pausedAt;
-    state.pausedAt = null;
-    state.rearm();
+    state.pauseDepth -= 1;
+    if (state.pauseDepth === 0 && state.pausedAt !== null) {
+      state.pausedMs += Date.now() - state.pausedAt;
+      state.pausedAt = null;
+      state.rearm();
+    }
   }
 }

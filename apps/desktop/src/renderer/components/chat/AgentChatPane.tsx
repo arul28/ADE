@@ -16138,7 +16138,7 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
-            {usageLimitPill}
+      {usageLimitPill}
       {composerElement}
     </div>
   );
@@ -16557,7 +16557,7 @@ export function AgentChatPane({
                         ) : appPanelLifecyclePill}
                         {takeoverBanner}
                         {stalledTurnBanner}
-                                                {usageLimitPill}
+                        {usageLimitPill}
                         {composerElement}
                       </div>
                     ) : null}

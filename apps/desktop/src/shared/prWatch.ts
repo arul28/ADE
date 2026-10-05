@@ -18,6 +18,14 @@ import { classifyPrAuthor } from "./prBotIdentity";
 import type { PrCheck, PrChecksStatus, PrState } from "./types/prs";
 
 export type PrWatchMode = "watch" | "ship";
+
+/** A wire `mode`: "watch", "ship", or empty for off. Anything else is refused, not read as off. */
+export function parsePrWatchMode(value: unknown): PrWatchMode | null {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!mode || mode === "off") return null;
+  if (mode === "watch" || mode === "ship") return mode;
+  throw new Error(`Unknown PR watch mode "${String(value)}". Use watch, ship, or off.`);
+}
 export type PrWatchArmedBy = "user" | "agent";
 
 /** Comment-only wakes in a row before the watch stops itself (a bot loop). */
@@ -297,7 +305,9 @@ export function evaluatePrWatch(args: {
     changes = release ? held : [];
     if (release) held = [];
   } else {
-    changes = found;
+    // News Ship was holding (the watch switched from Ship) goes out now.
+    changes = mergeHeld(held, found);
+    held = [];
   }
 
   const commentsOnly = changes.length > 0 && changes.every((change) => change.kind === "remarks");
@@ -522,7 +532,7 @@ export type PrChatWatchSummary = {
   githubPrNumber: number | null;
   mode: PrWatchMode;
   armedBy: PrWatchArmedBy;
-  status: "active" | "paused" | "stopped";
+  status: "active" | "stopped";
   startedAt: string;
   stoppedAt: string | null;
   stopReason: PrWatchStopReason | null;

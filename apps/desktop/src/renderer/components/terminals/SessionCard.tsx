@@ -307,6 +307,12 @@ function branchDisplayLabel(branchName: string): string {
 }
 
 /** `·` between the adaptive "where" line's parts. Decoration, never read out. */
+/** "Goal: <objective>", with the status when it is not plain active. */
+function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
+  const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
+  return `Goal${status}: ${goal.objective}`;
+}
+
 function WhereSeparator() {
   return (
     <span aria-hidden className="shrink-0 text-muted-fg/25">
@@ -1224,7 +1230,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     hoverRows.push({
       id: "goal",
       icon: <Target size={13} weight="duotone" className="text-amber-300/70" />,
-      value: `Goal${session.activeGoal.status !== "active" ? ` (${session.activeGoal.status.replace(/_/g, " ")})` : ""}: ${session.activeGoal.objective}`,
+      value: sessionGoalTitle(session.activeGoal),
     });
   }
   if (session.nextWakeAt) {
@@ -1321,9 +1327,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      sentence in the title and the hover card — the existing vocabulary. */
   // A chat working toward a goal says so, in the same quiet glyph cluster.
   const activeGoal = session.activeGoal ?? null;
-  const goalTitle = activeGoal
-    ? `Goal${activeGoal.status !== "active" ? ` (${activeGoal.status.replace(/_/g, " ")})` : ""}: ${activeGoal.objective}`
-    : null;
+  const goalTitle = activeGoal ? sessionGoalTitle(activeGoal) : null;
   const indicatorGlyph = rowIndicators.length > 0 || activeGoal ? (
     <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
       {activeGoal && goalTitle ? (

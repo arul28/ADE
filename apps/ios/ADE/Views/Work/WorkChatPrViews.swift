@@ -845,15 +845,9 @@ struct WorkChatPrWatchModel: Equatable {
 }
 
 func workPrWatchRelativeTime(_ iso: String?, now: Date = Date()) -> String? {
-  guard let iso, let date = workParsedDate(iso) else { return nil }
-  let seconds = now.timeIntervalSince(date)
-  guard seconds.isFinite, seconds >= 0 else { return nil }
-  let minutes = Int((seconds / 60).rounded())
-  if minutes < 1 { return "just now" }
-  if minutes < 60 { return "\(minutes)m ago" }
-  let hours = Int((Double(minutes) / 60).rounded())
-  if hours < 24 { return "\(hours)h ago" }
-  return "\(Int((Double(hours) / 24).rounded()))d ago"
+  guard let iso, workParsedDate(iso) != nil else { return nil }
+  let text = workProofRelativeTime(iso, now: now)
+  return text == "now" ? "just now" : text
 }
 
 /// Icon-only Off / Watch / Ship beside the composer PR chip (desktop

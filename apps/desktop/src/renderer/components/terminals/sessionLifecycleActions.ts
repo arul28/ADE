@@ -5,6 +5,7 @@ import type {
   SessionSettleOverride,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { isTurnInFlightError } from "../../../shared/codedError";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, promptDialog } from "../ui/dialog";
 import {
@@ -445,8 +446,7 @@ export async function restartAgentSession(
     try {
       result = await call(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/turn is running/i.test(message)) throw error;
+      if (!isTurnInFlightError(error)) throw error;
       const confirmed = await confirmDialog({
         title: "Stop the turn and restart?",
         message: "The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.",
@@ -480,7 +480,7 @@ export async function setChatGoal(
 ): Promise<void> {
   const objective = (await promptDialog({
     title: "Set a goal",
-    message: "The agent keeps working across turns until this is true. You can pause or clear it from the goal chip above the prompt box.",
+    message: "The agent keeps working across turns until this is true. Edit or clear it from the Goal section of the chat actions drawer.",
     placeholder: "e.g. All tests pass and the PR is merged",
     confirmLabel: "Set goal",
   }))?.replace(/\s*[\r\n]+\s*/g, " ").trim();

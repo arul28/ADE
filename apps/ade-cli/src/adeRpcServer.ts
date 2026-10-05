@@ -3248,6 +3248,11 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Restarting tears down the target's runtime (and stops its turn with
+  // stopFirst); holding background work arms wakes on its terminals. Both act
+  // on a chat the way `interrupt` does, so a bound agent aims them at itself.
+  "restartSession",
+  "holdBackgroundWork",
   "restoreCancelledQueue",
   "setSpawnKind",
   "dismissSubagentTakeoverPrompt",
@@ -3301,6 +3306,16 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
+  if (action === "armWait" && !isUnboundAdeCliCaller(session)) {
+    // A wait wakes `callerSessionId` when it fires: a bound agent may only ask
+    // to be woken itself.
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    const requestedCaller = asOptionalTrimmedString(chatArgs.callerSessionId);
+    if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
+      chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
+    }
+    return { ...chatArgs, callerSessionId: callerChatSessionId };
+  }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) {

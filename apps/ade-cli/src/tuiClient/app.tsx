@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
+import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -13199,7 +13200,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Agent session restarted. Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`, "success");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!stopFirst && /turn is running/i.test(message)) {
+        if (!stopFirst && isTurnInFlightError(error)) {
           addNotice("The agent is mid-turn. Run /restart stop to stop the turn (and its background jobs) and restart. The conversation is kept.", "info");
           return;
         }

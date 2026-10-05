@@ -8,7 +8,8 @@ import {
   type PrWatchRemark,
 } from "../../../shared/prWatch";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types/chat";
-import type { PrActionRun, PrCheck, PrComment, PrReview, PrSummary } from "../../../shared/types/prs";
+import type { PrActionRun, PrCheck, PrComment, PrEventPayload, PrReview, PrSummary } from "../../../shared/types/prs";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, nowIso } from "../shared/utils";
 import { prChatWatchSummary, type PrChatWatchRecord, type PrChatWatchStore } from "./prChatWatchStore";
@@ -21,10 +22,10 @@ const PR_WATCH_TICK_MS = 60_000;
  * check run.
  */
 const PR_WATCH_DETAIL_REFRESH_MS = 3 * 60_000;
-/** Consecutive failed wake deliveries before the reactor stops retrying a pass. */
+/** Log a failing wake delivery on the first attempt and every this many after. */
 const PR_WATCH_DELIVERY_FAILURE_LOG_EVERY = 5;
 
-export type PrWatchChatState = {
+type PrWatchChatState = {
   /** Settled chats keep their watch but are not woken until unsettled. */
   settled: boolean;
   archived: boolean;
@@ -42,10 +43,12 @@ export type PrWatchServiceDeps = {
     getActionRuns?: (prId: string) => Promise<PrActionRun[]>;
     chatWatchStore: PrChatWatchStore;
   };
-  /** Null when the chat no longer exists. */
-  getChatState: (sessionId: string) => PrWatchChatState | null;
+  /** The chat's row; a missing or non-chat row ends its watch. */
+  sessionService: {
+    get: (sessionId: string) => { toolType?: string | null; settledAt?: string | null; archivedAt?: string | null } | null;
+  };
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
-  emitWatchChanged: (event: { sessionId: string; prId: string; watch: PrChatWatchSummary | null }) => void;
+  emitPrEvent: (event: PrEventPayload) => void;
   getGithubBackgroundPauseUntilMs?: () => number | null | Promise<number | null>;
   tickMs?: number;
   now?: () => number;
@@ -113,7 +116,7 @@ function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ign
  * been told, wakes the chat through the ordinary message path (a wake starts a
  * turn on an idle chat and queues at the boundary of a running one), and only
  * after that delivery succeeds records what was told. A pass whose watch was
- * stopped or switched meanwhile is discarded by `commitPass`.
+ * stopped or restarted meanwhile is discarded by `commitPass`.
  */
 export function createPrWatchService(deps: PrWatchServiceDeps) {
   const { logger, prService } = deps;
@@ -124,21 +127,29 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
   let timer: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
 
-  const summaryFor = (record: PrChatWatchRecord, pr: PrSummary | null, paused = false): PrChatWatchSummary =>
-    prChatWatchSummary(record, { githubPrNumber: pr?.githubPrNumber ?? null, paused });
+  const chatStateFor = (sessionId: string): PrWatchChatState | null => {
+    const row = deps.sessionService.get(sessionId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    return { settled: Boolean(row.settledAt), archived: Boolean(row.archivedAt) };
+  };
+
+  /** Clients get the live watch, or null once it has stopped. */
+  const emitWatchChanged = (record: PrChatWatchRecord, current: PrChatWatchRecord | null, pr: PrSummary | null) =>
+    deps.emitPrEvent({
+      type: "pr-chat-watch-changed",
+      sessionId: record.sessionId,
+      prId: record.prId,
+      watch: current && !current.stoppedAt ? prChatWatchSummary(current, { githubPrNumber: pr?.githubPrNumber ?? null }) : null,
+    });
 
   const stopWatch = (record: PrChatWatchRecord, reason: Parameters<PrChatWatchStore["stop"]>[1], pr: PrSummary | null) => {
     const stopped = store.stop(record.id, reason);
     memory.delete(record.id);
-    deps.emitWatchChanged({
-      sessionId: record.sessionId,
-      prId: record.prId,
-      watch: stopped ? summaryFor(stopped, pr) : null,
-    });
+    emitWatchChanged(record, stopped, pr);
   };
 
   const runPass = async (record: PrChatWatchRecord, prs: Map<string, PrSummary>, force: boolean): Promise<void> => {
-    const chat = deps.getChatState(record.sessionId);
+    const chat = chatStateFor(record.sessionId);
     let pr = prs.get(record.prId) ?? null;
     if (!chat || chat.archived) {
       stopWatch(record, "chat_gone", pr);
@@ -277,7 +288,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     const heldBefore = record.state.held.length > 0;
     const committed = store.commitPass({
       watchId: record.id,
-      expectedUpdatedAt: record.updatedAt,
+      expectedStartedAt: record.startedAt,
       state: evaluation.next,
       told,
       stopReason: evaluation.stop,
@@ -296,12 +307,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     }
     const heldAfter = evaluation.next.held.length > 0;
     if (told || evaluation.stop || heldBefore !== heldAfter) {
-      const updated = store.get(record.id);
-      deps.emitWatchChanged({
-        sessionId: record.sessionId,
-        prId: record.prId,
-        watch: updated ? summaryFor(updated, pr) : null,
-      });
+      emitWatchChanged(record, store.get(record.id), pr);
     }
   };
 
@@ -336,14 +342,16 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       timer.unref?.();
       void evaluate();
     },
+    /** A watch just armed takes its first look now, not on the next tick. */
+    onPrEvent(event: PrEventPayload): void {
+      if (event.type === "pr-chat-watch-changed" && event.watch?.status === "active") {
+        void evaluate({ prIds: [event.prId], force: true });
+      }
+    },
     /** The PR poller saw these PRs change: re-read their watches now. */
     onPullRequestsChanged(prIds: readonly string[]): void {
       if (prIds.length === 0) return;
       void evaluate({ prIds, force: true });
-    },
-    /** A watch was armed or switched: take its first look now. */
-    poke(prId: string): void {
-      void evaluate({ prIds: [prId], force: true });
     },
     evaluate,
     dispose(): void {

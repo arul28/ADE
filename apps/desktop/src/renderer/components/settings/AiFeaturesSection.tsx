@@ -5,6 +5,7 @@ import type {
 } from "../../../shared/types";
 import { ArrowClockwise, Clock, PauseCircle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { showToast } from "../app/toast/toastStore";
 import { SettingsPanel, SettingsRow, SettingsSection, SettingsToggle } from "./primitives";
 
 /**
@@ -58,33 +59,32 @@ export function AiFeaturesSection() {
     void loadStatus();
   }, [loadStatus]);
 
-  const handleScheduledWorkPaused = useCallback(async (paused: boolean) => {
+  /** Save one chat toggle optimistically; a failed save puts it back and says so. */
+  const saveChatToggle = useCallback(async (
+    key: "scheduledWorkPaused" | "continueAfterRestart",
+    value: boolean,
+    setLocal: (value: boolean) => void,
+  ) => {
     if (saving) return;
     setSaving(true);
-    setScheduledWorkPaused(paused);
+    setLocal(value);
     try {
-      await window.ade.ai.updateConfig({ chat: { scheduledWorkPaused: paused } });
+      await window.ade.ai.updateConfig({ chat: { [key]: value } });
     } catch (error) {
-      setScheduledWorkPaused(!paused);
-      console.error("[AiFeaturesSection] scheduled-work pause update failed:", error);
+      setLocal(!value);
+      showToast({
+        title: "Couldn't save the setting",
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     } finally {
       setSaving(false);
     }
   }, [saving]);
-
-  const handleContinueAfterRestart = useCallback(async (enabled: boolean) => {
-    if (saving) return;
-    setSaving(true);
-    setContinueAfterRestart(enabled);
-    try {
-      await window.ade.ai.updateConfig({ chat: { continueAfterRestart: enabled } });
-    } catch (error) {
-      setContinueAfterRestart(!enabled);
-      console.error("[AiFeaturesSection] continue-after-restart update failed:", error);
-    } finally {
-      setSaving(false);
-    }
-  }, [saving]);
+  const handleScheduledWorkPaused = (paused: boolean) =>
+    saveChatToggle("scheduledWorkPaused", paused, setScheduledWorkPaused);
+  const handleContinueAfterRestart = (enabled: boolean) =>
+    saveChatToggle("continueAfterRestart", enabled, setContinueAfterRestart);
 
   const handleCancelScheduledWork = useCallback(async (item: AgentChatScheduledWorkItem) => {
     setScheduledWorkError(null);

@@ -3865,11 +3865,7 @@ app.whenReady().then(async () => {
     // best-effort auto-map of any existing open PR on its branch (Trigger #1).
     prService.setEventEmitter((event) => {
       emitPrEvent(event);
-      // A watch the user (or an agent) just armed takes its first look now
-      // instead of on the next minute tick.
-      if (event.type === "pr-chat-watch-changed" && event.watch?.status === "active") {
-        prWatchServiceRef?.poke(event.prId);
-      }
+      prWatchServiceRef?.onPrEvent(event);
     });
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
@@ -4441,14 +4437,9 @@ app.whenReady().then(async () => {
     prWatchServiceRef = createPrWatchService({
       logger,
       prService,
-      getChatState: (sessionId) => {
-        const row = sessionService.get(sessionId);
-        if (!row) return null;
-        return { settled: Boolean(row.settledAt), archived: Boolean(row.archivedAt) };
-      },
+      sessionService,
       messageSession: (args) => agentChatService.messageSession(args),
-      emitWatchChanged: ({ sessionId, prId, watch }) =>
-        emitPrEvent({ type: "pr-chat-watch-changed", sessionId, prId, watch }),
+      emitPrEvent,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
     });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({

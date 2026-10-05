@@ -3007,10 +3007,12 @@ private struct WorkChatComposerDraftInput: View {
 
   /// This chat's spawned chats that are working now, read off the summary
   /// cache the Work list fills. The child-chat Stop choices appear only while
-  /// there is one to stop.
+  /// there is one to stop, and only on a host that knows them: an older host
+  /// reads an unknown mode as the default and would leave the children running.
+  /// Child-chat stop modes shipped with `chat.restartSession`.
   private var activeChildChatCount: Int {
     let parentId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !parentId.isEmpty else { return 0 }
+    guard !parentId.isEmpty, syncService.supportsRemoteAction("chat.restartSession") else { return 0 }
     return syncService.chatSummaryCache.values.reduce(into: 0) { count, summary in
       if summary.orchestrationParentSessionId == parentId && summary.status == "active" { count += 1 }
     }

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CaretDown, Check, Eye, EyeSlash, RocketLaunch } from "@phosphor-icons/react";
 import type { PrChatWatchSummary, PrWatchMode } from "../../../shared/prWatch";
 import type { OpenProjectBinding, PrSummary } from "../../../shared/types";
+import { relativeWhen } from "../../lib/format";
+import { showToast } from "../app/toast/toastStore";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -15,23 +17,11 @@ const CHOICES: readonly Choice[] = [
   { mode: "ship", label: "Ship", hint: "Fix and merge" },
 ];
 
-function relativeTime(iso: string | null): string | null {
-  if (!iso) return null;
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return null;
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
-
 /** One short line under the choices, only while a watch is on. */
 function statusLine(watch: PrChatWatchSummary | null): string | null {
   if (!watch || watch.status === "stopped") return null;
   if (watch.holding) return "Holding for CI and reviews";
-  const told = relativeTime(watch.lastToldAt);
+  const told = watch.lastToldAt ? relativeWhen(watch.lastToldAt) : null;
   const by = watch.armedBy === "agent" ? " · on by agent" : "";
   if (watch.lastToldSummary && told) return `Told ${told}: ${watch.lastToldSummary}${by}`;
   return `No changes yet${by}`;
@@ -57,7 +47,6 @@ export function PrWatchPill({
   const [watch, setWatch] = useState<PrChatWatchSummary | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
@@ -96,16 +85,19 @@ export function PrWatchPill({
     const current = watch && watch.status !== "stopped" ? watch.mode : null;
     if (mode === current) return;
     setBusy(true);
-    setError(null);
     try {
       const next = await window.ade.prs.setChatWatch({ prId, sessionId, mode }, runtimePinRef.current);
       setWatch(next && next.status !== "stopped" ? next : null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      showToast({
+        title: `Couldn't change PR #${pr.githubPrNumber} watch`,
+        message: cause instanceof Error ? cause.message : String(cause),
+        tone: "error",
+      });
     } finally {
       setBusy(false);
     }
-  }, [prId, sessionId, watch]);
+  }, [pr.githubPrNumber, prId, sessionId, watch]);
 
   if (terminal || typeof window.ade.prs.setChatWatch !== "function") return null;
 
@@ -131,7 +123,7 @@ export function PrWatchPill({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`${label} PR #${pr.githubPrNumber}`}
-        title={error ?? (status ? `${label} · ${status}` : `${label} #${pr.githubPrNumber}`)}
+        title={status ? `${label} · ${status}` : `${label} #${pr.githubPrNumber}`}
       >
         <Icon size={13} weight={mode ? "fill" : "regular"} aria-hidden />
         <CaretDown size={8} weight="bold" className="opacity-50" aria-hidden />
@@ -177,12 +169,10 @@ export function PrWatchPill({
             </button>
           );
         })}
-        {status || error ? (
+        {status ? (
           <>
             <div className={MENU_SEPARATOR_CLASS} />
-            <div className={cn("px-2 pb-1 pt-0.5 text-[10.5px] leading-snug", error ? "text-amber-200/80" : "text-muted-fg/55")}>
-              {error ?? status}
-            </div>
+            <div className="px-2 pb-1 pt-0.5 text-[10.5px] leading-snug text-muted-fg/55">{status}</div>
           </>
         ) : null}
       </AnchoredMenu>

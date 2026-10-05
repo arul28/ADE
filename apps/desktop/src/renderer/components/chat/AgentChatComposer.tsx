@@ -38,6 +38,7 @@ import {
   parseAgentChatStopMode,
   providerStopModeSupport,
   providerSupportsStopModeChoice,
+  stopModeAvailable,
   stopModeClearsQueue,
   stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
@@ -2469,8 +2470,7 @@ export function AgentChatComposer({
   }, [sessionId]);
   // A remembered choice this chat cannot honour right now (a provider without
   // background stop, a child-chat stop with no child chats) stops the default way.
-  const effectiveStopMode: AgentChatStopMode = providerStopModeSupport(sessionProvider, activeTurnStopMode).supported
-    && (childChatCount > 0 || !stopModeStopsChildren(activeTurnStopMode))
+  const effectiveStopMode: AgentChatStopMode = stopModeAvailable(sessionProvider, activeTurnStopMode, childChatCount)
     ? activeTurnStopMode
     : DEFAULT_AGENT_CHAT_STOP_MODE;
 

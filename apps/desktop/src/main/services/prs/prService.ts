@@ -164,6 +164,7 @@ import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/t
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
 import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
 import { classifyPrAuthor } from "../../../shared/prBotIdentity";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
@@ -193,6 +194,7 @@ import { createPrChatLinkStore } from "./prChatLinkStore";
 import { createPrChatWatchStore, prChatWatchSummary, type PrChatWatchRecord } from "./prChatWatchStore";
 import {
   adeReviewRemarkKey,
+  parsePrWatchMode,
   type GetPrChatWatchArgs,
   type PrChatWatchSummary,
   type SetPrChatWatchArgs,
@@ -12518,7 +12520,17 @@ export function createPrService({
       // dismissal tombstone for a non-existent row.
       if (!pr) return { ok: false };
       const ok = unlinkPrFromChatSession(args);
-      if (ok) emitPrsUpdated();
+      if (ok) {
+        emitPrsUpdated();
+        // The watch control lives on the linked PR; an unlinked PR's watch
+        // would keep waking the chat with nothing on screen to stop it.
+        const sessionId = resolveCanonicalChatSessionId(args.sessionId) ?? args.sessionId;
+        const watch = chatWatchStore.getForPair(args.prId, sessionId);
+        if (watch && !watch.stoppedAt) {
+          chatWatchStore.stop(watch.id, "unwatched");
+          emitPrEvent?.({ type: "pr-chat-watch-changed", sessionId, prId: args.prId, watch: null });
+        }
+      }
       return { ok };
     },
 
@@ -12530,30 +12542,44 @@ export function createPrService({
     setChatWatch(args: SetPrChatWatchArgs): PrChatWatchSummary | null {
       const sessionId = String(args.sessionId ?? "").trim();
       const canonicalSessionId = resolveCanonicalChatSessionId(sessionId) ?? sessionId;
-      type WatchPrRow = { id: string; lane_id: string; state: string; head_sha: string | null; github_pr_number: number };
-      const select = "select id, lane_id, state, head_sha, github_pr_number from pull_requests";
       const target = String(args.prId ?? "").trim();
-      let pr = db.get<WatchPrRow>(`${select} where id = ? and project_id = ? limit 1`, [target, projectId]);
-      // Agents know a PR by number or URL, not by ADE's row id. Prefer a row
-      // the chat is already linked to when the number exists in two repos.
-      const number = pr ? null : Number(/(?:^#?|\/pull\/)(\d+)\/?$/.exec(target)?.[1] ?? Number.NaN);
-      if (!pr && number != null && Number.isInteger(number) && number > 0) {
-        const candidates = db.all<WatchPrRow>(
-          `${select} where project_id = ? and github_pr_number = ? and detached_at is null order by updated_at desc`,
-          [projectId, number],
-        );
+      const mode = parsePrWatchMode(args.mode);
+      // Agents know a PR by number or URL, not by ADE's row id; `getRow`
+      // resolves all three. A bare number that exists in two repos is
+      // ambiguous unless this chat is already linked to one of them.
+      let pr: PullRequestRow | null = null;
+      try {
+        pr = target ? getRow(target) : null;
+      } catch (error) {
+        const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
+        const candidates = Number.isInteger(number)
+          ? db.all<PullRequestRow>(
+            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ?`,
+            [projectId, number],
+          )
+          : [];
         const links = chatLinks.chatSessionIdsByPrId(candidates.map((row) => row.id));
-        pr = candidates.find((row) => links.get(row.id)?.includes(canonicalSessionId)) ?? candidates[0] ?? null;
+        pr = candidates.find((row) => links.get(row.id)?.includes(canonicalSessionId)) ?? null;
+        if (!pr) throw error;
       }
       if (!pr || !sessionId) {
-        if (args.mode === null) return null;
+        if (mode === null) return null;
         throw new Error(`No pull request "${target}" is tracked in this project. Use an ADE PR id, a PR number, or a PR URL.`);
       }
       let record: PrChatWatchRecord | null;
-      if (args.mode === null) {
+      if (mode === null) {
         const existing = chatWatchStore.getForPair(pr.id, canonicalSessionId);
         record = existing && !existing.stoppedAt ? chatWatchStore.stop(existing.id, "unwatched") : existing;
       } else {
+        // The watch wakes the chat through a chat turn; a terminal (a tracked
+        // agent CLI's own session) can never take one.
+        const sessionRow = db.get<{ tool_type: string | null }>(
+          "select tool_type from terminal_sessions where id = ? limit 1",
+          [canonicalSessionId],
+        );
+        if (!isChatToolType(sessionRow?.tool_type)) {
+          throw new Error("PR Watch wakes an ADE chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
+        }
         if (pr.state === "merged" || pr.state === "closed") {
           throw new Error(`PR #${pr.github_pr_number} is ${pr.state}; there is nothing left to watch.`);
         }
@@ -12564,14 +12590,19 @@ export function createPrService({
         record = chatWatchStore.arm({
           prId: pr.id,
           sessionId: canonicalSessionId,
-          mode: args.mode === "ship" ? "ship" : "watch",
+          mode,
           armedBy: args.armedBy === "agent" ? "agent" : "user",
-          headSha: pr.head_sha,
+          headSha: pr.head_sha ?? null,
         });
         markHotRefresh([pr.id]);
       }
       const summary = record ? prChatWatchSummary(record, { githubPrNumber: pr.github_pr_number }) : null;
-      emitPrEvent?.({ type: "pr-chat-watch-changed", sessionId: canonicalSessionId, prId: pr.id, watch: summary });
+      emitPrEvent?.({
+        type: "pr-chat-watch-changed",
+        sessionId: canonicalSessionId,
+        prId: pr.id,
+        watch: summary && summary.status === "active" ? summary : null,
+      });
       return summary;
     },
 

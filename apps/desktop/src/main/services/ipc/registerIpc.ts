@@ -893,7 +893,7 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
-import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../../../shared/prWatch";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
@@ -12240,11 +12240,10 @@ export function registerIpc({
   ipcMain.handle(
     IPC.prsSetChatWatch,
     async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
-      const mode = prChatLinkOptionalString(raw, "mode");
       return ensurePrMutationContext().prService.setChatWatch({
         prId: requirePrChatLinkString(raw, "prId"),
         sessionId: requirePrChatLinkString(raw, "sessionId"),
-        mode: mode === "watch" || mode === "ship" ? mode : null,
+        mode: parsePrWatchMode(prChatLinkOptionalString(raw, "mode")),
       });
     },
   );

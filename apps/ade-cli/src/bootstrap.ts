@@ -2626,14 +2626,9 @@ export async function createAdeRuntime(args: {
       ? createPrWatchService({
         logger,
         prService: headlessLinearServices.prService,
-        getChatState: (sessionId) => {
-          const row = sessionService.get(sessionId);
-          if (!row) return null;
-          return { settled: Boolean(row.settledAt), archived: Boolean(row.archivedAt) };
-        },
+        sessionService,
         messageSession: (args) => chatForPrWatch.messageSession(args),
-        emitWatchChanged: ({ sessionId, prId, watch }) =>
-          emitPrEvent({ type: "pr-chat-watch-changed", sessionId, prId, watch }),
+        emitPrEvent,
         getGithubBackgroundPauseUntilMs: () =>
           headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
       })
@@ -3091,10 +3086,7 @@ export async function createAdeRuntime(args: {
         if (event.type === "prs-updated") {
           for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
         }
-        // A watch just armed takes its first look now, not on the next tick.
-        if (event.type === "pr-chat-watch-changed" && event.watch?.status === "active") {
-          prWatchService?.poke(event.prId);
-        }
+        prWatchService?.onPrEvent(event);
       },
     ));
     externalSessionsService = createExternalSessionsService({

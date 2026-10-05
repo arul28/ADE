@@ -1,5 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
-import type { GetPrChatWatchArgs, SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import path from "node:path";
@@ -3572,11 +3572,10 @@ function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrC
 }
 
 function parseSetPrChatWatchArgs(value: Record<string, unknown>): SetPrChatWatchArgs {
-  const mode = asTrimmedString(value.mode);
   return {
     prId: requireString(value.prId, "prs.setChatWatch requires prId."),
     sessionId: requireString(value.sessionId, "prs.setChatWatch requires sessionId."),
-    mode: mode === "watch" || mode === "ship" ? mode : null,
+    mode: parsePrWatchMode(value.mode),
   };
 }
 

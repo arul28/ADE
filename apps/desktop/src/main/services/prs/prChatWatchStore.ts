@@ -88,7 +88,7 @@ function rowToRecord(row: WatchRow): PrChatWatchRecord {
 
 export function prChatWatchSummary(
   record: PrChatWatchRecord,
-  extras: { githubPrNumber: number | null; paused?: boolean },
+  extras: { githubPrNumber: number | null },
 ): PrChatWatchSummary {
   return {
     watchId: record.id,
@@ -97,7 +97,7 @@ export function prChatWatchSummary(
     githubPrNumber: extras.githubPrNumber,
     mode: record.mode,
     armedBy: record.armedBy,
-    status: record.stoppedAt ? "stopped" : extras.paused ? "paused" : "active",
+    status: record.stoppedAt ? "stopped" : "active",
     startedAt: record.startedAt,
     stoppedAt: record.stoppedAt,
     stopReason: record.stopReason,
@@ -213,13 +213,14 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
   };
 
   /**
-   * Record what the agent was told. Guarded on `expectedUpdatedAt`: a watch the
-   * user stopped, switched, or restarted while the reactor was reading GitHub
-   * must not be overwritten with the stale pass's state.
+   * Record what the agent was told. Guarded on `expectedStartedAt`: a watch
+   * stopped or restarted while the reactor was reading GitHub must not take the
+   * stale pass's state. A mode switch meanwhile keeps the watch, so the told
+   * state still lands and the news is not told twice.
    */
   const commitPass = (input: {
     watchId: string;
-    expectedUpdatedAt: string;
+    expectedStartedAt: string;
     state: PrWatchState;
     told?: { summary: string; at: string } | null;
     stopReason?: PrWatchStopReason | null;
@@ -236,11 +237,11 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
       params.push(now, input.stopReason);
     }
     const before = get(input.watchId);
-    if (!before || before.stoppedAt || before.updatedAt !== input.expectedUpdatedAt) return false;
+    if (!before || before.stoppedAt || before.startedAt !== input.expectedStartedAt) return false;
     db.run(
       `update pull_request_chat_watches set ${sets.join(", ")}
-        where id = ? and project_id = ? and updated_at = ? and stopped_at is null`,
-      [...params, input.watchId, projectId, input.expectedUpdatedAt],
+        where id = ? and project_id = ? and started_at = ? and stopped_at is null`,
+      [...params, input.watchId, projectId, input.expectedStartedAt],
     );
     return get(input.watchId)?.updatedAt === now;
   };
@@ -281,14 +282,5 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
     }
   };
 
-  /** A deleted chat or PR takes its watches with it. */
-  const deleteForSession = (sessionId: string): void => {
-    try {
-      db.run("delete from pull_request_chat_watches where project_id = ? and session_id = ?", [projectId, sessionId]);
-    } catch {
-      // Older databases may predate the table.
-    }
-  };
-
-  return { get, getForPair, list, arm, stop, commitPass, recordAdeComment, adeCommentIds, deleteForSession };
+  return { get, getForPair, list, arm, stop, commitPass, recordAdeComment, adeCommentIds };
 }
