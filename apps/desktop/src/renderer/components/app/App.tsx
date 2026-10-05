@@ -37,6 +37,8 @@ import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteS
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { cn } from "../ui/cn";
+import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
@@ -247,14 +249,6 @@ function defaultHeldRouteForOverlay(pathname: string): string {
   return pathname === "/history" || pathname.startsWith("/history/") ? "/lanes" : "/work";
 }
 
-const HIDDEN_PAGE_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  zIndex: -1,
-  opacity: 0,
-  pointerEvents: "none",
-};
-
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
@@ -419,13 +413,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   }, [overlayOpen, route]);
 
   React.useEffect(() => {
-    const node = pageSurfaceRef.current;
-    if (!node) return;
-    if (overlayOpen) node.setAttribute("inert", "");
-    else node.removeAttribute("inert");
-  }, [overlayOpen, pagePath]);
-
-  React.useEffect(() => {
     if (active && isWorkRoute) return;
     hideBuiltInBrowserView(projectRoot);
   }, [active, isWorkRoute, projectRoot]);
@@ -459,19 +446,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     };
   }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
-  React.useEffect(() => {
-    const node = workSurfaceRef.current;
-    if (!node) return;
-    if (isWorkRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isWorkRoute, shouldRenderWork]);
-
-  React.useEffect(() => {
-    const node = lanesSurfaceRef.current;
-    if (!node) return;
-    if (isLanesRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isLanesRoute, shouldRenderLanes]);
+  useParkedSurfaceFocus(workSurfaceRef, !isWorkRoute, shouldRenderWork);
+  useParkedSurfaceFocus(lanesSurfaceRef, !isLanesRoute, shouldRenderLanes);
+  useParkedSurfaceFocus(pageSurfaceRef, overlayOpen, pagePath);
 
   const workSurface = shouldRenderWork ? (
     <Routes location={visibleWorkRoute}>
@@ -479,9 +456,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={workSurfaceRef}
           className="h-full min-h-0 w-full"
-          aria-hidden={!isWorkRoute}
-          data-ade-animation-state={isWorkRoute ? "running" : "paused"}
-          style={!isWorkRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isWorkRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -501,9 +476,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={lanesSurfaceRef}
           className="ade-project-page h-full min-h-0 w-full"
-          aria-hidden={!isLanesRoute}
-          data-ade-animation-state={isLanesRoute ? "running" : "paused"}
-          style={!isLanesRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isLanesRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -528,8 +501,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             <div
               ref={pageSurfaceRef}
               className="ade-project-page h-full min-h-0 w-full"
-              aria-hidden={overlayOpen || undefined}
-              style={overlayOpen ? HIDDEN_PAGE_STYLE : undefined}
+              {...parkedSurfaceProps(overlayOpen)}
             >
               <ProjectSidebarHold held={overlayOpen}>
                 <Routes location={pageRoute}>
@@ -639,31 +611,16 @@ function ProjectSurface({
     void state.refreshProviderMode().catch(() => {});
   }, [active, projectBinding.kind, store]);
 
-  React.useEffect(() => {
-    const node = surfaceRef.current;
-    if (!node) return;
-    if (active) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [active]);
+  useParkedSurfaceFocus(surfaceRef, !active);
 
   return (
     <AppStoreProvider store={store}>
       <div
         ref={surfaceRef}
         className="h-full min-h-0 w-full"
-        aria-hidden={!active}
-        data-ade-animation-state={active ? "running" : "paused"}
+        {...parkedSurfaceProps(!active)}
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
-        style={!active
-          ? {
-            position: "absolute",
-            inset: 0,
-            zIndex: -1,
-            opacity: 0,
-            pointerEvents: "none",
-          }
-          : undefined}
       >
         <ProjectRouteContent active={active} route={route} />
       </div>
@@ -881,7 +838,13 @@ function ProjectTabHost() {
       const activeEntry = projectEntries.find((entry) => entry.surfaceKey === activeSurfaceKey);
       if (activeEntry) warm.unshift(activeEntry);
     }
-    return warm;
+    // Recency picks WHICH surfaces stay warm; it must not set their DOM
+    // order. Rendered in recency order, every switch moved the surfaces'
+    // nodes, and a moved node is detached and re-attached: its whole tree
+    // was restyled and laid out again, and every scroll container in it came
+    // back at the top. Tab order is stable across switches.
+    const tabOrder = new Map(projectEntries.map((entry, index) => [entry.surfaceKey, index]));
+    return warm.sort((left, right) => (tabOrder.get(left.surfaceKey) ?? 0) - (tabOrder.get(right.surfaceKey) ?? 0));
   }, [activeSurfaceKey, projectEntries]);
 
   // Inside a project, the account lives in Settings. `/account` (sign-in
@@ -1507,7 +1470,13 @@ export function App() {
     <LaunchGate>
       <Router>
         <div
-          className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
+          className={cn(
+            "h-full bg-bg text-fg font-sans antialiased",
+            // See `.ade-app-selection` in index.css. Browsers that serve the
+            // hosted web client may not inherit ::selection, so it keeps the
+            // descendant rule.
+            isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
+          )}
         >
           <OnboardingBootstrap />
           {/* Windows beta notice: shown on every start of every Windows install

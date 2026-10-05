@@ -7074,22 +7074,25 @@ export function AgentChatPane({
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
+    let revalidateStatus = false;
     // Unpinned IPC follows the bound tab. Two runtimes can share one project
     // root, so a tab switch must bypass the TTL instead of reusing the other
-    // machine's Settings cache. Leave pin-scoped buckets alone.
-    let forceStatus = options?.force === true;
+    // machine's Settings cache. Leave pin-scoped buckets alone. Bypassing the
+    // TTL only needs a fresh answer from the newly bound brain, not a forced
+    // re-probe of every CLI and the login shell's PATH.
     if (!runtimePin) {
       const previousBindingKey = lastUnpinnedAuthBindingKeyRef.current;
       lastUnpinnedAuthBindingKeyRef.current = boundRuntimeKey;
       if (previousBindingKey !== undefined && previousBindingKey !== boundRuntimeKey) {
-        forceStatus = true;
+        revalidateStatus = true;
       }
     }
     try {
       const status = await getAiStatusCached({
         projectRoot: runtimeProjectRoot,
         pin: runtimePin,
-        force: forceStatus,
+        force: options?.force === true,
+        revalidate: revalidateStatus,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
       return applyAiStatusSnapshot(status);

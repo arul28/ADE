@@ -146,11 +146,16 @@ function AgentCluster({
         </span>
       ) : null}
       {/* Same status marks as the Work list: a filled amber dot when it is
-          your move, the dashed "working" circle otherwise. */}
+          your move, the dashed "working" circle otherwise. The spin sits on an
+          HTML wrapper, not the SVG: Chromium repaints an animated SVG every
+          frame on the main thread. 180 steps over 3 s is a 2° turn 60 times a
+          second, where a smooth spin ticks at the display's rate. */}
       {attention ? (
         <span aria-hidden className="inline-block h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: COLORS.warning }} />
       ) : (
-        <CircleDashed size={12} weight="bold" aria-hidden className="shrink-0 text-sky-400 motion-safe:animate-[spin_3s_linear_infinite]" />
+        <span aria-hidden className="inline-flex shrink-0 motion-safe:animate-[spin_3s_steps(180)_infinite]">
+          <CircleDashed size={12} weight="bold" className="text-sky-400" />
+        </span>
       )}
     </span>
   );

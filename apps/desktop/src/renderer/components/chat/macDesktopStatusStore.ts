@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStatus, MacDesktopStopResult } from "../../../shared/types/macDesktop";
+import { subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
 
 /**
  * The one place the pane and the tool card read a lane's desktop from.
@@ -124,7 +125,7 @@ export function withMacDesktopTimeout<T>(
 export function subscribeMacDesktopRuntimeChanges(onChange: () => void): () => void {
   const ade = typeof window === "undefined" ? undefined : window.ade;
   const disposers = [
-    ade?.app?.onRuntimeStatusChanged?.(() => onChange()),
+    subscribeRuntimeIdentityChanges(onChange),
     ade?.app?.onProjectBindingChanged?.(() => onChange()),
     ade?.remoteRuntime?.onConnectionSnapshotChanged?.(() => onChange()),
   ];

@@ -304,7 +304,12 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
-const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
+// How often a running terminal's on-disk snapshot catches up with its output.
+// Every live reader (terminal preview, screen hydrate) serializes the live
+// mirror or flushes first, and exit and dispose flush, so this cadence only
+// bounds how stale the file is if the brain dies. Each write serializes the
+// whole scrollback, so keep it slow.
+const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
@@ -1080,6 +1085,8 @@ type TerminalSnapshotMirror = {
   flushTimer: ReturnType<typeof setTimeout> | null;
   lastErrorAt: number;
   writeDisabled: boolean;
+  /** Writes the headless terminal has not parsed yet; it parses on a later tick. */
+  pendingWrites: number;
 };
 
 function cleanShellSpec(file: string): ShellSpec {
@@ -2611,7 +2618,7 @@ export function createPtyService({
       });
       const serializeAddon = new SerializeAddon();
       terminal.loadAddon(serializeAddon as Parameters<HeadlessTerminalInstance["loadAddon"]>[0]);
-      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false };
+      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false, pendingWrites: 0 };
     } catch (err) {
       logger.warn("pty.terminal_snapshot_init_failed", { err: String(err) });
       return null;
@@ -2692,10 +2699,13 @@ export function createPtyService({
     const mirror = entry.terminalSnapshot;
     if (!mirror || !entry.tracked || entry.disposed || !data) return;
     try {
+      mirror.pendingWrites += 1;
       mirror.terminal.write(data, () => {
+        mirror.pendingWrites -= 1;
         scheduleTerminalSnapshotWrite(entry);
       });
     } catch (err) {
+      mirror.pendingWrites = Math.max(0, mirror.pendingWrites - 1);
       const now = Date.now();
       if (now - mirror.lastErrorAt > 10_000) {
         mirror.lastErrorAt = now;
@@ -2712,6 +2722,23 @@ export function createPtyService({
       mirror.flushTimer = null;
     }
     writeTerminalSnapshot(entry);
+  };
+
+  /**
+   * The last snapshot of an ending session. It writes what the mirror has
+   * parsed now, since the timers are unref'd and a brain shutting down exits
+   * first, and writes again once the mirror parses output still queued, since
+   * the write callback schedules nothing for an ended entry.
+   */
+  const flushFinalTerminalSnapshot = (entry: PtyEntry): void => {
+    flushTerminalSnapshot(entry);
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || mirror.pendingWrites === 0) return;
+    try {
+      mirror.terminal.write("", () => writeTerminalSnapshot(entry));
+    } catch {
+      // The snapshot written above stands.
+    }
   };
 
   const resizeTerminalSnapshot = (entry: PtyEntry, cols: number, rows: number): void => {
@@ -4561,7 +4588,7 @@ export function createPtyService({
     sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
     // A shell App Control just replaced goes now, not on the next tick.
     if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
-    flushTerminalSnapshot(entry);
+    flushFinalTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
@@ -8543,6 +8570,7 @@ export function createPtyService({
       terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      flushFinalTerminalSnapshot(entry);
       scheduleTranscriptDependentWork(entry, "dispose");
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });

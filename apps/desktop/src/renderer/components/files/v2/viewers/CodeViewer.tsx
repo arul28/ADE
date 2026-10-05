@@ -8,6 +8,7 @@ import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
 import { takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
+import { isInParkedSurface } from "../../../../lib/parkedSurface";
 
 /**
  * The code/text editor: a Monaco instance bound to the shared model registry so
@@ -173,8 +174,8 @@ export function CodeViewer({
       const editor = editorRef.current;
       const host = hostRef.current;
       if (!editor || !host || !host.isConnected) return false;
-      // Single-surface Files keeps the inactive column mounted but `inert`.
-      if (host.closest("[inert]")) return false;
+      // A parked surface or an inert column stays mounted but is not on screen.
+      if (isInParkedSurface(host)) return false;
       const active = document.activeElement;
       const focused =
         editor.hasTextFocus() || (active instanceof Node && host.contains(active));

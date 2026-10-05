@@ -2048,7 +2048,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
       };
     });
-    invalidateAiDiscoveryCache(project.rootPath);
+    invalidateAiDiscoveryCache(project.rootPath, { force: false });
     invalidateProjectConfigCache(project.rootPath);
     void Promise.allSettled([
       get().refreshLanes({ includeStatus: false }),
@@ -3256,7 +3256,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           });
-      invalidateAiDiscoveryCache(rootPath);
+      invalidateAiDiscoveryCache(rootPath, { force: false });
       invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -3449,7 +3449,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneCacheByProject,
         };
       });
-      invalidateAiDiscoveryCache(binding.rootPath);
+      invalidateAiDiscoveryCache(binding.rootPath, { force: false });
       invalidateProjectConfigCache(binding.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),

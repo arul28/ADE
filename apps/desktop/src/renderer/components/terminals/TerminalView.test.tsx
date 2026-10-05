@@ -128,6 +128,7 @@ vi.mock("@xterm/xterm", () => ({
     getSelection = vi.fn(() => "");
     attachCustomKeyEventHandler = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
+    onRender = vi.fn(() => ({ dispose: vi.fn() }));
     loadAddon = vi.fn((addon: { activate?: (term: unknown) => void }) => {
       addon.activate?.(this);
     });
@@ -493,6 +494,36 @@ describe("TerminalView", () => {
       vi.useFakeTimers();
     }
   });
+
+  it("keeps at most eight terminals on WebGL and renders the rest with the DOM renderer", async () => {
+    // Chromium holds 16 GPU contexts a page and drops the oldest past that,
+    // which blanks another terminal or the Work picker's backdrop.
+    vi.useRealTimers();
+    try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
+      const sessions = Array.from({ length: 10 }, (_, index) => `session-webgl-cap-${index}`);
+      render(
+        <>
+          {sessions.map((sessionId, index) => (
+            <TerminalView key={sessionId} ptyId={`pty-webgl-cap-${index}`} sessionId={sessionId} isActive />
+          ))}
+        </>,
+      );
+
+      await waitFor(
+        () => {
+          const renderers = sessions.map((sessionId) => getTerminalRuntimeSnapshot(sessionId)?.renderer);
+          expect(renderers.every((renderer) => renderer === "webgl" || renderer === "dom")).toBe(true);
+          expect(renderers.filter((renderer) => renderer === "webgl")).toHaveLength(8);
+          expect(renderers.filter((renderer) => renderer === "dom")).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      vi.useFakeTimers();
+    }
+  });
+
 
   it("uses the WebGL renderer by default on supported platforms", async () => {
     vi.useRealTimers();

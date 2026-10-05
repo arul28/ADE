@@ -1392,7 +1392,15 @@ and is bumped on every real project change.
 
 Renderer strategy: WebGL-first, fall back to the DOM renderer on any
 init failure or context loss. Canvas renderer is intentionally skipped
-(simplified from the earlier three-tier approach).
+(simplified from the earlier three-tier approach). At most
+`MAX_WEBGL_TERMINALS = 8` terminals hold a WebGL context at once:
+Chromium keeps 16 per page and drops the oldest past that, which can
+blank another terminal or the Work picker's backdrop. A terminal holds
+its slot while the addon loads, and later terminals use the DOM
+renderer. A DOM-renderer terminal blinks its cursor through
+`lib/xtermCursorBlink.ts`: the CSS animation stays paused on one of
+its two keyframes, and a 500 ms timer flips between them, so the blink
+does not restyle on every display frame.
 
 Exposes `TerminalHealthCounters`:
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
+import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
@@ -25,6 +26,7 @@ import {
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
@@ -99,8 +101,6 @@ type CachedRuntime = {
   exitCode: number | null;
   renderer: TerminalRendererMode;
   rendererAddon: { dispose: () => void } | null;
-  rendererResetInFlight: boolean;
-  lastRendererResetAt: number;
   health: TerminalHealthCounters;
   lastDims: TerminalDims | null;
   lastPtyResizeDims: TerminalDims | null;
@@ -165,6 +165,8 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   linkProviderSub: { dispose: () => void } | null;
+  /** Drives the DOM renderer's cursor blink; null while WebGL draws the cursor. */
+  cursorBlinkClock: { dispose: () => void } | null;
   rendererInitStarted: boolean;
   inputEnabled: boolean;
   active: boolean;
@@ -176,10 +178,6 @@ type CachedRuntime = {
   bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
   macShiftSelectionCleanup: (() => void) | null;
-  // Set when a webgl→dom fallback is in flight and the runtime turned
-  // invisible before the webgl restore could run. Persists across renderer
-  // changes so the restore can be retried on the next visibility-true.
-  pendingWebGLRestore: boolean;
   invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
   fitWarningLogged: boolean;
   replayMode: boolean;
@@ -238,7 +236,6 @@ const MIN_VALID_ROWS = 6;
 const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
-const RENDERER_RESET_COOLDOWN_MS = 250;
 const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
 const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_BRACKETED_PASTE_MODE = 2004;
@@ -1497,6 +1494,12 @@ function teardownRuntime(runtime: CachedRuntime) {
     // ignore
   }
   try {
+    runtime.cursorBlinkClock?.dispose();
+  } catch {
+    // ignore
+  }
+  webglRuntimes.delete(runtime);
+  try {
     runtime.rendererAddon?.dispose();
   } catch {
     // ignore
@@ -2713,13 +2716,42 @@ function startHydration(runtime: CachedRuntime) {
   }, 120);
 }
 
-async function loadAddonCtor(moduleName: string, exportName: string): Promise<any | null> {
-  try {
-    const mod = await import(/* @vite-ignore */ moduleName);
-    return (mod as any)?.[exportName] ?? null;
-  } catch {
-    return null;
+type WebglAddonCtor = typeof WebglAddon;
+
+/**
+ * Each WebGL terminal holds a GPU context, and Chromium keeps at most 16 per
+ * page: past that it drops the oldest, which can be another terminal or the
+ * Work picker's backdrop. Terminals past the cap use the DOM renderer.
+ */
+const MAX_WEBGL_TERMINALS = 8;
+const webglRuntimes = new Set<CachedRuntime>();
+
+/** The DOM renderer blinks its cursor with CSS; WebGL blinks its own. */
+function syncCursorBlinkClock(runtime: CachedRuntime): void {
+  if (runtime.renderer === "dom") {
+    runtime.cursorBlinkClock ??= attachCursorBlinkClock(runtime.term, runtime.host);
+    return;
   }
+  runtime.cursorBlinkClock?.dispose();
+  runtime.cursorBlinkClock = null;
+}
+
+let webglAddonCtorPromise: Promise<WebglAddonCtor | null> | null = null;
+
+/**
+ * The WebGL renderer loads on first use, as its own chunk. The specifier must
+ * stay a string literal: a variable specifier is left for the browser to
+ * resolve, and a bare package name does not resolve in a renderer, so every
+ * terminal used to fall back to the DOM renderer.
+ */
+function loadWebglAddonCtor(): Promise<WebglAddonCtor | null> {
+  webglAddonCtorPromise ??= import("@xterm/addon-webgl")
+    .then((mod) => mod.WebglAddon ?? null)
+    .catch(() => {
+      webglAddonCtorPromise = null;
+      return null;
+    });
+  return webglAddonCtorPromise;
 }
 
 async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): Promise<boolean> {
@@ -2733,12 +2765,15 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     }
     runtime.rendererAddon = null;
     runtime.renderer = "dom";
+    webglRuntimes.delete(runtime);
+    syncCursorBlinkClock(runtime);
     notifyRuntime(runtime);
     return true;
   }
 
-  const Ctor = await loadAddonCtor("@xterm/addon-webgl", "WebglAddon");
-  if (!Ctor) return false;
+  const Ctor = await loadWebglAddonCtor();
+  // Teardown during the import has already given back this runtime's slot.
+  if (!Ctor || runtime.disposed) return false;
 
   try {
     const addon = new Ctor();
@@ -2750,6 +2785,8 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     }
     runtime.rendererAddon = addon as { dispose: () => void };
     runtime.renderer = mode;
+    webglRuntimes.add(runtime);
+    syncCursorBlinkClock(runtime);
 
     if (mode === "webgl") {
       const maybeOnContextLoss = (addon as { onContextLoss?: (cb: () => void) => void }).onContextLoss;
@@ -2775,71 +2812,18 @@ async function initRendererChain(runtime: CachedRuntime) {
   if (runtime.rendererInitStarted || runtime.disposed) return;
   runtime.rendererInitStarted = true;
 
-  if (!terminalWebglRendererEnabled()) {
+  if (!terminalWebglRendererEnabled() || webglRuntimes.size >= MAX_WEBGL_TERMINALS) {
     await setRenderer(runtime, "dom");
     return;
   }
+  // Hold the slot across the async addon load, so terminals created together
+  // cannot all pass the cap; the DOM fallback releases it.
+  webglRuntimes.add(runtime);
 
   const webgl = await setRenderer(runtime, "webgl");
   if (webgl) return;
   incrementHealth(runtime, "rendererFallbacks");
   await setRenderer(runtime, "dom");
-}
-
-function resetWebglRenderer(runtime: CachedRuntime, afterReset: () => void): boolean {
-  if (runtime.disposed || runtime.renderer !== "webgl" || runtime.rendererResetInFlight) return false;
-  const now = Date.now();
-  if (
-    runtime.lastRendererResetAt > 0
-    && now - runtime.lastRendererResetAt < RENDERER_RESET_COOLDOWN_MS
-  ) return false;
-
-  runtime.rendererResetInFlight = true;
-  runtime.lastRendererResetAt = now;
-
-  void setRenderer(runtime, "dom")
-    .then(async () => {
-      if (runtime.disposed) return;
-      // Visibility may have flipped to false while we were swapping to DOM.
-      // Defer the webgl restore until the runtime becomes visible again
-      // instead of dropping it permanently — `runtime.renderer === "dom"`
-      // here so a subsequent caller would not retry without this flag.
-      if (!runtime.visible) {
-        runtime.pendingWebGLRestore = true;
-        return;
-      }
-      const restored = await setRenderer(runtime, "webgl");
-      if (!restored && !runtime.disposed) {
-        incrementHealth(runtime, "rendererFallbacks");
-      }
-    })
-    .catch(() => {
-      if (!runtime.disposed) {
-        incrementHealth(runtime, "rendererFallbacks");
-      }
-    })
-    .finally(() => {
-      runtime.rendererResetInFlight = false;
-      if (runtime.disposed || !runtime.visible) return;
-      clearTextureAtlas(runtime);
-      afterReset();
-    });
-
-  return true;
-}
-
-function flushPendingWebGLRestore(runtime: CachedRuntime): void {
-  if (!runtime.pendingWebGLRestore || runtime.disposed || !runtime.visible) return;
-  if (runtime.renderer === "webgl") {
-    runtime.pendingWebGLRestore = false;
-    return;
-  }
-  runtime.pendingWebGLRestore = false;
-  void setRenderer(runtime, "webgl").then((restored) => {
-    if (!restored && !runtime.disposed) {
-      incrementHealth(runtime, "rendererFallbacks");
-    }
-  });
 }
 
 function createRuntime(args: {
@@ -2903,8 +2887,6 @@ function createRuntime(args: {
     exitCode: null,
     renderer: "dom",
     rendererAddon: null,
-    rendererResetInFlight: false,
-    lastRendererResetAt: 0,
     health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
     lastPtyResizeDims: null,
@@ -2953,6 +2935,7 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     linkProviderSub,
+    cursorBlinkClock: null,
     rendererInitStarted: false,
     inputEnabled: true,
     active: true,
@@ -2963,7 +2946,6 @@ function createRuntime(args: {
     bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
     macShiftSelectionCleanup: null,
-    pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false,
     replayMode: false,
@@ -3502,9 +3484,12 @@ export function TerminalView({
           }
         });
       };
+      // A cleared atlas plus a full refresh repaints a revealed WebGL canvas.
+      // Do not rebuild the renderer here (WebGL -> DOM -> WebGL): creating the
+      // DOM renderer forces a layout of the whole document. A lost GPU context
+      // has its own fallback in setRenderer's onContextLoss.
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
-      resetWebglRenderer(runtime, redraw);
       redraw();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -3664,11 +3649,6 @@ export function TerminalView({
           snapshotOnly: true,
         });
       }
-      // Replay a webgl restore that was deferred when the runtime turned
-      // invisible mid-fallback. Without this, runtime.renderer stays "dom"
-      // and resetWebglRenderer's webgl-only guard would silently skip retry.
-      flushPendingWebGLRestore(runtime);
-      resetWebglRenderer(runtime, redraw);
       redraw();
     }
 
