@@ -261,6 +261,12 @@ function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
   );
 }
 
+function sameStatusValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
@@ -1594,9 +1600,11 @@ export class RemoteConnectionService {
     // cross-machine lane union answered each one with a status read of every
     // machine -- itself a call, so the loop ran several times a second. Only a
     // change a window can act on is broadcast.
+    // A re-read project list or error is a fresh object even when nothing in
+    // it changed, so structured fields compare by content.
     const previous: Record<string, unknown> = current;
     const meaningful = Object.entries(next).some(
-      ([key, value]) => key !== "lastAttemptedAt" && previous[key] !== value,
+      ([key, value]) => key !== "lastAttemptedAt" && !sameStatusValue(previous[key], value),
     );
     if (meaningful) this.emit();
   }

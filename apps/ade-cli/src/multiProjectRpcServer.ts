@@ -1525,6 +1525,9 @@ export function createMultiProjectRpcRequestHandler(
       );
     }
     const frameService = scope.runtime.appControlService ?? null;
+    // A scope that restarted under this connection has a fresh service with no
+    // demand; this puts back what the connection last declared for it.
+    frameDemand.apply(projectId, frameService);
     const releaseLegacyFrameDemand = includeHighVolumeEvents && frameService
       ? frameDemand.holdForLegacySubscription(subscriptionId, frameService)
       : null;
@@ -1641,11 +1644,13 @@ export function createMultiProjectRpcRequestHandler(
         "appControl.setFrameDemand requires projectId.",
       );
     }
-    const demand = readAppControlFrameDemand(params);
+    // Recorded before the scope lookup, so a slower lookup for an older call
+    // applies this newer demand rather than its own.
+    frameDemand.declare(projectId, readAppControlFrameDemand(params));
     const scope = await scopeRegistry.get(projectId);
     if (disposed) return { applied: false };
     const service = scope.runtime.appControlService ?? null;
-    frameDemand.declare(projectId, service, demand);
+    frameDemand.apply(projectId, service);
     return { applied: service != null };
   };
 

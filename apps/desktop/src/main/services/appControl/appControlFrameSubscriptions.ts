@@ -68,6 +68,14 @@ export function setAppControlFrameLanesForSender(
     laneIdsByWebContentsId.delete(webContentsId);
     notifyChanged();
   });
+  // A reloaded or crashed renderer starts with no holds, and its new preload
+  // only reports holds as views mount; the old document's must not outlive it.
+  const forgetDocument = (): void => {
+    if (!laneIdsByWebContentsId.delete(webContentsId)) return;
+    notifyChanged();
+  };
+  sender.on("did-navigate", forgetDocument);
+  sender.on("render-process-gone", forgetDocument);
 }
 
 /**

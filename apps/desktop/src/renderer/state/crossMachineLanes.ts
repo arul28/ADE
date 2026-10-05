@@ -2012,7 +2012,10 @@ function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionS
     .map((connection) => [
       connection.target.id,
       connection.state,
-      connection.projects.map((project) => `${project.projectId}@${project.rootPath}`).sort().join(","),
+      connection.projects
+        .map((project) => `${project.projectId}@${project.rootPath}@${project.gitOriginUrl ?? ""}`)
+        .sort()
+        .join(","),
     ].join("|"))
     .sort()
     .join("\n");
