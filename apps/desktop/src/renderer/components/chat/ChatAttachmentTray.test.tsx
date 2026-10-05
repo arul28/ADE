@@ -6,6 +6,10 @@ import { makeGitHubIssueContextAttachment, makeLinearIssueContextAttachment } fr
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import type { LaneGitHubIssue, LaneLinearIssue } from "../../../shared/types";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
+// The tray code-splits its preview popup. Loading the module here keeps the
+// lazy import a cache hit, so the popup tests do not race a cold transform of
+// the module when the suite runs in parallel.
+import "./ChatAttachmentPreviewModal";
 
 function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
   return {
