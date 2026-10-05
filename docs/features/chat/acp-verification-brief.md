@@ -112,9 +112,15 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   and a Copilot row with an `agent_id` exist only as binary strings and
   fixtures; a long Grok session (80% context) and a Copilot subagent turn
   would confirm them.
-- Qwen 0.24.0: `--session-id` vs `--resume`/`--continue` and `--yolo` vs
-  `--approval-mode` are parse errors. `session/close` is **not** implemented;
-  the ACP handshake advertises `openai` and `openai-responses`.
+- Qwen (verified live on 0.22.3 and 0.25.0; the 0.24.0 fixture is retained):
+  `--session-id` vs `--resume`/`--continue` and `--yolo` vs `--approval-mode`
+  are parse errors on all three. `session/close` is **not** implemented
+  (-32601 on 0.22.3/0.24.0/0.25.0). Cancel is a **notification**: the request
+  form answers -32601 on 0.22.3 and 0.25.0, so the dialect sends the
+  notification directly. 0.22.3 and 0.25.0 advertise only the `openai` auth
+  method; 0.24.0 also advertised `openai-responses`. 0.25.0 dropped `default`
+  and `max` from `reasoning_effort` (now none|low|medium|high|xhigh) but still
+  accepts `default` as a clear.
 - Copilot: `config.json` is JSONC; live 1.0.82 persists `trustedFolders`
   (camelCase — not the `trusted_folders` older notes claimed). ADE writes
   neither: the trust pre-seed is removed and nothing on the Copilot path may

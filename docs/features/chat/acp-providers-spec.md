@@ -76,23 +76,30 @@ providers identically.
 
 ## 3. Per-provider dialects (verified facts — do not re-derive)
 
-### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.24.0**)
-- Caps: loadSession, session list/resume, image **and audio** prompts, MCP
-  http/sse. Slash via `available_commands_update`. **`session/close` is not
-  advertised and answers -32601.** ADE ends the process (one process per
-  session). Default `qwen --help` hides `--acp`, `--approval-mode`,
-  `--session-id`, `--yolo`, and `--append-system-prompt`; they exist (error-path
-  help lists them).
-- Auth: `qwen auth` is **removed**. Advertised ACP methods are `openai` and
-  `openai-responses` (both use `OPENAI_API_KEY`; `OPENAI_BASE_URL` and a custom
-  provider in `~/.qwen/settings.json` remain supported). ADE does **not** write
-  that file — it reuses the Qwen CLI the user already configured, including a
-  local OpenAI-compatible proxy. Unauthenticated `session/new` is
-  `-32000 Authentication required: Use Qwen Code CLI to authenticate first.`
-  `authenticate` with `openai` and no key is `-32603 Internal error` whose
-  `data.details` say "Missing API key" even when the key already lives in
-  settings.json, so ADE's auth probe uses `session/new` as the proof. Free OAuth
-  tier is dead (2026-04). Live model ids come from `settings.json`
+### Qwen (`qwen --acp`, npm `@qwen-code/qwen-code` **0.22.3 / 0.24.0 / 0.25.0**)
+- Caps (0.22.3, 0.24.0, and 0.25.0 agree): loadSession, session list/resume,
+  image **and audio** prompts, MCP http/sse. Slash via
+  `available_commands_update`. **`session/close` is not advertised and answers
+  -32601 on all three.** ADE ends the process (one process per session). Cancel
+  is a **notification**: a `session/cancel` request answers -32601 on 0.22.3 and
+  0.25.0 (the shipped ACP SDK registers only the notification handler), so ADE
+  sends the notification directly. Through 0.24.0, default `qwen --help` hides
+  `--acp`, `--approval-mode`, `--session-id`, `--yolo`, and
+  `--append-system-prompt`; they exist (error-path help lists them). 0.25.0 lists
+  them in the default help. The `--yolo` vs `--approval-mode` and
+  `--session-id` vs `--resume`/`--continue` parse errors are unchanged.
+- Auth: `qwen auth` is **removed**. The advertised method set varies: 0.22.3 and
+  0.25.0 advertise only `openai`; 0.24.0 also advertised `openai-responses` (all
+  use `OPENAI_API_KEY`; `OPENAI_BASE_URL` and a custom provider in
+  `~/.qwen/settings.json` remain supported). ADE probes the stable `openai`
+  method, which every version advertises. It does **not** write that file — it
+  reuses the Qwen CLI the user already configured, including a local
+  OpenAI-compatible proxy. Unauthenticated `session/new` is
+  `-32000 Authentication required: Use Qwen Code CLI to authenticate first.` on
+  0.22.3 and 0.25.0. `authenticate` with `openai` and no key is `-32603 Internal
+  error` whose `data.details` say "Missing API key" even when the key already
+  lives in settings.json, so ADE's auth probe uses `session/new` as the proof.
+  Free OAuth tier is dead (2026-04). Live model ids come from `settings.json`
   `modelProviders` plus anything a session later reports.
 - Config home: `QWEN_HOME` names the config dir (CODEX_HOME shape). Runtime
   state axis: `QWEN_RUNTIME_DIR`. Live probe: `QWEN_HOME` relocates
@@ -108,7 +115,7 @@ providers identically.
   `requestCount`, `servedModel` (row `model`), and one derived
   `done.subagentUsage` entry per non-`main` source (usage, not a transcript
   card). `qwen/notify/session/model-update
-  { currentModelId }` (sent without an underscore by 0.24's ACP SDK; both
+  { currentModelId }` (sent without an underscore by 0.24/0.25's ACP SDK; both
   spellings are registered) names the model after a switch; ACP model ids
   carry an auth-type suffix (`gpt-5.5(openai)`) that ADE strips. Account: the
   row's `authType` is the upstream; `qwen-oauth` is a subscription. Any other
@@ -117,23 +124,28 @@ providers identically.
   (`scheme://host:port`, never userinfo, path, or query) as the endpoint;
   every other type is an API key with no endpoint.
 - Session config via `session/set_config_option` (mode/model/reasoning_effort).
-  Qwen 0.24.0 also advertises `openai-responses` alongside `openai`; both
-  use `OPENAI_API_KEY`, and ADE keeps `openai` as its non-interactive probe.
-  Approval modes: plan|default|auto-edit|auto|yolo.
-- Model selection (verified 2026-09-23 with no-prompt sessions on 0.22.3).
-  `session/new` advertises the `model` option. Its values are the suffixed
-  ids of the models in `settings.json` (`gpt-5.5(openai)`). Qwen accepts the
-  suffixed id and the bare id (`gpt-5.5`). A model that is not configured for
-  the auth type fails with `-32603` `Model '<id>' not found for authType
-  'openai'`, and the session stays on its model. An unknown
-  `reasoning_effort` value fails with `-32602`. ADE matches its id against
-  the advertised ids through the suffix strip and sends the advertised id.
-  ADE sends nothing for a model that Qwen does not offer (see 3.6).
+  Approval modes on all three: plan|default|auto-edit|auto|yolo. The
+  `reasoning_effort` choices differ: 0.22.3 lists
+  default|low|medium|high|xhigh|max; 0.25.0 lists none|low|medium|high|xhigh (no
+  `default`, no `max`) and marks its default through
+  `_meta.qwenCode/reasoning.defaultEffort` (`medium` for gpt-5.5). Both still
+  accept `default` when ADE clears the effort; an unknown value is -32602.
+- Model selection (verified 2026-09-23 with no-prompt sessions on 0.22.3, and
+  re-verified on 0.25.0). `session/new` advertises the `model` option. Its
+  values are the suffixed ids of the models in `settings.json`
+  (`gpt-5.5(openai)`). Qwen accepts the suffixed id and the bare id (`gpt-5.5`).
+  A model that is not configured for the auth type fails with `-32603` `Model
+  '<id>' not found for authType 'openai'`, and the session stays on its model.
+  An unknown `reasoning_effort` value fails with `-32602`. ADE matches its id
+  against the advertised ids through the suffix strip and sends the advertised
+  id. ADE sends nothing for a model that Qwen does not offer (see 3.6).
 - Tracked CLI: `qwen -i "<prompt>" -m <model> --approval-mode=<m> --session-id
   <uuid>`; resume `--resume <id>` / `--continue`; NEVER pass `--yolo` together
   with `--approval-mode` (parse error: use `--approval-mode=yolo`). NEVER pass
   `--session-id` with `--resume`/`--continue`. `--append-system-prompt` carries
-  ADE guidance.
+  ADE guidance. The flag set and its parse errors are identical on 0.22.3 and
+  0.25.0; only the default help text changed (0.25.0 lists the load-bearing
+  flags that older builds hid).
 - Windows: npm `.cmd` shim → prompt rides PTY (`promptRidesInArgv = platform
   !== "win32"`), same rule as Claude.
 
