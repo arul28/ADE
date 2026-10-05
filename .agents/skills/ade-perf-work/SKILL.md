@@ -635,8 +635,9 @@ passes over ~60k elements, the markdown parse, and `ThreadCommentLayer`
 `getBoundingClientRect` reads (~150 ms). A fix needs virtualization or deferred
 row mount, so measure the visual effect before you change it.
 
-Measured but not changed: the WebGL terminal renderer is not active in dev
-(`loadAddonCtor` does a bare `import("@xterm/addon-webgl")` that Vite does not
-resolve), so dev terminals use the DOM renderer. A forced WebGL renderer gave a
+Measured but not changed: the WebGL terminal renderer is not active.
+`loadAddonCtor` does a bare `import("@xterm/addon-webgl")` with `@vite-ignore`.
+Neither Vite in dev nor the packaged `app.asar` resolves it, so terminals use
+the DOM renderer. A forced WebGL renderer gave a
 streaming terminal 5.2% renderer CPU against 8.6% for the DOM renderer. Glyph
 rendering differs, so a change is a product decision.
