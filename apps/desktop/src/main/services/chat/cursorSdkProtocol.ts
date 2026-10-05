@@ -440,6 +440,12 @@ export type CursorSdkWorkerResponse =
       sdkRequestId?: string;
     }
   | { type: "hook_request"; requestId: string; request: CursorSdkHookRequest }
+  /**
+   * The hook that asked for `requestId` went away before ADE answered: the gate
+   * script stopped waiting, or Cursor killed it. Nothing can use the answer, so
+   * ADE retires the approval card instead of leaving it pending.
+   */
+  | { type: "hook_abandoned"; requestId: string }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };
 
 /**

@@ -1149,6 +1149,15 @@ only through `CursorSdkSendPrompt.forceExpireActiveRun` on ADE's automatic
 recovery re-send. Conflating the two would let a full-auto session silently
 discard a turn that was still working.
 
+Because Cursor kills a `preToolUse` command hook at the `timeout` in
+`~/.cursor/hooks.json` (60 seconds when unset, and its timer overflows past
+~24.8 days), ADE's gate entry states `timeout: 86400` and the gate script stops
+waiting 15 seconds earlier, denying with a reason the model can relay instead of
+being killed mid-wait. If the script gives up or Cursor kills it anyway, the
+worker posts `hook_abandoned`; ADE retires the approval card as cancelled rather
+than reporting a pending permission no answer can reach
+(`agent_chat.cursor_permission_hook_abandoned`).
+
 Cursor is also the one provider whose local fork is not a provider fork.
 `@cursor/sdk` exposes no fork/clone/branch operation and a Cursor thread cannot
 be resumed twice, so ADE's fork opens a fresh Cursor agent and replays the

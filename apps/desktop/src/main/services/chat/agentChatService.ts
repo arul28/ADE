@@ -47050,6 +47050,26 @@ export function createAgentChatService(args: {
         });
       });
     };
+    // The gate hook stopped waiting (its deadline passed, or Cursor killed it),
+    // and Cursor has already treated the call as denied. Retire the card, or
+    // the session keeps reporting a pending permission no answer can reach.
+    runtime.sdk.bridge.onHookAbandoned = (itemId) => {
+      const waiter = runtime.permissionWaiters.get(itemId);
+      if (!waiter) return;
+      logger.warn("agent_chat.cursor_permission_hook_abandoned", {
+        sessionId: managed.session.id,
+        itemId,
+        toolName: waiter.toolName,
+      });
+      // The waiter's resolve removes it from `permissionWaiters`.
+      cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for ADE's approval.");
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId: runtime.activeTurnId ?? null,
+        questions: [],
+      });
+    };
   };
 
   const ensureCursorSdkRuntime = async (managed: ManagedChatSession): Promise<CursorRuntime> => {

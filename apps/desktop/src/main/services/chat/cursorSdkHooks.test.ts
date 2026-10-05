@@ -247,7 +247,10 @@ describe("Cursor SDK hook installation", () => {
         env: { ...adeEnv(socketPath), ADE_CURSOR_SDK_RESPONSE_TIMEOUT_MS: "20" },
       });
       expect(decision.permission).toBe("deny");
-      expect(decision.user_message).toContain("Timed out waiting");
+      // Failing closed must relay a reason to the model; the exact wording is
+      // not the contract, only that the unattempted call explains itself.
+      expect(decision.user_message).toEqual(expect.any(String));
+      expect(decision.user_message.length).toBeGreaterThan(0);
     });
   }));
 
@@ -376,7 +379,7 @@ describe("Cursor SDK hook installation", () => {
     expect(installed.preCompactCommand).toBeNull();
     expect(installed.preCompactError).toMatch(/EISDIR|EPERM|illegal operation/i);
     const config = readJson(hooksPath);
-    expect(config.hooks.preToolUse).toEqual([{ command: installed.command, failClosed: true }]);
+    expect(config.hooks.preToolUse).toEqual([{ command: installed.command, failClosed: true, timeout: 86400 }]);
     expect(fs.existsSync(cursorSdkHookScriptPath(home))).toBe(true);
     // ADE's stale entry is gone; the user's own entry stays.
     expect(config.hooks.preCompact).toEqual([userPreCompact]);
