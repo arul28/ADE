@@ -827,6 +827,21 @@ lane-mapping gate widened what an installation can do without needing any new
 instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
 deleting a merged PR's branch was reachable only from a mapped PR it was a
 corner of the product, and it is now an offer on every merged row.
+`prs.setChatWatch` (turning PR Watch / Ship on, switching it, or off for a
+chat) is in the set too: a deliberate choice, at most a few per PR — a person
+in the menu, or an agent arming its own watch through the same action. Which
+mode was picked is deliberately not a property — the product question is
+adoption, and the ledger row already answers it. The watch's own wakes, holds,
+and stops are background mechanics with no person behind them, so they stay in
+the local `prs.watch_*` lines and never reach analytics. `chat.restartSession`
+(a fresh provider process that keeps the conversation) joined for the same
+reason: one row per press.
+
+Chat goals, stop-mode choices, waits, and restart resume add no analytics.
+Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
+firing, and a chat continuing after a restart are things the app does with no
+person behind them; and a Stop press is high-frequency enough that which of
+six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.
 It is a parameter of `prs.land`, the merge itself is already counted, and there

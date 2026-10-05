@@ -435,6 +435,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "user_message":
         event = workSpawnCompletionEvent(from: eventDict["metadata"], fallbackTurnId: turnId)
           ?? workBoardMoveEvent(from: eventDict, fallbackTurnId: turnId)
+          ?? workPrWatchWakeEvent(
+            from: eventDict,
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            turnId: turnId
+          )
           ?? .userMessage(
             text: userMessageDisplayText(from: eventDict),
             attachments: parseAgentChatFileRefs(from: eventDict["attachments"]),
@@ -1243,6 +1250,34 @@ private func workBoardMoveEvent(
     turnId: fallbackTurnId,
     steerId: nil
   )
+}
+
+/// A PR Watch / Ship wake, which arrives as a `user_message` ADE wrote.
+///
+/// Like a board move it must not render as a user bubble: the user did not
+/// type it. It becomes the ADE card the host attached (`metadata.prWatchWake.card`),
+/// carrying the exact text the agent read so the card can fold it underneath.
+/// Mirrors the `prWatchWake` branch of desktop's `AgentChatMessageList`.
+private func workPrWatchWakeEvent(
+  from eventDict: [String: Any],
+  sessionId: String,
+  timestamp: String,
+  sequence: Int?,
+  turnId: String?
+) -> WorkChatEvent? {
+  guard let metadata = eventDict["metadata"] as? [String: Any],
+        let wake = metadata["prWatchWake"] as? [String: Any],
+        let cardDict = wake["card"] as? [String: Any]
+  else { return nil }
+  var card = workAdeCardModel(
+    from: cardDict,
+    sessionId: sessionId,
+    timestamp: timestamp,
+    sequence: sequence,
+    turnId: turnId
+  )
+  card.wakeText = stringValue(eventDict["text"])
+  return .adeCard(card)
 }
 
 private func parseAgentChatResourceLinksFromEvent(_ eventDict: [String: Any]) -> [AgentChatResourceLink] {

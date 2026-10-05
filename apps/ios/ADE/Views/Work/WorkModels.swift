@@ -788,16 +788,85 @@ func providerSupportsLiveRedirect(_ provider: String) -> Bool {
 /// Hand mirror of desktop `chatStopModes.ts`. iOS cannot import the TS table,
 /// so the two stay in step by this struct plus `testWorkChatStopCapabilityMirrorsDesktopStopMatrix`.
 struct WorkChatStopCapability: Equatable {
+  /// Table order, matching desktop `AGENT_CHAT_STOP_MODES`. The two child-chat
+  /// modes are only offered while the chat has a child chat working.
   static let modes: [AgentChatStopMode] = [
     .stopOnly,
     .stopAndClear,
     .stopAndBackground,
     .stopAndClearAndBackground,
+    .stopAndClearAndChildren,
+    .stopEverythingAndChildren,
   ]
   static let defaultMode: AgentChatStopMode = .stopAndClear
 
-  static func copy(mode: AgentChatStopMode, jobCount: Int) -> (title: String, detail: String) {
+  static func clearsQueue(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndClear, .stopAndClearAndBackground, .stopAndClearAndChildren, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndBackground: return false
+    }
+  }
+
+  static func stopsBackground(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndBackground, .stopAndClearAndBackground, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndClear, .stopAndClearAndChildren: return false
+    }
+  }
+
+  static func stopsChildren(_ mode: AgentChatStopMode) -> Bool {
+    mode == .stopAndClearAndChildren || mode == .stopEverythingAndChildren
+  }
+
+  private static func providerLabel(_ provider: String?) -> String {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    switch key {
+    case "claude": return "Claude"
+    case "codex": return "Codex"
+    case "opencode": return "OpenCode"
+    case "cursor": return "Cursor"
+    case "droid": return "Droid"
+    case "pi": return "Pi"
+    case "": return "This provider"
+    default: return key.prefix(1).uppercased() + key.dropFirst()
+    }
+  }
+
+  /// Mirrors desktop `providerStopModeSupport`. Background work: Claude,
+  /// OpenCode and Codex can stop it. Keeping the queue: Pi and ACP agents drop
+  /// queued messages on interrupt. Child chats are ADE chats, so every provider
+  /// can stop them. Nil reason means supported.
+  static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let name = providerLabel(provider)
+    let canStopBackground = ["claude", "opencode", "codex"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "cursor", "droid"].contains(key)
+    if stopsBackground(mode) && !canStopBackground {
+      return "\(name) can't stop background work its agent started."
+    }
+    if !clearsQueue(mode) && !keepsQueue {
+      return "\(name) drops queued messages when stopped."
+    }
+    return nil
+  }
+
+  /// The modes the Stop menu lists: every mode, minus the child-chat ones while
+  /// there is no child chat to stop. Unsupported modes stay listed, disabled.
+  static func visibleModes(childChatCount: Int) -> [AgentChatStopMode] {
+    modes.filter { childChatCount > 0 || !stopsChildren($0) }
+  }
+
+  /// A remembered choice this chat cannot honour right now stops the default way.
+  static func effectiveMode(_ mode: AgentChatStopMode, provider: String?, childChatCount: Int) -> AgentChatStopMode {
+    if unsupportedReason(provider: provider, mode: mode) != nil { return defaultMode }
+    if stopsChildren(mode) && childChatCount <= 0 { return defaultMode }
+    return mode
+  }
+
+  static func copy(mode: AgentChatStopMode, jobCount: Int, childChatCount: Int = 0) -> (title: String, detail: String) {
     let jobs = jobCount == 1 ? "1 job" : "\(max(0, jobCount)) jobs"
+    let n = max(0, childChatCount)
+    let children = n == 1 ? "1 child chat" : "\(n) child chats"
     switch mode {
     case .stopOnly:
       return (
@@ -819,6 +888,16 @@ struct WorkChatStopCapability: Equatable {
         "Turn + queue + background (\(jobs))",
         "Stop the active turn, cancel queued messages, and stop \(jobs)."
       )
+    case .stopAndClearAndChildren:
+      return (
+        "Turn + queue + child chats (\(n))",
+        "Stop the active turn, cancel queued messages, and stop \(children) this chat started. Background jobs keep running."
+      )
+    case .stopEverythingAndChildren:
+      return (
+        "Everything + child chats (\(n))",
+        "Stop the turn, queued messages, \(jobs), and \(children) this chat started."
+      )
     }
   }
 
@@ -828,6 +907,8 @@ struct WorkChatStopCapability: Equatable {
     case .stopAndClear: return "trash"
     case .stopAndBackground: return "square.fill"
     case .stopAndClearAndBackground: return "xmark.square.fill"
+    case .stopAndClearAndChildren: return "person.2.slash"
+    case .stopEverythingAndChildren: return "xmark.octagon.fill"
     }
   }
 }
@@ -1051,6 +1132,7 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_stack_land",
     "claude_session_quota",
     "lane_setup",
+    "pr_watch_wake",
   ]
 
   let id: String
@@ -1077,6 +1159,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   /// bottom on every progress emit. Stamped by `buildWorkAdeCards` from the
   /// envelope, so the decoders that have no envelope context can leave it.
   var timestamp: String = ""
+  /// PR Watch / Ship wake: the exact message ADE sent the agent. The wake is a
+  /// `user_message` the user did not write, so it renders as this card with the
+  /// text folded underneath. Nil for every ordinary card.
+  var wakeText: String? = nil
 
   var isKnownVariant: Bool {
     Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1124,7 +1210,8 @@ struct WorkAdeCardModel: Identifiable, Hashable {
       rowsTruncated: incoming.rowsTruncated ?? rowsTruncated,
       fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
       turnId: incoming.turnId ?? turnId,
-      timestamp: timestamp
+      timestamp: timestamp,
+      wakeText: incoming.wakeText ?? wakeText
     )
   }
 }

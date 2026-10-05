@@ -8,6 +8,7 @@ import type {
   StackLinkOffer,
 } from "../../../shared/types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
+import type { PrChatWatchSummary } from "../../../shared/prWatch";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -363,6 +364,14 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return { ok: true, linked: linkedIds.length };
     },
     listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
+    setChatWatch: async (args: unknown) => {
+      // A host without PR Watch must say so; a null result reads as "turned off".
+      if (!commands.hasAction("prs.setChatWatch")) throw new Error("This machine's ADE does not have PR Watch yet. Update it to use Watch and Ship.");
+      const result = await call<PrChatWatchSummary | null>("prs.setChatWatch", args, null, false);
+      invalidatePrsReads();
+      return result;
+    },
+    getChatWatches: (args: unknown) => read("prs.getChatWatches", args, []),
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {

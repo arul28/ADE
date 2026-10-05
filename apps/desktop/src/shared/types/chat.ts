@@ -486,7 +486,11 @@ export type AgentChatHostContinuationMetadata = {
     | "plan_followup"
     | "interrupted_turn_recovery"
     | "continuity_recovery"
-    | "cto_intro";
+    | "cto_intro"
+    /** A chat wait the agent armed fired (`chat.armWait`). */
+    | "chat_wait"
+    /** A background job the agent was waiting on ended. */
+    | "background_work_ended";
 };
 
 export type AgentChatContinuityRecovery = {
@@ -1105,6 +1109,16 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   usageLimitResume?: "manual";
   /** Marks the host-authored nudge that accompanies a Work-board drag. */
   boardMove?: AgentChatBoardMoveMetadata;
+  /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
+  prWatchWake?: AgentChatPrWatchWakeMetadata;
+};
+
+export type AgentChatPrWatchWakeMetadata = {
+  watchId: string;
+  prId: string;
+  githubPrNumber: number;
+  mode: "watch" | "ship";
+  card: AdeCardPayload;
 };
 
 export type AgentChatScheduledWorkKind =
@@ -4852,8 +4866,24 @@ export type AgentChatInterruptArgs = {
 export type AgentChatInterruptResult = {
   mode: AgentChatStopMode;
   cancelledQueuedCount: number;
+  /** Spawned chats (and their own children) a "+ child chats" stop interrupted mid-work. */
+  stoppedChildChatCount?: number;
   recoveryId?: string;
   recoveryExpiresAt?: string;
+};
+
+export type AgentChatRestartSessionArgs = {
+  sessionId: string;
+  /** Stop a running turn first instead of refusing. */
+  stopFirst?: boolean;
+};
+
+export type AgentChatRestartSessionResult = {
+  sessionId: string;
+  /** False when no provider process was running; the next message starts one either way. */
+  restarted: boolean;
+  stoppedTurn: boolean;
+  backgroundJobsStopped: number;
 };
 
 export type AgentChatStopTaskArgs = {

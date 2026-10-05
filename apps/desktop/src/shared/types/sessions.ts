@@ -299,6 +299,14 @@ export type TerminalResumeMetadata = {
 export type TrackedCliResumeProvider = TerminalResumeProvider;
 export type TrackedCliResumeMetadata = TerminalResumeMetadata;
 
+/** A chat's live goal, projected onto its row so lists can show it. */
+export type SessionActiveGoal = {
+  provider: "codex" | "claude";
+  objective: string;
+  /** Codex goal status; Claude goals are always `active` while they exist. */
+  status: string;
+};
+
 export type TerminalSessionSummary = {
   id: string;
   laneId: string;
@@ -310,6 +318,8 @@ export type TerminalSessionSummary = {
   pinned: boolean;
   manuallyNamed?: boolean;
   goal: string | null;
+  /** The chat's live goal (Codex `thread/goal`, Claude `/goal`); absent when none. */
+  activeGoal?: SessionActiveGoal | null;
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];

@@ -2611,6 +2611,33 @@ function renderEvent(
     );
   }
 
+  /* ── PR Watch / Ship wake ──
+     ADE woke the agent because its pull request changed. The user did not
+     write this message, so it is never a user bubble: the card says what
+     changed and that the agent was told, and the exact text sits folded
+     underneath for anyone who wants to see what the agent read. */
+  const prWatchWake = event.type === "user_message" ? event.metadata?.prWatchWake : undefined;
+  if (event.type === "user_message" && prWatchWake?.card) {
+    const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
+    return (
+      <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
+        <AdeCard
+          card={card}
+          onAction={(actionId) => dispatchAdeCardAction(card, actionId, options?.sessionId ?? null)}
+        />
+        <details className="group mx-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/45">
+          <summary className="cursor-pointer select-none list-none hover:text-fg/70">
+            <span className="group-open:hidden">What the agent was told</span>
+            <span className="hidden group-open:inline">Hide what the agent was told</span>
+          </summary>
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-white/[0.02] p-2 font-sans leading-relaxed text-fg/60">
+            {event.text}
+          </pre>
+        </details>
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);

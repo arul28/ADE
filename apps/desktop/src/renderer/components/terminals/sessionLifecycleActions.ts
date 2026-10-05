@@ -5,7 +5,9 @@ import type {
   SessionSettleOverride,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { isTurnInFlightError } from "../../../shared/codedError";
 import { showToast } from "../app/toast/toastStore";
+import { confirmDialog, promptDialog } from "../ui/dialog";
 import {
   canonicalInputFromSummary,
   sessionNeedsYou,
@@ -422,5 +424,78 @@ export async function setChatSpawnKind(
       : window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }));
   } catch (error) {
     reportFailure(action, session.id, error);
+  }
+}
+
+/**
+ * "Restart agent session": stop the chat's provider process and keep the
+ * conversation, so the next message starts a fresh process that picks up new
+ * skills, plugins, and MCP servers. A running turn is not stopped silently —
+ * the user confirms first.
+ */
+export async function restartAgentSession(
+  session: Pick<TerminalSessionSummary, "id">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const call = (stopFirst: boolean) => {
+    const args = { sessionId: session.id, ...(stopFirst ? { stopFirst: true } : {}) };
+    return pin ? window.ade.agentChat.restartSession(args, pin) : window.ade.agentChat.restartSession(args);
+  };
+  try {
+    let result;
+    try {
+      result = await call(false);
+    } catch (error) {
+      if (!isTurnInFlightError(error)) throw error;
+      const confirmed = await confirmDialog({
+        title: "Stop the turn and restart?",
+        message: "The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.",
+        confirmLabel: "Stop and restart",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+      result = await call(true);
+    }
+    const stopped = result.backgroundJobsStopped > 0
+      ? ` ${result.backgroundJobsStopped === 1 ? "1 background job" : `${result.backgroundJobsStopped} background jobs`} stopped.`
+      : "";
+    showToast({
+      id: `restart-agent-session:${session.id}`,
+      title: "Agent session restarted",
+      message: `Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`,
+    });
+  } catch (error) {
+    reportFailure("Restart agent session", session.id, error);
+  }
+}
+
+/**
+ * Set a chat's goal: Codex through its goal API, Claude through its native
+ * `/goal` command (sent like a typed command). Either way the agent keeps
+ * working across turns until the goal is met.
+ */
+export async function setChatGoal(
+  session: Pick<TerminalSessionSummary, "id" | "toolType">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const objective = (await promptDialog({
+    title: "Set a goal",
+    message: "The agent keeps working across turns until this is true. Edit or clear it from the Goal section of the chat actions drawer.",
+    placeholder: "e.g. All tests pass and the PR is merged",
+    confirmLabel: "Set goal",
+  }))?.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  if (!objective) return;
+  try {
+    if (session.toolType === "codex-chat") {
+      await (pin
+        ? window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }, pin)
+        : window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }));
+    } else {
+      const args = { sessionId: session.id, text: `/goal ${objective}` };
+      await (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args));
+    }
+    showToast({ id: `chat-goal:${session.id}`, title: "Goal set", message: objective });
+  } catch (error) {
+    reportFailure("Set goal", session.id, error);
   }
 }

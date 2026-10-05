@@ -1,3 +1,5 @@
+import { providerDisplayLabel } from "./pendingInputLabels";
+
 /**
  * Canonical chat stop matrix: queue axis × background axis.
  *
@@ -16,6 +18,10 @@ export const AGENT_CHAT_STOP_MODES = [
   "stop_and_clear",
   "stop_and_background",
   "stop_and_clear_and_background",
+  // A third axis: also stop the chats this chat spawned, depth-first, each
+  // with the same mode. Never the default, for any provider.
+  "stop_and_clear_and_children",
+  "stop_everything_and_children",
 ] as const;
 
 export type AgentChatStopMode = (typeof AGENT_CHAT_STOP_MODES)[number];
@@ -58,6 +64,13 @@ const AGENT_CHAT_STOP_MODE_ALIASES: Record<string, AgentChatStopMode> = {
   stop_and_clear_and_background: "stop_and_clear_and_background",
   "stop-and-clear-and-background": "stop_and_clear_and_background",
   "clear-and-background": "stop_and_clear_and_background",
+  stop_and_clear_and_children: "stop_and_clear_and_children",
+  "stop-and-clear-and-children": "stop_and_clear_and_children",
+  children: "stop_and_clear_and_children",
+  "clear-and-children": "stop_and_clear_and_children",
+  stop_everything_and_children: "stop_everything_and_children",
+  "stop-everything-and-children": "stop_everything_and_children",
+  everything: "stop_everything_and_children",
 };
 
 /** Hyphen, underscore, and composer-flag aliases for the four-mode matrix. */
@@ -67,11 +80,12 @@ export function resolveAgentChatStopModeAlias(value: string): AgentChatStopMode 
 }
 
 /**
- * Providers whose runtime honours every stop mode, so the Stop control can
- * offer the queue and background choices. Others get the plain Stop.
+ * Whether the Stop control offers the choice menu. Every provider does: the
+ * menu disables the choices a provider cannot honour and says why
+ * (`providerStopModeSupport`), instead of hiding them.
  */
 export function providerSupportsStopModeChoice(provider: string | null | undefined): boolean {
-  return provider === "claude" || provider === "opencode";
+  return String(provider ?? "").trim().length > 0;
 }
 
 /** Providers whose runtime can stop one background task (`chat.stopTask`). */
@@ -79,12 +93,82 @@ export function providerSupportsPerTaskStop(provider: string | null | undefined)
   return provider === "claude" || provider === "opencode";
 }
 
+/** What each mode stops besides the active turn. */
+const STOP_MODE_EFFECTS: Record<AgentChatStopMode, { clearsQueue: boolean; stopsBackground: boolean; stopsChildren: boolean }> = {
+  stop_only: { clearsQueue: false, stopsBackground: false, stopsChildren: false },
+  stop_and_clear: { clearsQueue: true, stopsBackground: false, stopsChildren: false },
+  stop_and_background: { clearsQueue: false, stopsBackground: true, stopsChildren: false },
+  stop_and_clear_and_background: { clearsQueue: true, stopsBackground: true, stopsChildren: false },
+  stop_and_clear_and_children: { clearsQueue: true, stopsBackground: false, stopsChildren: true },
+  stop_everything_and_children: { clearsQueue: true, stopsBackground: true, stopsChildren: true },
+};
+
 export function stopModeClearsQueue(mode: AgentChatStopMode): boolean {
-  return mode === "stop_and_clear" || mode === "stop_and_clear_and_background";
+  return STOP_MODE_EFFECTS[mode].clearsQueue;
 }
 
 export function stopModeStopsBackground(mode: AgentChatStopMode): boolean {
-  return mode === "stop_and_background" || mode === "stop_and_clear_and_background";
+  return STOP_MODE_EFFECTS[mode].stopsBackground;
+}
+
+/** Also stop the chats this chat spawned (`orchestrationParentSessionId`). */
+export function stopModeStopsChildren(mode: AgentChatStopMode): boolean {
+  return STOP_MODE_EFFECTS[mode].stopsChildren;
+}
+
+/** The queue × background mode a provider runtime acts on; children are ADE's job. */
+export function stopModeProviderMode(mode: AgentChatStopMode): AgentChatStopMode {
+  if (mode === "stop_and_clear_and_children") return "stop_and_clear";
+  if (mode === "stop_everything_and_children") return "stop_and_clear_and_background";
+  return mode;
+}
+
+export type AgentChatStopModeSupport =
+  | { supported: true }
+  | { supported: false; reason: string };
+
+/**
+ * What each provider can actually do for each Stop choice, from its own
+ * interrupt semantics:
+ *
+ * - Background work: Claude stops tasks one by one (`stopTask`) or resets the
+ *   query; OpenCode stops child sessions and kills its background shells;
+ *   Codex ends its background terminals (`thread/backgroundTerminals/clean`).
+ *   Cursor, Droid, Pi, and ACP agents expose no way to stop background work.
+ * - Keeping the queue: Pi and ACP agents drop queued messages on interrupt, so
+ *   a Stop that keeps them cannot be offered there.
+ * - Child chats are ADE chats, so every provider can stop them.
+ *
+ * iOS hand-mirrors this table in `WorkChatStopCapability`.
+ */
+export function providerStopModeSupport(
+  provider: string | null | undefined,
+  mode: AgentChatStopMode,
+): AgentChatStopModeSupport {
+  const key = String(provider ?? "").trim().toLowerCase();
+  const name = providerDisplayLabel(provider, "This provider");
+  const stopsBackground = key === "claude" || key === "opencode" || key === "codex";
+  const keepsQueue = key === "claude" || key === "opencode" || key === "codex" || key === "cursor" || key === "droid";
+  if (stopModeStopsBackground(mode) && !stopsBackground) {
+    return { supported: false, reason: `${name} can't stop background work its agent started.` };
+  }
+  if (!stopModeClearsQueue(mode) && !keepsQueue) {
+    return { supported: false, reason: `${name} drops queued messages when stopped.` };
+  }
+  return { supported: true };
+}
+
+/**
+ * Whether the Stop menu offers this mode: the provider can do it, and the
+ * child-chat modes only while this chat has child chats.
+ */
+export function stopModeAvailable(
+  provider: string | null | undefined,
+  mode: AgentChatStopMode,
+  childChatCount: number,
+): boolean {
+  if (stopModeStopsChildren(mode) && childChatCount <= 0) return false;
+  return providerStopModeSupport(provider, mode).supported;
 }
 
 export function formatBackgroundJobCount(count: number): string {
@@ -103,8 +187,11 @@ export type AgentChatStopModeCopy = {
 export function chatStopModeCopy(
   mode: AgentChatStopMode,
   jobCount: number,
+  childChatCount = 0,
 ): AgentChatStopModeCopy {
   const jobs = formatBackgroundJobCount(jobCount);
+  const n = Number.isFinite(childChatCount) ? Math.max(0, Math.floor(childChatCount)) : 0;
+  const children = n === 1 ? "1 child chat" : `${n} child chats`;
   switch (mode) {
     case "stop_only":
       return {
@@ -125,6 +212,16 @@ export function chatStopModeCopy(
       return {
         label: `Turn + queue + background (${jobs})`,
         description: `Stop the active turn, cancel queued messages, and stop ${jobs}.`,
+      };
+    case "stop_and_clear_and_children":
+      return {
+        label: `Turn + queue + child chats (${n})`,
+        description: `Stop the active turn, cancel queued messages, and stop ${children} this chat started. Background jobs keep running.`,
+      };
+    case "stop_everything_and_children":
+      return {
+        label: `Everything + child chats (${n})`,
+        description: `Stop the turn, queued messages, ${jobs}, and ${children} this chat started.`,
       };
     default: {
       const exhaustive: never = mode;

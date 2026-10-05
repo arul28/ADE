@@ -99,6 +99,10 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | Node worker that hosts the official `@cursor/sdk` and bridges it to the main process via the JSON line protocol in `cursorSdkProtocol.ts`. It creates the SDK local agent platform with the lane workspace/state root, configures local agents to use HTTP/1 by default (`ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT=0` disables it), enables SDK local agent retries, passes ADE mode/idempotency keys on sends, and tolerates stream-iteration failures long enough to call `run.wait()` and emit a structured terminal result. The SDK's `local.force` send option (expire the currently active persisted run before starting this message as a new follow-up) is wired to the explicit `forceExpireActiveRun` payload flag and is set **only** on ADE's automatic recovery re-send — a normal send that expired a genuinely running turn would discard its output. It also serves the `steer` request added for Cursor's active-turn inline send: only the live **local** run is eligible (cloud runs are tracked separately and never reached from here), a build whose `Run` has no `steer` method reports ADE's diagnostics-only `unsupported`, and nothing throws for a missing channel — the caller's fallback is a normal follow-up message, and an exception would lose text the user already typed. Any outcome other than `complete_delivered` is normalized to `revert_to_followup` so the host keeps ownership of the message. User images are materialized here from attachment paths or URLs (`workerAttachmentImages.ts`) rather than as base64 on the JSON IPC pipe — several large screenshots on `child.send` can stall the turn so Cursor never sees the message. |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerGuards.ts` | The worker's self-defence once its brain is gone, kept apart from the worker so tests can drive it without the SDK. `sendToCursorSdkParent` drops a message when `process.connected` is false and sends with a callback, so a send on a closed channel never becomes a process `'error'`. `ignoreCursorSdkWorkerPipeErrors` swallows `'error'` on the process and on its stdio, where EPIPE shows after the parent dies. `createCursorSdkWorkerExit` gives every exit path a 2 s timer deadline (`CURSOR_SDK_WORKER_EXIT_DEADLINE_MS`), because timers still fire when promises cannot settle. `cursorSdkOwnerPidArg` / `readCursorSdkOwnerPid` write and read the `--ade-owner-pid=<pid>` argv marker, and `cursorSdkOwnerStillOwns` backs the 2 s owner poll. See [Cursor worker orphan guard](#cursor-worker-orphan-guard). |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerOrphans.ts` | `recoverCursorSdkWorkerOrphans`, the once-per-process startup sweep that the brain (`ade serve`) and desktop main both run. It lists processes asynchronously (`ps -ww -axo` on POSIX, a PowerShell CIM query on Windows) and `selectOrphanedCursorSdkWorkers` picks the workers whose owner pid is dead, plus unmarked workers from older builds only on POSIX with ppid 1 and the exact legacy command shape. It re-lists before every kill after the first, so a reused pid is never killed. |
+| `apps/desktop/src/main/services/chat/chatWaitRegistry.ts` | Event-driven chat waits: the `chat.waitFor` long-poll and the durable waiters (`chat.armWait` / `listWaits` / `cancelWait`), re-checked on each target's events, one check at a time. The chat service signals it from `emitChatEvent`. |
+| `apps/desktop/src/shared/chatGoals.ts` | `parseClaudeGoalCommand` (what a sent `/goal …` asks for) and the `goal_reached` / `goal_blocked` notice statuses the push publisher alerts on. |
+| `apps/desktop/src/shared/prWatch.ts` | PR Watch / Ship's pure evaluator (`evaluatePrWatch`), the wake text and card, and the `PrChatWatchSummary` contract. See the PR docs. |
+| `apps/desktop/src/main/services/ai/tools/toolDeadline.ts` | ADE's own per-tool deadline (default 120 s) under a 65-minute MCP transport cap; time on an approval card does not count, and overlapping cards count once. See `tool-system.md`. |
 | `apps/desktop/src/main/services/shared/processOrphans.ts` | What the OpenCode sweep and the Cursor worker sweep share: `parseProcessRows` (`ps` rows and tab-separated Windows CIM rows), `waitForProcessExit`, and `terminateOrphanProcess` (SIGTERM then SIGKILL on POSIX, `taskkill /T /F` on both passes on Windows, with an optional `confirm` step before each kill). Each sweep keeps its own listing and its own orphan rule. |
 | `apps/desktop/src/main/services/chat/cursorSdkErrors.ts` | Cursor SDK error normalization helpers shared by the worker: extracts `code`, `status`, `requestId`, `operation`, and `endpoint` from SDK errors/results, reads terminal run details through the public local store API, and classifies resource/backoff vs transport failures without reaching into private SDK run fields. Classification yields a bare `CursorSdkErrorKind`; there is no companion `retryable` bit, because what a caller does about a failure (recycle the thread, surface a rate limit, re-auth) is decided per call site rather than encoded in the classifier. |
 | `apps/desktop/src/main/services/chat/cursorSdkProtocol.ts` | Shared types for the worker IPC: chat mode, approval policy, hook decisions, hook requests, `CursorSdkModelParameterValue`, `CursorSdkWorkerInit`, local/cloud send payloads, SDK request ids, `CursorSdkErrorDetail`, and `CursorSdkSteerOutcome` — what `Run.steer()` did with a message pushed into a live local run: `complete_delivered` means the turn took ownership and the host must drop its staged row, `revert_to_followup` means the turn refused it and the host still owns it, and `unsupported` is ADE's own diagnostics-only third value, treated identically to a refusal by every caller so a log line can tell a missing steer channel from a live refusal (do not branch on it). User images on those payloads are path/URL references (`CursorSdkUserImage`), not inlined screenshot bytes. It exports Cursor-specific error classifiers for transport (`nghttp2`, dropped sockets, stream closures, plus the socket-side cousins `ECANCELED` / `EPIPE` / `write after end`, which poison the server-side agent thread the same way) and backoff/resource exhaustion (`resource_exhausted`, `rate_limited`, `NGHTTP2_ENHANCE_YOUR_CALM`, 429-style text) so UI/service paths present rate-limit and network failures consistently. `classifyCursorSdkErrorText` returns a bare `CursorSdkErrorKind` (`auth` / `rate_limit` / `network` / `busy` / `not_found` / `configuration` / `unknown`); the `configuration` kind is the shared sandbox-unsupported predicate `isSandboxUnsupportedFailureText` from `shared/chatErrorPresentation.ts`, not a second copy of the same terms. The expired-short-lived-access-token signature lives here too, as one greppable literal (`CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT`) plus `isCursorSdkStaleAccessTokenText` (matches the sentence's two halves independently, so a reflowed clause or a request-id suffix still matches, while a genuinely bad API key does not) and `readCursorSdkStaleTokenFailure`, which reads the worker's synthetic terminal `status: ERROR` event into a `CursorSdkStaleTokenFailure` (`turnId`, message, optional code and request id) in one pass, or returns `null` for any other error. `CursorSdkPermissionPolicy.fullAuto` is a permission-mode marker only — it separates full-auto sessions into their own worker pool and labels logs, and deliberately does **not** map onto the SDK's `local.force`; run expiry is the separate recovery-only `CursorSdkSendPrompt.forceExpireActiveRun`. |
@@ -198,7 +202,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/ProviderFailureRecoveryCard.tsx` | Classifies terminal provider capacity and usage-limit errors into actionable transcript cards. The card explains that the thread remains safe, offers an explicit same-thread **Retry turn**, and opens the composer model picker through a one-shot request for **Choose model**; neither action is enabled while another turn is active. The usage-limit card remains the transcript evidence and fork entry point, while the live schedule is rendered once by `ChatUsageLimitResumePill` above the composer; it no longer owns the old **Continue automatically** / **Don't continue** block. |
 | `apps/desktop/src/shared/chatAutoResume.ts` | Shared auto-resume contract and helpers: the deterministic schedule id/tag, 90s buffer, continue prompt, structured usage-limit classifier, host-zone notice copy, `autoResumeFireAtMs`, `isPendingAutoResumeScheduledWork`, `resolveUsageLimitResumeState`, the deprecated `usageLimitParkedUntilMirror`, `formatUsageLimitResetLabel`, and `isUsageLimitChatError`. A known future reset arms one durable `auto-resume:<sessionId>` row for every provider, including Claude; a missing reset produces `no_reset` with no wake. `sessionAutoContinueAtUsageLimit()` treats only explicit `false` as opt-out. Don't continue cancels the row and produces `opted_out`; Turn on / Try again resets the two-arm streak and arms again; Resume now cancels the row, resets the streak, and sends `AUTO_RESUME_PROMPT` as an ordinary user turn with `metadata.usageLimitResume: "manual"`. `resolveUsageLimitResumeState` derives `resuming` after the row is due, and only `armed` / `resuming` mirror `fireAt` into deprecated `usageLimitParkedUntil`. |
 | `apps/desktop/src/renderer/components/chat/ChatUsageLimitResumePill.tsx`, `apps/desktop/src/shared/usageLimitResumePresentation.ts` | Neutral usage-limit resume pill and anchored popover above the composer. The shared presentation model formats the viewer-zone countdown, provider title, state-specific primary action, **Fork in this lane**, **Don't continue**, **Details**, and the Work-list/footer projections; the component routes Resume now and auto-continue changes through the pinned runtime bridge and feature-detects older clients. The presentation module also owns `parseUsageLimitResume` (the one strict reader every host, CLI, and client parses an untrusted `usageLimitResume` with — an unrecognised state or a missing provider is discarded whole), `usageLimitResumeRowStatus` (the Work-list projection: `armed`/`resuming` → neutral `Resumes <clock>` or `Resuming`, `paused` → attention `Paused · limit`, `opted_out`/`no_reset` → null so the row keeps its ordinary failed/idle presentation), `formatUsageLimitCountdown` (`59 s`, `4 min 30 s` under five minutes, then `3 min`, then `2 hr 5 min`), `usageLimitTurnFooterLabel`, and `isUsageLimitFailureText` — the narrow text predicate the subagent grouping pass reads, where a bare `429` never counts without a rate/usage/limit/quota word beside it. |
-| `apps/desktop/src/shared/chatStopModes.ts` | Canonical four-mode stop matrix (`stop_only`, `stop_and_clear`, `stop_and_background`, `stop_and_clear_and_background`), default `stop_and_clear`, settle teardown `stop_and_background`, live job-count copy, hyphen/flag aliases, and `shouldDeclarePerTaskStopAffordance` — ADE sets Claude SDK `perTaskStopAffordance` only after the public `stopTask` controls are reachable. iOS hand-mirrors the table in `WorkChatStopCapability`. |
+| `apps/desktop/src/shared/chatStopModes.ts` | Canonical stop matrix (`stop_only`, `stop_and_clear`, `stop_and_background`, `stop_and_clear_and_background`, plus the child-chat modes `stop_and_clear_and_children` / `stop_everything_and_children`), per-provider support with reasons (`providerStopModeSupport`), default `stop_and_clear`, settle teardown `stop_and_background`, live job-count copy, hyphen/flag aliases, and `shouldDeclarePerTaskStopAffordance` — ADE sets Claude SDK `perTaskStopAffordance` only after the public `stopTask` controls are reachable. iOS hand-mirrors the table in `WorkChatStopCapability`. |
 | `apps/desktop/src/shared/claudeContextUsage.ts` | Normalizes SDK `context_usage` / `getContextUsage` into `ClaudeContextUsage`. Rows are classified by `categories[].kind` (`used` / `free` / `buffer` / `deferred`), never by the display name `"free"`. A used row named Free stays used; remaining capacity is synthesized as `kind: "free"` only when the SDK omitted that row. |
 | `apps/desktop/src/shared/claudeClassifierContext.ts` | Builds the Claude SDK `classifierContext` string for PostToolUse. Relays only explicit user approvals and user-typed consent; never tool output, model text, a summary of either, session-override auto-allows, or policy allows. Approval-without-text becomes `"The user approved this tool call."` with no command text. The 2000 UTF-16 cap is enforced; the hook return is synchronous. Every relay emits a `system_notice` with `status: "classifier_context"`. |
 | `apps/desktop/src/shared/claudeModelSwitch.ts` | Parses PreModelSwitch / PostModelSwitch hook args. PostModelSwitch emits a quiet transcript divider (`system_notice` `status: "model_switched"`). |
@@ -1011,6 +1015,129 @@ Three rules are specific to the schedule itself:
   the newest usage-limit failure, never on every one in the thread's history.
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
+
+### Goals
+
+A goal keeps the agent working across turns until a condition is true. Codex
+goals run on the app-server's `thread/goal/*` API; Claude goals are Claude
+Code's native `/goal <condition>` (cleared with `/goal clear`; Claude has no
+pause). Claude reports goal state only through `active_goal` messages after its
+Stop-hook check, and its CLI does not always send them, so ADE tracks a Claude
+goal itself (`applyClaudeActiveGoal` still takes the SDK's messages when they
+come):
+
+- `noteClaudeGoalCommand` records the goal the moment a `/goal <condition>`
+  message is sent, and clears it on `/goal clear` (or stop/off/reset/none/
+  cancel) — so the goal shows during its first turn.
+- `settleClaudeGoalOnTurnEnd`: the Stop hook keeps a turn going until the goal
+  is met, so a Claude turn that completes with a goal set has met it, and ADE
+  clears it. An interrupted or failed turn leaves it; a bare `/goal` turn only
+  showed it.
+
+- **Goal section (desktop).** A goal shows only while one is set (with
+  `/goal …`). It is the first section of the chat actions drawer
+  (`ChatSubagentsPanel` → `GoalCard`), laid out like Tasks and Schedule: an
+  uppercase "Goal" header with the check count, then the condition and the
+  last check reason. A Claude goal has Edit (inline; Enter saves, Esc cancels)
+  and Clear icons on hover. Both send `/goal …` as a typed command and are
+  disabled mid-turn. Codex keeps its full card (Edit, Pause/Resume, Clear).
+- **Goal chip (iOS).** The phone has no drawer, so a small "Goal" chip with
+  the target icon sits above the composer; tapping it opens the details and
+  controls.
+- **Setting one.** Type `/goal …`, or use **Set goal…** in the command palette
+  for the chat in front of you (Claude and Codex).
+- **Work rows.** `projectActiveGoal` projects the live goal onto the session
+  row (`activeGoal`), and the row shows a goal glyph in its quiet indicator
+  cluster, with the objective in the hover card.
+- **Alert.** When a Codex goal turns `complete` or `blocked`, or a Claude goal
+  is met (not cleared by the user), the chat records a "Goal reached: …" /
+  "Goal blocked: …" notice that every client shows. The notice carries the
+  status `goal_reached` / `goal_blocked`, so the brain's push publisher alerts
+  a paired phone (the objective stays off the lock screen). An in-process
+  desktop host (`onGoalEnded`) also raises an OS notification that opens the
+  chat (skipped while an ADE window is focused).
+
+### Waits
+
+- **`ade chat wait <session> --for …`** asks the brain (`chat.waitFor`), which
+  re-checks the chat's summary whenever the chat emits an event, in long-polls
+  of at most 25 s that the CLI repeats until its own timeout. An older brain
+  without the action is polled every 2 s as before. Matching is
+  `chatWaitTargetMatches` in `shared/chatWait.ts`, shared by both sides.
+- **Durable waits** (`chat.armWait`, `ade chat wait <ids…> --async [--any]`,
+  the CTO tool `waitForChats`) return at once. When all (or any) of the target
+  chats reach the state, ADE wakes the caller with one line per chat (title,
+  status, status note); after the timeout (24 h by default) it wakes the caller
+  with where they are instead. A deleted target counts as idle or terminal,
+  never as active or awaiting input; a summary read that fails counts as "not
+  yet", never as a match. A plain shell cannot be waited on (it has no state). Waiters
+  persist in the project database (`agent-chat:waiters:v1`), re-arm on start,
+  and re-check on each target's events with a 15 s backstop. Checks run one at
+  a time, so a waiter fires once, and one cancelled mid-check never fires.
+  A session-bound agent's wake wait can only wake that agent's own chat.
+  `main/services/chat/chatWaitRegistry.ts` owns all of this.
+  `chat.listWaits` / `ade chat waits` and `chat.cancelWait` /
+  `ade chat wait --cancel <id>` manage them.
+- **Start B after A.** `ade chat send <B> --after <A>[,<A2>] "<prompt>"` arms
+  the same kind of waiter with a `send` action: once every named chat is idle,
+  B receives the prompt as a wake (a new turn if B is idle, queued at its turn
+  boundary if not).
+- **Waiting on background work** (`chat.holdBackgroundWork`,
+  `ade chat wait --background [--job <id>]`) is the agent's call, with no UI. A
+  chat with live background work already shows as working. Claude and OpenCode
+  wake their agent themselves when a background job finishes, so the action
+  only says so there; Codex does not, so ADE re-reads the held terminals every
+  15 s and wakes the agent with the commands that ended.
+
+### Restart agent session
+
+**Restart agent session** stops the chat's provider process and keeps the
+conversation, so the next message starts a fresh process that resumes the same
+provider thread and picks up skills, plugins, MCP servers, and project
+instructions added since the chat started. Entry points: the session
+right-click menu, the command palette (for the chat in front of you),
+`ade chat restart <session> [--stop]`, the `chat.restartSession` action, and
+the sync remote command of the same name.
+
+`restartSession` tears the runtime down with the `restart` reason, which keeps
+the provider resume pointer the way an idle eviction does (Claude session id,
+Codex thread id, OpenCode/ACP session id, Cursor agent id, Pi session). A turn
+in progress is not stopped silently: the action refuses unless `stopFirst`,
+and the desktop asks "Stop the turn and restart?" first. Background work the
+process owned ends with it; the result and the toast say how many jobs
+stopped, and the chat records a notice. No runtime running is fine — the next
+message starts one either way.
+
+### Continue chats after restarts
+
+When ADE restarts while a chat's turn is running — a crash, a force quit, a
+reboot — the turn cannot be saved, but the chat can continue. With **Continue
+chats after restarts** on (Settings → Chat, the default; config
+`ai.chat.continueAfterRestart`):
+
+- On load, `recoverDetachedChatAfterRestart` closes the orphaned turn as
+  before, then `armRestartResume` arms one durable "continue" row
+  (`RESTART_RESUME_PROMPT`). It uses the same deterministic id and
+  `update_restart` tag as an update resume, so a chat an update already armed
+  is not armed twice, and the user typing into the chat cancels it.
+- Settled and archived chats stay asleep. A chat whose turn had already ended,
+  or that the user stopped, has no unsettled turn and is not resumed.
+- Recovery is lazy (a detached chat is repaired when it is first loaded), so a
+  startup sweep loads the chats a restart cut off in the last 6 hours (at most
+  25, only chats this brain may adopt) and each recovers and resumes on its own.
+- The chat's notice says what happens: "The agent picks up where it stopped"
+  with the setting on, "retry or continue when ready" with it off.
+
+Whether or not the chat resumes, the model is told what the restart did. The
+background work the transcript still showed running — background commands,
+monitors, native subagents and workflows, not spawned ADE chats, which survive
+— is collected (`collectRestartCancelledWork`) into a one-time note
+(`buildRestartNote`, at most 10 items named). It is stored on the chat
+(`pendingRestartNote`, persisted) and prefixed to the next turn's provider
+prompt by `consumePendingTurnContextPrefix`, the same hook every provider's send
+path already uses for replay and continuity context. It is delivered once, to
+the model only, never as a user message; a provider slash command does not
+consume it, and a Cursor turn that is recycled before it lands re-stages it.
 
 ### Codex reset credits
 

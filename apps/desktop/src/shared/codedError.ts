@@ -102,6 +102,15 @@ export function extractCodeFromMessage(error: unknown): string | null {
   return parseCodedErrorMessage(error).code ?? null;
 }
 
+/**
+ * A chat refused because a turn is running (`turn_in_flight`). Older hosts
+ * send only the sentence, so its wording is the fallback.
+ */
+export function isTurnInFlightError(error: unknown): boolean {
+  const parsed = parseCodedErrorMessage(error);
+  return parsed.code === "turn_in_flight" || /\bturn is running\b/i.test(parsed.message);
+}
+
 export const ACTION_NOT_CALLABLE_CODE = "action_not_callable";
 export const ACTION_NOT_EXPOSED_CODE = "action_not_exposed";
 

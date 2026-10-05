@@ -2001,6 +2001,79 @@ prose, and it never uses the live-only envelope path, so cards replay after a
 restart and sync to mobile. Unknown variants degrade to required `fallbackText`
 plus the deeplink.
 
+### PR Watch / Ship: waking the chat
+
+Cards are news for the user; they never start a turn. **Watch** and **Ship**
+are how a chat asks to be woken when its PR changes. Source:
+`shared/prWatch.ts` (pure evaluator, wake text, wake card),
+`main/services/prs/prChatWatchStore.ts` (rows), `main/services/prs/prWatchService.ts`
+(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control).
+
+- **Turning it on.** Beside the header PR pill, while the PR is open, sits
+  one icon button with a caret: a slashed eye (off), an eye (Watch, sky) or a
+  rocket (Ship, amber), with a pulsing dot while Ship holds news. Clicking it
+  opens a small menu: Off / Watch / Ship, each with a two-word hint, and one
+  status line ("Told 6m ago: …", "Holding for CI and reviews"). A failed
+  change shows as a toast; a watch that could not be read shows "Couldn't read
+  the watch" with no row checked, and Off still sends (iOS does the same).
+  Agents arm it themselves with
+  `ade prs watch|ship|unwatch <pr>` (defaults to `$ADE_CHAT_SESSION_ID`; `<pr>`
+  is an ADE PR id, a PR number, or a PR URL) or the CTO tool
+  `watchPullRequest`; the status line then adds "on by agent".
+  Actions: `pr.setChatWatch` (`mode: null` stops it) and `pr.getChatWatches`,
+  through IPC, preload, the web adapter, and sync remote commands
+  (`prs.setChatWatch`, `prs.getChatWatches`). The PR resolves through the
+  service's own locator (`getRow`, so a URL keeps its owner and repo); a bare
+  number in two repos is ambiguous unless the chat is linked to one of them.
+  An unknown mode is refused, never read as off. Only an ADE chat can be
+  watched — a tracked CLI's terminal session is refused, since it can never
+  take a wake — and a PR no longer attached to a lane is refused. Watching
+  links the chat to the PR, even over an earlier unlink; unlinking it stops
+  the watch. Every change emits the PR event `pr-chat-watch-changed`, with
+  `watch: null` once it has stopped.
+- **What wakes the agent.** Each check as soon as it fails (failure, cancelled,
+  timed out, action required); the required checks passing (`checksStatus`
+  turning `passing`); new comments, inline comments, and submitted reviews from
+  people and agent reviewers (deploy, CI, and dependency bots are ignored); the
+  branch starting to conflict; the PR merging or closing. A new head resets the
+  check state. The first pass reports the PR's current state, so arming Watch
+  on a red PR tells the agent what is red right away.
+- **What never wakes it.** Comments ADE posted (`addComment`,
+  `replyToReviewThread`, `postReviewComment`, `submitReview` record their ids
+  in `pull_request_ade_comments`, keyed by the PR's row id however the PR was
+  named). The account owner's own comments still do,
+  because agents post with the same GitHub account.
+- **Ship** holds its news until every check on the head is terminal and either
+  an agent reviewer has spoken on that head or 12 minutes have passed since
+  it was pushed (a bot that never shows up is treated as not running here).
+  An empty check list right after a push is CI not registered yet, not CI
+  finished; only the grace releases a repository with no CI at all. A conflict
+  is released immediately. Switching Ship to Watch releases what Ship was
+  holding. The wake carries standing orders, written
+  for any repository: fix CI and review findings together in one push, verify
+  narrowly, rebase only on a real conflict, answer the threads, merge when
+  green. There is no round cap.
+- **Delivery.** The reactor runs every minute and right away when the PR poller
+  reports a change or a watch is armed. Watched PRs refresh their row every
+  pass; checks and comments are re-read when the row changed, and at least
+  every 3 minutes. The wake goes through the ordinary message path with
+  `kind: "wake"`: it starts a turn on an idle chat and queues at the turn
+  boundary of a running one. What the agent was told is recorded only after
+  delivery succeeds, guarded so a watch stopped or restarted mid-read is not
+  overwritten (a mode switch mid-read keeps the told state, so nothing is told
+  twice, and the switched watch runs again right after the pass). The transcript shows the wake as its card (`pr_watch_wake`,
+  "Agent notified · watching"), with the exact text folded underneath — never
+  as a user bubble.
+- **Stopping.** The PR merging or closing (one last wake, which still carries
+  remarks left on the way out), the user or agent
+  turning it off, the chat being archived or deleted, 10 comment-only wakes in
+  a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
+  with the reason). A settled chat keeps its watch but is not woken until it is
+  unsettled. GitHub rate-limit pauses pause the reactor too.
+- **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
+  the chat on the machine that runs it, and a synced row would let a second
+  machine wake its own copy of the chat as well.
+
 ## Integration merge target adoption
 
 An integration proposal can target an existing lane instead of always

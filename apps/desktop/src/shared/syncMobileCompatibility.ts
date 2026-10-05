@@ -94,6 +94,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.linkChatStack",
   "prs.listChatSessionsForPr",
   "prs.getStackLinkOffer",
+  // PR Watch / Ship. Optional: an older host simply has no watch.
+  "prs.setChatWatch",
+  "prs.getChatWatches",
+  // Restart agent session. Optional: an older host simply lacks it.
+  "chat.restartSession",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.

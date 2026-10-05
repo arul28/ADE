@@ -69,7 +69,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/redo", description: "Redo the most recently undone HEAD change on the active lane", placement: "inline", category: "Lanes" },
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline", category: "Lanes" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline", category: "Chats" },
-  { name: "/stop", description: "Stop the active turn; optionally keep the queue or stop background jobs", placement: "inline", argumentHint: "[keep-queue|clear-queue|background|clear-and-background]", category: "Chats" },
+  { name: "/stop", description: "Stop the active turn; optionally keep the queue, stop background jobs, or stop child chats", placement: "inline", argumentHint: "[keep-queue|clear-queue|background|clear-and-background|children|everything]", category: "Chats" },
+  // Fresh provider process, same conversation: picks up new skills, plugins,
+  // and MCP servers. Refused mid-turn unless `stop` confirms stopping it.
+  { name: "/restart", description: "Restart the agent session to pick up new skills, plugins, and MCP servers", placement: "inline", argumentHint: "[stop]", category: "Chats" },
   { name: "/restore-queue", description: "Undo a recent Stop & clear queue", placement: "inline", argumentHint: "<recovery-id>", category: "Chats" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline", category: "Nav" },
   // The way back from an account-side machine removal — the same repair
@@ -179,6 +182,11 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/pr land", description: "Merge the active PR (needs confirm)", placement: "right", argumentHint: "[confirm] [merge|squash|rebase] [bypass] [delete-remote-branch]", category: "PRs" },
   { name: "/pr close", description: "Close the active PR (needs confirm)", placement: "right", argumentHint: "[confirm]", category: "PRs" },
   { name: "/pr reopen", description: "Reopen the active PR after it was closed", placement: "right", category: "PRs" },
+  // PR Watch / Ship for the chat's pull request (the one the header shows).
+  // Under `/pr` so a project's own `/ship` or `/watch` skill keeps its name.
+  { name: "/pr watch", description: "Wake this chat when its pull request changes", placement: "inline", argumentHint: "[pr]", category: "PRs" },
+  { name: "/pr ship", description: "Watch the chat's PR and have the agent take it to merged", placement: "inline", argumentHint: "[pr]", category: "PRs" },
+  { name: "/pr unwatch", description: "Stop watching the chat's pull request", placement: "inline", argumentHint: "[pr]", category: "PRs" },
   { name: "/pr draft", description: "Convert the active PR back to a draft", placement: "right", category: "PRs" },
   { name: "/pr ready", description: "Mark the active draft PR ready for review", placement: "right", category: "PRs" },
   { name: "/pr auto-merge", description: "Turn GitHub auto-merge on or off for the active PR", placement: "right", argumentHint: "[on|off] [merge|squash|rebase]", category: "PRs" },

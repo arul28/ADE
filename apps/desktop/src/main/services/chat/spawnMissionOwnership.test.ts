@@ -295,6 +295,10 @@ describe("messageClearsAttentionMarkers", () => {
     expect(messageClearsAttentionMarkers({
       agentRelay: { fromSessionId: "sibling" },
     } as never)).toBe(false);
+    // Nor PR Watch telling the agent its PR changed.
+    expect(messageClearsAttentionMarkers({
+      prWatchWake: { watchId: "w", prId: "p", githubPrNumber: 42, mode: "watch" },
+    } as never)).toBe(false);
   });
 
   it("lets a board move clear, because a drag is a person acting", () => {

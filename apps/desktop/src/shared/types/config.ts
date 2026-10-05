@@ -1904,6 +1904,11 @@ export type AiChatConfig = {
   piExtensionsEnabled?: boolean;
   /** Global kill switch for durable Claude wakeups, cron tasks, and loops. */
   scheduledWorkPaused?: boolean;
+  /**
+   * Continue a chat whose turn an ADE restart cut short (a crash, a force quit,
+   * a reboot). On unless set to false. Settled and archived chats stay asleep.
+   */
+  continueAfterRestart?: boolean;
 };
 export type AiConfig = {
   mode?: ProviderMode;

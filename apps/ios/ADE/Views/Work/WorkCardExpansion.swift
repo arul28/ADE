@@ -159,6 +159,7 @@ func workAdeCardCollapsedGlyph(_ card: WorkAdeCardModel) -> String {
   case "pr_merged", "pr_merge_ready": return "arrow.triangle.merge"
   case "pr_conflict": return "exclamationmark.triangle"
   case "pr_stack_land": return "square.stack.3d.up.fill"
+  case "pr_watch_wake": return "eye.fill"
   case "proof_artifact": return "cube.transparent"
   case "claude_session_quota": return "gauge.with.dots.needle.33percent"
   default: return "square.stack"

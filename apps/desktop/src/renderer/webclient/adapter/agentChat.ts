@@ -360,6 +360,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         false,
       );
     },
+    restartSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restartSession", pin);
+      // A host without the action must fail loudly, not report "not restarted".
+      return await callRequiredMutation("chat.restartSession", args);
+    },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);
       return await call(

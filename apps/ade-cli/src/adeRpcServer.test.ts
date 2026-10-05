@@ -608,6 +608,14 @@ function createRuntime() {
         restored: recoveryId === "recovery-1",
         restoredCount: recoveryId === "recovery-1" ? 2 : 0,
       })),
+      restartSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        sessionId,
+        restarted: true,
+        stoppedTurn: false,
+        backgroundJobsStopped: 0,
+      })),
+      holdBackgroundWork: vi.fn(async () => ({ held: [], nativeWake: true, message: "ok" })),
+      armWait: vi.fn(async (args: Record<string, unknown>) => ({ id: "waiter-1", ...args })),
       resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         id: sessionId,
         laneId: "lane-1",
@@ -1847,7 +1855,9 @@ describe("adeRpcServer", () => {
         recoveryId: "recovery-1",
       });
 
-      for (const action of ["interrupt", "restoreCancelledQueue"]) {
+      // Restarting tears the target's runtime down, and holding background
+      // work arms wakes on it: both are aimed at the caller's own chat only.
+      for (const action of ["interrupt", "restoreCancelledQueue", "restartSession", "holdBackgroundWork"]) {
         const denied = await callTool(handler, "run_ade_action", {
           domain: "chat",
           action,
@@ -1864,6 +1874,41 @@ describe("adeRpcServer", () => {
       expect(runtime.agentChatService.restoreCancelledQueue).not.toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: "chat-2" }),
       );
+      expect(runtime.agentChatService.restartSession).not.toHaveBeenCalled();
+      expect(runtime.agentChatService.holdBackgroundWork).not.toHaveBeenCalled();
+
+      // A wake wait wakes its caller: a bound agent may only ask for itself.
+      const otherWake = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: { callerSessionId: "chat-2", targetSessionIds: ["chat-3"] },
+      });
+      expect(otherWake.isError).toBe(true);
+      const ownWake = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: { targetSessionIds: ["chat-3"] },
+      });
+      expect(ownWake?.isError).toBeUndefined();
+      expect(runtime.agentChatService.armWait).toHaveBeenCalledTimes(1);
+      expect(runtime.agentChatService.armWait).toHaveBeenCalledWith(
+        expect.objectContaining({ callerSessionId: "chat-1", targetSessionIds: ["chat-3"] }),
+      );
+
+      // A send wait's prompt carries the provenance the host derives, never the caller's.
+      const sendWait = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: {
+          targetSessionIds: ["chat-3"],
+          sendToSessionId: "chat-4",
+          text: "start the review",
+          sendMetadata: { boardMove: { to: "working" } },
+        },
+      });
+      expect(sendWait?.isError).toBeUndefined();
+      const sendArgs = vi.mocked(runtime.agentChatService.armWait).mock.calls.at(-1)?.[0] as Record<string, any>;
+      expect(sendArgs.sendMetadata).toEqual({ agentRelay: { fromSessionId: "chat-1" } });
     });
   });
 

@@ -1884,6 +1884,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
     $ ade prs link-chat --pr <ade-pr-id> --session <id>    Link a pull request to a chat
     $ ade prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+    $ ade prs watch <pr> [--chat <id>]     Wake the chat on each PR change (failed check, checks passed, comments, conflict, merge)
+    $ ade prs ship <pr> [--chat <id>]      Watch + standing instructions to take the PR to merged; waits for CI and review bots
+    $ ade prs unwatch <pr> [--chat <id>]   Stop watching. <pr> is an ADE PR id, a PR number, or a PR URL
+    $ ade prs watch-status [--chat <id>]   The chat's live watches. --chat defaults to $ADE_CHAT_SESSION_ID
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
@@ -2076,6 +2080,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
+    $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
+                                                    Return now; ADE wakes this chat when all (or any) of them get there
+    $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
+    $ ade chat waits [<session>]                    Waits this chat armed or is a target of
+    $ ade chat wait --cancel <waitId>               Cancel an armed wait
+    $ ade chat wait --background [--job <id>[,<id>]]
+                                                    Wake this chat when its background jobs end (Codex; Claude/OpenCode do it natively)
     $ ade chat recover <session> --turn <turn-id> --action nudge
                                                     Recover a stalled provider turn: wait, nudge, retry, or resume
     $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
@@ -2119,8 +2130,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat interrupt <session> --stop-background
                                                     Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --stop-children  Also stop the chats this chat spawned (depth-first); add --stop-background for everything
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+                                                    | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
+    $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
@@ -3823,7 +3837,10 @@ function readLaneId(args: string[]): string | null {
 
 function normalizeChatStopMode(value: unknown): AgentChatStopMode {
   if (isAgentChatStopMode(value)) return value;
-  throw new CliUsageError("chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background.");
+  throw new CliUsageError(
+    "chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, stop_and_clear_and_background, "
+    + "stop_and_clear_and_children, or stop_everything_and_children.",
+  );
 }
 
 function readChatStopMode(args: string[]): AgentChatStopMode {
@@ -3831,13 +3848,20 @@ function readChatStopMode(args: string[]): AgentChatStopMode {
   const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
   const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
   const stopBackground = readFlag(args, ["--stop-background"]);
-  if (explicitMode && (keepQueue || clearQueue || stopBackground)) {
-    throw new CliUsageError("Use --mode or the queue/background flags, not both.");
+  const stopChildren = readFlag(args, ["--stop-children", "--children"]);
+  if (explicitMode && (keepQueue || clearQueue || stopBackground || stopChildren)) {
+    throw new CliUsageError("Use --mode or the queue/background/children flags, not both.");
   }
   if (keepQueue && clearQueue) {
     throw new CliUsageError("Use only one of --keep-queue or --clear-queue.");
   }
   if (explicitMode) return normalizeChatStopMode(explicitMode);
+  if (stopChildren) {
+    // Child chats stop with their queue cleared; keeping the queue is not a
+    // combination the Stop menu offers.
+    if (keepQueue) throw new CliUsageError("--stop-children always clears the queue; drop --keep-queue.");
+    return stopBackground ? "stop_everything_and_children" : "stop_and_clear_and_children";
+  }
   if (keepQueue && stopBackground) return "stop_and_background";
   if (clearQueue && stopBackground) return "stop_and_clear_and_background";
   if (stopBackground) return "stop_and_background";
@@ -7355,6 +7379,38 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "watch" || sub === "ship" || sub === "unwatch" || sub === "watch-status") {
+    // A tracked agent shell watches for its own chat by default.
+    const explicitSessionId = readValue(args, ["--session", "--session-id", "--chat"]);
+    const sessionId = explicitSessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    if (sub === "watch-status") {
+      const input: JsonObject = {};
+      maybePut(input, "sessionId", sessionId ?? undefined);
+      maybePut(input, "prId", prId ?? firstPositional(args) ?? undefined);
+      return {
+        kind: "execute",
+        label: "PR watch status",
+        steps: [actionStep("result", "pr", "getChatWatches", input)],
+      };
+    }
+    const target = requireValue(
+      prId ?? firstPositional(args),
+      "prId (an ADE PR id, a PR number, or a PR URL)",
+    );
+    return {
+      kind: "execute",
+      label: sub === "unwatch" ? "PR unwatch" : sub === "ship" ? "PR ship" : "PR watch",
+      steps: [
+        actionStep("result", "pr", "setChatWatch", {
+          prId: target,
+          sessionId: requireValue(sessionId, "sessionId (--chat, or run from a tracked agent shell)"),
+          mode: sub === "unwatch" ? null : sub,
+          // From an agent's own shell the agent armed it; the chat header says so.
+          armedBy: explicitSessionId ? "user" : "agent",
+        }),
+      ],
+    };
+  }
   if (sub === "link-chat" || sub === "unlink-chat") {
     const sessionId = requireValue(readValue(args, ["--session", "--session-id", "--chat"]), "sessionId");
     const linkedPrId = requireValue(
@@ -9382,11 +9438,33 @@ function buildChatPlan(args: string[]): CliPlan {
         "--print must be set at session creation time. Use `ade chat create --print ...`.",
       );
     }
+    const afterValue = readValue(args, ["--after"]);
+    // Read before the text: whatever flags are left become the prompt.
+    const afterWaitFor = afterValue ? readValue(args, ["--for", "--until"]) : null;
     const sendText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
     );
     const targetSession = requireValue(sessionId, "sessionId");
+    if (afterValue) {
+      // "Start B after A": a durable wait that sends this prompt to B once
+      // every chat named in --after is idle.
+      const afterIds = afterValue.split(",").map((id) => id.trim()).filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat send after",
+        steps: [
+          actionStep("result", "chat", "armWait", {
+            targetSessionIds: afterIds,
+            mode: "all",
+            waitFor: normalizeChatWaitTarget(afterWaitFor),
+            sendToSessionId: targetSession,
+            text: sendText,
+            ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
+          }),
+        ],
+      };
+    }
     const messageArgs = withSession({
       sessionId: targetSession,
       text: sendText,
@@ -9465,7 +9543,59 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "waits") {
+    const input: JsonObject = {};
+    maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
+    return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if ((sub === "wait" || sub === "watch") && readFlag(args, ["--background"])) {
+    // Wake me when my background jobs end: every running job, or the ones
+    // named with --job id[,id].
+    const jobs = (readValue(args, ["--job", "--jobs", "--task"]) ?? "")
+      .split(",").map((id) => id.trim()).filter(Boolean);
+    const ownSession = sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    return {
+      kind: "execute",
+      label: "chat wait background",
+      steps: [actionStep("result", "chat", "holdBackgroundWork", {
+        sessionId: requireValue(ownSession, "sessionId (run from a chat, or pass the chat id)"),
+        ...(jobs.length ? { taskIds: jobs } : {}),
+      })],
+    };
+  }
   if (sub === "wait" || sub === "watch") {
+    const cancelId = readValue(args, ["--cancel", "--cancel-wait"]);
+    if (cancelId) {
+      return { kind: "execute", label: "chat wait cancel", steps: [actionStep("result", "chat", "cancelWait", { waiterId: cancelId })] };
+    }
+    if (readFlag(args, ["--async"])) {
+      // Arm a durable wait and return at once; ADE wakes the calling chat
+      // when all (or any) of the chats reach the state.
+      // Flags first: what is left are the chat ids to wait on.
+      const any = readFlag(args, ["--any"]);
+      readFlag(args, ["--all"]);
+      const waitForValue = readValue(args, ["--for", "--state", "--until"]);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
+        throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
+      }
+      const caller = readValue(args, ["--caller", "--wake"]) ?? asString(process.env.ADE_CHAT_SESSION_ID);
+      const targets = [sessionId, ...args.filter((value) => !value.startsWith("-"))]
+        .flatMap((value) => (value ? value.split(",") : []))
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat wait async",
+        steps: [actionStep("result", "chat", "armWait", {
+          callerSessionId: requireValue(caller, "caller chat (run from a chat, or pass --caller <sessionId>)"),
+          targetSessionIds: targets,
+          mode: any ? "any" : "all",
+          waitFor: normalizeChatWaitTarget(waitForValue),
+          timeoutMinutes,
+        })],
+      };
+    }
     const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
@@ -9495,6 +9625,23 @@ function buildChatPlan(args: string[]): CliPlan {
           "chat",
           "interrupt",
           interruptArgs,
+        ),
+      ],
+    };
+  }
+  if (sub === "restart" || sub === "restart-session") {
+    return {
+      kind: "execute",
+      label: "chat restart session",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "restartSession",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            ...(readFlag(args, ["--stop", "--stop-first"]) ? { stopFirst: true } : {}),
+          }),
         ),
       ],
     };
@@ -16936,6 +17083,14 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--delivery",
   "--file",
   "--for",
+  // `ade chat wait/send` (waits): values, so a chat id positional is never swallowed.
+  "--cancel",
+  "--cancel-wait",
+  "--job",
+  "--jobs",
+  "--after",
+  "--caller",
+  "--timeout-minutes",
   "--fps",
   "--bitrate",
   "--bitrate-kbps",
@@ -30456,9 +30611,45 @@ async function runChatWaitCommand(
     return unwrapped;
   };
 
+  // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
+  // long-poll per call); an older brain without it is polled as before.
+  let serverWaitSupported = true;
+  const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
+    try {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "waitFor",
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+        },
+      });
+      const result = unwrapActionEnvelope(unwrapToolResult(raw));
+      if (!isRecord(result)) return "unsupported";
+      if (result.missing === true) return null;
+      return isRecord(result.summary) ? result.summary : null;
+    } catch {
+      // An older brain has no `chat.waitFor`. Any failure here falls back to
+      // polling, which surfaces a real problem through its own reads.
+      return "unsupported";
+    }
+  };
+
   try {
     while (true) {
-      const summary = await readSummary();
+      const remainingMs = Math.max(1, plan.timeoutMs - (Date.now() - startedAt));
+      let summary: JsonObject | null;
+      if (serverWaitSupported) {
+        const waited = await serverWait(Math.min(25_000, remainingMs));
+        if (waited === "unsupported") {
+          serverWaitSupported = false;
+          summary = await readSummary();
+        } else {
+          summary = waited;
+        }
+      } else {
+        summary = await readSummary();
+      }
       const elapsedMs = Date.now() - startedAt;
       if (!summary) {
         const result = {
@@ -30492,7 +30683,9 @@ async function runChatWaitCommand(
         };
         return { output: formatOutput(result, options), exitCode: 1 };
       }
-      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      if (!serverWaitSupported) {
+        await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      }
     }
   } finally {
     await connection.close();

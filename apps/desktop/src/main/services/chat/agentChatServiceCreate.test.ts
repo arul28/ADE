@@ -2338,7 +2338,8 @@ describe("createAgentChatService", () => {
       expect(server?.type).toBe("sdk");
       expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
         name: "ade-cto",
-        timeout: 120_000,
+        // The transport only backstops; ADE's own per-tool deadline ends a call.
+        timeout: 65 * 60_000,
       }));
       const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
       expect(toolNames).toContain("spawnChat");

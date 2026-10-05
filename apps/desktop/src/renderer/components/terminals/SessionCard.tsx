@@ -19,6 +19,7 @@ import {
   UsersThree,
   Warning,
   XCircle,
+  Target,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -303,6 +304,12 @@ function LinkifiedPreviewLine({
  */
 function branchDisplayLabel(branchName: string): string {
   return branchName.startsWith("ade/") ? branchName.slice("ade/".length) : branchName;
+}
+
+/** "Goal: <objective>", with the status when it is not plain active. */
+function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
+  const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
+  return `Goal${status}: ${goal.objective}`;
 }
 
 /** `·` between the adaptive "where" line's parts. Decoration, never read out. */
@@ -1219,6 +1226,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       mono: true,
     });
   }
+  if (session.activeGoal) {
+    hoverRows.push({
+      id: "goal",
+      icon: <Target size={13} weight="duotone" className="text-amber-300/70" />,
+      value: sessionGoalTitle(session.activeGoal),
+    });
+  }
   if (session.nextWakeAt) {
     const wakeIn = formatFutureDuration(Date.parse(session.nextWakeAt), Date.now());
     // Neutral, never amber: a scheduled wake is the agent's move, not yours.
@@ -1311,8 +1325,25 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      and machine marks: identity-adjacent state that never spends a status hue
      and never competes with the status slot for the eye. Glyph-only, with the
      sentence in the title and the hover card — the existing vocabulary. */
-  const indicatorGlyph = rowIndicators.length > 0 ? (
+  // A chat working toward a goal says so, in the same quiet glyph cluster.
+  const activeGoal = session.activeGoal ?? null;
+  const goalTitle = activeGoal ? sessionGoalTitle(activeGoal) : null;
+  const indicatorGlyph = rowIndicators.length > 0 || activeGoal ? (
     <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
+      {activeGoal && goalTitle ? (
+        <span
+          data-testid="session-goal-indicator"
+          role="img"
+          title={goalTitle}
+          aria-label={goalTitle}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            activeGoal.status === "active" ? "text-amber-300/80" : "text-muted-fg/55",
+          )}
+        >
+          <Target size={11} weight="duotone" />
+        </span>
+      ) : null}
       {rowIndicators.map((indicator) => (
         <span
           key={indicator.kind}

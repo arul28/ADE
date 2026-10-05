@@ -1115,6 +1115,9 @@ export function ChatSubagentsPanel({
   onClose,
   goal,
   claudeGoal,
+  onEditClaudeGoal,
+  onClearClaudeGoal,
+  claudeGoalLocked = false,
   onEditGoal,
   onClearGoal,
   onSetGoalStatus,
@@ -1153,8 +1156,12 @@ export function ChatSubagentsPanel({
   variant?: "drawer" | "pane";
   onClose?: () => void;
   goal?: CodexThreadGoal | null;
-  /** Read-only Claude goal (owned by the CLI's /goal loop); Claude sessions only. */
+  /** Claude's `/goal`; edited and cleared by sending `/goal …` between turns. */
   claudeGoal?: ClaudeActiveGoal | null;
+  onEditClaudeGoal?: (condition: string) => void;
+  onClearClaudeGoal?: () => void;
+  /** A Claude turn is running; its goal changes wait for the turn boundary. */
+  claudeGoalLocked?: boolean;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
@@ -1595,7 +1602,13 @@ export function ChatSubagentsPanel({
           pending={goalPending}
         />
       ) : hasClaudeGoal && claudeGoal ? (
-        <GoalCard variant="claude" goal={claudeGoal} />
+        <GoalCard
+          variant="claude"
+          goal={claudeGoal}
+          onEdit={onEditClaudeGoal}
+          onClear={onClearClaudeGoal}
+          locked={claudeGoalLocked}
+        />
       ) : null}
 
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}

@@ -109,6 +109,8 @@ struct WorkChatHeaderMenuModel: Equatable {
   var canAttachIssue: Bool = false
   /// False for Cursor Cloud chats — Cursor owns the agent name.
   var showsRename: Bool = true
+  /// The host has `chat.restartSession`.
+  var showsRestartAgent: Bool = false
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -135,6 +137,9 @@ struct WorkChatHeaderMenu: View, Equatable {
   var onCopySessionId: () -> Void
   var onCopySessionDeepLink: () -> Void
   var onTogglePinned: () -> Void
+  /// Fresh provider process, same conversation: picks up new skills, plugins,
+  /// and MCP servers (desktop "Restart agent session").
+  var onRestartAgent: (() -> Void)? = nil
   var onAttachIssue: (() -> Void)? = nil
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
@@ -244,6 +249,13 @@ struct WorkChatHeaderMenu: View, Equatable {
       Button(action: onRename) {
         Label("Rename", systemImage: "pencil")
       }
+    }
+
+    if model.showsRestartAgent, let onRestartAgent {
+      Button(action: onRestartAgent) {
+        Label("Restart agent session", systemImage: "arrow.clockwise")
+      }
+      .accessibilityHint("Starts a fresh agent process on the next message, with new skills, plugins, and MCP servers. The conversation is kept.")
     }
 
     Button(role: .destructive, action: onDelete) {
@@ -1427,35 +1439,219 @@ struct WorkTurnEndMarkerView: View {
   }
 }
 
-struct WorkClaudeGoalPill: View {
-  let goal: AgentChatClaudeGoal
+/// The chat's goal as the composer chip (desktop `GoalChip`): Codex
+/// `thread/goal` or Claude's native `/goal`. Codex goals that finished drop it.
+struct WorkChatGoalModel: Equatable {
+  enum Provider: Equatable { case claude, codex }
+  let provider: Provider
+  let objective: String
+  /// Codex goal status; Claude goals are `active` while they exist.
+  let status: String
+  let iterations: Int?
+  let tokensUsed: Double?
+  let lastReason: String?
 
-  private var iterationLabel: String {
-    "\(goal.iterations) iteration\(goal.iterations == 1 ? "" : "s")"
+  var paused: Bool { provider == .codex && status == "paused" }
+
+  var statusLabel: String {
+    switch status {
+    case "usage_limited": return "waiting on usage limit"
+    case "budget_limited": return "budget reached"
+    case "complete": return "reached"
+    default: return status.replacingOccurrences(of: "_", with: " ")
+    }
   }
 
+  var progressLabel: String? {
+    if let iterations, iterations > 0 { return "iteration \(iterations)" }
+    guard let tokensUsed, tokensUsed.isFinite, tokensUsed > 0 else { return nil }
+    if tokensUsed >= 1_000_000 { return String(format: "%.1fM tokens", tokensUsed / 1_000_000) }
+    if tokensUsed >= 1_000 { return "\(Int((tokensUsed / 1_000).rounded()))k tokens" }
+    return "\(Int(tokensUsed)) tokens"
+  }
+}
+
+/// Desktop's pick, in its order: a live Codex goal on a Codex chat, else a
+/// Claude `/goal` condition.
+func workChatGoalModel(
+  provider: String,
+  claudeGoal: AgentChatClaudeGoal?,
+  codexGoal: AgentChatCodexGoal?
+) -> WorkChatGoalModel? {
+  let family = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if family == "codex", let codexGoal, codexGoal.isLive {
+    return WorkChatGoalModel(
+      provider: .codex,
+      objective: codexGoal.objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      status: codexGoal.status ?? "active",
+      iterations: nil,
+      tokensUsed: codexGoal.tokensUsed,
+      lastReason: nil
+    )
+  }
+  if let claudeGoal {
+    let condition = claudeGoal.condition.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !condition.isEmpty else { return nil }
+    return WorkChatGoalModel(
+      provider: .claude,
+      objective: condition,
+      status: "active",
+      iterations: claudeGoal.iterations,
+      tokensUsed: nil,
+      lastReason: claudeGoal.lastReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+  return nil
+}
+
+/// One-line goal chip above the composer. Tap opens a sheet with the full
+/// objective and the controls the provider has: Codex goals pause and resume;
+/// Claude goals (its `/goal`) can only be changed or cleared, between turns.
+/// A nil closure hides its button (the host lacks that command).
+struct WorkChatGoalChip: View {
+  let goal: WorkChatGoalModel
+  /// Claude takes `/goal` only between turns.
+  let turnActive: Bool
+  var onEdit: ((String) -> Void)? = nil
+  var onClear: (() -> Void)? = nil
+  var onSetPaused: ((Bool) -> Void)? = nil
+
+  @State private var sheetPresented = false
+  @State private var pulse = false
+
+  /// Amber while working toward the goal, grey when paused.
+  private var dotColor: Color { goal.paused ? ADEColor.textMuted : ADEColor.warning }
+
   var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: "target")
-        .font(.caption2.weight(.bold))
-      Text(goal.condition)
-        .font(.caption.weight(.medium))
-        .lineLimit(1)
-      Text("·")
-        .foregroundStyle(ADEColor.textMuted)
-      Text(iterationLabel)
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
+    Button {
+      ADEHaptics.light()
+      sheetPresented = true
+    } label: {
+      HStack(spacing: 5) {
+        Image(systemName: "target")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.warning)
+        Text("Goal")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Circle()
+          .fill(dotColor)
+          .frame(width: 5, height: 5)
+          .opacity(!goal.paused && pulse ? 0.35 : 1)
+          .animation(goal.paused ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+          .onAppear { pulse = true }
+          .accessibilityHidden(true)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(ADEColor.warning.opacity(0.07), in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.5))
+      .contentShape(Capsule(style: .continuous))
     }
-    .foregroundStyle(ADEColor.textSecondary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.accent.opacity(0.07), in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.16), lineWidth: 0.5))
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Goal: \(goal.condition). \(iterationLabel).")
+    .buttonStyle(.plain)
+    .accessibilityLabel("Goal, \(goal.statusLabel): \(goal.objective)")
+    .accessibilityHint("Opens goal controls")
+    .accessibilityIdentifier("Work.Chat.GoalChip")
+    .sheet(isPresented: $sheetPresented) {
+      WorkChatGoalSheet(
+        goal: goal,
+        turnActive: turnActive,
+        onEdit: onEdit,
+        onClear: onClear,
+        onSetPaused: onSetPaused
+      )
+      .presentationDetents([.height(340), .medium])
+      .presentationDragIndicator(.visible)
+    }
+  }
+}
+
+private struct WorkChatGoalSheet: View {
+  let goal: WorkChatGoalModel
+  let turnActive: Bool
+  let onEdit: ((String) -> Void)?
+  let onClear: (() -> Void)?
+  let onSetPaused: ((Bool) -> Void)?
+
+  @Environment(\.dismiss) private var dismiss
+  @State private var editing = false
+  @State private var draft = ""
+
+  private var claudeLocked: Bool { goal.provider == .claude && turnActive }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          Text(goal.objective)
+            .font(.body)
+            .textSelection(.enabled)
+          if let lastReason = goal.lastReason, !lastReason.isEmpty {
+            Text("Last check: \(lastReason)")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        } header: {
+          Text(["Goal · \(goal.statusLabel)", goal.progressLabel].compactMap { $0 }.joined(separator: " · "))
+        } footer: {
+          if claudeLocked {
+            Text("Claude takes goal changes between turns.")
+          }
+        }
+
+        if editing, let onEdit {
+          Section("Edit goal") {
+            TextField("Goal", text: $draft, axis: .vertical)
+              .lineLimit(2...6)
+            let normalizedDraft = draft
+              .replacingOccurrences(of: "\\s*[\\r\\n]+\\s*", with: " ", options: .regularExpression)
+              .trimmingCharacters(in: .whitespacesAndNewlines)
+            Button("Set goal") {
+              guard !normalizedDraft.isEmpty, normalizedDraft != goal.objective else { return }
+              onEdit(normalizedDraft)
+              dismiss()
+            }
+            .disabled(claudeLocked || normalizedDraft.isEmpty || normalizedDraft == goal.objective)
+          }
+        } else {
+          Section {
+            if onEdit != nil {
+              Button {
+                draft = goal.objective
+                editing = true
+              } label: {
+                Label("Edit", systemImage: "pencil")
+              }
+              .disabled(claudeLocked)
+            }
+            if goal.provider == .codex, let onSetPaused {
+              Button {
+                onSetPaused(!goal.paused)
+                dismiss()
+              } label: {
+                Label(goal.paused ? "Resume" : "Pause", systemImage: goal.paused ? "play.fill" : "pause.fill")
+              }
+            }
+            if let onClear {
+              Button(role: .destructive) {
+                onClear()
+                dismiss()
+              } label: {
+                Label("Clear", systemImage: "xmark")
+              }
+              .disabled(claudeLocked)
+            }
+          }
+        }
+      }
+      .navigationTitle("Goal")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
   }
 }
 

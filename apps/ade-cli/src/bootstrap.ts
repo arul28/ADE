@@ -89,6 +89,7 @@ import {
   type PrCardDataSource,
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
+import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -2619,6 +2620,21 @@ export async function createAdeRuntime(args: {
       getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
 
+    // PR Watch / Ship: wakes a chat on this brain when its watched PR changes.
+    const chatForPrWatch = agentChatService;
+    const prWatchService = chatForPrWatch
+      ? createPrWatchService({
+        logger,
+        prService: headlessLinearServices.prService,
+        sessionService,
+        messageSession: (args) => chatForPrWatch.messageSession(args),
+        emitPrEvent,
+        getGithubBackgroundPauseUntilMs: () =>
+          headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
+      })
+      : null;
+    if (prWatchService) teardown.push(() => prWatchService.dispose());
+
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own
     // the background polling loop that emits `prs-updated` — otherwise PR state
@@ -2648,6 +2664,7 @@ export async function createAdeRuntime(args: {
             previousReviewStatus,
           });
         }
+        prWatchService?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         await emitRuntimePrCardsForChanges({
           changes,
           dataSource: headlessLinearServices.prService,
@@ -2659,6 +2676,7 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => prPollingService.dispose());
     prPollingService.start();
+    prWatchService?.start();
     prPollingServiceForIngress = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {
@@ -3068,6 +3086,7 @@ export async function createAdeRuntime(args: {
         if (event.type === "prs-updated") {
           for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
         }
+        prWatchService?.onPrEvent(event);
       },
     ));
     externalSessionsService = createExternalSessionsService({

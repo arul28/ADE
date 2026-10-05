@@ -183,6 +183,7 @@ import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLoca
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createPrWatchService } from "./services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -3844,6 +3845,7 @@ app.whenReady().then(async () => {
     prServiceRef = prService;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let prWatchServiceRef: ReturnType<typeof createPrWatchService> | null = null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -3861,7 +3863,10 @@ app.whenReady().then(async () => {
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
     // PR event channel, and a freshly created worktree lane triggers a
     // best-effort auto-map of any existing open PR on its branch (Trigger #1).
-    prService.setEventEmitter(emitPrEvent);
+    prService.setEventEmitter((event) => {
+      emitPrEvent(event);
+      prWatchServiceRef?.onPrEvent(event);
+    });
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
     });
@@ -3905,6 +3910,7 @@ app.whenReady().then(async () => {
           ),
         );
         const chatService = agentChatServiceRef;
+        prWatchServiceRef?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         if (chatService) {
           await Promise.all(changes.map(async (change) => {
             try {
@@ -4223,6 +4229,47 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
+    /**
+     * An OS notification about one chat that opens it on click. Skipped while
+     * any ADE window is focused: there is no per-window "which chat is open"
+     * signal in main, and the chat's own transcript already says what happened.
+     */
+    const showChatOsNotification = (args: {
+      sessionId: string;
+      title: string;
+      body: string;
+      source: string;
+      failureEvent: string;
+    }): void => {
+      if (!Notification.isSupported()) return;
+      if (BrowserWindow.getFocusedWindow()) return;
+      try {
+        const notification = new Notification({ title: args.title, body: args.body });
+        // Clicking it opens the chat, through the same protocol dispatcher
+        // an `ade://` click from outside the app goes through.
+        notification.on("click", () => {
+          handleDeeplinkUrl(
+            buildDeeplink({ kind: "session", sessionId: args.sessionId }, { form: "ade" }),
+            args.source,
+            (request) => {
+              if (dispatchAppNavigationForProjectRoot) {
+                dispatchAppNavigationForProjectRoot(projectRoot, request);
+                return;
+              }
+              dispatchOrQueueAppNavigationRequest(request);
+            },
+            (event, fields) => logger.warn(event, fields),
+          );
+        });
+        notification.show();
+      } catch (error) {
+        logger.warn(args.failureEvent, {
+          sessionId: args.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     const agentChatService = createAgentChatService({
       machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
@@ -4334,43 +4381,24 @@ app.whenReady().then(async () => {
         provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
-        if (!Notification.isSupported()) return;
-        // An OS notification for something the user is already looking at is
-        // noise. There is no per-window "which chat is open" signal in main, so
-        // the check is the coarse one that is actually available: any focused
-        // ADE window means the user is here, and the chat's own transcript
-        // notice already says the resume happened.
-        if (BrowserWindow.getFocusedWindow()) return;
-        try {
-          const notification = new Notification({
-            title: "Chat resumed",
-            body: title?.trim()
-              ? `"${title.trim()}" continued after its usage limit reset.`
-              : "A chat continued after its usage limit reset.",
-          });
-          // Clicking it opens the chat, through the same protocol dispatcher
-          // an `ade://` click from outside the app goes through.
-          notification.on("click", () => {
-            handleDeeplinkUrl(
-              buildDeeplink({ kind: "session", sessionId }, { form: "ade" }),
-              "notification:usage_limit_resume",
-              (request) => {
-                if (dispatchAppNavigationForProjectRoot) {
-                  dispatchAppNavigationForProjectRoot(projectRoot, request);
-                  return;
-                }
-                dispatchOrQueueAppNavigationRequest(request);
-              },
-              (event, fields) => logger.warn(event, fields),
-            );
-          });
-          notification.show();
-        } catch (error) {
-          logger.warn("agent_chat.usage_limit_resume_notification_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        showChatOsNotification({
+          sessionId,
+          title: "Chat resumed",
+          body: title?.trim()
+            ? `"${title.trim()}" continued after its usage limit reset.`
+            : "A chat continued after its usage limit reset.",
+          source: "notification:usage_limit_resume",
+          failureEvent: "agent_chat.usage_limit_resume_notification_failed",
+        });
+      },
+      onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        showChatOsNotification({
+          sessionId,
+          title: outcome === "reached" ? "Goal reached" : "Goal blocked",
+          body: `${title ? `"${title}": ` : ""}${objective}`,
+          source: "notification:goal_ended",
+          failureEvent: "agent_chat.goal_ended_notification_failed",
+        });
       },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
@@ -4406,6 +4434,14 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    prWatchServiceRef = createPrWatchService({
+      logger,
+      prService,
+      sessionService,
+      messageSession: (args) => agentChatService.messageSession(args),
+      emitPrEvent,
+      getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
+    });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
       sessionService,
@@ -5268,7 +5304,10 @@ app.whenReady().then(async () => {
 
     scheduleBackgroundProjectTask(
       "prs.polling_start",
-      () => prPollingService.start(),
+      () => {
+        prPollingService.start();
+        prWatchServiceRef?.start();
+      },
       (error) => {
         logger.warn("prs.polling_start_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -5845,6 +5884,7 @@ app.whenReady().then(async () => {
       feedbackReporterService,
       prService,
       prPollingService,
+      prWatchService: prWatchServiceRef,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -6060,6 +6100,7 @@ app.whenReady().then(async () => {
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,
+      prWatchService: null,
       prSummaryService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
@@ -6310,6 +6351,7 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService?.dispose();
+      ctx.prWatchService?.dispose();
     } catch {
       // ignore
     }

@@ -20,6 +20,29 @@ import {
   type CtoRemoteActionCall,
 } from "./ctoCrossMachine";
 import { executableTool } from "./executableTool";
+import { DEFAULT_ADE_TOOL_BUDGET_MS, REMOTE_CALL_ALLOWANCE_MS } from "./toolDeadline";
+
+/** Creating a worktree on a large repository takes a while. */
+export const REMOTE_LANE_CREATE_TIMEOUT_MS = 120_000;
+const REMOTE_CHAT_CREATE_TIMEOUT_MS = 60_000;
+/** The bridge's default per-call timeout, for the calls that pass none. */
+const REMOTE_DEFAULT_CALL_TIMEOUT_MS = 30_000;
+/** A `runMachineAction` call that names no timeout waits this long. */
+const RUN_MACHINE_ACTION_DEFAULT_TIMEOUT_SECONDS = 30;
+
+/**
+ * Everything `spawnRemoteChat` can wait on in sequence: the lane, the chat,
+ * its title, its first message and the check-in, plus one connect allowance
+ * (the bridge keeps the connection for the later calls).
+ */
+export const SPAWN_REMOTE_CHAT_BUDGET_MS =
+  REMOTE_LANE_CREATE_TIMEOUT_MS
+  + REMOTE_CHAT_CREATE_TIMEOUT_MS
+  + 3 * REMOTE_DEFAULT_CALL_TIMEOUT_MS
+  + REMOTE_CALL_ALLOWANCE_MS;
+
+/** A remote lane create: its call timeout plus the connect allowance. */
+export const CREATE_REMOTE_LANE_BUDGET_MS = REMOTE_LANE_CREATE_TIMEOUT_MS + REMOTE_CALL_ALLOWANCE_MS;
 
 /** A lane row from another machine's `lane.list`: its `LaneSummary`, as JSON. */
 export type CtoRemoteLane = Partial<LaneSummary> & { id: string };
@@ -167,7 +190,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
           name: args.title?.trim() || "implementation chat",
           description: "Dedicated implementation lane launched from the CTO coordinator chat.",
         },
-        timeoutMs: 120_000,
+        timeoutMs: REMOTE_LANE_CREATE_TIMEOUT_MS,
       });
       remoteLaneId = isRecord(lane) && typeof lane.id === "string" ? lane.id : "";
       if (!remoteLaneId) throw new Error(`${target.name} created a lane but did not return its id.`);
@@ -186,7 +209,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
         surface: "work",
         sessionProfile: "workflow",
       },
-      timeoutMs: 60_000,
+      timeoutMs: REMOTE_CHAT_CREATE_TIMEOUT_MS,
     });
     const created: Partial<AgentChatSession> = isRecord(createdRaw) ? createdRaw : {};
     const remoteSessionId = typeof created.id === "string" ? created.id : "";
@@ -340,6 +363,13 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
       arg: z.union([z.string(), z.number(), z.boolean()]).optional().describe("A single scalar argument, for actions that take one instead of args."),
       timeoutSeconds: z.number().int().positive().max(180).optional().describe("Wait this long for the answer. Default 30."),
     }),
+    // The machine's own timeout plus connecting; the approval card, when one
+    // is raised, does not count.
+    budgetMs: ({ timeoutSeconds }) =>
+      Math.max(
+        DEFAULT_ADE_TOOL_BUDGET_MS,
+        (timeoutSeconds ?? RUN_MACHINE_ACTION_DEFAULT_TIMEOUT_SECONDS) * 1000 + REMOTE_CALL_ALLOWANCE_MS,
+      ),
     execute: async ({ machine, domain, action, args, arg, timeoutSeconds }) => {
       if (!deps.crossMachine) return { success: false, error: NOT_REACHABLE };
       // Before anything connects: the result would put a secret in the transcript.

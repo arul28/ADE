@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
   type AppOpenSystemSettingsPaneResult,
@@ -536,6 +537,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -1878,6 +1881,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "approveToolUse",
   "interrupt",
   "stopTask",
+  "restartSession",
   "restoreCancelledQueue",
   "recoverTurn",
   "recoverCodexTurn",
@@ -7679,6 +7683,21 @@ const adeBridge = {
       agentChatSummaryCache.clear();
       return result;
     },
+    restartSession: async (
+      args: AgentChatRestartSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRestartSessionResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRestartSessionResult>(
+        pin,
+        "chat",
+        "restartSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRestartSession, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
     stopTask: async (
       args: AgentChatStopTaskArgs,
       pin?: OpenProjectBinding | null,
@@ -12091,6 +12110,21 @@ const adeBridge = {
         "listChatSessionsForPr",
         { args },
         () => ipcRenderer.invoke(IPC.prsListChatSessionsForPr, args),
+      ),
+    setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null): Promise<PrChatWatchSummary | null> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "pr",
+        "setChatWatch",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsSetChatWatch, args),
+      ),
+    getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null): Promise<PrChatWatchSummary[]> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "getChatWatches",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsGetChatWatches, args),
       ),
     getStackLinkOffer: (
       args: {

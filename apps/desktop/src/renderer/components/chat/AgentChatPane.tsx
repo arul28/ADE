@@ -5759,6 +5759,16 @@ export function AgentChatPane({
       });
     }
   }, []);
+  // Claude's goal lives in its own `/goal` command; ADE sends it like a typed
+  // command, between turns.
+  const sendClaudeGoalCommand = useCallback(async (sessionId: string, argument: string) => {
+    setError(null);
+    try {
+      await window.ade.agentChat.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current);
+    } catch (goalError) {
+      setError(errorMessage(goalError));
+    }
+  }, []);
   const setCodexGoalStatusFromPanel = useCallback(async (
     sessionId: string,
     status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">,
@@ -6598,6 +6608,14 @@ export function AgentChatPane({
     const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
   }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
+
+  // Spawned chats of this chat that are working now: the Stop menu offers to
+  // stop them too.
+  const activeChildChatCount = useMemo(() => {
+    const parentId = selectedSession?.sessionId;
+    if (!parentId) return 0;
+    return sessions.filter((s) => s.orchestrationParentSessionId === parentId && s.status === "active").length;
+  }, [selectedSession?.sessionId, sessions]);
 
   // Resolve a spawned child chat's live title so the Subagents pane's spawned-chat
   // rows read as the chat they open, not the bare runtime name.
@@ -14494,6 +14512,17 @@ export function AgentChatPane({
       sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
+      onEditClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? (condition) => { void sendClaudeGoalCommand(selectedSessionId, condition); }
+          : undefined
+      }
+      onClearClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? () => { void sendClaudeGoalCommand(selectedSessionId, "clear"); }
+          : undefined
+      }
+      claudeGoalLocked={selectedSession?.provider === "claude" && turnActive}
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
@@ -15688,6 +15717,7 @@ export function AgentChatPane({
               void interrupt(mode);
             }}
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
+            childChatCount={activeChildChatCount}
             onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}

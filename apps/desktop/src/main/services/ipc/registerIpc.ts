@@ -891,6 +891,9 @@ import type {
 } from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
+import type { PrWatchService } from "../prs/prWatchService";
+import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
@@ -1245,6 +1248,7 @@ export type AppContext = {
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
+  prWatchService: PrWatchService | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
@@ -8828,6 +8832,18 @@ export function registerIpc({
     return await ctx.agentChatService.interrupt(request);
   });
 
+  ipcMain.handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("A chat session id is required.");
+    }
+    return await ctx.agentChatService.restartSession({
+      sessionId: record.sessionId,
+      ...(record.stopFirst === true ? { stopFirst: true } : {}),
+    });
+  });
+
   ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
     const ctx = ensureAgentChatContext();
     if (
@@ -12219,6 +12235,26 @@ export function registerIpc({
     IPC.prsListChatSessionsForPr,
     async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
       ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
+  );
+
+  ipcMain.handle(
+    IPC.prsSetChatWatch,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
+      return ensurePrMutationContext().prService.setChatWatch({
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        mode: parsePrWatchMode(prChatLinkOptionalString(raw, "mode")),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsGetChatWatches,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary[]> =>
+      ensurePrReadContext().prService.getChatWatches({
+        sessionId: prChatLinkOptionalString(raw, "sessionId") ?? undefined,
+        prId: prChatLinkOptionalString(raw, "prId") ?? undefined,
+      }),
   );
 
   ipcMain.handle(

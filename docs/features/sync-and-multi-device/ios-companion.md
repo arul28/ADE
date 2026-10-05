@@ -3243,6 +3243,26 @@ Known limits, all deliberate:
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 
+### Chat session control: PR Watch, goals, Stop, restart
+
+- **PR Watch / Ship** (`WorkChatPrViews.swift` `WorkChatPrWatchChip`): an
+  icon-only control beside the composer PR chip (slashed eye, eye, or paper
+  plane for Ship) with a minimal menu: Off / Watch / Ship and one status line.
+  It calls `prs.setChatWatch` / `prs.getChatWatches` (optional commands; the
+  control hides on an older host). A result for a PR the chat no longer shows
+  is dropped, a failed change shows in the chat's error line, and a watch that
+  could not be read shows "Couldn't read the watch" with Off still sending.
+- **Goals** (`WorkChatHeaderAndMessageViews.swift`): a small "Goal" chip with
+  the target icon above the composer while a goal is set; tapping it opens the
+  details and Edit / Clear (Claude sends `/goal …`; Codex uses its goal API).
+  A failed `/goal` send says so.
+- **Stop choices** (`WorkModels.swift` `WorkChatStopCapability`, hand-mirrored
+  from `shared/chatStopModes.ts`): six modes, unsupported ones disabled with a
+  reason. The child-chat modes appear only with active child chats and only
+  on a host that has `chat.restartSession` (they shipped together).
+- **Restart agent session** from the session menu (`chat.restartSession`,
+  optional); a running turn asks first, then retries with `stopFirst`.
+
 ### Lane tool chips and the Work tools sheet
 
 The desktop's Work tools pane cannot run on a phone — the browser is a

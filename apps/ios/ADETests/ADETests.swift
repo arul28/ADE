@@ -14365,7 +14365,14 @@ final class ADETests: XCTestCase {
   func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
     XCTAssertEqual(
       WorkChatStopCapability.modes,
-      [.stopOnly, .stopAndClear, .stopAndBackground, .stopAndClearAndBackground]
+      [
+        .stopOnly,
+        .stopAndClear,
+        .stopAndBackground,
+        .stopAndClearAndBackground,
+        .stopAndClearAndChildren,
+        .stopEverythingAndChildren,
+      ]
     )
     XCTAssertEqual(WorkChatStopCapability.defaultMode, .stopAndClear)
     XCTAssertEqual(WorkChatStopCapability.copy(mode: .stopOnly, jobCount: 3).title, "Turn only")

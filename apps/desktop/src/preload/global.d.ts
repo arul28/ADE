@@ -1,4 +1,5 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -250,6 +251,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -2227,6 +2230,11 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Stop the provider process, keep the conversation; the next message starts fresh. */
+        restartSession: (
+          args: AgentChatRestartSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatRestartSessionResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
           pin?: OpenProjectBinding | null,
@@ -4150,6 +4158,9 @@ declare global {
         ) => Promise<GitHubPrStack | null>;
         linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        /** PR Watch / Ship for one chat; `mode: null` stops it. */
+        setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary | null>;
+        getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary[]>;
         linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,

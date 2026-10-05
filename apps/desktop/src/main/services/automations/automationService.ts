@@ -742,6 +742,9 @@ export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unkno
   const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
   if (domain === "chat") {
     for (const candidate of candidates) {
+      // A send wait's prompt provenance is the host's to derive; an
+      // unattended rule has no agent identity, so it gets none.
+      if (isRecord(candidate)) delete candidate.sendMetadata;
       if (isRecord(candidate) && isRecord(candidate.metadata)) {
         stripHostAuthoredMessageProvenance(candidate.metadata);
       }

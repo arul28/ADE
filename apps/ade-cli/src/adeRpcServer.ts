@@ -3248,6 +3248,11 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Restarting tears down the target's runtime (and stops its turn with
+  // stopFirst); holding background work arms wakes on its terminals. Both act
+  // on a chat the way `interrupt` does, so a bound agent aims them at itself.
+  "restartSession",
+  "holdBackgroundWork",
   "restoreCancelledQueue",
   "setSpawnKind",
   "dismissSubagentTakeoverPrompt",
@@ -3301,6 +3306,31 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
+  if (action === "armWait") {
+    // Provenance on the prompt a send wait delivers is the host's to derive,
+    // never a caller's to assert.
+    const { sendMetadata: _callerProvenance, ...waitArgs } = chatArgs;
+    if (isUnboundAdeCliCaller(session)) return waitArgs;
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    const sendTo = asOptionalTrimmedString(waitArgs.sendToSessionId);
+    if (sendTo) {
+      // A send wait ("start B after A") wakes nobody; its prompt reaches B
+      // marked as from this agent, exactly as a direct send would be.
+      const derived = withTrustedAgentProvenance(runtime, session, { sessionId: sendTo }).metadata;
+      return {
+        ...waitArgs,
+        callerSessionId: callerChatSessionId ?? null,
+        ...(isRecord(derived) ? { sendMetadata: derived } : {}),
+      };
+    }
+    // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
+    // ask to be woken itself.
+    const requestedCaller = asOptionalTrimmedString(waitArgs.callerSessionId);
+    if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
+      chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
+    }
+    return { ...waitArgs, callerSessionId: callerChatSessionId };
+  }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) {
@@ -5315,7 +5345,11 @@ async function runTool(args: {
     // its arguments from these raw ones.
     const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
-      : safeObject(toolArgs.args);
+      : domain === "chat" && action === "armWait"
+        // A send wait's provenance is derived by the host (bound agents, in
+        // the chat scoping below) and never accepted from any caller.
+        ? (({ sendMetadata: _callerProvenance, ...waitArgs }) => waitArgs)(safeObject(toolArgs.args))
+        : safeObject(toolArgs.args);
     // `inputOrigin` names the desktop a person is talking from, and show
     // requests follow it. Only a user client may say where that person is.
     const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs
@@ -5434,6 +5468,7 @@ async function runTool(args: {
       && domain === "chat"
       && (
         SCOPED_CHAT_ACTIONS.has(action)
+        || action === "armWait"
         || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
       )
     ) {
