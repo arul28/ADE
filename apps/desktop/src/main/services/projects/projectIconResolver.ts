@@ -99,6 +99,14 @@ function isLocalIconHref(href: string): boolean {
 
 function findExistingFile(projectRoot: string, candidates: readonly string[]): string | null {
   for (const candidate of candidates) {
+    // Most candidates do not exist. One stat says so; the containment walk
+    // below resolves every directory from the drive root, which on Windows is
+    // a slow call per level, and doing it for each missing candidate held the
+    // brain's event loop for seconds on every project-catalog read.
+    // A `..` segment is resolved against the real (symlink-followed) parent by
+    // the walk, which a plain join cannot predict, so those keep the full walk.
+    const plainRelative = !path.isAbsolute(candidate) && !candidate.split(/[\\/]/).includes("..");
+    if (plainRelative && !fs.existsSync(path.join(projectRoot, candidate))) continue;
     // resolvePathWithinRoot follows symlinks via fs.realpath, so a `public ->
     // /etc` symlink in the checked-out repo can't trick us into stat'ing or
     // reading outside the project root. Treat any failure (escape, missing
@@ -243,7 +251,8 @@ type ProjectIconPathCacheEntry = {
   sourceMtimeMs: number;
   sourceSize: number;
   expiresAtMs: number;
-  value: string;
+  /** Null: the project has no icon. Cached too, or every read rescans it. */
+  value: string | null;
 };
 
 const projectIconPathCache = new Map<string, ProjectIconPathCacheEntry>();
@@ -617,7 +626,7 @@ export function resolveProjectIconPath(
       return cached.value;
     }
   }
-  const cacheValue = (value: string): string => {
+  const cacheValue = <T extends string | null>(value: T): T => {
     const sourceSignature = fileSignature(value);
     setProjectIconPathCache(cacheKey, {
       rootMtimeMs,
@@ -634,7 +643,7 @@ export function resolveProjectIconPath(
   const configured = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
     ? options.iconPathOverride
     : readProjectIconOverride(root);
-  if (configured === null) return null;
+  if (configured === null) return cacheValue(null);
   const configuredMatch = resolveConfiguredProjectIconPath(root, configured);
   if (configuredMatch) return cacheValue(configuredMatch);
 
@@ -665,7 +674,7 @@ export function resolveProjectIconPath(
     }
   }
 
-  return null;
+  return cacheValue(null);
 }
 
 function mimeTypeForIconPath(filePath: string): string | null {
