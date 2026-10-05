@@ -6191,7 +6191,10 @@ describe("prService.land", () => {
    * A stacked PR (#91, position 2 over open #90 in Stack #19) merges through
    * the async merge API. `replies` scripts the PUT, then each poll in order.
    */
-  const buildStackLand = (replies: Array<{ status?: number; body: unknown }>) => {
+  const buildStackLand = (
+    replies: Array<{ status?: number; body: unknown }>,
+    opts: { headSha?: string; compare?: unknown } = {},
+  ) => {
     const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
     const db = makeMockDb();
     installPullRequestRowStore(db, [row]);
@@ -6225,7 +6228,10 @@ describe("prService.land", () => {
           }
           return { data: reply.body };
         }
-        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) return { data: { state: "open", merged_at: null } };
+        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) {
+          return { data: { state: "open", merged_at: null, ...(opts.headSha ? { head: { sha: opts.headSha } } : {}) } };
+        }
+        if (args.method === "GET" && args.path.includes("/compare/") && opts.compare) return { data: opts.compare };
         return { data: {} };
       }),
     });
@@ -6273,7 +6279,7 @@ describe("prService.land", () => {
     {
       name: "the head moved since the card opened",
       replies: [{ status: 400, body: { status: "failed", details: { message: "Pull request head branch was modified." } } }],
-      expected: { success: false, error: "PR head changed since you opened the merge dialog — refresh and retry." },
+      expected: { success: false, mergeCommitSha: null },
       puts: 1,
     },
     {
@@ -6375,6 +6381,102 @@ describe("prService.land", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/draft/i);
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+
+  describe("when the PR head moved past the SHA the user saw", () => {
+    const compare = {
+      status: "ahead",
+      ahead_by: 2,
+      commits: [
+        { sha: "new-1", commit: { message: "first new\n\nbody", committer: { date: "2026-10-05T18:20:00Z" } }, author: { login: "alice" } },
+        { sha: "new-2", commit: { message: "second new", committer: { date: "2026-10-05T18:20:30Z" } }, author: { login: "bob" } },
+      ],
+    };
+
+    /**
+     * A single PR (#97). `heads` scripts what each fresh read of the PR says
+     * its head is; `putError` makes GitHub refuse the merge call.
+     */
+    const buildSingleLand = (heads: string[], putError?: string) => {
+      const row = makePrRow({ id: "pr-moved", github_pr_number: 97 });
+      const db = makeMockDb();
+      installPullRequestRowStore(db, [row]);
+      const queue = [...heads];
+      const githubService = makeGithubService({
+        apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+          if (args.method === "GET" && args.path.endsWith("/pulls/97")) {
+            const sha = queue.length > 1 ? queue.shift()! : queue[0]!;
+            return { data: makeGitHubPull({ number: 97, mergeable: true, mergeable_state: "clean", head: { ref: "feature", sha } }) };
+          }
+          if (args.method === "GET" && args.path.includes("/compare/old-head...new-2")) return { data: compare };
+          if (args.method === "PUT" && args.path.endsWith("/pulls/97/merge")) {
+            if (putError) throw Object.assign(new Error(putError), { status: 409 });
+            return { data: { sha: "merge-sha" } };
+          }
+          return { data: {} };
+        }),
+      });
+      const operationService = makeOperationService();
+      const { service } = buildService({ db, githubService, operationService });
+      return { service, githubService, operationService };
+    };
+
+    const putCalls = (githubService: { apiRequest: ReturnType<typeof vi.fn> }) =>
+      githubService.apiRequest.mock.calls.filter(([args]: any[]) => args.method === "PUT");
+
+    it.each([
+      { name: "before the merge call", heads: ["new-2"], putError: undefined, puts: 0 },
+      {
+        name: "between the check and the merge call",
+        heads: ["old-head", "new-2"],
+        putError: "Head branch was modified. Review and try the merge again.",
+        puts: 1,
+      },
+    ])("single PR, moved $name: nothing merges and the result lists what landed", async ({ heads, putError, puts }) => {
+      const { service, githubService, operationService } = buildSingleLand(heads, putError);
+
+      const result = await service.land({ prId: "pr-moved", method: "squash", bypassRules: true, expectedHeadSha: "old-head" });
+
+      expect(result).toMatchObject({ success: false, mergeCommitSha: null });
+      expect(result.headChanged).toEqual({
+        expectedHeadSha: "old-head",
+        currentHeadSha: "new-2",
+        history: "appended",
+        totalNewCommits: 2,
+        newCommits: [
+          { sha: "new-1", title: "first new", author: "alice", committedAt: "2026-10-05T18:20:00Z" },
+          { sha: "new-2", title: "second new", author: "bob", committedAt: "2026-10-05T18:20:30Z" },
+        ],
+      });
+      expect(putCalls(githubService)).toHaveLength(puts);
+      expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+      expect(operationService.finish).not.toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded" }));
+    });
+
+    it("merges when the SHA the user saw is still the head", async () => {
+      const { service, githubService } = buildSingleLand(["old-head"]);
+
+      const result = await service.land({ prId: "pr-moved", method: "squash", expectedHeadSha: "old-head" });
+
+      expect(result).toMatchObject({ success: true, mergeCommitSha: "merge-sha" });
+      expect(result.headChanged).toBeUndefined();
+      expect(putCalls(githubService)).toHaveLength(1);
+      expect(putCalls(githubService)[0]![0]).toEqual(expect.objectContaining({ body: expect.objectContaining({ sha: "old-head" }) }));
+    });
+
+    it("a stacked PR whose head moved starts no stack merge and reports a force-push", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const { service, asyncCalls } = buildStackLand([{ status: 202, body: pending() }], {
+        headSha: "s2-rebased",
+        compare: { status: "diverged", ahead_by: 1, commits: [{ sha: "s2-rebased", commit: { message: "rebased" } }] },
+      });
+
+      const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+      expect(result).toMatchObject({ success: false, stackPrNumbers: [90, 91] });
+      expect(result.headChanged).toMatchObject({ expectedHeadSha: "s2", currentHeadSha: "s2-rebased", history: "rewritten", totalNewCommits: 1 });
+      expect(asyncCalls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    });
   });
 
   it("short-circuits dirty mergeability before calling GitHub merge", async () => {
