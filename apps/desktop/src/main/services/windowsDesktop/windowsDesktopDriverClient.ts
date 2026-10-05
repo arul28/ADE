@@ -75,6 +75,13 @@ type SharedDriver = {
   attachments: Set<SharedAttachment>;
   /** Which project's service a lane belongs to: the one that sent a request for it. */
   laneOwner: Map<string, SharedAttachment>;
+  /**
+   * Lanes with a screen asked for and not yet destroyed, by owner. A project
+   * reconciles before its first screen while another project's create can
+   * still wait on sign-in; that lane is not in the other project's live list
+   * yet, so the reconcile keeps it from here.
+   */
+  heldLanes: Map<string, SharedAttachment>;
 };
 
 const sharedDrivers = new Map<string, SharedDriver>();
@@ -100,7 +107,8 @@ function sharedDriverKey(adeHome: string, platform: NodeJS.Platform): string {
  *   - a lane's events go to that project only, so no project records another
  *     project's windows; events with no lane (a lock, a phase) go to all;
  *   - `display.reconcile` destroys every display not in its list, so the list
- *     sent is every attached project's live lanes, never one project's alone;
+ *     sent is every attached project's live lanes, plus every screen a
+ *     project asked for and has not destroyed, never one project's alone;
  *   - health changes and a lost driver reach every project;
  *   - the host stops only when the last project releases it.
  */
@@ -121,6 +129,7 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
   if (!shared) {
     const attachments = new Set<SharedAttachment>();
     const laneOwner = new Map<string, SharedAttachment>();
+    const heldLanes = new Map<string, SharedAttachment>();
     const client = createWindowsDesktopDriverClient({
       logger: deps.logger,
       platform: deps.platform,
@@ -130,6 +139,7 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
       },
       onDriverLost: (reason) => {
         laneOwner.clear();
+        heldLanes.clear();
         for (const attachment of [...attachments]) attachment.onDriverLost(reason);
       },
       ...(deps.requestTimeoutMs != null ? { requestTimeoutMs: deps.requestTimeoutMs } : {}),
@@ -144,12 +154,15 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
       for (const target of targets) {
         for (const listener of [...target.listeners]) listener(event);
       }
-      if (laneId && event.event === "display-destroyed") laneOwner.delete(laneId);
+      if (laneId && event.event === "display-destroyed") {
+        laneOwner.delete(laneId);
+        heldLanes.delete(laneId);
+      }
     });
-    shared = { client, attachments, laneOwner };
+    shared = { client, attachments, laneOwner, heldLanes };
     sharedDrivers.set(key, shared);
   }
-  const { client, attachments, laneOwner } = shared;
+  const { client, attachments, laneOwner, heldLanes } = shared;
   const attachment: SharedAttachment = {
     listeners: new Set(),
     onHealthChanged: deps.onHealthChanged,
@@ -168,8 +181,19 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
         if (other === attachment) continue;
         for (const id of other.liveLaneIds?.() ?? []) live.add(id);
       }
+      for (const [id, owner] of heldLanes) if (owner !== attachment) live.add(id);
       return await client.request(op, { ...payload, liveLaneIds: [...live] }, options);
     }
+    if (laneId && op === MAC_DESKTOP_DRIVER_OPS.createDisplay) {
+      heldLanes.set(laneId, attachment);
+      try {
+        return await client.request(op, payload, options);
+      } catch (error) {
+        if (heldLanes.get(laneId) === attachment) heldLanes.delete(laneId);
+        throw error;
+      }
+    }
+    if (laneId && op === MAC_DESKTOP_DRIVER_OPS.destroyDisplay) heldLanes.delete(laneId);
     return await client.request(op, payload, options);
   };
 
@@ -187,6 +211,7 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
       released = true;
       attachments.delete(attachment);
       for (const [laneId, owner] of [...laneOwner]) if (owner === attachment) laneOwner.delete(laneId);
+      for (const [laneId, owner] of [...heldLanes]) if (owner === attachment) heldLanes.delete(laneId);
       if (attachments.size > 0) return;
       sharedDrivers.delete(key);
       client.dispose();

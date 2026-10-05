@@ -75,26 +75,35 @@ describe("the Windows driver shared by every open project", () => {
 
   it("starts one host for two projects, and keeps each project's lanes its own", async () => {
     const { children, spawnProcess, attach } = setup();
-    const projectA = attach(["lane-a"]);
+    const liveA: string[] = [];
+    const projectA = attach(liveA);
     const projectB = attach([]);
     await projectA.client.ensureStarted();
     await projectB.client.ensureStarted();
     expect(spawnProcess).toHaveBeenCalledTimes(1);
     const host = children[0]!;
+    const sent = async () => {
+      await settle();
+      return JSON.parse(host.stdin.read()!.toString());
+    };
+    const reply = (id: unknown, result: unknown) => host.stdout.write(`${JSON.stringify({ id, ok: true, result })}\n`);
+    const reconcileFromB = async () => {
+      const reconcile = projectB.client.request("display.reconcile", { liveLaneIds: [] });
+      const message = await sent();
+      reply(message.id, { destroyed: [] });
+      await reconcile;
+      return message.liveLaneIds;
+    };
 
-    // Project A names its lane; project B reconciles on its first start.
+    // A's create still waits on sign-in when B reconciles on its first start.
     const create = projectA.client.request("display.create", { laneId: "lane-a" });
-    await settle();
-    const createSent = JSON.parse(host.stdin.read()!.toString());
-    host.stdout.write(`${JSON.stringify({ id: createSent.id, ok: true, result: {} })}\n`);
+    const createSent = await sent();
+    // B's cleanup must not destroy the screen A is still making.
+    expect(await reconcileFromB()).toEqual(["lane-a"]);
+    reply(createSent.id, {});
     await create;
-    const reconcile = projectB.client.request("display.reconcile", { liveLaneIds: [] });
-    await settle();
-    const reconcileSent = JSON.parse(host.stdin.read()!.toString());
-    // B's cleanup must not destroy the screen A is using.
-    expect(reconcileSent.liveLaneIds).toEqual(["lane-a"]);
-    host.stdout.write(`${JSON.stringify({ id: reconcileSent.id, ok: true, result: { destroyed: [] } })}\n`);
-    await reconcile;
+    liveA.push("lane-a");
+    expect(await reconcileFromB()).toEqual(["lane-a"]);
 
     host.stdout.write(`${JSON.stringify({ event: "windows-changed", laneId: "lane-a", windows: [] })}\n`);
     host.stdout.write(`${JSON.stringify({ event: "windows-state-changed", locked: true })}\n`);
@@ -102,6 +111,13 @@ describe("the Windows driver shared by every open project", () => {
     expect(projectA.events.map((event) => event.event)).toEqual(["windows-changed", "windows-state-changed"]);
     // B gets the PC-wide event, never A's lane.
     expect(projectB.events.map((event) => event.event)).toEqual(["windows-state-changed"]);
+
+    // After A destroys its screen, a reconcile may clean that lane up.
+    const destroy = projectA.client.request("display.destroy", { laneId: "lane-a" });
+    reply((await sent()).id, {});
+    await destroy;
+    liveA.splice(0);
+    expect(await reconcileFromB()).toEqual([]);
   });
 
   it("keeps the host while any project holds it, and stops it after the last one leaves", async () => {

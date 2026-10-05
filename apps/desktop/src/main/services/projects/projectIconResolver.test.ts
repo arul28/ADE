@@ -245,20 +245,12 @@ describe("projectIconResolver", () => {
     readdirSpy.mockRestore();
   });
 
-  it("reuses a no-icon result until the project root changes", () => {
+  it("finds an icon added to an existing folder on the next read", () => {
     const root = makeProjectRoot();
-    writeFile(root, "README.md", "# no icon here");
+    writeFile(root, "public/robots.txt", "User-agent: *");
     expect(resolveProjectIconPath(root)).toBeNull();
 
-    const readdirSpy = vi.spyOn(fs, "readdirSync");
-    const existsSpy = vi.spyOn(fs, "existsSync");
-    expect(resolveProjectIconPath(root)).toBeNull();
-    expect(readdirSpy).not.toHaveBeenCalled();
-    expect(existsSpy).not.toHaveBeenCalled();
-    readdirSpy.mockRestore();
-    existsSpy.mockRestore();
-
-    const iconPath = writeFile(root, "favicon.svg", "<svg>favicon</svg>");
+    const iconPath = writeFile(root, "public/favicon.svg", "<svg>favicon</svg>");
     expect(resolveProjectIconPath(root)).toBe(iconPath);
   });
 

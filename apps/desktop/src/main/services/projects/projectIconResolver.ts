@@ -674,7 +674,10 @@ export function resolveProjectIconPath(
     }
   }
 
-  return cacheValue(null);
+  // No icon found: do not cache. A new icon can appear in any nested folder,
+  // and the cache checks only a few folder times. The scan is cheap since a
+  // missing candidate skips the containment walk.
+  return null;
 }
 
 function mimeTypeForIconPath(filePath: string): string | null {
