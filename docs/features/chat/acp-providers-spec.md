@@ -19,7 +19,7 @@ a message naming the CLI and telling the user to update ADE or the CLI.
 
 | Provider | Version | Date |
 |---|---|---|
-| copilot | TBD | TBD |
+| copilot | 1.0.91 (baseline 1.0.89) | 2026-10-05 |
 | grok | TBD | TBD |
 | qwen | TBD | TBD |
 | kimi | 2.1.1 (baseline 0.39.1) | 2026-10-05 |
@@ -416,7 +416,7 @@ Rust, Apache-2.0)
   Markdown heading theme colors without changing the ACP launch contract. ADE's
   setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
-### Copilot (`copilot --acp`, npm `@github/copilot@1.0.86`, PREVIEW)
+### Copilot (`copilot --acp`, latest verified **1.0.91**, baseline **1.0.89**, PREVIEW)
 - The 1.0.89 and 1.0.91 handshakes are identical in capability terms
   (verified 2026-10-05): `loadSession`, image prompts, HTTP/SSE MCP, and
   session list/close. Neither advertises `session/resume`; both answer the
