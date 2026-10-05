@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.90] - 2026-10-05
+
+### Desktop
+
+- Agent wakes for PR Watch/Ship, crash resume, waits, goals, stop choices, restart session, and MCP timeouts (#1454).
+- Switch a chat's account from the chat actions drawer (#1456).
+- Calmer wake-up loops, a composer status strip, and lanes that follow their agent's branch (#1458).
+- Smooth project switches, cheaper animations, and WebGL terminals (#1457).
+
+### iOS
+
+- Agent wake and session control updates (#1454).
+
 ## [1.2.89] - 2026-10-04
 
 ### Desktop
