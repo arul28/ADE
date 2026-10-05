@@ -928,8 +928,10 @@ describe("ChatMacDesktopPanel with no display", () => {
   });
 
   it("reads again when the brain restarts, so a display that died with it goes to Off", async () => {
-    let runtimeChanged: () => void = () => {};
-    (window as unknown as { ade: { app: Record<string, unknown> } }).ade.app.onRuntimeStatusChanged = (cb: () => void) => {
+    let runtimeChanged: (status: { connectionState: string; pid: number }) => void = () => {};
+    (window as unknown as { ade: { app: Record<string, unknown> } }).ade.app.onRuntimeStatusChanged = (
+      cb: (status: { connectionState: string; pid: number }) => void,
+    ) => {
       runtimeChanged = cb;
       return () => {};
     };
@@ -940,7 +942,7 @@ describe("ChatMacDesktopPanel with no display", () => {
 
     // The new brain has no display and sends no display-destroyed for the old one.
     macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
-    await act(async () => { runtimeChanged(); });
+    await act(async () => { runtimeChanged({ connectionState: "connected", pid: 4242 }); });
     expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
   });
 
