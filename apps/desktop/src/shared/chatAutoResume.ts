@@ -15,6 +15,7 @@
 import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
 import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
+import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
 import type { AgentChatEventEnvelope } from "./types/chat";
 
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
@@ -323,6 +324,12 @@ export type RestartCancelledWork = {
   label: string;
 };
 
+/** The summaries the orphan sweep gives rows whose process died. */
+const ORPHAN_RESTART_SUMMARIES = new Set<string>([
+  ORPHAN_BACKGROUND_SUMMARY,
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+]);
+
 /** The note names at most this many; the rest are counted. */
 export const RESTART_CANCELLED_WORK_LIMIT = 10;
 const RESTART_CANCELLED_LABEL_CHARS = 120;
@@ -342,8 +349,18 @@ function clampLabel(label: string): string {
 export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): RestartCancelledWork[] {
   const out: RestartCancelledWork[] = [];
   const seen = new Set<string>();
+  // The orphan sweep may already have closed the dead process's rows by the
+  // time recovery reads them. Those still count when they were closed after
+  // the chat's last finished turn — that is this restart's damage.
+  let lastDoneAt = "";
+  for (const envelope of events) {
+    if (envelope.event.type === "done" && envelope.timestamp > lastDoneAt) lastDoneAt = envelope.timestamp;
+  }
+  const closedByRestart = (summary: string | null | undefined, at: string | null | undefined): boolean =>
+    Boolean(summary && ORPHAN_RESTART_SUMMARIES.has(summary) && (at ?? "") > lastDoneAt);
   for (const item of deriveBackgroundItems(events)) {
-    if (item.status !== "running" && item.status !== "scheduled") continue;
+    const live = item.status === "running" || item.status === "scheduled";
+    if (!live && !closedByRestart(item.summary, item.updatedAt)) continue;
     const label = clampLabel(backgroundCommandLabel(item.title) || item.title || item.summary || "background command");
     const key = `command:${item.sourceTaskId ?? item.id}`;
     if (seen.has(key)) continue;
@@ -351,7 +368,8 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
     out.push({ kind: /monitor/i.test(item.title) ? "monitor" : "command", label });
   }
   for (const snapshot of subagentSnapshotsFromEvents(events)) {
-    if (snapshot.status !== "running") continue;
+    const live = snapshot.status === "running";
+    if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt)) continue;
     if (snapshot.id.startsWith("chat:")) continue;
     const key = `subagent:${snapshot.id}`;
     if (seen.has(key)) continue;

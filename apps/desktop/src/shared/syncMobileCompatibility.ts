@@ -97,6 +97,8 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // PR Watch / Ship. Optional: an older host simply has no watch.
   "prs.setChatWatch",
   "prs.getChatWatches",
+  // Restart agent session. Optional: an older host simply lacks it.
+  "chat.restartSession",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.
@@ -293,8 +295,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "chat.send",
   "chat.interrupt",
   "chat.stopTask",
-  // Restart agent session. Optional: an older host simply lacks it.
-  "chat.restartSession",
   "chat.steer",
   "chat.cancelSteer",
   "chat.editSteer",

@@ -274,6 +274,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
+import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
 import {
@@ -4265,6 +4266,8 @@ type ManagedChatSession = {
    * next turn does not lose it.
    */
   pendingRestartNote: string | null;
+  /** This process already ran restart recovery for this chat; never twice. */
+  restartRecoveryDone?: boolean;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
@@ -18302,6 +18305,8 @@ export function createAgentChatService(args: {
     unsettled: UnsettledParentTurn | null,
     transcriptEvents: AgentChatEventEnvelope[],
   ): void => {
+    if (managed.restartRecoveryDone) return;
+    managed.restartRecoveryDone = true;
     // Read before the orphan sweep closes those rows: what the transcript
     // still shows running is exactly what the dead process took with it.
     const cancelled = collectRestartCancelledWork(mergeEnvelopeStreams(
@@ -20102,16 +20107,14 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     value: unknown,
     turnId?: string,
+    options: { clearedByUser?: boolean } = {},
   ): void => {
     if (value === null) {
       if (managed.session.claudeGoal == null) return;
-      // Claude clears a goal when its Stop hook reports it met — or when the
-      // user typed `/goal clear`. Only the first is news worth an alert.
-      const lastUserText = [...managed.recentConversationEntries]
-        .reverse()
-        .find((entry) => entry.role === "user")?.text?.trim() ?? "";
-      const clearedByUser = /^\/goal\s+(?:clear|stop|off|reset|none|cancel)\b/i.test(lastUserText);
-      if (!clearedByUser) reportGoalEnded(managed, managed.session.claudeGoal.condition, "reached");
+      // Claude clears a goal when its Stop hook reports it met — or the user
+      // sent `/goal clear` (then ADE cleared it already, `clearedByUser`).
+      // Only the first is news worth an alert.
+      if (!options.clearedByUser) reportGoalEnded(managed, managed.session.claudeGoal.condition, "reached");
       managed.session.claudeGoal = null;
       emitChatEvent(managed, {
         type: "claude_goal_cleared",
@@ -24051,8 +24054,34 @@ export function createAgentChatService(args: {
       ...(args.messageId ? { messageId: args.messageId } : {}),
       ...(args.steerId ? { steerId: args.steerId, deliveryState: "delivered" as const } : {}),
     });
+    noteClaudeGoalCommand(managed, args.text);
     args.onDispatched?.();
   };
+
+  /**
+   * Claude reports a goal only after its first Stop-hook check, and a goal met
+   * on that first check arrives as "cleared" — so without this the chat never
+   * shows the goal and never hears it was reached. The `/goal` the user sent
+   * is the goal: record it now; Claude's own `active_goal` updates refine or
+   * clear it from here.
+   */
+  function noteClaudeGoalCommand(managed: ManagedChatSession, text: string): void {
+    if (managed.session.provider !== "claude") return;
+    const match = /^\/goal(?:\s+([\s\S]*))?$/.exec(text.trim());
+    if (!match) return;
+    const argument = (match[1] ?? "").trim();
+    if (!argument) return; // `/goal` alone only shows the current goal.
+    if (/^(?:clear|stop|off|reset|none|cancel)$/i.test(argument)) {
+      applyClaudeActiveGoal(managed, null, undefined, { clearedByUser: true });
+      return;
+    }
+    applyClaudeActiveGoal(managed, {
+      condition: argument,
+      iterations: 0,
+      set_at: Date.now(),
+      tokens_at_start: 0,
+    });
+  }
 
   const persistDeliveredLaneDirectiveKey = (
     managed: ManagedChatSession,
@@ -52807,6 +52836,9 @@ export function createAgentChatService(args: {
     const backgroundJobsStopped = totalBackgroundWork(runtimeBackgroundWork(managed.runtime ?? null));
     const hadRuntime = Boolean(managed.runtime);
     teardownRuntime(managed, "restart");
+    // The stopped turn's stream unwinds asynchronously; the chat is idle now,
+    // so the next message starts a turn instead of steering a dead one.
+    if (managed.session.status === "active") markSessionIdleWithFreshCache(managed);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
@@ -58464,10 +58496,17 @@ export function createAgentChatService(args: {
       })
       .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
     for (const row of rows) {
-      if (managedSessions.has(row.id)) continue;
       try {
-        // Loading is what recovers it; the loader checks runtime ownership.
-        ensureManagedSession(row.id);
+        const loaded = managedSessions.get(row.id);
+        if (!loaded) {
+          // Loading is what recovers it; the loader checks runtime ownership.
+          ensureManagedSession(row.id);
+        } else if (!loaded.runtime && !loaded.deleted && chatRuntimeAdoptable(row.id, undefined, { quiet: true })) {
+          // Loaded while its row still read "running" (the dead owner is only
+          // detected by the rescan), so the loader never recovered it.
+          const events = readTranscriptEnvelopes(loaded);
+          recoverDetachedChatAfterRestart(loaded, findUnsettledParentTurn(loaded, events), events);
+        }
       } catch (error) {
         logger.warn("agent_chat.restart_recovery_sweep_failed", {
           sessionId: row.id,
@@ -58478,16 +58517,24 @@ export function createAgentChatService(args: {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   };
-  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+  // Twice: soon after start, and again just after the host's rescan marks the
+  // rows of a crashed owner `detached` (a row with fresh activity is held back
+  // until then, which is exactly the chat a crash interrupted).
+  const scheduleRestartRecoverySweep = (delayMs: number, again?: number): void => {
     restartRecoverySweepTimer = setTimeout(() => {
       restartRecoverySweepTimer = null;
       void runRestartRecoverySweep().catch((error) => {
         logger.warn("agent_chat.restart_recovery_sweep_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
+      }).finally(() => {
+        if (again !== undefined) scheduleRestartRecoverySweep(again);
       });
-    }, 3_000);
+    }, delayMs);
     restartRecoverySweepTimer.unref?.();
+  };
+  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+    scheduleRestartRecoverySweep(3_000, Math.max(0, STALE_RUNNING_SESSION_RESCAN_DELAY_MS + 5_000 - 3_000));
   }
 
   // A tracked CLI child's end closes its parent's card. Every PTY exit path

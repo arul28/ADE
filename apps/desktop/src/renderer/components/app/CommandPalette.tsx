@@ -243,6 +243,27 @@ export function CommandPalette({
     const key = selectActiveProjectStateKey(s);
     return key ? (s.workViewByProject[key]?.activeItemId ?? null) : null;
   });
+  // The session in front of the user, for the commands that act on it. The
+  // Work tab's mirrored list answers at once when it has the row; otherwise it
+  // is read when the palette opens.
+  const [fetchedActiveSession, setFetchedActiveSession] = useState<Pick<TerminalSessionSummary, "id" | "toolType"> | null>(null);
+  const cachedActiveSession = activeSessionId
+    ? threadSessions.find((session) => session.id === activeSessionId) ?? null
+    : null;
+  useEffect(() => {
+    if (!open || !activeSessionId || cachedActiveSession) return;
+    let cancelled = false;
+    void window.ade.sessions.get(activeSessionId)
+      .then((detail) => {
+        if (!cancelled) setFetchedActiveSession(detail ? { id: detail.id, toolType: detail.toolType } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedActiveSession(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeSessionId, cachedActiveSession, open]);
+  const activeSessionTarget: Pick<TerminalSessionSummary, "id" | "toolType"> | null = cachedActiveSession
+    ?? (fetchedActiveSession?.id === activeSessionId ? fetchedActiveSession : null);
   // The Work sidebar is a union across every connected machine, always. The
   // palette is that sidebar's search, so it reads the same union — otherwise it
   // would report "no matches" for a thread visible one pane over. Read straight
@@ -794,8 +815,8 @@ export function CommandPalette({
 
     // The chat in front of the user can be restarted from here: a fresh
     // provider process with the same conversation.
-    const activeChat = activeSessionId
-      ? threadSessions.find((session) => session.id === activeSessionId && isChatToolType(session.toolType))
+    const activeChat = activeSessionTarget && isChatToolType(activeSessionTarget.toolType)
+      ? activeSessionTarget
       : null;
     if (activeChat) {
       next.push({
@@ -830,11 +851,10 @@ export function CommandPalette({
 
     return next;
   }, [
-    activeSessionId,
+    activeSessionTarget,
     hasActiveProject,
     lanes,
     navigate,
-    threadSessions,
     project?.rootPath,
     selectLane,
     selectedLaneId,
