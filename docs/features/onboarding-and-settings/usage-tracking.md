@@ -819,7 +819,12 @@ and three picks: the same model at another effort (`sameModel`), the best route 
 the same harness, and the best route anywhere. An unknown effort is priced at the
 model's default effort, not guessed as `high`. A follow-up message to a finished
 Claude subagent reuses its task id; that run is logged as `<key>#<run>` with the
-first run's brief. Reports skip v1 lines (from older builds): they guessed
+first run's brief. When the follow-up starts before the first run's result
+arrives (another tool call), the first run is logged without an outcome, and a
+late result that names the replaced tool call is dropped. An hourly timer, as
+well as each event, gives up on a subagent after 6 hours, so a quiet brain still
+logs it. Briefs come from any subagent-spawning tool (`Agent`, `Task`,
+`spawn_agent`, `subagent`; `prompt`, `message`, `instructions`, or `task`). Reports skip v1 lines (from older builds): they guessed
 `high` for a Claude subagent that named a model and classified from the label only. `routeCatalog` and `routerCore` are pure, and the service never
 throws into the chat. Read it with `ade router shadow --days 7` (action
 `usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one

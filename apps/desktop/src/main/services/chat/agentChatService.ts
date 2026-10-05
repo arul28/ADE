@@ -2520,6 +2520,12 @@ type ClaudeRuntime = {
    */
   subagentLabelById: Map<string, string>;
   /**
+   * The effort each child reported through a hook, by task id and agent id.
+   * Kept off `activeSubagents` for the same reason as `subagentLabelById`:
+   * terminal paths delete that entry before the result event is emitted.
+   */
+  subagentEffortById: Map<string, string>;
+  /**
    * Per-workflow-task emit state for the SDK's undocumented
    * `workflow_progress` snapshot on system:task_progress. Keyed by the
    * workflow taskId → per-agent transition tracking, so cumulative snapshots
@@ -23351,6 +23357,7 @@ export function createAgentChatService(args: {
       );
       runtime.taskToolInputByToolUseId.clear();
       runtime.subagentLabelById.clear();
+      runtime.subagentEffortById.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
       settleClaudePendingApprovals(managed, runtime);
@@ -32671,6 +32678,9 @@ export function createAgentChatService(args: {
       if (entry.reasoningEffort === level || entry.nonAgentTaskRun) continue;
       const nextEntry = { ...entry, reasoningEffort: level };
       runtime.activeSubagents.set(key, nextEntry);
+      for (const id of [key, nextEntry.taskId, nextEntry.agentId]) {
+        if (id) runtime.subagentEffortById.set(id, level);
+      }
       if (
         !runtime.emittedSubagentStartIds.has(entry.taskId)
         && (!entry.agentId || !runtime.emittedSubagentStartIds.has(entry.agentId))
@@ -32708,8 +32718,8 @@ export function createAgentChatService(args: {
       ? finalizeClaudeWorkflowProgress(event.workflowProgress)
       : undefined;
     const observedEffort = event.reasoningEffort
-      ?? runtime.activeSubagents.get(event.taskId)?.reasoningEffort
-      ?? (event.agentId ? runtime.activeSubagents.get(event.agentId)?.reasoningEffort : undefined);
+      ?? runtime.subagentEffortById.get(event.taskId)
+      ?? (event.agentId ? runtime.subagentEffortById.get(event.agentId) : undefined);
     emitChatEvent(managed, {
       ...claudeSubagentLabelFields(runtime, [event.taskId, event.agentId]),
       ...event,
@@ -32720,6 +32730,8 @@ export function createAgentChatService(args: {
     if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
     runtime.subagentLabelById.delete(event.taskId);
     if (event.agentId) runtime.subagentLabelById.delete(event.agentId);
+    runtime.subagentEffortById.delete(event.taskId);
+    if (event.agentId) runtime.subagentEffortById.delete(event.agentId);
   };
 
   /**
@@ -39447,6 +39459,7 @@ export function createAgentChatService(args: {
       detachedToolCalls: new Map(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
+      subagentEffortById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
       taskTodos: { seeded: false, byId: new Map() },
