@@ -7632,6 +7632,52 @@ describe("AgentChatMessageList — the chat's one task list", () => {
 });
 
 describe("AgentChatMessageList self-paced wake loops", () => {
+  it("opens both the closed chain and the check's own fold when a jump lands inside them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        nextRunAt: at(dueMinute),
+        turnId,
+      });
+    const events = [
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      // Check B: its interim line is inside B's fold, and B is inside the chain.
+      envelope(6, { type: "text", text: "Reading the run log.", itemId: "b-interim", turnId: "B" }),
+      envelope(6, { type: "command", command: "gh run view", cwd: "/repo", output: "", itemId: "b-cmd", status: "completed", turnId: "B" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", itemId: "b-answer", turnId: "B" }),
+      wake(6, "B", "w2", 10),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: deploy finished.", turnId: "C" }),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Reading the run log.");
+    const interimKey = buildTranscriptEventRowKeys(events)[4]!;
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(view.container.textContent).toContain("Reading the run log.");
+    expect(screen.getByRole("button", { name: "Hide 1 more check" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("draws each wake-up on its turn-end line and folds earlier checks under the line that started them", () => {
     const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
     const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({

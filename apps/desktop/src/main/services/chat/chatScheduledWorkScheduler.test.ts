@@ -736,6 +736,16 @@ describe("createChatScheduledWorkScheduler", () => {
     expect(await scheduler.markFired("wake-1")).toMatchObject({ status: "done", lastFiredAt: START });
     // Recurring work is never settled this way: its next occurrence stays armed.
     expect(await scheduler.markFired("cron-1")).toMatchObject({ status: "scheduled" });
+    // A fire ADE claimed for a running turn waits for that turn, which
+    // records its outcome, instead of settling here with no summary.
+    await scheduler.upsert(wakeup({ id: "wake-claimed", fireAt: START, durable: true, provider: "claude", providerScheduleId: "claimed" }));
+    expect(scheduler.claimNativeFire("session-1", "turn-claimed", "claimed")).toMatchObject({ status: "fired" });
+    // The Stop hook's snapshot arrives after the claim has been persisted.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await scheduler.markFired("wake-claimed")).toMatchObject({ status: "fired", activeTurnId: "turn-claimed" });
+    await scheduler.recordTurnFinished("turn-claimed", "Deploy still queued.");
+    expect(requireState(state).schedules.find((schedule) => schedule.id === "wake-claimed"))
+      .toMatchObject({ status: "done", outcomeSummary: "Deploy still queued." });
     await vi.advanceTimersByTimeAsync(120_000);
 
     expect(fire).not.toHaveBeenCalled();

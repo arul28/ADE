@@ -7614,8 +7614,10 @@ describe("laneService branch drift", () => {
     repoRoot: string;
     headBranchByPath: Record<string, string>;
     dirtyPaths?: string[];
-    /** `git rev-list --count <old> --not HEAD --remotes`: local-only commits HEAD lacks. */
-    commitsOnlyOnOldBranch?: number;
+    /** `git rev-list --count <old> --not HEAD --remotes`: local-only commits HEAD lacks; null = git fails. */
+    commitsOnlyOnOldBranch?: number | null;
+    /** The old branch no longer exists locally (`show-ref --verify` fails). */
+    missingBranches?: string[];
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
     vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
@@ -7643,8 +7645,12 @@ describe("laneService branch drift", () => {
       if (gitArgs[0] === "status") {
         return { exitCode: 0, stdout: dirty ? " M src/app.ts\n" : "", stderr: "" };
       }
-      if (gitArgs[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
+      if (gitArgs[0] === "show-ref") {
+        const missing = (args.missingBranches ?? []).some((branch) => gitArgs.includes(`refs/heads/${branch}`));
+        return { exitCode: missing ? 1 : 0, stdout: "", stderr: "" };
+      }
       if (gitArgs[0] === "rev-list" && gitArgs[1] === "--count") {
+        if (args.commitsOnlyOnOldBranch === null) return { exitCode: 128, stdout: "", stderr: "fatal: bad revision" };
         return { exitCode: 0, stdout: `${args.commitsOnlyOnOldBranch ?? 0}\n`, stderr: "" };
       }
       return { exitCode: 1, stdout: "", stderr: "" };
@@ -7808,6 +7814,23 @@ describe("laneService branch drift", () => {
       branchRef: "feature/child",
     },
     {
+      label: "adopts when the old branch is gone, since nothing is left to lose",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      missingBranches: ["feature/child"],
+      expected: { adopted: true, previousBranchRef: "feature/child", branchRef: "hotfix-auth" },
+      branchRef: "hotfix-auth",
+    },
+    {
+      label: "asks, naming no false reason, when git cannot answer",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      expected: { adopted: false, reason: "unavailable" },
+      branchRef: "feature/child",
+    },
+    {
       label: "asks when the lane was already off its branch before the turn",
       laneId: "lane-child",
       branchAtTurnStart: "some-other-branch",
@@ -7823,7 +7846,15 @@ describe("laneService branch drift", () => {
       expected: { adopted: false, reason: "primary_lane" },
       branchRef: "main",
     },
-  ])("adoptAgentBranchSwitch $label", async ({ laneId, branchAtTurnStart, commitsOnlyOnOldBranch, expected, branchRef }) => {
+  ] as Array<{
+    label: string;
+    laneId: string;
+    branchAtTurnStart: string;
+    commitsOnlyOnOldBranch: number | null;
+    missingBranches?: string[];
+    expected: Record<string, unknown>;
+    branchRef: string;
+  }>)("adoptAgentBranchSwitch $label", async ({ laneId, branchAtTurnStart, commitsOnlyOnOldBranch, missingBranches, expected, branchRef }) => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-adopt-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-adopt", repoRoot });
@@ -7836,6 +7867,7 @@ describe("laneService branch drift", () => {
       repoRoot,
       headBranchByPath: { [laneRow!.worktree_path]: "hotfix-auth" },
       commitsOnlyOnOldBranch,
+      missingBranches,
     });
     const lifecycleEvents: LaneLifecycleEvent[] = [];
     const service = createLaneService({

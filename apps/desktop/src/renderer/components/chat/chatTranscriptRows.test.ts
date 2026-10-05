@@ -5246,6 +5246,18 @@ describe("scheduled work presentation (wake loops)", () => {
       text(1, "A", "Watching the deploy."),
       scheduled(1, "A", "w-dropped", "superseded check", 30),
       settled(2, "A", "w-dropped", "cancelled"),
+      // Overdue, then cancelled by the user: a real cancel, never a delivery.
+      scheduled(0, "A", "w-user", "user cancels this", 1),
+      envelope(2, {
+        type: "scheduled_work_update",
+        id: "w-user",
+        kind: "wakeup",
+        status: "cancelled",
+        stopSource: "user",
+        turnId: "A",
+      }),
+      // A subagent's turn ends inside turn A; it must not end A.
+      done(2, "subagent-turn"),
       scheduled(2, "A", "w1", "deploy-watch 1: pending", 5),
       // The provider's end-of-turn inventory repeats w1 with fewer fields.
       envelope(2, {
@@ -5296,9 +5308,10 @@ describe("scheduled work presentation (wake loops)", () => {
       (byTurnEndKey.get(doneKey(rows, turnId) ?? "") ?? []).map((item) => item.event);
 
     // One entry per schedule, however many updates it got and in which turns.
-    expect(onTurnEnd("A").map((event) => event.id)).toEqual(["w-dropped", "w1"]);
+    expect(onTurnEnd("A").map((event) => event.id)).toEqual(["w-dropped", "w-user", "w1"]);
     expect(onTurnEnd("A")).toEqual([
       expect.objectContaining({ id: "w-dropped", status: "cancelled" }),
+      expect.objectContaining({ id: "w-user", status: "cancelled" }),
       // The inventory repeat kept the reason; the late "cancel" reads as fired.
       expect.objectContaining({ id: "w1", status: "completed", reason: "deploy-watch 1: pending", firedAt: at(5) }),
     ]);
@@ -5331,13 +5344,14 @@ describe("scheduled work presentation (wake loops)", () => {
     expect(textsIn(open)).toContain("Check 3: still queued.");
   });
 
-  it("does not chain a turn the user started, even right after a wake-up", () => {
+  it("does not chain a turn the user started, even right after a wake-up or from a queued message", () => {
     sequence = 0;
     const events = [
       envelope(0, { type: "user_message", text: "watch it", turnId: "A" }),
       scheduled(1, "A", "w1", "check", 5),
+      // Sent while A ran: it keeps its place among A's rows, delivered as turn B.
+      envelope(1, { type: "user_message", text: "check sooner", turnId: "B", steerId: "steer-1", deliveryState: "delivered" }),
       done(1, "A"),
-      envelope(3, { type: "user_message", text: "check sooner", turnId: "B" }),
       text(4, "B", "Checking sooner."),
       scheduled(4, "B", "w2", "check", 6),
       done(4, "B"),
