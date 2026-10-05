@@ -4056,6 +4056,13 @@ describe("local runtime connection pool", () => {
       expect.anything(),
     );
     second();
+    // The last subscription gone, the project's screencasts must not keep
+    // streaming for a desktop that no longer listens.
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
     const callsAfterCleanup = call.mock.calls.length;
     pool.setAppControlFrameLanes(["lane-2"]);
     expect(call.mock.calls.length).toBe(callsAfterCleanup);

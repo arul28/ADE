@@ -2153,6 +2153,9 @@ export class LocalRuntimeConnectionPool {
       holder.refs -= 1;
       if (holder.refs <= 0 && this.frameDemandClients.get(project.projectId) === holder) {
         this.frameDemandClients.delete(project.projectId);
+        // The brain keeps this connection's demand until told otherwise; with
+        // no subscription left, nothing here paints the project's frames.
+        void this.declareAppControlFrameDemand(holder.client, project.projectId, []);
       }
     };
     let unsubscribe: () => void;
@@ -2183,10 +2186,14 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  private async declareAppControlFrameDemand(client: RuntimeRpcClient, projectId: string): Promise<void> {
+  private async declareAppControlFrameDemand(
+    client: RuntimeRpcClient,
+    projectId: string,
+    demand: AppControlFrameDemand = this.appControlFrameLanes,
+  ): Promise<void> {
     await client.call(
       "appControl.setFrameDemand",
-      appControlFrameDemandParams(projectId, this.appControlFrameLanes),
+      appControlFrameDemandParams(projectId, demand),
       // A subscription waits on this, so a slow brain costs it at most this long.
       { timeoutMs: APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS },
     ).catch(() => {
