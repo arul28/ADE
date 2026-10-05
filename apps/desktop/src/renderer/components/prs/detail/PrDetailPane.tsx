@@ -646,9 +646,9 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
-  // The last merge request, so a merge refused for a moved head can be sent
-  // again against the new head in one click.
-  const lastMergeRequestRef = React.useRef<{ method: MergeMethod; options: MergeRequestOptions } | null>(null);
+  // The merge that produced `actionResult`, so a merge refused for a moved
+  // head can be sent again against the new head in one click.
+  const [lastMergeRequest, setLastMergeRequest] = React.useState<MergeRequest | null>(null);
   // A stack merge that answered "still merging" finishes in the background.
   // When the PR shows as merged, the banner says so instead of spinning on.
   React.useEffect(() => {
@@ -1194,7 +1194,7 @@ export function PrDetailPane({
   // ---- Actions ----
   const handleMerge = (method: MergeMethod, options?: MergeRequestOptions) => {
     setActionResult(null);
-    lastMergeRequestRef.current = { method, options: options ?? {} };
+    setLastMergeRequest({ method, options: options ?? {} });
     if (mergeBlockedReason) {
       setActionError(mergeBlockedReason);
       return Promise.resolve();
@@ -1520,13 +1520,11 @@ export function PrDetailPane({
             pr,
             busy: actionBusy,
             onMergeAgain: (currentHeadSha) => {
-              const last = lastMergeRequestRef.current;
-              if (!last) return;
-              void handleMerge(last.method, { ...last.options, expectedHeadSha: currentHeadSha });
+              if (!lastMergeRequest) return;
+              void handleMerge(lastMergeRequest.method, { ...lastMergeRequest.options, expectedHeadSha: currentHeadSha });
             },
-            canMergeAgain: Boolean(lastMergeRequestRef.current) && !mergeBlockedReason,
-            bypassing: Boolean(lastMergeRequestRef.current?.options.bypassRules),
-            onViewChanges: () => setActiveTab("files"),
+            canMergeAgain: Boolean(lastMergeRequest) && !mergeBlockedReason,
+            bypassing: Boolean(lastMergeRequest?.options.bypassRules),
           })}
         />
       ) : null}
@@ -1824,6 +1822,8 @@ type MergeRequestOptions = {
   expectedHeadSha?: string;
 };
 
+type MergeRequest = { method: MergeMethod; options: MergeRequestOptions };
+
 type MergeResultBannerHandlers = {
   onDismiss: () => void;
   pr: PrWithConflicts;
@@ -1831,7 +1831,6 @@ type MergeResultBannerHandlers = {
   canMergeAgain: boolean;
   bypassing: boolean;
   onMergeAgain: (currentHeadSha: string) => void;
-  onViewChanges: () => void;
 };
 
 const HEAD_CHANGE_VISIBLE_COMMITS = 4;
@@ -1875,19 +1874,14 @@ function HeadChangeCommitList({ change, pr }: { change: LandHeadChange; pr: PrWi
 }
 
 function headChangeBannerModel(result: LandResult, change: LandHeadChange, handlers: MergeResultBannerHandlers): BannerModel {
-  const count = change.totalNewCommits;
-  const title = change.rewritten
-    ? `PR #${result.prNumber} was force-pushed after you loaded it`
-    : count > 0
-      ? `${count} new commit${count === 1 ? "" : "s"} on PR #${result.prNumber} since you loaded it`
-      : `PR #${result.prNumber} changed after you loaded it`;
   const compareUrl = `https://github.com/${handlers.pr.repoOwner}/${handlers.pr.repoName}/compare/${change.expectedHeadSha}...${change.currentHeadSha}`;
   return {
     id: "pr-merge-result",
     tone: "warning",
     icon: <GitCommit size={16} weight="bold" />,
-    title,
-    detail: "Nothing was merged. Look over what changed, then merge again.",
+    // The host words the refusal (new commits vs a force-push).
+    title: result.error ?? `PR #${result.prNumber} changed after you loaded it. Nothing was merged.`,
+    detail: "Look over what landed, then merge again.",
     extra: <HeadChangeCommitList change={change} pr={handlers.pr} />,
     actions: [
       ...(handlers.canMergeAgain
@@ -1899,8 +1893,8 @@ function headChangeBannerModel(result: LandResult, change: LandHeadChange, handl
             onClick: () => handlers.onMergeAgain(change.currentHeadSha),
           }]
         : []),
-      { label: "View changes", variant: "secondary" as const, onClick: handlers.onViewChanges },
-      { label: "Compare", variant: "link" as const, href: compareUrl },
+      // Only the new commits, not the whole PR diff.
+      { label: "See what changed", variant: "secondary" as const, href: compareUrl },
     ],
     dismiss: { onDismiss: handlers.onDismiss, label: "Dismiss merge result" },
   };

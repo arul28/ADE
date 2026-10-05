@@ -1,4 +1,4 @@
-import type { AgentChatPermissionMode, LandHeadChange, PrAgentPermissionMode } from "../../../shared/types";
+import type { AgentChatPermissionMode, PrAgentPermissionMode } from "../../../shared/types";
 
 /**
  * Map ADE's permission mode to the agent chat permission mode.
@@ -39,20 +39,11 @@ function looksLikeBranchPolicyBlock(error: string): boolean {
 
 /**
  * GitHub's refusal when the `sha` / `--match-head-commit` guard no longer
- * matches the PR head. Matches the HTTP status as a whole word so a SHA or PR
- * number that happens to contain "409" does not count.
+ * matches the PR head. Matches GitHub's text, not the status: GitHub also
+ * answers 409 for other refusals, such as a merge already in progress.
  */
 export function isHeadModifiedMergeError(rawMsg: string): boolean {
-  return /head branch was modified|\b409\b/i.test(rawMsg);
-}
-
-/** What a merge refused for a moved PR head tells the user. */
-export function formatHeadChangeMessage(change: LandHeadChange): string {
-  if (change.rewritten) return "The PR branch was rewritten (force-pushed) after you loaded it. Nothing was merged.";
-  const count = change.totalNewCommits;
-  return count > 0
-    ? `${count} new commit${count === 1 ? "" : "s"} landed on the PR after you loaded it. Nothing was merged.`
-    : "The PR changed after you loaded it. Nothing was merged.";
+  return /head branch was modified/i.test(rawMsg);
 }
 
 /** Turn a GitHub merge error into a message a user can act on. */

@@ -3,7 +3,8 @@ import { asString, getErrorMessage, isRecord } from "../shared/utils";
 import type { GitHubRepoRef } from "../../../shared/types/git";
 import type { GitHubPrStack, LandHeadChange, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";
 import { openStackEntriesThrough } from "./githubStackStore";
-import { formatHeadChangeMessage, formatMergeError, isHeadModifiedMergeError } from "./resolverUtils";
+import { formatMergeError } from "./resolverUtils";
+import { formatHeadChangeMessage, type PrHeadChangeDetector } from "./prHeadChange";
 
 /**
  * Merging a PR that is in a GitHub Stack. GitHub supports this only through the
@@ -68,11 +69,7 @@ export type GithubStackMergeDeps = {
   refreshOne: (prId: string) => Promise<unknown>;
   invalidateGithubSnapshotCache: () => void;
   delay: (ms: number) => Promise<void>;
-  /**
-   * The PR head's move past `expectedHeadSha`, read fresh; null when it has
-   * not moved or no SHA was given.
-   */
-  detectHeadChange: (repo: GitHubRepoRef, prNumber: number, expectedHeadSha: string | undefined) => Promise<LandHeadChange | null>;
+  headChange: PrHeadChangeDetector;
 };
 
 export function createGithubStackMerge(deps: GithubStackMergeDeps) {
@@ -185,12 +182,11 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       return { ...base, error: formatHeadChangeMessage(headChanged), stackPrNumbers, headChanged };
     };
     const headMoved = async (rawMsg: string): Promise<LandResult | null> => {
-      if (!isHeadModifiedMergeError(rawMsg)) return null;
-      const headChanged = await deps.detectHeadChange(repo, prNumber, args.expectedHeadSha);
+      const headChanged = await deps.headChange.afterMergeRefusal(repo, prNumber, args.expectedHeadSha, rawMsg);
       return headChanged ? finishHeadChanged(rawMsg, headChanged) : null;
     };
 
-    const headChangedBefore = await deps.detectHeadChange(repo, prNumber, args.expectedHeadSha);
+    const headChangedBefore = await deps.headChange.detect(repo, prNumber, args.expectedHeadSha);
     if (headChangedBefore) {
       return finishHeadChanged(
         `PR head is ${headChangedBefore.currentHeadSha}, expected ${headChangedBefore.expectedHeadSha}`,

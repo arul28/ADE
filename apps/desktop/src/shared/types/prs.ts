@@ -636,8 +636,11 @@ export type LandResult = {
 export type LandHeadChange = {
   expectedHeadSha: string;
   currentHeadSha: string;
-  /** True when the old head is not an ancestor of the new one (a force-push / rebase). */
-  rewritten: boolean;
+  /**
+   * `appended`: the old head is an ancestor of the new one. `rewritten`: it is
+   * not (a force-push or rebase). `unknown`: GitHub could not compare them.
+   */
+  history: "appended" | "rewritten" | "unknown";
   /** Commits on the new head that the old head did not have, oldest first. Capped. */
   newCommits: Array<{ sha: string; title: string; author: string | null; committedAt: string | null }>;
   /** How many new commits there are in total (may exceed `newCommits.length`). */
