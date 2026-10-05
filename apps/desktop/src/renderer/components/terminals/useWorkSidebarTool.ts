@@ -10,7 +10,7 @@ import {
   type WorkSidebarTab,
 } from "../../state/appStore";
 import { closeWorkToolForReal } from "./closeWorkToolForReal";
-import { subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
+import { subscribeRemoteRuntimeIdentityChanges, subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
 import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
 import { confirmMacDesktopToolClose } from "../chat/MacDesktopStopConfirm";
 
@@ -301,6 +301,7 @@ function usePublishActiveWorkTool(
     const disposers = [
       app?.onProjectBindingChanged?.(bump),
       subscribeRuntimeIdentityChanges(bump),
+      subscribeRemoteRuntimeIdentityChanges(bump),
     ];
     return () => {
       for (const dispose of disposers) dispose?.();

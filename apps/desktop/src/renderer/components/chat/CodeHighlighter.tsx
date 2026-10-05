@@ -52,6 +52,8 @@ type ShikiHighlighter = {
   codeToHast(code: string, options: { lang: string; theme: string; grammarState?: ShikiGrammarState }): HastRoot;
   getLastGrammarState(element: HastRoot): ShikiGrammarState | undefined;
   loadTheme(theme: ShikiThemeData): Promise<void>;
+  /** Shiki's serializer, carried with the highlighter that produced the trees. */
+  hastToHtml(node: HastRoot | HastElement): string;
 };
 
 /**
@@ -67,17 +69,16 @@ const STOCK_CODE_THEME: CodeTheme = { key: "stock", data: null };
 const loadedThemeNames = new Set<string>();
 
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
-let hastToHtml: ((node: HastRoot | HastElement) => string) | null = null;
 
 function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = import("shiki").then((shiki) => {
-      hastToHtml = shiki.hastToHtml;
-      return shiki.createHighlighter({
+    highlighterPromise = import("shiki").then(async (shiki) => {
+      const highlighter = await shiki.createHighlighter({
         themes: [THEME],
         langs: SUPPORTED_LANGUAGES,
         engine: shiki.createJavaScriptRegexEngine(),
       });
+      return Object.assign(highlighter, { hastToHtml: shiki.hastToHtml });
     }).catch((error) => {
       highlighterPromise = null;
       throw error;
@@ -91,8 +92,7 @@ function getHighlighter(): Promise<ShikiHighlighter> {
 /*
  * A streaming code block re-renders with a longer string every frame, and
  * highlighting each string from scratch re-tokenizes every earlier line: a
- * block costs O(lines²) over its stream, which held ~15% of the renderer main
- * thread while an agent streamed code. TextMate tokenization runs line by line
+ * block costs O(lines²) over its stream. TextMate tokenization runs line by line
  * with a carried rule stack, so the HTML of the complete lines and the grammar
  * state after them can be kept, and only the new lines tokenized. The output is
  * byte-identical to `codeToHtml` (checked frame by frame across languages);
@@ -122,27 +122,20 @@ function lineElements(root: HastRoot): HastElement[] | null {
 }
 
 function renderHighlightedHtml(highlighter: ShikiHighlighter, code: string, lang: string, themeName: string): string {
-  const toHtml = hastToHtml;
-  if (!toHtml || lang === "text" || code.includes("\r")) {
-    return highlighter.codeToHtml(code, { lang, theme: themeName });
+  if (lang !== "text" && !code.includes("\r")) {
+    try {
+      const html = renderIncrementally(highlighter, code, lang, themeName);
+      if (html !== null) return html;
+    } catch {
+      // Incremental output is only a faster route to the same HTML; start over.
+      streamingHighlights.length = 0;
+    }
   }
-  try {
-    return renderIncrementally(highlighter, toHtml, code, lang, themeName);
-  } catch {
-    // Incremental output is only a faster route to the same HTML.
-    streamingHighlights.length = 0;
-    return highlighter.codeToHtml(code, { lang, theme: themeName });
-  }
+  return highlighter.codeToHtml(code, { lang, theme: themeName });
 }
 
-function renderIncrementally(
-  highlighter: ShikiHighlighter,
-  toHtml: (node: HastRoot | HastElement) => string,
-  code: string,
-  lang: string,
-  themeName: string,
-): string {
-
+/** The same HTML as `codeToHtml`, or null when Shiki's tree is not the expected shape. */
+function renderIncrementally(highlighter: ShikiHighlighter, code: string, lang: string, themeName: string): string | null {
   const lastNewline = code.lastIndexOf("\n");
   const settled = code.slice(0, lastNewline + 1);
   const tail = code.slice(lastNewline + 1);
@@ -159,9 +152,9 @@ function renderIncrementally(
   if (fresh) {
     const hast = highlighter.codeToHast(fresh.slice(0, -1), { lang, theme: themeName, grammarState: state });
     const lines = lineElements(hast);
-    if (!lines) return highlighter.codeToHtml(code, { lang, theme: themeName });
+    if (!lines) return null;
     state = highlighter.getLastGrammarState(hast);
-    linesHtml = linesHtml.concat(lines.map((line) => toHtml(line)));
+    linesHtml = linesHtml.concat(lines.map((line) => highlighter.hastToHtml(line)));
   }
 
   if (base) streamingHighlights.splice(streamingHighlights.indexOf(base), 1);
@@ -171,16 +164,15 @@ function renderIncrementally(
   const tailHast = highlighter.codeToHast(tail, { lang, theme: themeName, grammarState: state });
   const tailLine = lineElements(tailHast)?.[0];
   const codeElement = findCodeElement(tailHast);
-  if (!tailLine || !codeElement) return highlighter.codeToHtml(code, { lang, theme: themeName });
+  if (!tailLine || !codeElement) return null;
   // The <pre>/<code> wrapper carries the theme colours; serialize it empty and
   // splice the lines in where its children go.
-  const tailChildren = codeElement.children;
+  const tailLineHtml = highlighter.hastToHtml(tailLine);
   codeElement.children = [];
-  const shell = toHtml(tailHast);
-  codeElement.children = tailChildren;
+  const shell = highlighter.hastToHtml(tailHast);
   const closeAt = shell.lastIndexOf("</code>");
-  if (closeAt < 0) return highlighter.codeToHtml(code, { lang, theme: themeName });
-  return `${shell.slice(0, closeAt)}${linesHtml.concat(toHtml(tailLine)).join("\n")}${shell.slice(closeAt)}`;
+  if (closeAt < 0) return null;
+  return `${shell.slice(0, closeAt)}${linesHtml.concat(tailLineHtml).join("\n")}${shell.slice(closeAt)}`;
 }
 
 /* ── Highlight function ── */

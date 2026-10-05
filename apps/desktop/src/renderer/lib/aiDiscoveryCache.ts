@@ -32,7 +32,7 @@ export type AiStatusCacheInvalidatedEventDetail = {
    * switched to), so listeners refill from the brain's caches instead of
    * forcing it to re-probe every CLI and re-read the login shell's PATH.
    */
-  forceRefresh: boolean;
+  force: boolean;
 };
 
 export type AiStatusCacheUpdatedEventDetail = {
@@ -242,13 +242,13 @@ export async function getAgentChatModelsCached(args: {
 
 export function invalidateAiDiscoveryCache(
   projectRoot?: string | null,
-  options?: { forceRefresh?: boolean },
+  options?: { force?: boolean },
 ): void {
-  const forceRefresh = options?.forceRefresh !== false;
+  const force = options?.force !== false;
   if (projectRoot == null) {
     aiStatusCache.clear();
     providerModelsCache.clear();
-    emitAiStatusCacheInvalidated({ projectRoot: null, allProjects: true, forceRefresh });
+    emitAiStatusCacheInvalidated({ projectRoot: null, allProjects: true, force });
     return;
   }
 
@@ -266,6 +266,6 @@ export function invalidateAiDiscoveryCache(
   emitAiStatusCacheInvalidated({
     projectRoot: projectRoot.trim() || null,
     allProjects: false,
-    forceRefresh,
+    force,
   });
 }

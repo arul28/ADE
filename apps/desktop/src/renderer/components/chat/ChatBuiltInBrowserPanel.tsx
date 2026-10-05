@@ -143,6 +143,7 @@ import {
   cropBrowserScreenshot,
   pointerToCapturePoint,
 } from "./browser/browserCapture";
+import { isInParkedSurface } from "../../lib/parkedSurface";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -271,13 +272,13 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
   /*
     A mounted panel is not necessarily a visible one.
 
-    The three `active` chains above unmount it today, but the app's habit is to
-    keep hidden surfaces MOUNTED behind `inert` + `opacity: 0`, and "focus is
-    nowhere in the DOM" is as true of a hidden pane as of one just clicked into.
-    If any of those guards ever becomes a CSS hide, this is what stops a parked
-    browser eating the app's chords.
+    The three `active` chains above unmount it today, but the app keeps hidden
+    surfaces MOUNTED and parked (lib/parkedSurface), and "focus is nowhere in
+    the DOM" is as true of a hidden pane as of one just clicked into. If any of
+    those guards ever becomes a CSS hide, this is what stops a parked browser
+    eating the app's chords.
   */
-  if (panel.closest("[inert], [data-ade-surface-hidden]")) return false;
+  if (isInParkedSurface(panel)) return false;
   const active = document.activeElement;
   if (active == null) return true;
   if (panel.contains(active)) return true;

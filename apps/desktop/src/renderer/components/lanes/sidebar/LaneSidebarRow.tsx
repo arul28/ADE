@@ -149,9 +149,7 @@ function AgentCluster({
           your move, the dashed "working" circle otherwise. The spin sits on an
           HTML wrapper, not the SVG: Chromium repaints an animated SVG every
           frame on the main thread. 180 steps over 3 s is a 2° turn 60 times a
-          second; smooth, it ticked at the display's rate, and five working
-          lanes held the renderer at ~20% of a core on a 240 Hz display (~7%
-          wrapped and stepped). */}
+          second, where a smooth spin ticks at the display's rate. */}
       {attention ? (
         <span aria-hidden className="inline-block h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: COLORS.warning }} />
       ) : (

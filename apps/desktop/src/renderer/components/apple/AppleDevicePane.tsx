@@ -68,6 +68,7 @@ import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
+import { isInParkedSurface } from "../../lib/parkedSurface";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -261,7 +262,9 @@ export function AppleDevicePane({
       observer = new IntersectionObserver((entries) => {
         const entry = entries[0];
         if (!entry) return;
-        offScreen = !entry.isIntersecting;
+        // A parked surface (another project or tab on screen) reports as not
+        // intersecting, but keeps its stream so switching back shows it live.
+        offScreen = !entry.isIntersecting && !isInParkedSurface(node);
         apply();
       });
       observer.observe(node);

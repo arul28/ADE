@@ -306,10 +306,9 @@ const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
 // How often a running terminal's on-disk snapshot catches up with its output.
 // Every live reader (terminal preview, screen hydrate) serializes the live
-// mirror or flushes first, and exit flushes, so this cadence only bounds how
-// stale the file is if the brain dies. Each write serializes the whole
-// scrollback (~0.5 MB), so 500 ms cost ~1.3% of a brain core and ~1 MB/s of
-// disk writes per busy terminal.
+// mirror or flushes first, and exit and dispose flush, so this cadence only
+// bounds how stale the file is if the brain dies. Each write serializes the
+// whole scrollback, so keep it slow.
 const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
@@ -8549,6 +8548,9 @@ export function createPtyService({
       terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      // Same as closeEntry: the snapshot timer is unref'd, so a brain shutting
+      // down would otherwise exit before the last output reached the file.
+      flushTerminalSnapshot(entry);
       scheduleTranscriptDependentWork(entry, "dispose");
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });

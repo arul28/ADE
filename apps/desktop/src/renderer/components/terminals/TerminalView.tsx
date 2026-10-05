@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
+import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
@@ -164,7 +165,8 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   linkProviderSub: { dispose: () => void } | null;
-  cursorBlinkClock: { dispose: () => void };
+  /** Drives the DOM renderer's cursor blink; null while WebGL draws the cursor. */
+  cursorBlinkClock: { dispose: () => void } | null;
   rendererInitStarted: boolean;
   inputEnabled: boolean;
   active: boolean;
@@ -1492,10 +1494,11 @@ function teardownRuntime(runtime: CachedRuntime) {
     // ignore
   }
   try {
-    runtime.cursorBlinkClock.dispose();
+    runtime.cursorBlinkClock?.dispose();
   } catch {
     // ignore
   }
+  webglRuntimes.delete(runtime);
   try {
     runtime.rendererAddon?.dispose();
   } catch {
@@ -2713,7 +2716,25 @@ function startHydration(runtime: CachedRuntime) {
   }, 120);
 }
 
-type WebglAddonCtor = typeof import("@xterm/addon-webgl").WebglAddon;
+type WebglAddonCtor = typeof WebglAddon;
+
+/**
+ * Each WebGL terminal holds a GPU context, and Chromium keeps at most 16 per
+ * page: past that it drops the oldest, which can be another terminal or the
+ * Work picker's backdrop. Terminals past the cap use the DOM renderer.
+ */
+const MAX_WEBGL_TERMINALS = 8;
+const webglRuntimes = new Set<CachedRuntime>();
+
+/** The DOM renderer blinks its cursor with CSS; WebGL blinks its own. */
+function syncCursorBlinkClock(runtime: CachedRuntime): void {
+  if (runtime.renderer === "dom") {
+    runtime.cursorBlinkClock ??= attachCursorBlinkClock(runtime.term, runtime.host);
+    return;
+  }
+  runtime.cursorBlinkClock?.dispose();
+  runtime.cursorBlinkClock = null;
+}
 
 let webglAddonCtorPromise: Promise<WebglAddonCtor | null> | null = null;
 
@@ -2744,6 +2765,8 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     }
     runtime.rendererAddon = null;
     runtime.renderer = "dom";
+    webglRuntimes.delete(runtime);
+    syncCursorBlinkClock(runtime);
     notifyRuntime(runtime);
     return true;
   }
@@ -2761,6 +2784,8 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     }
     runtime.rendererAddon = addon as { dispose: () => void };
     runtime.renderer = mode;
+    webglRuntimes.add(runtime);
+    syncCursorBlinkClock(runtime);
 
     if (mode === "webgl") {
       const maybeOnContextLoss = (addon as { onContextLoss?: (cb: () => void) => void }).onContextLoss;
@@ -2786,10 +2811,13 @@ async function initRendererChain(runtime: CachedRuntime) {
   if (runtime.rendererInitStarted || runtime.disposed) return;
   runtime.rendererInitStarted = true;
 
-  if (!terminalWebglRendererEnabled()) {
+  if (!terminalWebglRendererEnabled() || webglRuntimes.size >= MAX_WEBGL_TERMINALS) {
     await setRenderer(runtime, "dom");
     return;
   }
+  // Hold the slot across the async addon load, so terminals created together
+  // cannot all pass the cap; the DOM fallback releases it.
+  webglRuntimes.add(runtime);
 
   const webgl = await setRenderer(runtime, "webgl");
   if (webgl) return;
@@ -2839,7 +2867,6 @@ function createRuntime(args: {
   const linkProviderSub = typeof term.registerLinkProvider === "function"
     ? term.registerLinkProvider(createTerminalLinkProvider(term, args.runtimePin))
     : null;
-  const cursorBlinkClock = attachCursorBlinkClock(term, host);
 
   const runtime: CachedRuntime = {
     key: terminalRuntimeKey(args),
@@ -2907,7 +2934,7 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     linkProviderSub,
-    cursorBlinkClock,
+    cursorBlinkClock: null,
     rendererInitStarted: false,
     inputEnabled: true,
     active: true,
@@ -3457,9 +3484,9 @@ export function TerminalView({
         });
       };
       // A cleared atlas plus a full refresh repaints a revealed WebGL canvas.
-      // Rebuilding the renderer here (WebGL -> DOM -> WebGL) cost ~150 ms
-      // of forced layout on every reveal; a lost GPU context has its own
-      // fallback in setRenderer's onContextLoss.
+      // Do not rebuild the renderer here (WebGL -> DOM -> WebGL): creating the
+      // DOM renderer forces a layout of the whole document. A lost GPU context
+      // has its own fallback in setRenderer's onContextLoss.
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
       redraw();

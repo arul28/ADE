@@ -8,8 +8,7 @@ const HALF_PERIOD_MS = 500;
 /**
  * xterm's DOM renderer blinks a focused cursor with an infinite `step-end` CSS
  * animation. Even stepped, a running main-thread animation re-runs style every
- * display frame — ~8% of a renderer core for an idle focused shell on a 240 Hz
- * display. With the clock class on `host`, index.css pauses that animation and
+ * display frame. With the clock class on `host`, index.css pauses that animation and
  * holds it on one of its two keyframes; this flips between them on the same
  * 500 ms schedule. It restarts at "on" whenever xterm re-renders the cursor row
  * or the terminal takes focus, the moments the CSS animation restarted, so the

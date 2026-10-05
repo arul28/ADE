@@ -507,8 +507,9 @@ samp {
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's
    `selection:bg-accent/30` compiles to `.x *::selection`, a descendant rule
-   matched against every element on every restyle: 40% of all selector time
-   when a project surface holding a long chat was restyled. */
+   matched against every element on every restyle, so do not use the variant
+   on a large container. The accent resolves on the root; nothing below it
+   overrides --color-accent. */
 .ade-app-selection::selection {
   background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
 }
@@ -2366,11 +2367,8 @@ button, [role="button"] {
    0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
    the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
    changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
-   smooth opacity animation makes the compositor draw every display frame, and
-   with three running sessions on a 240 Hz display that held the GPU process at
-   ~20% of a core and the renderer at ~7% on the Work tab. Held steps (~15
-   changes a second) measured ~6% and ~4%. To change the range, re-derive the
-   stops from the same curve. */
+   smooth opacity animation makes the compositor draw every display frame. To
+   change the range, re-derive the stops from the same curve. */
 @keyframes ade-session-working-breathe {
   0% { opacity: 1.00; }
   5.76% { opacity: 0.98; }
@@ -5407,11 +5405,6 @@ button, [role="button"] {
   filter: blur(4px);
   animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
 }
-
-/* Parked project and route surfaces pause their animations through
-   `content-visibility: hidden` (HIDDEN_PAGE_STYLE in App.tsx). Do not add a
-   `[data-ade-animation-state="paused"] *` rule back: toggling it restyled
-   every element of the surface on each switch. */
 
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
