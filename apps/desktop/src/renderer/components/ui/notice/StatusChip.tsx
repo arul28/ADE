@@ -13,6 +13,7 @@ export function StatusStrip({ children, className }: { children: ReactNode; clas
   return (
     <div
       data-testid="chat-composer-status-strip"
+      data-status-strip=""
       className={cn(
         "flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1.5 [scrollbar-width:none] empty:hidden [&::-webkit-scrollbar]:hidden",
         className,
@@ -61,21 +62,24 @@ export function StatusChip({
   dataAttributes?: Record<`data-${string}`, string>;
 }) {
   const tokens = noticeTone(tone);
-  const style: CSSProperties & Record<"--status-chip-hover", string> = {
+  const style: CSSProperties & Record<"--status-chip-fill" | "--status-chip-hover", string> = {
     borderColor: tokens.edge,
-    background: tone === "neutral" || tone === "success" ? undefined : tokens.soft,
+    "--status-chip-fill": tone === "neutral" || tone === "success" ? "rgb(255 255 255 / 0.03)" : tokens.soft,
     "--status-chip-hover": tokens.softHover,
   };
   return (
     <div
       data-testid={testId}
       data-notice-tone={tone}
+      // A host that floats chips over content backs them with an opaque plate
+      // under `--status-chip-fill` (index.css, composer overlay).
+      data-overlay-plate=""
       {...dataAttributes}
       role="status"
       aria-label={tooltip}
       title={tooltip}
       style={style}
-      className="pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-white/[0.03] pl-2 pr-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60"
+      className={cn("pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-[var(--status-chip-fill)] pl-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60", actions.length > 0 || onDismiss ? "pr-1" : "pr-2")}
     >
       <span className="inline-flex shrink-0" style={{ color: tokens.color }} aria-hidden>{icon}</span>
       <span className="shrink-0 font-medium" style={{ color: tokens.text }}>{label}</span>

@@ -3,7 +3,7 @@ import { CheckCircle, Moon } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { isSessionSnoozed, snoozeWakeDescription } from "../../lib/sessionSnooze";
-import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
+import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { unsettleSession, wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { StatusChip, type NoticeTone } from "../ui/notice";
 
@@ -91,8 +91,8 @@ export function ChatLifecyclePill({
         label: snoozed ? "Wake now" : "Un-settle",
         testId: snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle",
         // Both route through the shared Work-tab lifecycle actions rather than
-        // calling `window.ade.sessions` directly, so this chip, the snooze
-        // header chip, and the sidebar menu use the same write and failure path.
+        // calling `window.ade.sessions` directly, so this chip and the sidebar
+        // menus use the same write and failure path.
         onClick: () => { void (snoozed ? wakeSessionNow(session, runtimePin) : unsettleSession(session, runtimePin)); },
       }]}
     />

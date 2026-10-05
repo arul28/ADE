@@ -23,8 +23,8 @@ import {
  * One place for every write the Work tab's menus make against a session: the
  * lifecycle writes (snooze/wake/settle/keep-active), the rename and spawn-kind
  * writes, and the auto-handoff rules the chat menu arms through the automations
- * surface. The sidebar row menu, the row context menu, the chat header snooze
- * affordance and the composer lifecycle pill all route through here, so none of
+ * surface. The sidebar row menu, the row context menu and the composer
+ * lifecycle pill all route through here, so none of
  * them can disagree about what an action does — or about the copy it confirms
  * with, which is why the toasts live here rather than at each call site.
  */
