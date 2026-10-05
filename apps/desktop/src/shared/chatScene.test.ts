@@ -219,6 +219,8 @@ describe("hasOpenSceneFence", () => {
     { markdown: "```mermaid\nA-->B\n~~~\nC-->D", open: "mermaid" },
     { markdown: "````mermaid\nA-->B\n```\nC-->D", open: "mermaid" },
     { markdown: "~~~scene\n<p>\n~~~~", open: null },
+    // A backtick in a backtick fence's info string makes the line text.
+    { markdown: "````scene`x\n<p>", open: null },
   ])("names the open fence's language ($open)", ({ markdown, open }) => {
     expect(openFenceLanguage(markdown)).toBe(open);
   });

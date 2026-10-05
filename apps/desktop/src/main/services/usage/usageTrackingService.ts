@@ -5718,13 +5718,19 @@ export function createUsageTrackingService({
       ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
     });
     const sink = dependencies?.captureInternalAnalytics;
+    // The save already happened; analytics failing must not report it failed
+    // or skip the re-price below.
     if (sink) {
-      const analytics = { captureInternal: sink };
-      if (args.price !== undefined) {
-        captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
-      }
-      if (args.mapTo !== undefined) {
-        captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+      try {
+        const analytics = { captureInternal: sink };
+        if (args.price !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
+        }
+        if (args.mapTo !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+        }
+      } catch (error) {
+        logger.debug("usage.price_override_analytics_failed", { error: getErrorMessage(error) });
       }
     }
     const reprice = () => refreshHistory({ reason: "user" });

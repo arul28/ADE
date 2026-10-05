@@ -291,8 +291,13 @@ function scanFences(markdown: string): { spans: FenceSpan[]; open: FenceSpan | n
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
     if (opener === null) {
-      const fence = /^ {0,3}(`{3,}|~{3,})\s*([^\s`~]*)/.exec(line);
-      if (fence) opener = { marker: fence[1]!, language: (fence[2] ?? "").toLowerCase(), at: i };
+      const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      const info = fence?.[2] ?? "";
+      // A backtick fence's info string may not contain a backtick (then the
+      // line is inline code, not a fence).
+      if (fence && !(fence[1]![0] === "`" && info.includes("`"))) {
+        opener = { marker: fence[1]!, language: (info.trim().split(/\s+/)[0] ?? "").toLowerCase(), at: i };
+      }
       continue;
     }
     const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
