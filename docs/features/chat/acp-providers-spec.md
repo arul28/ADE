@@ -17,13 +17,16 @@ a message naming the CLI and telling the user to update ADE or the CLI.
 
 ### Last verified versions
 
-| Provider | Version | Date |
-|---|---|---|
-| copilot | 1.0.91 (baseline 1.0.89) | 2026-10-05 |
-| grok | TBD | TBD |
-| qwen | TBD | TBD |
-| kimi | 2.1.1 (baseline 0.39.1) | 2026-10-05 |
-| devin | TBD | TBD |
+| Provider | Latest verified | Older version checked | Scope | Date |
+|---|---|---|---|---|
+| copilot | 1.0.91 | 1.0.89 | Handshake, live turn, cancel, close; rejoin on 1.0.91 | 2026-10-05 |
+| grok | 1.0.46 | 1.0.41 | Handshake, live turn, cancel, permissions, close, resume | 2026-10-05 |
+| qwen | 0.25.0 | 0.22.3 | Handshake, config options, cancel, close; no live turn (no reachable model) | 2026-10-05 |
+| kimi | 2.1.1 | 0.39.1 | Handshake and unauthenticated methods only (no active login) | 2026-10-05 |
+| devin | not verified | — | — | — |
+
+Copilot CLI updates itself, so a user on any Copilot release usually runs the
+newest one.
 
 ## 1. Architecture
 
@@ -435,10 +438,8 @@ Rust, Apache-2.0)
   options, cancel-as-notification, close, resume, and a
   `session/request_permission` for a write and an execute in
   `--permission-mode default` with `_GROK_CLAUDE_MARKER_OVERRIDE=1`, including a
-  symlinked cwd. The npm `latest` release was 1.0.34, published 2026-09-16
-  04:15:07 UTC; its release notes add generally available Memory and Markdown
-  heading theme colors without changing the ACP launch contract. ADE's
-  setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
+  symlinked cwd. ADE's setup and error copy install the latest
+  `@xai-official/grok` release.
 
 ### Copilot (`copilot --acp`, latest verified **1.0.91**, baseline **1.0.89**, PREVIEW)
 - The 1.0.89 and 1.0.91 handshakes are identical in capability terms
@@ -558,7 +559,8 @@ Rust, Apache-2.0)
     cheapest available session path gate, so removing it needs its own decision.
 - Auth: `copilot login` (browser local / device remote); free plan includes
   the CLI. `authenticate` succeeds only after login.
-- Config home: `COPILOT_HOME` + `--config-dir` flag. Sessions at
+- Config home: `COPILOT_HOME` only. Copilot 1.0.91 warns that the
+  `--config-dir` flag is deprecated, so ADE does not pass it. Sessions at
   `~/.copilot/session-state/<uuid>/`.
 - Tracked CLI: `copilot -i "<prompt>" --model <enum> --reasoning-effort
   <low|medium|high|xhigh>`; `--resume=<new-uuid>` doubles as assign-at-launch;

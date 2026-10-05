@@ -45,8 +45,8 @@
  * - `--add-dir` on the spawn plan is the session path gate. It is argv, not a
  *   rewrite of user state, so it stays.
  * - `COPILOT_HOME` names the config directory. ADE sets only the variable:
- *   1.0.89 warns that the `--config-dir` flag is deprecated, and 1.0.91 keeps
- *   its sessions under `$COPILOT_HOME` without it. Sessions live at
+ *   1.0.91 warns that the `--config-dir` flag is deprecated, and keeps its
+ *   sessions under `$COPILOT_HOME` without it. Sessions live at
  *   `<config home>/session-state/<uuid>/`.
  * - Usage: `usage_update { used, size }` is context occupancy, and the prompt
  *   result `usage` is the turn's tokens. The model Copilot actually picked,

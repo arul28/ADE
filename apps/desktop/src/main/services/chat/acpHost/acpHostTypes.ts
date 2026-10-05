@@ -70,10 +70,10 @@ export function behaviorOf<TBehavior>(entry: AcpCapability<TBehavior>): TBehavio
 /**
  * How to stop a running turn.
  *
- * Grok, Copilot, and Qwen answer a `session/cancel` REQUEST with -32601 on the
- * compatibility baseline and accept the same call as a notification. Qwen is
- * notification-only on 0.22.3 and 0.25.0 (verified against the shipped SDK and
- * live). Kimi and Devin accept the request form.
+ * Grok, Copilot, Qwen, and Kimi answer a `session/cancel` REQUEST with -32601
+ * on every version checked and accept the same call as a notification. Devin
+ * accepts the request form. A request that meets -32601 falls back to the
+ * notification, so a wrong style still stops the turn.
  */
 export type AcpCancelStyle = "request" | "notification";
 
@@ -84,8 +84,8 @@ export type AcpCancelStyle = "request" | "notification";
  * 0.25.0 is in that group: it does not advertise close and answers -32601.
  * Each such chat owns its own process and the host ends the chat by ending the
  * process.
- * Kimi's 0.39.1 compatibility baseline and 2.0.0 reference both advertise
- * close and implement it, so it is `close_request`.
+ * Kimi advertises and implements close on 0.39.1 and 2.1.1, so it is
+ * `close_request`.
  */
 export type AcpCloseStyle = "close_request" | "kill_process";
 
