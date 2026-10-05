@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.91] - 2026-10-05
+
+### Desktop
+
+- Private Windows screens with saved sign-in, and Windows Desktop follow-ups (#1415, #1467).
+- One Mac Desktop preview, Reset ADE in Settings, Settings without a project, and recordings that never wedge (#1470).
+- The brain no longer runs out of memory under load; lower idle and per-turn CPU (#1469).
+- ACP providers with any CLI version, harness-route composer sends, forked Codex chats, Cursor approvals (#1468, #1461, #1462, #1464).
+- Work and Lanes multi-select, and the chat thread scrolls behind the composer (#1465, #1466).
+- Upgrades: Claude Agent SDK 0.3.289, Codex 0.160.0, Cursor SDK 1.0.35, OpenCode 2.0.23 (#1460, #1462, #1464, #1463).
+
+### iOS
+
+- Mac Desktop viewer and Work tools updates (#1470).
+
 ## [1.2.90] - 2026-10-05
 
 ### Desktop
@@ -2320,7 +2335,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.90...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.91...HEAD
+[1.2.91]: https://github.com/arul28/ADE/compare/v1.2.90...v1.2.91
 [1.2.90]: https://github.com/arul28/ADE/compare/v1.2.89...v1.2.90
 [1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89
 [1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88
