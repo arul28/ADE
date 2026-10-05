@@ -79,6 +79,11 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     handoffSession: IPC.agentChatHandoff,
     prepareCrossMachineHandoff: IPC.agentChatPrepareCrossMachineHandoff,
   },
+  // A GitHub Stack merge polls GitHub, then cleans up each merged PR,
+  // whichever runtime answers it.
+  pr: {
+    land: IPC.prsLand,
+  },
   // A remote runtime runs the same ledger worker as a local one, so the Usage
   // page's Refresh needs the same budget whichever runtime answers it.
   usage: {
@@ -149,6 +154,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeAddProject:
     case IPC.remoteRuntimeBrowseDirectories:
     case IPC.remoteRuntimeGetProjectDetail:
+    // Includes the time the user spends in the native file dialog.
+    case IPC.remoteRuntimeChooseProjectIcon:
+    case IPC.remoteRuntimeRemoveProjectIcon:
     case IPC.remoteRuntimeGetDefaultParentDir:
     case IPC.remoteRuntimeCreateProject:
     case IPC.remoteRuntimeCloneProject:
@@ -186,6 +194,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
       return 4 * 60_000;
+    // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+    // merged PR. The 30s default reported a failure while the merge went on.
+    case IPC.prsLand:
+      return 120_000;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked
     // the page — while the daemon kept scanning for another nine minutes.

@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  AppWindow,
   ArrowCounterClockwise,
   ChatCircleDots,
+  FolderOpen,
+  GitMerge,
   Plus,
   Trash,
 } from "@phosphor-icons/react";
+import { cloneTargetFor, projectMenuSections } from "./projectMenuEntries";
+import {
+  ContextMenu,
+  type ContextMenuEntry,
+  type ContextMenuState,
+} from "../ui/ContextMenu";
+import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDialog";
+import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -15,6 +26,8 @@ import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
   groupRecentProjects,
   recentProjectLocationKey,
+  localBindingFromRecent,
+  remoteBindingFromRecent,
   type RecentProjectGroup,
 } from "../app/projectTabGrouping";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -464,6 +477,90 @@ export function ProjectWelcomePage() {
     return { group, rp, key: recentKey(rp) };
   }), [visibleProjectGroups]);
 
+  const [rowMenu, setRowMenu] = useState<(NonNullable<ContextMenuState> & { key: string }) | null>(null);
+  const closeRowMenu = useCallback(() => setRowMenu(null), []);
+  const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
+  const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
+  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<CloneLocallyTarget | null>(null);
+
+  const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
+    if (!rowMenu) return [];
+    const row = rows.find((entry) => entry.key === rowMenu.key);
+    if (!row) return [];
+    const { group, rp } = row;
+    const remoteBinding = remoteBindingFromRecent(rp);
+    const connected = remoteBinding
+      ? connectionByTarget.get(remoteBinding.targetId) === "connected"
+      : false;
+    const localReady = !remoteBinding && rp.exists !== false;
+    const sections = projectMenuSections(
+      {
+        rootPath: rp.rootPath,
+        displayName: rp.displayName,
+        binding: remoteBinding ?? localBindingFromRecent(rp),
+        available: localReady || remoteBinding != null,
+        pinned: Boolean(group.pinned),
+        hostIconDataUrl: remoteBinding?.iconDataUrl ?? null,
+        cloneTarget: cloneTargetFor({
+          binding: remoteBinding,
+          hasLocalCheckout: group.locations.some((location) => location.summary.kind !== "remote"),
+          gitOriginUrl: rp.gitOriginUrl ?? rp.remote?.gitOriginUrl,
+        }),
+      },
+      { webMode },
+      {
+        onChangeIcon: setIconDialogTarget,
+        onClone: setCloneLocallyTarget,
+        onTogglePin: () => void handleTogglePin(group),
+      },
+    );
+    const canMerge = !remoteBinding && Boolean(rp.worktreeOf) && rp.exists;
+    const entries: Array<ContextMenuEntry | null> = [
+      { kind: "item", key: "open", label: "Open", icon: FolderOpen, onSelect: () => handleOpen(rp) },
+      !webMode && (localReady || connected)
+        ? {
+            kind: "item",
+            key: "new-window",
+            label: "Open in new window",
+            icon: AppWindow,
+            onSelect: () => {
+              void window.ade.app
+                .openProjectInNewWindow(remoteBinding ?? localBindingFromRecent(rp))
+                .catch((error: unknown) =>
+                  setRowError(error instanceof Error ? error.message : String(error)),
+                );
+            },
+          }
+        : null,
+      ...sections.open,
+      { kind: "separator", key: "sep-project" },
+      ...sections.project,
+      !webMode && canMerge && rp.worktreeOf
+        ? {
+            kind: "item",
+            key: "merge",
+            label: `Merge into ${rp.worktreeOf.displayName} as a lane…`,
+            icon: GitMerge,
+            onSelect: () => setMergeTarget(rp),
+          }
+        : null,
+      { kind: "separator", key: "sep-copy" },
+      ...sections.copy,
+      !webMode ? { kind: "separator", key: "sep-remove" } : null,
+      !webMode
+        ? {
+            kind: "item",
+            key: "forget",
+            label: "Remove from recents",
+            icon: Trash,
+            danger: true,
+            onSelect: () => handleForget(group),
+          }
+        : null,
+    ];
+    return entries.filter((entry): entry is ContextMenuEntry => entry != null);
+  }, [connectionByTarget, handleForget, handleOpen, handleTogglePin, rowMenu, rows, webMode]);
+
   const focusRowButton = useCallback((index: number) => {
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
     buttons?.[index]?.focus();
@@ -689,6 +786,10 @@ export function ProjectWelcomePage() {
                     onTogglePin={() => void handleTogglePin(group)}
                     onForget={() => handleForget(group)}
                     onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setRowMenu({ x: event.clientX, y: event.clientY, key });
+                    }}
                     primary={primary}
                     locations={group.locations}
                     onSelectMachine={(location) => handleOpen(location.summary)}
@@ -717,6 +818,21 @@ export function ProjectWelcomePage() {
           />
         ) : null}
       </div>
+
+      <ContextMenu
+        menu={rowMenu}
+        entries={rowMenuEntries}
+        onClose={closeRowMenu}
+        label="Project"
+      />
+      <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
+      <CloneLocallyDialog
+        target={cloneLocallyTarget}
+        onClose={() => setCloneLocallyTarget(null)}
+        onCloned={(result) => {
+          void switchProjectToPath(result.rootPath).catch(() => {});
+        }}
+      />
 
       {mergeTarget ? (
         <MergeWorktreeProjectDialog

@@ -571,6 +571,14 @@ enum LaneIcon: String, Codable, Equatable {
   case bolt
   case shield
   case tag
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LaneIcon(rawValue: raw) ?? .unknown
+  }
 }
 
 struct LaneSummary: Codable, Identifiable, Equatable {
@@ -844,11 +852,25 @@ struct FileChange: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
   var kind: String
+  /// A rename's source path (branch diffs).
+  var oldPath: String? = nil
+  /// Line counts, sent with branch diffs (`git.getBranchChanges`).
+  var additions: Int? = nil
+  var deletions: Int? = nil
 }
 
 struct DiffChanges: Codable, Equatable {
   var unstaged: [FileChange]
   var staged: [FileChange]
+}
+
+/// Everything a lane changed since its base: commits, uncommitted and untracked.
+struct BranchDiffChanges: Codable, Equatable {
+  var baseRef: String
+  var mergeBase: String
+  var files: [FileChange]
+  var additions: Int
+  var deletions: Int
 }
 
 struct DiffSide: Codable, Equatable {
@@ -1154,6 +1176,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// Read-only Claude `/goal` state mirrored by the paired host. Older hosts
   /// omit this additive snapshot field.
   var claudeGoal: AgentChatClaudeGoal? = nil
+  /// Codex `thread/goal` state mirrored by the paired host. Older hosts omit it.
+  var codexGoal: AgentChatCodexGoal? = nil
   var status: String
   /// Start of the currently active provider turn; nil when no turn is running.
   var currentTurnStartedAt: String? = nil
@@ -1246,6 +1270,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
+      && lhs.codexGoal == rhs.codexGoal
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId
@@ -2182,6 +2207,14 @@ enum AgentChatFileChangeKind: String, Codable, Equatable {
   case create
   case modify
   case delete
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatFileChangeKind(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTurnStatus: String, Codable, Equatable {
@@ -2189,6 +2222,14 @@ enum AgentChatTurnStatus: String, Codable, Equatable {
   case completed
   case interrupted
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTurnStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatActivityKind: String, Codable, Equatable {
@@ -2283,6 +2324,14 @@ enum AgentChatApprovalRequestKind: String, Codable, Equatable {
   case command
   case fileChange = "file_change"
   case toolCall = "tool_call"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatApprovalRequestKind(rawValue: raw) ?? .unknown
+  }
 }
 
 /// Resolve what an `approval_request` is actually asking for, and write the
@@ -2375,6 +2424,14 @@ enum AgentChatSubagentStatus: String, Codable, Equatable {
   case completed
   case failed
   case stopped
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatSubagentStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTodoStatus: String, Codable, Equatable {
@@ -2382,17 +2439,90 @@ enum AgentChatTodoStatus: String, Codable, Equatable {
   case inProgress = "in_progress"
   case completed
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTodoStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatAutoApprovalReviewStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case manual
   case auto
   case adeFallback = "ade_fallback"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactTrigger(rawValue: raw) ?? .unknown
+  }
+}
+
+/// Codex `thread/goal` (desktop `CodexThreadGoal`). Every field is optional and
+/// decoded on its own, so a goal shape a newer host adds never fails the
+/// summary it rides on.
+struct AgentChatCodexGoal: Codable, Equatable {
+  var objective: String? = nil
+  /// `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
+  /// `complete`, or `cancelled`.
+  var status: String? = nil
+  var tokensUsed: Double? = nil
+  var tokenBudget: Double? = nil
+  var timeUsedSeconds: Double? = nil
+  var updatedAt: String? = nil
+
+  private enum CodingKeys: String, CodingKey {
+    case objective, status, tokensUsed, tokenBudget, timeUsedSeconds, updatedAt
+  }
+
+  init(objective: String? = nil, status: String? = nil, tokensUsed: Double? = nil) {
+    self.objective = objective
+    self.status = status
+    self.tokensUsed = tokensUsed
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    objective = try? container.decodeIfPresent(String.self, forKey: .objective)
+    status = try? container.decodeIfPresent(String.self, forKey: .status)
+    tokensUsed = try? container.decodeIfPresent(Double.self, forKey: .tokensUsed)
+    tokenBudget = try? container.decodeIfPresent(Double.self, forKey: .tokenBudget)
+    timeUsedSeconds = try? container.decodeIfPresent(Double.self, forKey: .timeUsedSeconds)
+    updatedAt = try? container.decodeIfPresent(String.self, forKey: .updatedAt)
+  }
+
+  /// A goal still in play: has an objective and is not reached or cancelled.
+  var isLive: Bool {
+    let trimmed = objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !trimmed.isEmpty && status != "complete" && status != "cancelled"
+  }
+}
+
+/// A chat's live goal projected onto its Work row (desktop `SessionActiveGoal`).
+struct SessionActiveGoal: Codable, Equatable, Hashable {
+  /// `"codex"` or `"claude"`.
+  var provider: String
+  var objective: String
+  /// Codex goal status; Claude goals are always `active` while they exist.
+  var status: String
 }
 
 struct AgentChatClaudeGoal: Codable, Equatable {
@@ -2411,6 +2541,14 @@ struct AgentChatClaudeGoal: Codable, Equatable {
 enum AgentChatContextCompactState: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactState(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatInputAnswerValue: Equatable {
@@ -2825,15 +2963,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     /// in that transcript — a decode fault surfacing as duplicated rows.
     init(from decoder: Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
-      type = (try? container.decodeIfPresent(String.self, forKey: .type)) ?? nil
+      type = try? container.decodeIfPresent(String.self, forKey: .type)
       apiErrorStatus = (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatus))
         ?? (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatusSnake))
         ?? nil
-      stopSource = (try? container.decodeIfPresent(String.self, forKey: .stopSource)) ?? nil
-      stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
-      resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
-      resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
-      resumed = (try? container.decodeIfPresent(Bool.self, forKey: .resumed)) ?? nil
+      stopSource = try? container.decodeIfPresent(String.self, forKey: .stopSource)
+      stopReason = try? container.decodeIfPresent(String.self, forKey: .stopReason)
+      resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
+      resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
+      resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
     }
   }
 
@@ -3021,6 +3159,79 @@ func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
   }
 }
 
+/// What a thread comment points at. Mirrors `ChatThreadCommentAnchor` in
+/// `apps/desktop/src/shared/threadComments.ts`. An unknown `kind` fails to
+/// decode, and the list decoder skips that one comment.
+enum ChatThreadCommentAnchor: Equatable {
+  case text(quote: String, prefix: String, suffix: String)
+  case tableRow(tableIndex: Int, rowIndex: Int, headers: [String], cells: [String])
+}
+
+extension ChatThreadCommentAnchor: Decodable {
+  private enum CodingKeys: String, CodingKey {
+    case kind, quote, prefix, suffix, tableIndex, rowIndex, headers, cells
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let kind = try container.decode(String.self, forKey: .kind)
+    switch kind {
+    case "text":
+      self = .text(
+        quote: try container.decodeIfPresent(String.self, forKey: .quote) ?? "",
+        prefix: try container.decodeIfPresent(String.self, forKey: .prefix) ?? "",
+        suffix: try container.decodeIfPresent(String.self, forKey: .suffix) ?? ""
+      )
+    case "table_row":
+      self = .tableRow(
+        tableIndex: try container.decodeIfPresent(Int.self, forKey: .tableIndex) ?? 0,
+        rowIndex: try container.decodeIfPresent(Int.self, forKey: .rowIndex) ?? 0,
+        headers: try container.decodeIfPresent([String].self, forKey: .headers) ?? [],
+        cells: try container.decodeIfPresent([String].self, forKey: .cells) ?? []
+      )
+    default:
+      throw DecodingError.dataCorruptedError(
+        forKey: .kind,
+        in: container,
+        debugDescription: "Unknown thread comment anchor kind \(kind)"
+      )
+    }
+  }
+
+  /// The words the comment quotes. A table row reads "Header: cell | …",
+  /// the same as `threadCommentQuoteText` on the host.
+  var quoteText: String {
+    switch self {
+    case .text(let quote, _, _):
+      return quote
+    case .tableRow(_, _, let headers, let cells):
+      return cells.enumerated().map { index, cell in
+        let header = index < headers.count
+          ? headers[index].trimmingCharacters(in: .whitespacesAndNewlines)
+          : ""
+        return header.isEmpty ? cell : "\(header): \(cell)"
+      }
+      .joined(separator: " | ")
+    }
+  }
+}
+
+/// A note the user pinned to part of an agent reply, pending until a send
+/// carries it. The phone lists, edits, holds and deletes these; it does not
+/// create them.
+struct ChatThreadComment: Decodable, Equatable, Identifiable {
+  var id: String
+  var sessionId: String
+  var messageKey: String
+  var messageExcerpt: String
+  var anchor: ChatThreadCommentAnchor
+  var body: String
+  /// False = held: stays in the thread and does not go with the next send.
+  var includeInNextSend: Bool
+  var createdAt: String
+  var updatedAt: String
+}
+
 struct PromptStashEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
@@ -3044,6 +3255,16 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
   }
 }
 
+/// A finished child's label in its parent: its title, plus where it ran when
+/// that is another machine ("Fix tests · on Mac mini"). Shared by the live
+/// decoder and the replay parser so both read the same.
+func spawnCompletionDisplayLabel(title: String, machineName: String?) -> String {
+  guard let machine = machineName?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else {
+    return title
+  }
+  return "\(title) · on \(machine)"
+}
+
 private struct AgentChatSpawnCompletionPayload: Decodable {
   var childSessionId: String
   var childTitle: String
@@ -3051,6 +3272,12 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
   var childTurnId: String?
   var status: AgentChatSubagentStatus
   var summary: String?
+  /// Set when the child ran on another machine than the parent.
+  var childMachineName: String?
+
+  var displayLabel: String {
+    spawnCompletionDisplayLabel(title: childTitle, machineName: childMachineName)
+  }
 
   func event(fallbackTurnId: String?) -> AgentChatEvent {
     let resolvedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3059,6 +3286,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     case .completed: fallbackSummary = "Subagent turn finished."
     case .failed: fallbackSummary = "Turn failed."
     case .stopped: fallbackSummary = "Stopped before finishing."
+    case .unknown: fallbackSummary = "Subagent turn ended."
     }
     return .subagentResult(
       taskId: "chat:\(childSessionId)",
@@ -3069,7 +3297,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
       status: status,
       summary: resolvedSummary.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackSummary,
       usage: nil,
-      label: childTitle,
+      label: displayLabel,
       model: nil,
       reasoningEffort: nil,
       turnId: childTurnId ?? fallbackTurnId,
@@ -3081,6 +3309,15 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?
+}
+
+/// `metadata.prWatchWake` on a PR Watch / Ship wake. Only the card matters
+/// here: the wake renders as that card, never as a user bubble.
+private struct AgentChatPrWatchWakeContainer: Decodable {
+  struct Wake: Decodable {
+    var card: AgentChatAdeCardPayload?
+  }
+  var prWatchWake: Wake?
 }
 
 enum AgentChatEvent: Decodable, Equatable {
@@ -3111,6 +3348,8 @@ enum AgentChatEvent: Decodable, Equatable {
   case contextUsage(usage: AgentChatContextUsage, turnId: String?, origin: String?, state: String?, sampleId: Int?)
   case conversationReset(newConversationId: String)
   case interruptReceipt(stillQueuedUuids: [String], cancelledUuids: [String]?)
+  /// The host's staged-queue order after a reorder (`queue_reordered`).
+  case queueReordered(steerIds: [String])
   case commandLifecycle(commandUuid: String, status: String, preview: String?, steerId: String?, turnId: String?)
   case claudeGoalUpdated(goal: AgentChatClaudeGoal, turnId: String?)
   case claudeGoalCleared(turnId: String?)
@@ -3416,6 +3655,7 @@ extension AgentChatEvent {
     case newConversationId
     case stillQueuedUuids
     case cancelledUuids
+    case steerIds
     case recoveryId
     case messageCount
     case expiresAt
@@ -3503,10 +3743,18 @@ extension AgentChatEvent {
         return
       }
       let text = try container.decode(String.self, forKey: .text)
+      // A PR Watch / Ship wake: ADE wrote this message, not the user. It shows
+      // as its card, with the exact text the agent read folded underneath.
+      if let wakeCard = (try? container.decodeIfPresent(AgentChatPrWatchWakeContainer.self, forKey: .metadata))?.prWatchWake?.card {
+        var card = makeWorkAdeCardModel(from: wakeCard)
+        card.wakeText = text
+        self = .adeCard(card: card)
+        return
+      }
       let displayText = try container.decodeIfPresent(String.self, forKey: .displayText)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       self = .userMessage(
-        text: displayText.flatMap { $0.isEmpty ? nil : $0 } ?? text,
+        text: workUserMessageShownText(text: text, displayText: displayText),
         attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
         turnId: eventTurnId,
         steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
@@ -3682,6 +3930,8 @@ extension AgentChatEvent {
         stillQueuedUuids: try container.decodeIfPresent([String].self, forKey: .stillQueuedUuids) ?? [],
         cancelledUuids: try container.decodeIfPresent([String].self, forKey: .cancelledUuids)
       )
+    case "queue_reordered":
+      self = .queueReordered(steerIds: try container.decodeIfPresent([String].self, forKey: .steerIds) ?? [])
     case "queue_recovery":
       let state = try container.decode(String.self, forKey: .state)
       let messageCount = try container.decode(Int.self, forKey: .messageCount)
@@ -4131,6 +4381,7 @@ extension AgentChatEvent {
     case .contextUsage: return "context_usage"
     case .conversationReset: return "conversation_reset"
     case .interruptReceipt: return "interrupt_receipt"
+    case .queueReordered: return "queue_reordered"
     case .commandLifecycle: return "command_lifecycle"
     case .claudeGoalUpdated: return "claude_goal_updated"
     case .claudeGoalCleared: return "claude_goal_cleared"
@@ -4208,6 +4459,34 @@ struct AgentChatSteerRequest: Codable, Equatable {
   /// same round-trip instead of staging the message, so nothing reaches the
   /// staged strip. Omitted (nil) for a plain staged steer.
   var dispatchMode: String? = nil
+  /// True only when the user sends from a composer that shows pending thread
+  /// comments: the host then adds them to this message. Nil = key omitted.
+  var includeThreadComments: Bool? = nil
+}
+
+/// The host machine's last-used chat model and settings (`chat.getLaunchDefaults`).
+struct AgentChatLaunchDefaults: Codable, Equatable {
+  var provider: String
+  var modelId: String
+  var reasoningEffort: String?
+  var fastMode: Bool?
+  var interactionMode: String?
+  var permissionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var droidPermissionMode: String?
+  var cursorModeId: String?
+  var updatedAt: String
+}
+
+struct AgentChatMoveSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+  /// Destination position, 0 = delivered next.
+  var toIndex: Int
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {
@@ -4241,6 +4520,55 @@ enum AgentChatStopMode: String, Codable, Equatable, Hashable, CaseIterable {
   case stopAndClear = "stop_and_clear"
   case stopAndBackground = "stop_and_background"
   case stopAndClearAndBackground = "stop_and_clear_and_background"
+  /// Also stop the chats this chat spawned, depth-first, with the same mode.
+  case stopAndClearAndChildren = "stop_and_clear_and_children"
+  case stopEverythingAndChildren = "stop_everything_and_children"
+}
+
+/// `chat.restartSession`: the provider process restarted, the conversation kept.
+struct AgentChatRestartSessionResult: Decodable, Equatable {
+  var restarted: Bool? = nil
+  var stoppedTurn: Bool? = nil
+  var backgroundJobsStopped: Int? = nil
+}
+
+/// A chat's PR Watch / Ship (`apps/desktop/src/shared/prWatch.ts`
+/// `PrChatWatchSummary`). Only the fields the phone renders are required.
+struct PrChatWatchSummary: Decodable, Equatable {
+  var watchId: String
+  var prId: String
+  var sessionId: String
+  var githubPrNumber: Int? = nil
+  /// `"watch"` or `"ship"`.
+  var mode: String
+  /// `"user"` or `"agent"`.
+  var armedBy: String? = nil
+  /// `"active"`, `"paused"`, or `"stopped"`.
+  var status: String
+  var lastToldAt: String? = nil
+  var lastToldSummary: String? = nil
+  /// Ship: news found and held until CI and the review bots finish.
+  var holding: Bool = false
+
+  private enum CodingKeys: String, CodingKey {
+    case watchId, prId, sessionId, githubPrNumber, mode, armedBy, status, lastToldAt, lastToldSummary, holding
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    watchId = try container.decode(String.self, forKey: .watchId)
+    prId = try container.decode(String.self, forKey: .prId)
+    sessionId = try container.decode(String.self, forKey: .sessionId)
+    githubPrNumber = try? container.decodeIfPresent(Int.self, forKey: .githubPrNumber)
+    mode = try container.decode(String.self, forKey: .mode)
+    armedBy = try? container.decodeIfPresent(String.self, forKey: .armedBy)
+    status = (try? container.decodeIfPresent(String.self, forKey: .status)) ?? "active"
+    lastToldAt = try? container.decodeIfPresent(String.self, forKey: .lastToldAt)
+    lastToldSummary = try? container.decodeIfPresent(String.self, forKey: .lastToldSummary)
+    holding = (try? container.decodeIfPresent(Bool.self, forKey: .holding)) ?? false
+  }
+
+  var isLive: Bool { status != "stopped" }
 }
 
 struct AgentChatInterruptRequest: Codable, Equatable {
@@ -4493,6 +4821,37 @@ struct AgentChatModelCatalog: Codable, Equatable {
   var groups: [AgentChatModelCatalogGroup]
   var fetchedAt: String
   var stale: Bool?
+}
+
+/// A preset's mark as an identity (never artwork): `provider` names a brand
+/// mark to draw, `ade` is the built-in Custom mark, and `upload`/`generated`
+/// are a picture that lives only on its own machine — drawn remotely as the
+/// Custom mark in the preset's accent.
+struct SyncMachineInventoryPresetLogo: Codable, Equatable {
+  var kind: String
+  var providerId: String?
+}
+
+/// One saved Custom harness preset from `account.getMachineInventory`
+/// (`MachineInventoryPreset` on the host). `bound` means the preset's source —
+/// the account, key, or OpenCode sign-in it names — exists on that machine
+/// right now, which is exactly the launch's own test.
+struct SyncMachineInventoryPreset: Codable, Equatable, Identifiable {
+  var id: String
+  var name: String
+  var harness: String
+  var model: String
+  /// Absent against an older host; the row then falls back to the Custom mark.
+  var logo: SyncMachineInventoryPresetLogo?
+  var accentColor: String?
+  var bound: Bool
+}
+
+/// The subset of the host's `MachineInventoryDetail` the phone needs. Unknown
+/// keys (providers, model counts) decode away.
+struct SyncMachineInventoryDetail: Codable, Equatable {
+  var machineKey: String
+  var presets: [SyncMachineInventoryPreset]
 }
 
 /// Response envelopes for the cross-surface ModelPicker favorites/recents
@@ -4863,6 +5222,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// The chat's live goal (Codex `thread/goal`, Claude `/goal`), projected by
+  /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
+  /// read back from the database, which has no column for it.
+  var activeGoal: SessionActiveGoal? = nil
   /// Client-only: the segmented setup rail of a chat launch that still owns
   /// this row (`workOverlayChatLaunches`). Never on the wire — not in
   /// `CodingKeys` — and nil for every ordinary session.
@@ -4927,6 +5290,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.activeGoal == rhs.activeGoal
       && lhs.launchRail == rhs.launchRail
   }
 }
@@ -4980,6 +5344,7 @@ extension TerminalSessionSummary {
     case parentIdentityKey
     case orchestrationParentSessionId
     case spawnKind
+    case activeGoal
   }
 
   init(from decoder: Decoder) throws {
@@ -5031,6 +5396,9 @@ extension TerminalSessionSummary {
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    // Tolerant: a goal shape this build does not know drops the decoration,
+    // never the row.
+    activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)
   }
 }
 
@@ -5040,6 +5408,9 @@ struct GitHubPrStackMembership: Codable, Equatable {
   var size: Int
   var position: Int
   var baseBranch: String
+  /// How many open PRs a merge of this PR covers. 1 = the bottom open PR.
+  /// Nil from an older host.
+  var openThroughHere: Int? = nil
 }
 
 struct GitHubPrStackEntry: Codable, Identifiable, Equatable {
@@ -5090,6 +5461,10 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var creationStrategy: String? = nil
   /// Native GitHub stack membership. Nil against hosts before stacked PR support.
   var stack: GitHubPrStackMembership? = nil
+  /// Chats that explicitly opened or worked on this PR.
+  var chatSessionIds: [String]? = nil
+  /// Chats that unlinked this PR. Fallback display must not revive these.
+  var dismissedChatSessionIds: [String]? = nil
   /// ADE-135. One sentence explaining a non-obvious checks rollup, e.g. "3 checks
   /// reported, none from a CI provider." Nil when the state speaks for itself, and
   /// on hosts that predate the rollup.
@@ -5142,6 +5517,8 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   /// visible to the chats that own them even once its lane moves branch; a PR
   /// with none is legacy data and falls back to the branch rule.
   var chatSessionIds: [String]? = nil
+  /// Chats that unlinked this PR. Fallback display must not revive these.
+  var dismissedChatSessionIds: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
@@ -5194,6 +5571,14 @@ enum PrReviewDecisionValue: String, Codable, Equatable {
   case approved
   case changesRequested = "changes_requested"
   case reviewRequired = "review_required"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PrReviewDecisionValue(rawValue: raw) ?? .unknown
+  }
 }
 
 struct PrStatus: Codable, Equatable {
@@ -6630,6 +7015,15 @@ struct LandResult: Codable, Equatable {
   var branchDeleted: Bool?
   var laneArchived: Bool?
   var error: String?
+  /// Set for a GitHub Stack merge: "merged", "enqueued", or "pending".
+  var mergeStatus: String? = nil
+  /// For a GitHub Stack merge: every PR the merge covers.
+  var stackPrNumbers: [Int]? = nil
+
+  /// GitHub queued the stack or still runs the merge. Not a failure.
+  var isInFlight: Bool {
+    !success && (mergeStatus == "pending" || mergeStatus == "enqueued")
+  }
 }
 
 struct PrMobileSnapshot: Codable, Equatable {
@@ -6760,6 +7154,70 @@ struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
   var scopeSupported: Bool?
   var adeOriginatedTokens: Int?
   var externalTokens: Int?
+  /// `rangeCostUsd` split by token type and speed premium. Hosts predating the
+  /// split omit it, and the page hides the split rather than show zeros.
+  var costSplit: MobileAdeUsageCostSplit?
+}
+
+/// Where a cost's dollars went (`AdeUsageCostSplit`): the five type fields sum
+/// to the cost; the two premiums are inside them, not on top.
+struct MobileAdeUsageCostSplit: Codable, Equatable {
+  var input: Double
+  var cacheRead: Double
+  var cacheWrite: Double
+  var output: Double
+  var other: Double
+  var fastPremium: Double
+  var ultrafastPremium: Double
+
+  static let zero = MobileAdeUsageCostSplit(input: 0, cacheRead: 0, cacheWrite: 0, output: 0, other: 0, fastPremium: 0, ultrafastPremium: 0)
+
+  var total: Double { input + cacheRead + cacheWrite + output + other }
+  var premium: Double { fastPremium + ultrafastPremium }
+
+  static func + (lhs: MobileAdeUsageCostSplit, rhs: MobileAdeUsageCostSplit) -> MobileAdeUsageCostSplit {
+    MobileAdeUsageCostSplit(
+      input: lhs.input + rhs.input,
+      cacheRead: lhs.cacheRead + rhs.cacheRead,
+      cacheWrite: lhs.cacheWrite + rhs.cacheWrite,
+      output: lhs.output + rhs.output,
+      other: lhs.other + rhs.other,
+      fastPremium: lhs.fastPremium + rhs.fastPremium,
+      ultrafastPremium: lhs.ultrafastPremium + rhs.ultrafastPremium
+    )
+  }
+
+  init(input: Double, cacheRead: Double, cacheWrite: Double, output: Double, other: Double, fastPremium: Double, ultrafastPremium: Double) {
+    self.input = input
+    self.cacheRead = cacheRead
+    self.cacheWrite = cacheWrite
+    self.output = output
+    self.other = other
+    self.fastPremium = fastPremium
+    self.ultrafastPremium = ultrafastPremium
+  }
+
+  /// Every field optional on the wire: a missing one is zero.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    func value(_ key: CodingKeys) -> Double { max(0, (try? container.decodeIfPresent(Double.self, forKey: key)) ?? 0) }
+    input = value(.input)
+    cacheRead = value(.cacheRead)
+    cacheWrite = value(.cacheWrite)
+    output = value(.output)
+    other = value(.other)
+    fastPremium = value(.fastPremium)
+    ultrafastPremium = value(.ultrafastPremium)
+  }
+}
+
+struct MobileAdeUsageModelSummary: Codable, Equatable, Identifiable {
+  var id: String { "\(provider):\(model)" }
+  var provider: String
+  var model: String
+  var totalTokens: Int?
+  var costUsd: Double?
+  var costSplit: MobileAdeUsageCostSplit?
 }
 
 struct MobileAdeUsageStats: Decodable, Equatable {
@@ -6774,6 +7232,8 @@ struct MobileAdeUsageStats: Decodable, Equatable {
   var githubActivity: MobileAdeUsageGithubActivity?
   var localActivity: MobileAdeUsageLocalActivity?
   var providers: [MobileAdeUsageProviderSummary]?
+  /// Per-model totals, for the breakdown's Models view and its detail screen.
+  var models: [MobileAdeUsageModelSummary]?
   /// When the loaded copy of the public rate list was fetched. Null/absent
   /// means none is loaded, so every cost came from the built-in table.
   var pricingUpdatedAt: String?
@@ -6782,7 +7242,7 @@ struct MobileAdeUsageStats: Decodable, Equatable {
 extension MobileAdeUsageStats {
   private enum CodingKeys: String, CodingKey {
     case generatedAt, scope, summary, clients, daily, freshness
-    case githubActivity, localActivity, providers, pricingUpdatedAt
+    case githubActivity, localActivity, providers, models, pricingUpdatedAt
   }
 
   init(from decoder: Decoder) throws {
@@ -6799,7 +7259,95 @@ extension MobileAdeUsageStats {
     // Lossy-decode the providers array so one malformed provider entry can't drop
     // the whole stats payload (mirrors ExternalSessionSummary's sessions decode).
     providers = (try? container.decode(ADELossyArray<MobileAdeUsageProviderSummary>.self, forKey: .providers))?.wrappedValue
+    models = (try? container.decode(ADELossyArray<MobileAdeUsageModelSummary>.self, forKey: .models))?.wrappedValue
   }
+}
+
+/// `usage.getCostBreakdown`: ADE chat spend by chat, lane, or account, from
+/// the host's per-turn ledger.
+struct MobileAdeUsageCostBreakdownRow: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var label: String
+  var detail: String?
+  var laneId: String?
+  var sessionId: String?
+  var provider: String?
+  var accountKind: String?
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownTotals: Codable, Equatable {
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownOther: Codable, Equatable {
+  var count: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdown: Decodable, Equatable {
+  var by: String
+  var available: Bool
+  var rows: [MobileAdeUsageCostBreakdownRow]
+  var other: MobileAdeUsageCostBreakdownOther?
+  var totals: MobileAdeUsageCostBreakdownTotals
+
+  private enum CodingKeys: String, CodingKey { case by, available, rows, other, totals }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    by = try container.decode(String.self, forKey: .by)
+    available = try container.decodeIfPresent(Bool.self, forKey: .available) ?? false
+    rows = (try? container.decode(ADELossyArray<MobileAdeUsageCostBreakdownRow>.self, forKey: .rows))?.wrappedValue ?? []
+    other = try? container.decodeIfPresent(MobileAdeUsageCostBreakdownOther.self, forKey: .other)
+    totals = try container.decode(MobileAdeUsageCostBreakdownTotals.self, forKey: .totals)
+  }
+}
+
+/// `usage.getModelDetail`: one model's cost, cache hit rate, trend, split and price.
+struct MobileAdeUsageModelDetailDay: Codable, Equatable, Identifiable {
+  var id: String { date }
+  var date: String
+  var costUsd: Double
+  var totalTokens: Int
+}
+
+struct MobileAdeUsageModelPrice: Codable, Equatable {
+  var input: Double
+  var output: Double
+  var cacheRead: Double?
+  var cacheWrite: Double?
+  /// "custom" | "list" | "fallback".
+  var source: String?
+  var unpriced: Bool?
+}
+
+struct MobileAdeUsageModelDetail: Decodable, Equatable {
+  var provider: String
+  var model: String
+  var costUsd: Double
+  var totalTokens: Int
+  var costPerMillionUsd: Double?
+  var cacheHitRate: Double?
+  var costSplit: MobileAdeUsageCostSplit?
+  var daily: [MobileAdeUsageModelDetailDay]
+  var price: MobileAdeUsageModelPrice
+  var modelIds: [String]
+  var mapTo: String?
+  /// Model ids mapped onto this one; an older host omits it.
+  var mappedFrom: [String]?
 }
 
 // MARK: - Live provider quota
@@ -6886,6 +7434,14 @@ struct MobileUsageQuotaSnapshot: Codable, Equatable {
   var errors: [String]
   /// Codex spending cap hit — surfaced from the desktop UsageSnapshot.
   var spendControlReached: Bool?
+  /// The account smart balance would give the next new chat, per provider.
+  /// Absent while balance is off or skipped, and on older hosts.
+  var balanceNext: [MobileUsageBalanceNext]? = nil
+}
+
+struct MobileUsageBalanceNext: Codable, Equatable {
+  var provider: String
+  var instanceId: String
 }
 
 // MARK: - Work tools (read-only mirror of the desktop's tools pane)

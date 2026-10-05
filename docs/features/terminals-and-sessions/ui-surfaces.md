@@ -99,6 +99,24 @@ It also owns the sidebar's multi-select state:
 - `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
   permanently deletes every selected session once the user confirms.
 
+Right-clicking a row that is part of a multi-selection opens
+`SessionBulkContextMenu` instead of the single-row `SessionContextMenu`; a row
+outside the selection keeps its own menu. It renders through the shared
+`ui/ContextMenu` primitive and offers only actions that apply to every
+selected row: open in a grid (up to `MAX_WORK_GRID_TILES`, this tab's
+sessions only), remove from grid, pin/unpin, stop runtimes, snooze, wake,
+settle, unsettle, copy IDs, clear selection, and delete or stop & delete.
+Stop, delete and stop & delete reuse the header's `handleBulk*` handlers. Rows that apply to
+part of the selection show "k of N". Lifecycle writes go through the batch
+helpers in `sessionLifecycleActions.ts`, each row pinned to its own machine,
+with one failure toast and one Undo per batch. Bulk settle follows the
+header's rule and skips `Needs you` rows, so it never dismisses pending input.
+The Lanes submenu sends the selection's own-machine lanes to the Lanes tab:
+`/lanes?action=select&laneIds=…` multi-selects them, and
+`action=batch` (optionally `manageTab=archive|delete`) also opens the batch
+manage dialog. Both leave the lanes multi-selected in the Lanes sidebar, and
+the Work lane menu's "Manage N Open Lanes" shares the same `batch` link.
+
 Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
 don't leak across filter changes.
@@ -143,6 +161,29 @@ shelves are closed-by-default three-state disclosures: no marker means never
 touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
 removing the marker closes them again. Notification deep links add the open
 marker so a Settled destination cannot remain hidden.
+
+In by-lane list mode the funnel's **Fold busy lanes** chip
+(persisted as `workFoldBusyLanes`) moves every lane whose live rows are all
+Working or Waiting — or Done in a way the user has already left — onto a
+collapsed **Working** shelf between the inbox and the quiet zone. The rule lives
+in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
+cannot disagree with the board's columns. A lane folds only when at least one
+live row is actually busy: a raised hand (`needs_you`), a stale run, or a
+finished row the user has not left holds the whole lane out with its rows
+visible. Snoozed and settled rows take no part. A finished nested row (attached
+shell, subagent) can never hold its lane out — nobody opens a helper to mark it
+seen — though a nested raised hand still can. Pins and the primary lane never
+fold. Turning the option off forgets the return state, so turning it back on
+takes a fresh baseline instead of floating every lane at once.
+
+Each by-lane header carries one rolled-up status dot
+(`LaneFocusStatusDot`, Needs you > Working > Waiting > Done) read from the same
+focus derivation as the shelf. A finished row counts as seen only after the user
+**leaves** it: `useWorkSessions` stamps `workSeenAtBySessionId` on selection
+change, bounded to `WORK_SEEN_AT_LIMIT` entries, so opening a finished row in
+the inbox does not fold its lane out from under the cursor. A lane that just
+came back out of the Working shelf floats to the front of the active tier,
+newest return first, except in Manual sort where the user's own order wins.
 
 Lane groups with two or more sessions render an accent-coloured lane name,
 optional machine/PR markers, then indent the cards beside a lane-tinted rail.
@@ -199,14 +240,18 @@ autoscroll, while the list uses the resulting order signature only for its
 layout animation rather than remeasuring on every session tick.
 
 The same funnel also owns the persisted session chips. Status (Your move,
-Running, Ended, Settled, Snoozed) and Tool choices are ORed within their own
-axis; the Status, Tool, Has PR, and Dirty-lane axes are ANDed together. The
-status chip uses the same effective filing result as the sidebar, Has PR
-uses the coalesced PR snapshot that powers lane-header badges, and Dirty reads
-the already-loaded lane status. Chips apply before all three organization
-modes. A remote lane has no local PR snapshot, so Has PR fails closed there;
-the filtered empty state names the active chips and provides a clear action
-instead of implying that the sessions disappeared.
+Running, Ended, Settled, Snoozed), Tool, and Machine choices are ORed within
+their own axis; the Status, Tool, Machine, Has PR, and Dirty-lane axes are ANDed
+together. The status chip uses the same effective filing result as the sidebar,
+Has PR uses the coalesced PR snapshot that powers lane-header badges, and Dirty
+reads the already-loaded lane status. Machine is empty (all machines) by
+default; selecting a subset keeps only that machine's rows, and a chip for a
+machine that has since left stays visible so it can be turned back off. Chips
+apply before all three organization modes. A remote lane has no local PR
+snapshot, so Has PR fails closed there; the filtered empty state names the
+active chips and provides a clear action instead of implying that the sessions
+disappeared. Another machine's matching rows count, so a Machine filter that
+hides every local row shows those rows rather than the empty state.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
@@ -271,7 +316,8 @@ Also renders:
   is not in the chat/CLI header. When the list is collapsed, a thin left
   rail in `TerminalsPage` shows the same glyph as **Show sessions**.
 - an expandable filter panel with group selector (Lane / Status / Time), lane
-  sort, status/tool chips, Has PR / Dirty, and `LaneCombobox`
+  sort, status/tool/machine chips, Has PR / Dirty, the by-lane **Fold busy
+  lanes** Focus chip, and `LaneCombobox`
 - the actual list of `SessionCard` rows (memoized)
 - a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
   Work flow uses the host's `close-on-create` behavior: it closes as
@@ -1346,7 +1392,15 @@ and is bumped on every real project change.
 
 Renderer strategy: WebGL-first, fall back to the DOM renderer on any
 init failure or context loss. Canvas renderer is intentionally skipped
-(simplified from the earlier three-tier approach).
+(simplified from the earlier three-tier approach). At most
+`MAX_WEBGL_TERMINALS = 8` terminals hold a WebGL context at once:
+Chromium keeps 16 per page and drops the oldest past that, which can
+blank another terminal or the Work picker's backdrop. A terminal holds
+its slot while the addon loads, and later terminals use the DOM
+renderer. A DOM-renderer terminal blinks its cursor through
+`lib/xtermCursorBlink.ts`: the CSS animation stays paused on one of
+its two keyframes, and a 500 ms timer flips between them, so the blink
+does not restyle on every display frame.
 
 Exposes `TerminalHealthCounters`:
 

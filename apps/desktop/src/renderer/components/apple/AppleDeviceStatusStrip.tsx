@@ -95,6 +95,7 @@ export function AppleDeviceNoticeStrip({
   secondaryActionLabel,
   onSecondaryAction,
   onDismiss,
+  busy,
 }: {
   sentence: string;
   actionLabel: string;
@@ -102,6 +103,8 @@ export function AppleDeviceNoticeStrip({
   secondaryActionLabel?: string | undefined;
   onSecondaryAction?: (() => void) | undefined;
   onDismiss?: (() => void) | undefined;
+  /** The action is running: the icon spins and the action is not offered twice. */
+  busy?: boolean | undefined;
 }) {
   const actions: NoticeAction[] = [{ label: actionLabel, onClick: onAction }];
   if (secondaryActionLabel && onSecondaryAction) {
@@ -121,7 +124,8 @@ export function AppleDeviceNoticeStrip({
           tone: "neutral",
           icon: <AppleLogo size={13} />,
           title: sentence,
-          actions,
+          actions: busy ? [] : actions,
+          busy: busy ?? false,
           dismiss: onDismiss ? { onDismiss, title: "Dismiss this message", label: "Dismiss this message" } : undefined,
         }}
       />

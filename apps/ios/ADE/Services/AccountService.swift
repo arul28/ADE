@@ -825,6 +825,16 @@ final class AccountService: ObservableObject {
   @Published private(set) var identity: AccountIdentity?
   @Published private(set) var machines: [AccountMachine] = []
   @Published private(set) var machinesState: MachinesState = .idle
+
+  /// The account-directory row for a saved fleet key (`machine:<deviceId>`),
+  /// matched by device identity. Nil when the key carries no identity or the
+  /// directory has not listed that device.
+  func machine(forFleetKey fleetKey: String?) -> AccountMachine? {
+    guard let fleetKey,
+          let identity = HiddenMachineStore.identity(fromFleetKey: fleetKey) else { return nil }
+    return machines.first { $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame }
+  }
+
   @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
   /// Bumped after a new account Attention snapshot is committed to the App
   /// Group. The in-app model observes this alongside SyncService revisions.

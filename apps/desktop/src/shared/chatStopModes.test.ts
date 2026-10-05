@@ -10,18 +10,41 @@ import {
   parseAgentChatStopMode,
   resolveAgentChatStopModeAlias,
   shouldDeclarePerTaskStopAffordance,
+  providerStopModeSupport,
+  stopModeAvailable,
   stopModeClearsQueue,
+  stopModeProviderMode,
   stopModeStopsBackground,
+  stopModeStopsChildren,
 } from "./chatStopModes";
 
 describe("chat stop matrix", () => {
-  it("names all four queue × background combinations", () => {
-    expect(AGENT_CHAT_STOP_MODES).toEqual([
-      "stop_only",
-      "stop_and_clear",
-      "stop_and_background",
-      "stop_and_clear_and_background",
-    ]);
+  it.each([
+    // mode, clears queue, stops background, stops child chats, what the provider runtime acts on
+    ["stop_only", false, false, false, "stop_only"],
+    ["stop_and_clear", true, false, false, "stop_and_clear"],
+    ["stop_and_background", false, true, false, "stop_and_background"],
+    ["stop_and_clear_and_background", true, true, false, "stop_and_clear_and_background"],
+    ["stop_and_clear_and_children", true, false, true, "stop_and_clear"],
+    ["stop_everything_and_children", true, true, true, "stop_and_clear_and_background"],
+  ] as const)("%s: queue %s, background %s, child chats %s", (mode, clears, background, children, providerMode) => {
+    expect(AGENT_CHAT_STOP_MODES).toContain(mode);
+    expect(stopModeClearsQueue(mode)).toBe(clears);
+    expect(stopModeStopsBackground(mode)).toBe(background);
+    expect(stopModeStopsChildren(mode)).toBe(children);
+    // Child chats are ADE's job; the provider never sees a child-chat mode.
+    expect(stopModeProviderMode(mode)).toBe(providerMode);
+  });
+
+  it("offers a mode only when the provider can do it, and child-chat modes only with child chats", () => {
+    expect(stopModeAvailable("claude", "stop_everything_and_children", 2)).toBe(true);
+    expect(stopModeAvailable("claude", "stop_everything_and_children", 0)).toBe(false);
+    // Cursor cannot stop background work; Pi drops its queue on interrupt.
+    const cursor = providerStopModeSupport("cursor", "stop_and_background");
+    expect(cursor.supported).toBe(false);
+    expect(stopModeAvailable("cursor", "stop_and_clear_and_children", 1)).toBe(true);
+    expect(providerStopModeSupport("pi", "stop_only").supported).toBe(false);
+    expect(stopModeAvailable("codex", "stop_and_clear_and_background", 0)).toBe(true);
   });
 
   it("keeps stop_and_clear as the default so existing Stop-means-stop callers stay on the queue axis", () => {

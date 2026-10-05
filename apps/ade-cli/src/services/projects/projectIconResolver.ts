@@ -4,6 +4,11 @@ import {
   resolveProjectIcon,
   resolveProjectIconPath,
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";
+
+export {
+  importProjectIconBytes,
+  removeProjectIconOverride,
+} from "../../../../desktop/src/main/services/projects/projectIconResolver";
 import {
   PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES,
   resolveMobileProjectIconDataUrl,

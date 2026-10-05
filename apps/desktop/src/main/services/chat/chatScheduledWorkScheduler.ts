@@ -1,5 +1,8 @@
 import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/chatScheduledWork";
-import { AUTO_RESUME_SCHEDULED_WORK_SOURCE } from "../../../shared/chatAutoResume";
+import {
+  AUTO_RESUME_SCHEDULED_WORK_SOURCE,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+} from "../../../shared/chatAutoResume";
 
 export { nextChatScheduledCronFireAt };
 
@@ -17,7 +20,24 @@ export type ChatScheduledWorkKind = "wakeup" | "cron" | "loop";
  * Provenance tag for rows ADE created on the user's behalf. Untagged rows are
  * user- or agent-created and must never be swept by ADE's own housekeeping.
  */
-export type ChatScheduledWorkSource = typeof AUTO_RESUME_SCHEDULED_WORK_SOURCE;
+export type ChatScheduledWorkSource =
+  | typeof AUTO_RESUME_SCHEDULED_WORK_SOURCE
+  | typeof UPDATE_RESUME_SCHEDULED_WORK_SOURCE;
+
+const ADE_ARMED_CHAT_SCHEDULED_WORK_SOURCES: readonly ChatScheduledWorkSource[] = [
+  AUTO_RESUME_SCHEDULED_WORK_SOURCE,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+];
+
+/** Narrows an untrusted `source` to an ADE-owned tag, or drops it. */
+function asAdeArmedChatScheduledWorkSource(
+  value: unknown,
+): ChatScheduledWorkSource | null {
+  return typeof value === "string"
+    && (ADE_ARMED_CHAT_SCHEDULED_WORK_SOURCES as readonly string[]).includes(value)
+    ? value as ChatScheduledWorkSource
+    : null;
+}
 
 export type ChatScheduledWorkStatus =
   | "scheduled"
@@ -95,6 +115,11 @@ export type ChatScheduledWorkScheduler = {
   dispose(): void;
   upsert(schedule: ChatScheduledWorkUpsert): Promise<ChatScheduledWorkRecord>;
   cancel(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
+  /**
+   * Settles a one-shot the provider already delivered on its own (it left the
+   * provider's inventory after its fire time) as `done`, not `cancelled`.
+   */
+  markFired(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
   setSchedulePaused(scheduleId: string, paused: boolean): Promise<ChatScheduledWorkRecord | null>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   refreshGlobalPause(): Promise<void>;
@@ -143,6 +168,9 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
   if (typeof record.sessionId !== "string" || !record.sessionId) return null;
   if (record.kind !== "wakeup" && record.kind !== "cron" && record.kind !== "loop") return null;
   if (typeof record.prompt !== "string") return null;
+  // Only an ADE-owned tag survives the round trip. An unknown tag on disk would
+  // otherwise re-enter as a row ADE believes it owns.
+  const adeArmedSource = asAdeArmedChatScheduledWorkSource(record.source);
 
   const statuses: ChatScheduledWorkStatus[] = [
     "scheduled",
@@ -186,9 +214,7 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
     ...(typeof record.providerScheduleId === "string"
       ? { providerScheduleId: record.providerScheduleId }
       : {}),
-    ...(record.source === AUTO_RESUME_SCHEDULED_WORK_SOURCE
-      ? { source: AUTO_RESUME_SCHEDULED_WORK_SOURCE }
-      : {}),
+    ...(adeArmedSource ? { source: adeArmedSource } : {}),
   };
 }
 
@@ -364,6 +390,17 @@ export function createChatScheduledWorkScheduler(
     schedule.lateFlag = late;
     await persist();
     await emitTransition(schedule, "fired");
+
+    // A cancel (a user message, a superseding schedule) can land inside those
+    // awaits. The row is the durable record of intent; once it is cancelled,
+    // delivery must not happen. Re-read it rather than trust the pre-await
+    // snapshot, and release the in-flight claim before returning so this id can
+    // arm again later.
+    const afterPersist = schedules.get(scheduleId);
+    if (!afterPersist || afterPersist.status !== "fired") {
+      inFlight.delete(scheduleId);
+      return;
+    }
 
     let complete = false;
     let retry = false;
@@ -616,6 +653,30 @@ export function createChatScheduledWorkScheduler(
         await persist();
         await emitTransition(schedule, "cancelled");
       }
+      return cloneSchedule(schedule);
+    },
+
+    async markFired(scheduleId): Promise<ChatScheduledWorkRecord | null> {
+      await start();
+      const schedule = schedules.get(scheduleId);
+      if (!schedule) return null;
+      // A fire ADE already claimed for a running turn settles when that turn
+      // finishes (`recordTurnFinished`), which also records its outcome.
+      if (
+        schedule.kind === "cron"
+        || isTerminal(schedule)
+        || inFlight.has(scheduleId)
+        || (schedule.status === "fired" && schedule.activeTurnId)
+      ) {
+        return cloneSchedule(schedule);
+      }
+      clearTimer(scheduleId);
+      if (schedule.lastFiredAt == null) schedule.lastFiredAt = schedule.fireAt ?? now();
+      delete schedule.activeTurnId;
+      markTerminal(schedule, "done");
+      pruneTerminalHistory();
+      await persist();
+      await emitTransition(schedule, "done");
       return cloneSchedule(schedule);
     },
 

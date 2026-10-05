@@ -452,6 +452,51 @@ export function refreshChatLaunch(launchId: string | null | undefined): void {
   });
 }
 
+const hydratingLaunchIds = new Set<string>();
+/** Last `get` attempt per launch, so an unreachable machine is retried, not hammered. */
+const hydrateAttemptedAt = new Map<string, number>();
+/** Minimum gap between `chat.getLaunch` asks for one launch (store and card both use it). */
+export const CHAT_LAUNCH_HYDRATE_RETRY_MS = 20_000;
+
+/**
+ * Learn about a launch this window did not start — a chat opened from another
+ * device, whose setup card arrived in the synced transcript with no snapshot
+ * to drive it. Without this the transcript card is a dead end: a truncated
+ * error and no Retry. The owning machine still holds the failed record (only
+ * completed and cancelled launches expire), so one `chat.getLaunch` against
+ * the chat's own binding turns the payload card back into the live one.
+ *
+ * Idempotent and bounded: at most one read in flight, no read while an entry
+ * already exists, and a short cooldown after a failed read so a card that
+ * re-renders while the machine is offline does not poll.
+ */
+export function hydrateChatLaunchFromHost(launchId: string | null | undefined, binding: OpenProjectBinding | null): void {
+  if (!launchId || chatLaunchStore.getState().entries[launchId] || hydratingLaunchIds.has(launchId)) return;
+  const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
+  if (!api?.get) return;
+  const last = hydrateAttemptedAt.get(launchId);
+  if (last != null && Date.now() - last < CHAT_LAUNCH_HYDRATE_RETRY_MS) return;
+  hydratingLaunchIds.add(launchId);
+  hydrateAttemptedAt.set(launchId, Date.now());
+  let request: Promise<ChatLaunchSnapshot | null>;
+  try {
+    request = api.get({ launchId }, binding ?? undefined);
+  } catch {
+    hydratingLaunchIds.delete(launchId);
+    return;
+  }
+  void Promise.resolve(request).then((snapshot) => {
+    // A concurrent snapshot may have landed first; `applyChatLaunchSnapshot`
+    // merges, so the host's copy still wins when it is newer.
+    if (snapshot) applyChatLaunchSnapshot(binding, snapshot);
+  }).catch(() => {
+    // The chat's machine is unreachable, or predates `chat.getLaunch`: the
+    // payload card keeps its place and the cooldown lets a later render retry.
+  }).finally(() => {
+    hydratingLaunchIds.delete(launchId);
+  });
+}
+
 export function dismissChatLaunches(launchIds: readonly string[]): void {
   if (launchIds.length === 0) return;
   chatLaunchStore.setState((state) => {
@@ -491,6 +536,8 @@ export function resetChatLaunchStoreForTests(): void {
   localRecords.clear();
   unsentQueuedMessages.clear();
   refreshingLaunchIds.clear();
+  hydratingLaunchIds.clear();
+  hydrateAttemptedAt.clear();
   cachedOriginClientId = null;
 }
 

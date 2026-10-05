@@ -4,7 +4,11 @@ import {
   isSessionFiledAsSnoozed,
   type CanonicalSessionPhase,
 } from "./sessionCanonicalState";
-import { sessionStatusPresentation, sessionStatusShoutsLabel } from "./sessionStatusPresentation";
+import {
+  sessionStatusPresentation,
+  sessionStatusShoutsLabel,
+  type SessionStatusTone,
+} from "./sessionStatusPresentation";
 import type { TerminalSessionSummary } from "./types/sessions";
 
 /**
@@ -49,9 +53,10 @@ export type SpawnNestingSession = Pick<
   | "usageLimitResume"
   | "chatActivityMode"
   | "nextWakeAt"
+  | "archivedAt"
 >;
 
-export type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
+type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
 
 export type SpawnNestingIndex<T extends SpawnNestingSession = SpawnNestingSession> = {
   childrenByRootParentId: Map<string, T[]>;
@@ -287,14 +292,21 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     ? indexNestedSubagents(sessions, options)
     : emptySpawnNestingIndex<T>();
   const visibleParentIds = options?.visibleParentIds ?? new Set(sessions.map((session) => session.id));
-  const shellsByParentId = groupAttachedShellsByParentId(
+  const attachedShellsByParentId = groupAttachedShellsByParentId(
     sessions,
     index.nestedChildToRootParentId,
     visibleParentIds,
   );
+  // Every attached shell is filed under its chat, so none resurfaces as a
+  // top-level card. An archived one is then left out of the drawer: dead agent
+  // shells are archived on purpose (`agentShellCleanup`) to keep it quiet, and
+  // the transcript stays on disk.
   const excludedTopLevelIds = new Set(index.nestedChildIds);
-  for (const list of shellsByParentId.values()) {
+  const shellsByParentId = new Map<string, T[]>();
+  for (const [parentId, list] of attachedShellsByParentId) {
     for (const child of list) excludedTopLevelIds.add(child.id);
+    const listed = list.filter((child) => !child.archivedAt);
+    if (listed.length > 0) shellsByParentId.set(parentId, listed);
   }
   return {
     subagentsByParentId: index.childrenByRootParentId,
@@ -317,7 +329,7 @@ export function isTopLevelWorkSession(
   return true;
 }
 
-export function nestedSubagentDrawerAttention(
+function nestedSubagentDrawerAttention(
   children: readonly SpawnNestingSession[],
   nowMs: number = Date.now(),
 ): NestedSubagentDrawerAttention {
@@ -342,4 +354,34 @@ export function nestedSubagentDrawerAttention(
     }
   }
   return needsYou ? "needs_you" : null;
+}
+
+export type NestedDrawerStatus = "failed" | "needs_you" | "running" | null;
+
+/** How each drawer status reads on every surface: one word, one tone. */
+export const NESTED_DRAWER_STATUS_PRESENTATION: Record<
+  NonNullable<NestedDrawerStatus>,
+  { label: string; tone: SessionStatusTone }
+> = {
+  failed: { label: "Failed", tone: "red" },
+  needs_you: { label: "Needs you", tone: "amber" },
+  running: { label: "Running", tone: "blue" },
+};
+
+/**
+ * The one state a COLLAPSED drawer shows next to its count: failed, then needs
+ * you (both via `nestedSubagentDrawerAttention`), then running. Ended and done
+ * children add nothing — a drawer of finished work shows only its count.
+ */
+export function nestedDrawerStatus(
+  children: readonly SpawnNestingSession[],
+  nowMs: number = Date.now(),
+): NestedDrawerStatus {
+  const attention = nestedSubagentDrawerAttention(children, nowMs);
+  if (attention) return attention;
+  for (const child of children) {
+    const phase = phaseOf(child, nowMs);
+    if (phase === "running" || phase === "starting") return "running";
+  }
+  return null;
 }

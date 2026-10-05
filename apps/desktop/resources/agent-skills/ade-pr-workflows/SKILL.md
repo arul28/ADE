@@ -16,6 +16,21 @@ ade prs comments <pr-id-or-number-or-url> --text
 
 Use `ade help prs` and `ade help git rebase` before guessing PR or rebase flags.
 
+## Get woken when your PR changes — don't poll
+
+After you open a PR, have ADE wake you instead of sleeping and re-checking:
+
+```bash
+ade prs watch <pr>     # wake me on a failed check, checks passing, new comments, a conflict, merge/close
+ade prs ship <pr>      # watch + standing orders to take it to merged; waits for CI and review bots
+ade prs unwatch <pr>   # stop
+ade prs watch-status   # what this chat is watching
+```
+
+`<pr>` is a PR number, URL, or ADE PR id; the watch is for your own chat. Each
+wake lists exactly what changed; act on it and end your turn — ADE wakes you
+on the next change. Comments you post through `ade prs` never wake you.
+
 ## GitHub stacked PRs
 
 A stack is two or more dependency-ordered, independently reviewable PRs. ADE

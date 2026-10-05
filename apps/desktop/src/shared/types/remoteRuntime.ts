@@ -338,7 +338,17 @@ export type RemoteRuntimeMachineProjectCapability =
   | "handoffStoragePreflight"
   | "create"
   | "clone"
-  | "listMyGitHubRepos";
+  | "listMyGitHubRepos"
+  /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
+  | "setIcon";
+
+/** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
+export type RemoteRuntimeProjectIconUpload = {
+  /** Picked file's name; only its extension and base name are used. */
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+};
 
 export type RemoteRuntimeCapabilities = {
   projects: boolean;

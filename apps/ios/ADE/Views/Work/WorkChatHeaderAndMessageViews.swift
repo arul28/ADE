@@ -109,6 +109,8 @@ struct WorkChatHeaderMenuModel: Equatable {
   var canAttachIssue: Bool = false
   /// False for Cursor Cloud chats — Cursor owns the agent name.
   var showsRename: Bool = true
+  /// The host has `chat.restartSession`.
+  var showsRestartAgent: Bool = false
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -135,6 +137,9 @@ struct WorkChatHeaderMenu: View, Equatable {
   var onCopySessionId: () -> Void
   var onCopySessionDeepLink: () -> Void
   var onTogglePinned: () -> Void
+  /// Fresh provider process, same conversation: picks up new skills, plugins,
+  /// and MCP servers (desktop "Restart agent session").
+  var onRestartAgent: (() -> Void)? = nil
   var onAttachIssue: (() -> Void)? = nil
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
@@ -244,6 +249,13 @@ struct WorkChatHeaderMenu: View, Equatable {
       Button(action: onRename) {
         Label("Rename", systemImage: "pencil")
       }
+    }
+
+    if model.showsRestartAgent, let onRestartAgent {
+      Button(action: onRestartAgent) {
+        Label("Restart agent session", systemImage: "arrow.clockwise")
+      }
+      .accessibilityHint("Starts a fresh agent process on the next message, with new skills, plugins, and MCP servers. The conversation is kept.")
     }
 
     Button(role: .destructive, action: onDelete) {
@@ -447,7 +459,19 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              WorkChipMessageText(text: bubbleText)
+              if segment == nil, let parts = workUserMessageParts(bubbleText) {
+                // Sent thread comments draw as a card, and desktop quotes as
+                // quotes, instead of their raw `<ade-…>` tags.
+                WorkUserMessageStructuredBody(parts: parts)
+              } else if workUserTextLooksLikeMarkdown(message.markdown) {
+                // A handoff brief or pasted spec: render it, don't print raw
+                // `###` and `**`. Chat lines keep their exact text.
+                WorkMarkdownRenderer(markdown: bubbleText)
+                  .environment(\.workMarkdownForeground, .white)
+                  .foregroundStyle(.white)
+              } else {
+                WorkChipMessageText(text: bubbleText)
+              }
             }
             if hasAttachments {
               WorkChatAttachmentTray(
@@ -526,7 +550,8 @@ struct WorkChatMessageBubble: View, Equatable {
 
   private var userMessageAccessibilityLabel: String {
     var parts = ["Your message."]
-    let preview = workChatAccessibilityPreview(message.markdown)
+    // Comment cards and quotes read as words, not as their raw tags.
+    let preview = workChatAccessibilityPreview(workUserMessageAccessibilityText(message.markdown) ?? message.markdown)
     if !preview.isEmpty {
       parts.append(preview)
     }
@@ -584,8 +609,8 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   switch chip.origin {
   case .link(let link):
     return URL(string: link.url)
-  case .model:
-    // A model chip is an instruction, not a place: nothing to open.
+  case .model, .permission, .skill:
+    // A model, permission or skill chip names a setting, not a place.
     return nil
   case .path:
     // Same reasoning as a terminal mention: the desktop routes a path chip to
@@ -609,6 +634,57 @@ func workChipInlineLabel(_ chip: WorkChip) -> String {
   "\(chip.glyph) \(chip.label)"
 }
 
+/// One chip as a styled, tappable run: glyph + label. A lane or chat this
+/// device knows shows its real name (not "Lane b7ffb312"), a lane takes its own
+/// colour, and a running or waiting chat carries a live dot. The desktop's dot
+/// pulses; a `Text` run cannot animate, so this one is steady.
+func workChipPill(
+  _ chip: WorkChip,
+  facts: WorkThreadEntityFacts?,
+  foreground: Color,
+  background: Color,
+  font: Font? = nil,
+  emphasized: Bool = false
+) -> AttributedString {
+  let factLabel = facts?.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let label = factLabel.isEmpty ? chip.label : factLabel
+  let laneColor = LaneColorPalette.color(forHex: facts?.colorHex)
+  let fill = laneColor.map { $0.opacity(0.2) } ?? background
+
+  var pill = AttributedString("\(chip.glyph) \(label)")
+  pill.foregroundColor = laneColor.map { workMixColors($0, Color.white, 0.38) } ?? foreground
+  pill.backgroundColor = fill
+  if let live = facts?.live {
+    var dot = AttributedString(" ●")
+    dot.foregroundColor = live == .running ? ADEColor.success : ADEColor.warning
+    dot.backgroundColor = fill
+    pill.append(dot)
+  }
+  if let font { pill.font = font }
+  if emphasized { pill.inlinePresentationIntent = .stronglyEmphasized }
+  if let url = workChipNavigationURL(chip) {
+    pill.link = url
+  }
+  return pill
+}
+
+/// Where a chip tap lands. A lane opens its section in Work; every other
+/// `ade://` target goes through the app's deep-link router; a web address goes
+/// to the system.
+@MainActor
+func workOpenChipURL(_ url: URL) -> OpenURLAction.Result {
+  guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+  if url.host?.lowercased() == "lane",
+     let laneId = url.pathComponents.first(where: { $0 != "/" })?.removingPercentEncoding,
+     UUID(uuidString: laneId) != nil,
+     let syncService = SyncService.shared {
+    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
+    return .handled
+  }
+  DeepLinkRouter.shared.handle(url)
+  return .handled
+}
+
 /// Build the message body with its chips as styled, tappable runs.
 ///
 /// A partition of the original string: every character of `text` is either in a
@@ -618,6 +694,7 @@ func workChipAttributedMessage(
   _ text: String,
   chipForeground: Color,
   chipBackground: Color,
+  lookup: WorkThreadEntityLookup = .empty,
   limit: Int = WorkChipDetector.defaultLimit
 ) -> AttributedString {
   var out = AttributedString()
@@ -626,14 +703,15 @@ func workChipAttributedMessage(
     case .text(let run):
       out.append(AttributedString(run))
     case .chip(let chip):
-      var pill = AttributedString(workChipInlineLabel(chip))
-      pill.foregroundColor = chipForeground
-      pill.backgroundColor = chipBackground
-      pill.font = WorkChatTypography.body.weight(.semibold)
-      if let url = workChipNavigationURL(chip) {
-        pill.link = url
-      }
-      out.append(pill)
+      out.append(
+        workChipPill(
+          chip,
+          facts: lookup.facts(for: chip),
+          foreground: chipForeground,
+          background: chipBackground,
+          font: WorkChatTypography.chip
+        )
+      )
     }
   }
   return out
@@ -713,10 +791,32 @@ struct WorkUserBubbleOutline: Shape {
   }
 }
 
+private let workUserMarkdownHeadingLine = try! NSRegularExpression(pattern: "^#{1,6}\\s+\\S", options: [.anchorsMatchLines])
+private let workUserMarkdownFenceLine = try! NSRegularExpression(pattern: "^\\s*(```|~~~)", options: [.anchorsMatchLines])
+private let workUserMarkdownListLine = try! NSRegularExpression(
+  pattern: "^\\s*(?:[-*+]|\\d+[.)])\\s+\\S",
+  options: [.anchorsMatchLines]
+)
+
+/// True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
+/// spec), not a chat line that happens to contain an asterisk. Mirrors
+/// `userTextLooksLikeMarkdown` on the desktop.
+func workUserTextLooksLikeMarkdown(_ text: String) -> Bool {
+  let ns = text as NSString
+  guard ns.length >= 80 else { return false }
+  let full = NSRange(location: 0, length: ns.length)
+  if workUserMarkdownHeadingLine.firstMatch(in: text, range: full) != nil { return true }
+  if workUserMarkdownFenceLine.firstMatch(in: text, range: full) != nil { return true }
+  return workUserMarkdownListLine.numberOfMatches(in: text, range: full) >= 3
+}
+
 struct WorkChipMessageText: View {
   let text: String
   var foreground: Color = .white
   var chipBackground: Color = Color.white.opacity(0.22)
+  /// Lane names, colours and chat titles for the chips. Republishes only when
+  /// one of those changes.
+  @ObservedObject private var entities = WorkThreadEntityDirectory.shared
 
   /// One cheap scan before any regex runs. The overwhelming majority of
   /// messages contain no chip at all, and this view is rebuilt for every
@@ -732,14 +832,11 @@ struct WorkChipMessageText: View {
           workChipAttributedMessage(
             text,
             chipForeground: foreground,
-            chipBackground: chipBackground
+            chipBackground: chipBackground,
+            lookup: entities.lookup
           )
         )
-        .environment(\.openURL, OpenURLAction { url in
-          guard url.scheme?.lowercased() == "ade" else { return .systemAction }
-          DeepLinkRouter.shared.handle(url)
-          return .handled
-        })
+        .environment(\.openURL, OpenURLAction { url in workOpenChipURL(url) })
       } else {
         Text(text)
       }
@@ -1342,35 +1439,219 @@ struct WorkTurnEndMarkerView: View {
   }
 }
 
-struct WorkClaudeGoalPill: View {
-  let goal: AgentChatClaudeGoal
+/// The chat's goal as the composer chip (desktop `GoalChip`): Codex
+/// `thread/goal` or Claude's native `/goal`. Codex goals that finished drop it.
+struct WorkChatGoalModel: Equatable {
+  enum Provider: Equatable { case claude, codex }
+  let provider: Provider
+  let objective: String
+  /// Codex goal status; Claude goals are `active` while they exist.
+  let status: String
+  let iterations: Int?
+  let tokensUsed: Double?
+  let lastReason: String?
 
-  private var iterationLabel: String {
-    "\(goal.iterations) iteration\(goal.iterations == 1 ? "" : "s")"
+  var paused: Bool { provider == .codex && status == "paused" }
+
+  var statusLabel: String {
+    switch status {
+    case "usage_limited": return "waiting on usage limit"
+    case "budget_limited": return "budget reached"
+    case "complete": return "reached"
+    default: return status.replacingOccurrences(of: "_", with: " ")
+    }
   }
 
+  var progressLabel: String? {
+    if let iterations, iterations > 0 { return "iteration \(iterations)" }
+    guard let tokensUsed, tokensUsed.isFinite, tokensUsed > 0 else { return nil }
+    if tokensUsed >= 1_000_000 { return String(format: "%.1fM tokens", tokensUsed / 1_000_000) }
+    if tokensUsed >= 1_000 { return "\(Int((tokensUsed / 1_000).rounded()))k tokens" }
+    return "\(Int(tokensUsed)) tokens"
+  }
+}
+
+/// Desktop's pick, in its order: a live Codex goal on a Codex chat, else a
+/// Claude `/goal` condition.
+func workChatGoalModel(
+  provider: String,
+  claudeGoal: AgentChatClaudeGoal?,
+  codexGoal: AgentChatCodexGoal?
+) -> WorkChatGoalModel? {
+  let family = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if family == "codex", let codexGoal, codexGoal.isLive {
+    return WorkChatGoalModel(
+      provider: .codex,
+      objective: codexGoal.objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      status: codexGoal.status ?? "active",
+      iterations: nil,
+      tokensUsed: codexGoal.tokensUsed,
+      lastReason: nil
+    )
+  }
+  if let claudeGoal {
+    let condition = claudeGoal.condition.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !condition.isEmpty else { return nil }
+    return WorkChatGoalModel(
+      provider: .claude,
+      objective: condition,
+      status: "active",
+      iterations: claudeGoal.iterations,
+      tokensUsed: nil,
+      lastReason: claudeGoal.lastReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+  return nil
+}
+
+/// One-line goal chip above the composer. Tap opens a sheet with the full
+/// objective and the controls the provider has: Codex goals pause and resume;
+/// Claude goals (its `/goal`) can only be changed or cleared, between turns.
+/// A nil closure hides its button (the host lacks that command).
+struct WorkChatGoalChip: View {
+  let goal: WorkChatGoalModel
+  /// Claude takes `/goal` only between turns.
+  let turnActive: Bool
+  var onEdit: ((String) -> Void)? = nil
+  var onClear: (() -> Void)? = nil
+  var onSetPaused: ((Bool) -> Void)? = nil
+
+  @State private var sheetPresented = false
+  @State private var pulse = false
+
+  /// Amber while working toward the goal, grey when paused.
+  private var dotColor: Color { goal.paused ? ADEColor.textMuted : ADEColor.warning }
+
   var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: "target")
-        .font(.caption2.weight(.bold))
-      Text(goal.condition)
-        .font(.caption.weight(.medium))
-        .lineLimit(1)
-      Text("·")
-        .foregroundStyle(ADEColor.textMuted)
-      Text(iterationLabel)
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
+    Button {
+      ADEHaptics.light()
+      sheetPresented = true
+    } label: {
+      HStack(spacing: 5) {
+        Image(systemName: "target")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.warning)
+        Text("Goal")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Circle()
+          .fill(dotColor)
+          .frame(width: 5, height: 5)
+          .opacity(!goal.paused && pulse ? 0.35 : 1)
+          .animation(goal.paused ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+          .onAppear { pulse = true }
+          .accessibilityHidden(true)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(ADEColor.warning.opacity(0.07), in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.5))
+      .contentShape(Capsule(style: .continuous))
     }
-    .foregroundStyle(ADEColor.textSecondary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.accent.opacity(0.07), in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.16), lineWidth: 0.5))
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Goal: \(goal.condition). \(iterationLabel).")
+    .buttonStyle(.plain)
+    .accessibilityLabel("Goal, \(goal.statusLabel): \(goal.objective)")
+    .accessibilityHint("Opens goal controls")
+    .accessibilityIdentifier("Work.Chat.GoalChip")
+    .sheet(isPresented: $sheetPresented) {
+      WorkChatGoalSheet(
+        goal: goal,
+        turnActive: turnActive,
+        onEdit: onEdit,
+        onClear: onClear,
+        onSetPaused: onSetPaused
+      )
+      .presentationDetents([.height(340), .medium])
+      .presentationDragIndicator(.visible)
+    }
+  }
+}
+
+private struct WorkChatGoalSheet: View {
+  let goal: WorkChatGoalModel
+  let turnActive: Bool
+  let onEdit: ((String) -> Void)?
+  let onClear: (() -> Void)?
+  let onSetPaused: ((Bool) -> Void)?
+
+  @Environment(\.dismiss) private var dismiss
+  @State private var editing = false
+  @State private var draft = ""
+
+  private var claudeLocked: Bool { goal.provider == .claude && turnActive }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          Text(goal.objective)
+            .font(.body)
+            .textSelection(.enabled)
+          if let lastReason = goal.lastReason, !lastReason.isEmpty {
+            Text("Last check: \(lastReason)")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        } header: {
+          Text(["Goal · \(goal.statusLabel)", goal.progressLabel].compactMap { $0 }.joined(separator: " · "))
+        } footer: {
+          if claudeLocked {
+            Text("Claude takes goal changes between turns.")
+          }
+        }
+
+        if editing, let onEdit {
+          Section("Edit goal") {
+            TextField("Goal", text: $draft, axis: .vertical)
+              .lineLimit(2...6)
+            let normalizedDraft = draft
+              .replacingOccurrences(of: "\\s*[\\r\\n]+\\s*", with: " ", options: .regularExpression)
+              .trimmingCharacters(in: .whitespacesAndNewlines)
+            Button("Set goal") {
+              guard !normalizedDraft.isEmpty, normalizedDraft != goal.objective else { return }
+              onEdit(normalizedDraft)
+              dismiss()
+            }
+            .disabled(claudeLocked || normalizedDraft.isEmpty || normalizedDraft == goal.objective)
+          }
+        } else {
+          Section {
+            if onEdit != nil {
+              Button {
+                draft = goal.objective
+                editing = true
+              } label: {
+                Label("Edit", systemImage: "pencil")
+              }
+              .disabled(claudeLocked)
+            }
+            if goal.provider == .codex, let onSetPaused {
+              Button {
+                onSetPaused(!goal.paused)
+                dismiss()
+              } label: {
+                Label(goal.paused ? "Resume" : "Pause", systemImage: goal.paused ? "play.fill" : "pause.fill")
+              }
+            }
+            if let onClear {
+              Button(role: .destructive) {
+                onClear()
+                dismiss()
+              } label: {
+                Label("Clear", systemImage: "xmark")
+              }
+              .disabled(claudeLocked)
+            }
+          }
+        }
+      }
+      .navigationTitle("Goal")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
   }
 }
 

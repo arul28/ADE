@@ -26,7 +26,7 @@ import {
   Tag,
   TextT,
   Trash,
-  type Icon,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 import type {
   AgentChatSessionMetadataField,
@@ -46,7 +46,14 @@ import {
   snoozeWakeLabel,
   type SnoozeDurationKey,
 } from "../../lib/sessionSnooze";
-import { MenuSectionLabel, MenuSeparator, MenuSubmenu } from "../ui/MenuSubmenu";
+import {
+  DESTRUCTIVE_ITEM_CLASS,
+  MENU_ITEM_CLASS,
+  MenuRowIcon,
+  MenuSectionLabel,
+  MenuSeparator,
+  MenuSubmenu,
+} from "../ui/MenuSubmenu";
 import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
@@ -55,6 +62,7 @@ import {
   automationRulesReadable,
   removeAutomationRules,
   setSessionSettleOverride,
+  restartAgentSession,
   setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
@@ -65,28 +73,6 @@ import {
   loadAutoHandoffRulesForSession,
 } from "./AutoHandoffModal";
 import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
-
-/* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
-   `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
-   dark menu is imperceptible. Menu rows now use the same white-alpha fill every
-   other hoverable surface in the sidebar uses, so "this row is under my cursor"
-   is actually visible. */
-const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.07] focus-visible:bg-white/[0.07] outline-none";
-const DESTRUCTIVE_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
-
-function MenuRowIcon({ icon: Icon, danger = false }: { icon: Icon; danger?: boolean }) {
-  return (
-    <span
-      aria-hidden
-      data-menu-icon=""
-      className={danger ? "inline-flex shrink-0 text-red-300/70" : "inline-flex shrink-0 text-fg/45"}
-    >
-      <Icon size={13} weight="duotone" />
-    </span>
-  );
-}
 
 const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   label: string;
@@ -763,6 +749,19 @@ function SessionContextMenuPanel({
               </button>
             ) : null}
           </MenuSubmenu>
+        ) : null}
+
+        {isChat ? (
+          <button
+            type="button"
+            data-testid="session-menu-restart-agent"
+            className={MENU_ITEM_CLASS}
+            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
+            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Restart agent session
+          </button>
         ) : null}
 
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (

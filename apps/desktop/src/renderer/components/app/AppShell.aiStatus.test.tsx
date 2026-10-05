@@ -138,6 +138,17 @@ describe("AppShell AI provider status", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
+        archive: {
+          summary: vi.fn(async () => ({
+            total: 0,
+            byKind: { lane: 0, chat: 0, shell: 0 },
+            olderThanDays: 14,
+            staleTotal: 0,
+            staleByKind: { lane: 0, chat: 0, shell: 0 },
+            staleBytes: null,
+            oldestArchivedAt: null,
+          })),
+        },
         analytics: {
           capture: analyticsCaptureMock,
           getStatus: vi.fn(),

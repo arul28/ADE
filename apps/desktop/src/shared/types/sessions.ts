@@ -299,6 +299,14 @@ export type TerminalResumeMetadata = {
 export type TrackedCliResumeProvider = TerminalResumeProvider;
 export type TrackedCliResumeMetadata = TerminalResumeMetadata;
 
+/** A chat's live goal, projected onto its row so lists can show it. */
+export type SessionActiveGoal = {
+  provider: "codex" | "claude";
+  objective: string;
+  /** Codex goal status; Claude goals are always `active` while they exist. */
+  status: string;
+};
+
 export type TerminalSessionSummary = {
   id: string;
   laneId: string;
@@ -310,6 +318,8 @@ export type TerminalSessionSummary = {
   pinned: boolean;
   manuallyNamed?: boolean;
   goal: string | null;
+  /** The chat's live goal (Codex `thread/goal`, Claude `/goal`); absent when none. */
+  activeGoal?: SessionActiveGoal | null;
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
@@ -568,6 +578,12 @@ export type PtyCreateArgs = {
   allowExternalCwd?: boolean;
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
+  /**
+   * `"agent"` when an agent started this shell for its chat (App Control). Such
+   * a shell is archived once it is dead and nobody typed into it; see
+   * `agentShellCleanup`. Omitted means the user started it.
+   */
+  launchedBy?: "agent";
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
@@ -725,6 +741,8 @@ export type ChatTerminalListArgs = {
   chatSessionId?: string | null;
   laneId?: string | null;
   limit?: number | null;
+  /** Archived shells are left out unless this is true. Read one by id any time. */
+  includeArchived?: boolean | null;
 };
 
 export type ChatTerminalReadArgs = {
@@ -746,6 +764,11 @@ export type ChatTerminalWriteArgs = {
   ptyId?: string | null;
   chatSessionId?: string | null;
   data: string;
+  /**
+   * The person typed this (ADE Code), not an agent. Claims an agent-started
+   * shell for the user so the dead-shell cleanup leaves it alone.
+   */
+  fromUser?: boolean;
 };
 
 export type ChatTerminalResizeArgs = {

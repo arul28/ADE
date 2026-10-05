@@ -537,6 +537,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkC
     onEditSteer: { _, _ in },
     onDispatchSteerInline: nil,
     onDispatchSteerInterrupt: nil,
+    onMoveSteer: nil,
     onSelectModel: { _ in },
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
@@ -1321,6 +1322,14 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The New Chat page with fixture lanes and Claude/Codex limits. See
   /// `WorkNewChatPreviewHost` in `WorkNewChatScreen.swift`.
   case newChat = "new-chat"
+  /// The New Chat page started on a gateway-routed model
+  /// (`opencode/opencode-go/deepseek-v4.1-flash`) and the long-branch lane, so
+  /// the model chip's name/mark and the lane-selector layout are screenshotable
+  /// with no pairing.
+  case newChatDeepSeek = "new-chat-deepseek"
+  /// The real model picker with fixture Custom harnesses. See
+  /// `WorkModelPickerPreviewHost`.
+  case modelPicker = "model-picker"
   /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
   /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
   case hubComposer = "hub-composer"
@@ -1342,6 +1351,14 @@ enum ADEPreviewScreen: String, CaseIterable {
   case prFiles = "pr-files"
   case prDiff = "pr-diff"
   case prChecks = "pr-checks"
+  /// AI accounts. See `SettingsProviderAccountsPreviews.swift`.
+  case accounts = "accounts"
+  case accountsOtherMachine = "accounts-other-machine"
+  case accountDetail = "account-detail"
+  case accountAdd = "account-add"
+  case accountSignInClaude = "account-signin-claude"
+  case accountSignInCodex = "account-signin-codex"
+  case accountSignInDone = "account-signin-done"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1420,6 +1437,20 @@ struct ADEPreviewScreenHost: View {
       PrDiffPreviewHost()
     case .prChecks:
       PrDetailPreviewHost(tab: .checks, state: "open")
+    case .accounts:
+      ProviderAccountsPreviewHost(screen: .list)
+    case .accountsOtherMachine:
+      ProviderAccountsPreviewHost(screen: .otherMachine)
+    case .accountDetail:
+      ProviderAccountsPreviewHost(screen: .detail)
+    case .accountAdd:
+      ProviderAccountsPreviewHost(screen: .add)
+    case .accountSignInClaude:
+      ProviderAccountsPreviewHost(screen: .signInClaude)
+    case .accountSignInCodex:
+      ProviderAccountsPreviewHost(screen: .signInCodex)
+    case .accountSignInDone:
+      ProviderAccountsPreviewHost(screen: .signInDone)
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:
@@ -1451,10 +1482,69 @@ struct ADEPreviewScreenHost: View {
       WorkListPreviewHost()
     case .newChat:
       WorkNewChatPreviewHost()
+    case .newChatDeepSeek:
+      WorkNewChatPreviewHost(usesGatewayModelFixture: true)
+    case .modelPicker:
+      WorkModelPickerPreviewHost()
     case .hubComposer:
       HubComposerPreviewHost()
     }
   }
+}
+
+/// The real model picker with fixture Custom harnesses, presented as the sheet
+/// the phone shows. The host has no catalog, so the Custom rail and pane are
+/// what this fixture proves.
+private struct WorkModelPickerPreviewHost: View {
+  var body: some View {
+    NavigationStack {
+      WorkModelPickerSheet(
+        currentModelId: WorkModelPickerPreviewData.currentModelId,
+        currentProvider: "opencode",
+        cursorAvailabilityMode: .chat,
+        harnessPresets: WorkModelPickerPreviewData.presets,
+        isBusy: false,
+        onSelectPreset: { _ in },
+        onSelect: { _, _, _, _ in }
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    }
+  }
+}
+
+@MainActor
+private enum WorkModelPickerPreviewData {
+  static let currentModelId = "opencode/opencode-go/deepseek-v4.1-flash"
+
+  static let presets: [SyncMachineInventoryPreset] = [
+    SyncMachineInventoryPreset(
+      id: "hp_deepseek_flash",
+      name: "DeepSeek Flash",
+      harness: "opencode",
+      model: "opencode/opencode-go/deepseek-v4.1-flash",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "deepseek"),
+      accentColor: "#4d6bfe",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_opus_work",
+      name: "Opus on work",
+      harness: "claude",
+      model: "claude-opus-5-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "ade", providerId: nil),
+      accentColor: "#7c5ce0",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_haiku_sweeps",
+      name: "Haiku sweeps",
+      harness: "claude",
+      model: "claude-haiku-4-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "claude"),
+      accentColor: nil,
+      bound: false
+    ),
+  ]
 }
 
 /// Backdrop that opens `WorkQueuedSteerDetailSheet` on appear, so the fixture
@@ -1688,6 +1778,7 @@ struct WorkListPreviewHost: View {
       fixture.pushChatAfter = pushAfter
     }
     WorkRootPreviewFixture.active = fixture
+    WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
     if defaults.object(forKey: "adeWorkFixtureUnread") as? String != "0" {
       seedUnreadActivity()
     }
@@ -1787,6 +1878,7 @@ enum WorkListPreviewData {
   static let hub = lane(id: "wl-lane-hub", name: "mobile work hub", branch: "ade/mobile-work-hub", color: "#a78bfa")
   static let perf = lane(id: "wl-lane-perf", name: "sync perf", branch: "ade/sync-perf", color: "#34d399", icon: .bolt)
   static let sim = lane(id: "wl-lane-sim", name: "ios sim editor", branch: "ade/ios-sim-editor", color: "#fb923c")
+  static let docs = lane(id: "wl-lane-docs", name: "docs refresh", branch: "ade/docs-refresh", color: "#f472b6")
 
   private struct Row {
     var id: String
@@ -1794,7 +1886,7 @@ enum WorkListPreviewData {
     var title: String
     var provider: String = "claude"
     var model: String = "claude-opus-5"
-    /// "running" | "needs-you" | "done" | "cli-running" | "cli-done"
+    /// "running" | "needs-you" | "done" | "snoozed" | "cli-running" | "cli-done"
     var state: String
     var minutesAgo: Int
     var preview: String
@@ -1824,7 +1916,19 @@ enum WorkListPreviewData {
         preview: "Tightening the element outline hit test."),
     Row(id: "wl-sim-2", lane: sim, title: "Preview target wiring", state: "done", minutesAgo: 180,
         preview: "Preview targets now resolve per lane."),
+    // Only running work: folds into the Working shelf when "Fold busy lanes" is on.
+    Row(id: "wl-docs-1", lane: docs, title: "Rewrite the lanes guide", state: "running", minutesAgo: 3,
+        preview: "Updating the screenshots for the new lane header."),
+    Row(id: "wl-docs-2", lane: docs, title: "Check every docs link", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 5,
+        preview: "41 of 120 links checked."),
+    // Snoozed for three hours: lands on the Snoozed shelf with "back <time>".
+    Row(id: "wl-perf-snoozed", lane: perf, title: "Flaky sync test triage", state: "snoozed", minutesAgo: 30,
+        preview: "Parked until the CI runner is upgraded."),
   ]
+
+  /// Rows the fixture marks as left since they finished, so a lane
+  /// whose only finished row was read still folds (`workIsRowSeen`).
+  static let seenSessionIds = ["wl-sim-2"]
 
   static func fixture() -> WorkRootPreviewFixture {
     var sessions: [TerminalSessionSummary] = []
@@ -1833,6 +1937,7 @@ enum WorkListPreviewData {
       let isCli = row.state.hasPrefix("cli")
       let running = row.state == "running" || row.state == "cli-running"
       let needsYou = row.state == "needs-you"
+      let snoozed = row.state == "snoozed"
       let at = iso(row.minutesAgo)
       var session = WorkPreviewData.sessionFixture(
         id: row.id,
@@ -1847,6 +1952,10 @@ enum WorkListPreviewData {
         summary: row.preview
       )
       session.lastActivityAt = at
+      if snoozed {
+        session.snoozedAt = at
+        session.snoozedUntil = iso(-180)
+      }
       if let parentId = row.parentId {
         session.spawnKind = .subagent
         session.orchestrationParentSessionId = parentId
@@ -1875,7 +1984,7 @@ enum WorkListPreviewData {
     }
     return WorkRootPreviewFixture(
       sessions: sessions,
-      lanes: [primary, hub, perf, sim],
+      lanes: [primary, hub, perf, sim, docs],
       pullRequests: [
         pullRequest(id: "wl-pr-hub", lane: hub, number: 1304, title: "Work tab header in one row", state: "open", checks: "success"),
         pullRequest(id: "wl-pr-perf", lane: perf, number: 1298, title: "Coalesce roster publishes", state: "merged", checks: "success"),

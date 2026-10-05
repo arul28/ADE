@@ -440,6 +440,15 @@ function createHarness(overrides: {
 
   const sessionStore = new Map<string, any>();
   const sessionService = {
+    agentShells: {
+      start: vi.fn(),
+      stop: vi.fn(),
+      sweep: vi.fn(() => []),
+      sweepQuietly: vi.fn(),
+      markAgentLaunched: vi.fn(),
+      markUserInput: vi.fn(),
+      markRetiredByAde: vi.fn(),
+    },
     create: vi.fn((args: any) => {
       sessionStore.set(args.sessionId, {
         ...args,
@@ -6953,6 +6962,43 @@ describe("ptyService", () => {
       expect(mockPty.kill).not.toHaveBeenCalled();
       expect(sessionService.end).not.toHaveBeenCalled();
       expect(broadcastExit).not.toHaveBeenCalled();
+    });
+
+    it("writes the last screen snapshot at once, and again once queued output is parsed", async () => {
+      // A brain that shuts down exits before the unref'd debounce timer fires,
+      // so dispose writes what the mirror has parsed now. Output the mirror has
+      // not parsed yet must still reach the file once it is.
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "parsed before dispose\r\n");
+        // Let the headless mirror parse the output; the debounce is still pending.
+        await vi.advanceTimersByTimeAsync(100);
+        const snapshotWrites = () => mocks.writeFileSync.mock.calls
+          .filter(([filePath]) => String(filePath).includes(`terminal-snapshots${path.sep}${sessionId}.json`))
+          .map(([, data]) => String(data));
+        const writesBefore = snapshotWrites().length;
+        mockPty._emitter.emit("data", "queued at dispose\r\n");
+
+        service.dispose({ ptyId });
+
+        const atDispose = snapshotWrites().slice(writesBefore);
+        expect(atDispose).toHaveLength(1);
+        expect(atDispose[0]).toContain("parsed before dispose");
+
+        await vi.advanceTimersByTimeAsync(100);
+        const settled = snapshotWrites().slice(writesBefore);
+        expect(settled).toHaveLength(2);
+        expect(settled[1]).toContain("parsed before dispose");
+        expect(settled[1]).toContain("queued at dispose");
+        expect(mocks.renameSync).toHaveBeenLastCalledWith(
+          expect.stringContaining(`${sessionId}.json.`),
+          expect.stringMatching(new RegExp(`terminal-snapshots[\\\\/]${sessionId}\\.json$`)),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("handles disposing an already-disposed PTY gracefully", async () => {

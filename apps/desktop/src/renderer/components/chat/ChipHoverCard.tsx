@@ -27,7 +27,7 @@
 //     match a DIFFERENT lane that happens to share the id — and then print its
 //     name and branch. A chat pinned to a remote machine must read that
 //     machine's lanes, sessions and PRs, which is what `useChatRuntimeScope()`
-//     plus `useLanesForPin` / `useMachineEntryForBinding` resolve. Nothing here
+//     plus `useLanesForPin` / `useSessionsForPin` resolve. Nothing here
 //     touches a global store read.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -42,8 +42,9 @@ import type {
 } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { relativeWhen } from "../../lib/format";
-import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
@@ -60,6 +61,25 @@ export type ChipCardSources = {
    */
   rootPath: string | null;
 };
+
+/** A chip's view of the chat machine: its lanes and sessions. */
+export type ChipScopeSources = {
+  lanes: LaneSummary[] | null;
+  sessions: TerminalSessionSummary[] | null;
+};
+
+/**
+ * The machine this CHAT runs on. `AgentChatMessageList` sits under
+ * `ChatRuntimeScopeProvider`, exactly like `UserMessageIssueContext` next door,
+ * so the scope is already the right answer here — no prop drilling and,
+ * crucially, no global store read of the project tab's lanes.
+ */
+export function useChipScopeSources(): ChipScopeSources {
+  const scope = useChatRuntimeScope();
+  const lanes = useLanesForPin(scope.binding);
+  const sessions = useSessionsForPin(scope.binding);
+  return { lanes, sessions };
+}
 
 const EMPTY_LANES: LaneSummary[] = [];
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
@@ -268,22 +288,27 @@ export type ChipHoverCard = {
  * wrapper element: a chip lives inline in flowing prose, and wrapping it in a
  * positioned box would change how the sentence wraps around it.
  */
-export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipHoverCard {
+export function useChipHoverCard(
+  chip: Chip,
+  previewTitle: string | null,
+  /**
+   * The chat machine's lanes and sessions, resolved once by the chip (see
+   * `useChipScopeSources`) and shared with its label, so a transcript of
+   * hundreds of pills subscribes to each list once per pill, not twice.
+   */
+  scoped: ChipScopeSources,
+): ChipHoverCard {
   const cardId = useId();
-  // The machine this CHAT runs on. `AgentChatMessageList` sits under
-  // `ChatRuntimeScopeProvider`, exactly like `UserMessageIssueContext` next
-  // door, so the scope is already the right answer here — no prop drilling and,
-  // crucially, no global store read of the project tab's lanes.
   const scope = useChatRuntimeScope();
-  const machine = useMachineEntryForBinding(scope.binding);
-  const scopedLanes = useLanesForPin(scope.binding);
+  const scopedLanes = scoped.lanes;
+  const scopedSessions = scoped.sessions;
   // Held in a ref, not in the effect's deps: a lane-status refresh replaces
   // these arrays constantly, and depending on them would reload an open card on
   // every tick. This is the ref form the chat-scope lint rule sanctions.
   const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null });
   sourcesRef.current = {
     lanes: scopedLanes ?? EMPTY_LANES,
-    sessions: machine?.sessions ?? EMPTY_SESSIONS,
+    sessions: scopedSessions ?? EMPTY_SESSIONS,
     pin: scope.pin,
     rootPath: scope.rootPath,
   };
@@ -395,25 +420,29 @@ export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipH
 
   const card = open && data && typeof document !== "undefined"
     ? createPortal(
-        <div
-          ref={cardRef}
-          id={cardId}
-          role="tooltip"
-          data-chip-hover-card={data.kind}
-          className={
-            "pointer-events-none fixed z-[70] max-w-[300px] rounded-lg border border-white/12"
-            + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
-          }
-          style={{
-            top: coords?.y ?? 0,
-            left: coords?.x ?? 0,
-            // Measured before it is placed: keep the first frame invisible so
-            // the card never flashes at the top-left corner of the window.
-            visibility: coords ? "visible" : "hidden",
-          }}
-        >
-          <ChipCardBody data={data} />
-        </div>,
+        // The host owns the viewport anchoring and the tooltip layer; the card
+        // is placed inside it at the viewport point computeTooltipPosition gave.
+        <ViewportOverlayHost layer="tooltip">
+          <div
+            ref={cardRef}
+            id={cardId}
+            role="tooltip"
+            data-chip-hover-card={data.kind}
+            className={
+              "pointer-events-none absolute max-w-[300px] rounded-lg border border-white/12"
+              + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+            }
+            style={{
+              top: coords?.y ?? 0,
+              left: coords?.x ?? 0,
+              // Measured before it is placed: keep the first frame invisible so
+              // the card never flashes at the top-left corner of the window.
+              visibility: coords ? "visible" : "hidden",
+            }}
+          >
+            <ChipCardBody data={data} />
+          </div>
+        </ViewportOverlayHost>,
         document.body,
       )
     : null;

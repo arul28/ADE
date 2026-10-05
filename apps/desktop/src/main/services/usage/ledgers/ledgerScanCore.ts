@@ -14,6 +14,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { SqlValue } from "../../state/kvDb";
 import { finiteNumberOrNull, toOptionalString } from "../../shared/utils";
+import type { UsageSpeed } from "../../../../shared/types/usage";
 
 /**
  * Whether a scan could read everything it set out to read.
@@ -114,11 +115,11 @@ export interface TokenEntry {
   webSearchRequests?: number;
   costOverrideUsd?: number;
   /**
-   * Claude Code's fast mode (`usage.speed: "fast"`), which bills at a multiple
-   * of the model's standard rate. Set only by the Claude scanner; other
-   * providers have no such mode.
+   * The service tier the request billed at: Claude Code's fast mode
+   * (`usage.speed: "fast"`), Codex `service_tier` (`priority` is Fast,
+   * `ultrafast`). Absent means standard.
    */
-  fast?: boolean;
+  speed?: UsageSpeed;
   /**
    * Context size of the ONE model request this entry records (uncached input
    * + cache read + cache write). Set only by scanners whose entries are single

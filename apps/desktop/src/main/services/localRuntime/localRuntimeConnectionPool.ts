@@ -33,6 +33,7 @@ import type {
   SyncPeerDeviceType,
   SyncRoleSnapshot,
 } from "../../../shared/types";
+import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   SYSTEM_PROJECT_REGISTRATION,
@@ -92,6 +93,8 @@ type RuntimeServiceManagerOutput = {
   starting: boolean;
   /** The installer actually (re)started the service child; see `ServiceManagerResult.restarted`. */
   restarted: boolean;
+  /** The installer's typed failure stage; see `ServiceManagerResult.failureStep`. */
+  failureStep: string | null;
 };
 
 /**
@@ -420,7 +423,7 @@ export function createLocalRuntimeOutputLogger(args: {
   };
 }
 
-function resolveCliScriptPath(): string {
+export function resolveCliScriptPath(): string {
   const override = process.env.ADE_CLI_JS?.trim();
   if (override) return path.resolve(override);
 
@@ -468,6 +471,9 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
     running: nullableBool(record.running),
     path: nullableString(record.path),
     message: typeof record.message === "string" ? record.message : "",
+    ...(typeof record.backgroundItem === "string"
+      ? { backgroundItem: record.backgroundItem as ServiceManagerStatusResult["backgroundItem"] }
+      : {}),
   } as ServiceManagerStatusResult;
 }
 
@@ -1068,6 +1074,7 @@ export function parseRuntimeServiceManagerOutput(output: string): RuntimeService
     message: typeof record.message === "string" && record.message.trim() ? record.message.trim() : null,
     starting: record.starting === true,
     restarted: record.restarted === true,
+    failureStep: typeof record.failureStep === "string" && record.failureStep.trim() ? record.failureStep.trim() : null,
   };
 }
 
@@ -1334,6 +1341,7 @@ export class LocalRuntimeConnectionPool {
         path: status.path,
         message: status.message,
         checkedAt: new Date().toISOString(),
+        backgroundItem: status.backgroundItem ?? null,
       };
     };
     const applyError = (error: unknown) => {
@@ -1677,6 +1685,7 @@ export class LocalRuntimeConnectionPool {
         exitCode: code,
         updatedAt: new Date().toISOString(),
         attemptStartedAt,
+        failureStep: parsed?.failureStep ?? null,
       };
       this.logger.warn("local_runtime.service_install_failed", payload);
     }
@@ -2561,6 +2570,14 @@ export class LocalRuntimeConnectionPool {
       let recoveryCode: AdeRecoveryErrorCode;
       if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
         recoveryCode = lastFailure.code;
+      } else if (isBackgroundItemBlocked({
+        serviceInstall: this.serviceInstallStatus,
+        serviceHealth: this.serviceHealthStatus,
+      })) {
+        // Ahead of "not installed": the install "failed" only because macOS
+        // refused to start what it installed, and saying "not installed"
+        // sends the person to a Repair that cannot change the answer.
+        recoveryCode = "background_item_blocked";
       } else if (
         this.serviceInstallStatus.state === "failed"
         || this.serviceHealthStatus.state === "not_installed"

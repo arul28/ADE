@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
   GitCommitSummary,
@@ -162,7 +163,7 @@ export function WorkSidebar({
   onMaximizedChange?: (next: boolean) => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
+  const [selectedMode, setSelectedMode] = useState<LaneDiffMode | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const keybindings = useAppStore((state) => state.keybindings);
   const reduceMotion = useReducedMotion() ?? false;
@@ -348,7 +349,7 @@ export function WorkSidebar({
       .finally(() => setResumingSession(false));
   }, [activeSession, resumingSession, runtimePin]);
 
-  const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
+  const selectFile = useCallback((path: string, mode: LaneDiffMode) => {
     setSelectedPath(path);
     setSelectedMode(mode);
     setSelectedCommit(null);

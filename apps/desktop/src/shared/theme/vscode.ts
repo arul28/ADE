@@ -5,9 +5,9 @@
  * like `editor.background` and `sideBar.background`, plus `tokenColors` for
  * syntax highlighting. ADE's format is a much smaller semantic palette, so this
  * maps the keys that translate cleanly and **says what it could not map**
- * instead of pretending to full fidelity. A VS Code theme imported here gets a
- * coherent ADE theme; it does not get VS Code's syntax colours, and the caller
- * shows the user the leftover keys.
+ * instead of pretending to full fidelity. The `tokenColors` become ADE's ten
+ * syntax colours, so the editor and chat code blocks follow the import; the
+ * caller shows the user the leftover keys.
  *
  * The mapping is deliberately first-match-wins per ADE token, and only the
  * colour keys a human would recognize as "the surface / the text / the accent"
@@ -15,6 +15,8 @@
  */
 
 import { parseColor, relativeLuminance, toHex } from "./color";
+import { parseJsonc } from "./jsonc";
+import { syntaxFromTokenColors } from "./syntax";
 import { slugifyThemeId } from "./validate";
 import {
   ADE_THEME_FORMAT_VERSION,
@@ -24,6 +26,7 @@ import {
   type AdeTheme,
   type AdeThemePalette,
   type AdeThemePaletteKey,
+  type AdeSyntaxKey,
   type ThemeBaseMode,
 } from "./types";
 
@@ -77,6 +80,8 @@ export type VscodeImportResult = {
   theme: AdeTheme;
   /** ADE palette tokens the import filled from the file. */
   mapped: AdeThemePaletteKey[];
+  /** ADE syntax colours the import filled from `tokenColors`. */
+  syntaxMapped: AdeSyntaxKey[];
   /** VS Code `colors` keys (and `tokenColors`) the import did not consume. */
   unmapped: string[];
 };
@@ -95,7 +100,7 @@ export function importVscodeTheme(input: unknown, options: { name?: string } = {
   let parsed: unknown = input;
   if (typeof input === "string") {
     try {
-      parsed = JSON.parse(input);
+      parsed = parseJsonc(input);
     } catch {
       return null;
     }
@@ -145,11 +150,25 @@ export function importVscodeTheme(input: unknown, options: { name?: string } = {
     terminalMapped = true;
   }
 
-  const unmapped = Object.keys(colors).filter((key) => !consumed.has(key));
-  if (hasTokenColors) unmapped.push("tokenColors");
+  const syntax = hasTokenColors ? syntaxFromTokenColors(source.tokenColors as unknown[], normalizeHex) : {};
+  const syntaxMapped = Object.keys(syntax) as AdeSyntaxKey[];
 
+  const unmapped = Object.keys(colors).filter((key) => !consumed.has(key));
+  // Syntax colours import through `tokenColors`; only a list that gave nothing
+  // is reported as unmapped. A file this importer cannot follow says so.
+  if (hasTokenColors && syntaxMapped.length === 0) unmapped.push("tokenColors");
+  if (typeof source.include === "string") unmapped.push("include");
+  if (source.semanticTokenColors && typeof source.semanticTokenColors === "object") unmapped.push("semanticTokenColors");
+
+  // VS Code states the mode itself in `type`; the editor background is the
+  // fallback for a file that does not.
   const bg = parseColor(palette.bg ?? "");
-  const baseMode: ThemeBaseMode = bg && relativeLuminance(bg) > 0.5 ? "light" : "dark";
+  const declared = typeof source.type === "string" ? source.type.toLowerCase() : "";
+  const baseMode: ThemeBaseMode = declared === "light" || declared === "hc-light"
+    ? "light"
+    : declared === "dark" || declared === "hc" || declared === "hc-black"
+      ? "dark"
+      : bg && relativeLuminance(bg) > 0.5 ? "light" : "dark";
   const name = (options.name?.trim() || (typeof source.name === "string" ? source.name.trim() : "") || "VS Code theme")
     .slice(0, ADE_THEME_NAME_MAX_LENGTH);
 
@@ -161,6 +180,7 @@ export function importVscodeTheme(input: unknown, options: { name?: string } = {
     source: "vscode",
     palette,
     ...(terminalMapped ? { terminal } : {}),
+    ...(syntaxMapped.length > 0 ? { syntax } : {}),
   };
-  return { theme, mapped, unmapped };
+  return { theme, mapped, syntaxMapped, unmapped };
 }

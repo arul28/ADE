@@ -163,7 +163,7 @@ Two helpers summarise a parsed stream:
 | `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. Every surface that lists sources reads these results and URL actions through `shared/chatSources.ts`; the queries are metadata on the sources they produced, never items of their own. The desktop row header shows the result count (`resultsTotal`, else the results, else the URL actions) without being expanded. |
 | `sources` | Data-only citations for an assistant message: `sources: ChatSourceRef[]` plus optional `itemId`/`turnId`. Claude text-block citations, Codex `agentMessage.memoryCitation`, and ACP `resource_link` message blocks emit it. It draws no row on any surface (desktop hides it with the token events; iOS decodes it as `.unknown`; the TUI prints nothing for it) and does not break the streaming assistant message (`shouldFlushBufferedAssistantTextForEvent` returns false). Sources, the turn chip, and the fold count read it. |
-| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. The view line renders an inline preview for data URIs only (the renderer CSP pins `img-src` to an allowlist plus data:/blob:, so a remote preview would paint an empty box) and never prints a data URI as its name; remote and local sources keep the `open` affordance. Large stored data URIs are removed with original/omitted byte metadata. |
+| `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. The view line renders an inline preview for data URIs only (the renderer CSP pins `img-src` to an allowlist plus data:/blob:, so a remote preview would paint an empty box unless it is read through the chat's machine as a data URL — `CodexImageViewLine` loads a local one via `readAttachmentImageDataUrl` with the runtime pin) and never prints a data URI as its name; remote and local sources keep the `open` affordance. Consecutive views in one turn fold into a single `Viewed N images` strip (`imageViewSiblings`, carried through `ChatTranscriptRenderEnvelope` / `ChatTranscriptGroupedEnvelope`): a later view joins the strip when only folded work — tool calls, commands, narration — sits between them, and a row the reader keeps seeing starts a new strip. Large stored data URIs are removed with original/omitted byte metadata. |
 | `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. Its actions are `wait`, `steer`, `interrupt_retry_same_thread`, and `restart_resume_thread`. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
@@ -602,7 +602,17 @@ implements a two-layer transform:
      badge: a green check (finished), a red X (failed), or a neutral
      square (stopped). The status line reads `ran for 1m · 12 tools ·
      34k tokens`, prefixed `failed` or `stopped · <who stopped it>`, and
-     the report follows as plain text, clamped to three lines. Reports are
+     the report follows as plain text, clamped to three lines. Both status
+     lines name the agent's own model and effort (`Claude Opus 5.5 · Low`)
+     when it reported them, never the parent's: Claude reports a native
+     child's effort only through its PostToolUse and SubagentStop hooks
+     (`effort.level`), which `noteClaudeSubagentEffort` turns into a
+     `subagent_progress` row (a progress row never renames the agent), and
+     the result reads it from `subagentEffortById` because terminal paths
+     delete the active entry first. Opening a subagent's thread swaps the
+     composer's model chip and effort to the agent's own, locked; a Claude
+     native subagent with no report shows the session effort, which it
+     shares. Reports are
      markdown, so the card reads them through `subagentSummaryPlainText`
      (`shared/chatSubagents.ts`): headings, list, quote, and table markers,
      rules, and fence lines drop; emphasis, code spans, and links keep their
@@ -746,16 +756,34 @@ implements a two-layer transform:
      ended session a job still marked `running` shows no duration and
      no Stop.
 
-     **Scheduled work.** An activity bundle's wake-up, cron, loop, or
-     remote-trigger item (`scheduled_work_update` other than
-     `background_task`) renders as one compact `ScheduledWorkLine` in the
-     same idiom: `⏰ Wakes in 20m · <reason>`, `Woke at 14:30` once it
-     fired, or `⟳ Cron · every 30m · next 14:30`. A bundle holding only
-     scheduled work stacks those lines with no card around them. Task lists
-     are never bundled; they are the chat's one `task_list` row. Clicking a line opens
-     the chat actions pane. The fold keeps a line visible when its
-     schedule was still pending at turn end and folds it otherwise; the
-     `Woke on schedule` divider before the woken turn is unchanged.
+     **Scheduled work.** A wake-up, cron, loop, or remote trigger
+     (`scheduled_work_update` other than `background_task`) is one entry per
+     schedule id across the whole transcript (`foldScheduledWorkRows` in
+     `chatScheduledWorkRows.ts`): later updates, from the provider's
+     inventory snapshot, the fire, or a cancel, patch the entry where the
+     schedule was created instead of adding rows in later turns. A one-shot
+     `cancelled` at or after its fire time reads as fired, so transcripts
+     from older brains (which recorded fired wake-ups as cancelled) tell the
+     truth. Once the turn ends, its schedules move onto its turn-end line
+     (`moveScheduledWorkToTurnEnds`) as small chips in the line's own mono
+     type: `⏰ wakes in 2m` (amber while pending), `woke at 9:50 PM`, or
+     `⟳ cron · every 30m`, with the reason in the tooltip. A pending wake-up
+     more than a minute past due reads `was due 9:29`, never `wakes now`.
+     Clicking a chip opens the chat actions pane. A turn still running keeps
+     its schedule as a `ScheduledWorkLine` row until its `done` arrives.
+     Task lists are never bundled; they are the chat's one `task_list` row.
+
+     **Self-paced wake loops.** A turn the agent started from its own
+     wake-up (no user message, after a turn that scheduled one, or opened by
+     a `Woke on schedule` divider) is a wake turn (`deriveWakeTurnIds`). A
+     wake turn has no `Worked for …` fold row: the `ran 2.2s ›` time on its
+     turn-end line opens the fold, and its tool count stays on that line. A
+     run of consecutive wake turns folds every check but the latest
+     (`deriveWakeChains` / `applyWakeChains`): `+3 more checks ›` sits at the
+     end of the turn-end line just above them, so they open directly below
+     it, and the open state shares the turn folds' memory. A turn the user
+     started ends the run. When that line is not drawn, the chain falls back
+     to a slim `3 earlier checks` row (`wake_chain`).
    - `ade_card` collapses per `cardId` into ONE permanent chronological row
      keyed `ade-card:<cardId>`. A repeat emit mutates that row in place — a new
      object under the same key, merged over the previous payload, so an update

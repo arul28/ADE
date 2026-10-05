@@ -17,6 +17,7 @@ import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrows
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
 import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { MAC_DESKTOP_USER_CLI_HOLDER_ID } from "../../desktop/src/shared/types/macDesktop";
+import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -606,6 +607,14 @@ function createRuntime() {
         restored: recoveryId === "recovery-1",
         restoredCount: recoveryId === "recovery-1" ? 2 : 0,
       })),
+      restartSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
+        sessionId,
+        restarted: true,
+        stoppedTurn: false,
+        backgroundJobsStopped: 0,
+      })),
+      holdBackgroundWork: vi.fn(async () => ({ held: [], nativeWake: true, message: "ok" })),
+      armWait: vi.fn(async (args: Record<string, unknown>) => ({ id: "waiter-1", ...args })),
       resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         id: sessionId,
         laneId: "lane-1",
@@ -1845,7 +1854,9 @@ describe("adeRpcServer", () => {
         recoveryId: "recovery-1",
       });
 
-      for (const action of ["interrupt", "restoreCancelledQueue"]) {
+      // Restarting tears the target's runtime down, and holding background
+      // work arms wakes on it: both are aimed at the caller's own chat only.
+      for (const action of ["interrupt", "restoreCancelledQueue", "restartSession", "holdBackgroundWork"]) {
         const denied = await callTool(handler, "run_ade_action", {
           domain: "chat",
           action,
@@ -1862,6 +1873,41 @@ describe("adeRpcServer", () => {
       expect(runtime.agentChatService.restoreCancelledQueue).not.toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: "chat-2" }),
       );
+      expect(runtime.agentChatService.restartSession).not.toHaveBeenCalled();
+      expect(runtime.agentChatService.holdBackgroundWork).not.toHaveBeenCalled();
+
+      // A wake wait wakes its caller: a bound agent may only ask for itself.
+      const otherWake = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: { callerSessionId: "chat-2", targetSessionIds: ["chat-3"] },
+      });
+      expect(otherWake.isError).toBe(true);
+      const ownWake = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: { targetSessionIds: ["chat-3"] },
+      });
+      expect(ownWake?.isError).toBeUndefined();
+      expect(runtime.agentChatService.armWait).toHaveBeenCalledTimes(1);
+      expect(runtime.agentChatService.armWait).toHaveBeenCalledWith(
+        expect.objectContaining({ callerSessionId: "chat-1", targetSessionIds: ["chat-3"] }),
+      );
+
+      // A send wait's prompt carries the provenance the host derives, never the caller's.
+      const sendWait = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "armWait",
+        args: {
+          targetSessionIds: ["chat-3"],
+          sendToSessionId: "chat-4",
+          text: "start the review",
+          sendMetadata: { boardMove: { to: "working" } },
+        },
+      });
+      expect(sendWait?.isError).toBeUndefined();
+      const sendArgs = vi.mocked(runtime.agentChatService.armWait).mock.calls.at(-1)?.[0] as Record<string, any>;
+      expect(sendArgs.sendMetadata).toEqual({ agentRelay: { fromSessionId: "chat-1" } });
     });
   });
 
@@ -2014,6 +2060,44 @@ describe("adeRpcServer", () => {
     expect(read.structuredContent).toEqual(
       expect.objectContaining({ success: true, memory: expect.stringContaining("a fact") }),
     );
+  });
+
+  it("stamps who is calling on chat actions so an agent cannot pose as the user or the CTO", async () => {
+    const { runtime } = createRuntime();
+    const updateSession = (runtime.agentChatService as any).updateSession as ReturnType<typeof vi.fn>;
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(agentHandler, { role: "agent", chatSessionId: "session-1" });
+    await callTool(agentHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      args: { sessionId: "session-1", title: "Renamed", runtimeActor: { kind: "cto" } },
+    });
+    expect(updateSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      runtimeActor: { kind: "agent", chatSessionId: "session-1" },
+    }));
+
+    // Positional args would skip the stamp, so an agent must send one object.
+    const positional = await callTool(agentHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      argsList: [{ sessionId: "session-1", title: "Again" }],
+    });
+    expect(positional.isError).toBe(true);
+    expect(JSON.stringify(positional.error)).toMatch(/one object argument/i);
+    expect(updateSession).toHaveBeenCalledTimes(1);
+
+    // The user's own client is never capped: a value it sends is dropped, not trusted.
+    const userHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(userHandler);
+    await callTool(userHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      args: { sessionId: "session-1", title: "Mine", runtimeActor: { kind: "agent", chatSessionId: "session-1" } },
+    });
+    expect(updateSession).toHaveBeenCalledTimes(2);
+    expect(updateSession.mock.calls[1]![0]).not.toHaveProperty("runtimeActor");
   });
 
   it("creates a work chat for cto callers and returns a work navigation suggestion", async () => {
@@ -3873,6 +3957,7 @@ describe("adeRpcServer", () => {
       body: "Body text",
       draft: true,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     const defaulted = await callTool(handler, "create_pr_from_lane", {
@@ -3888,6 +3973,7 @@ describe("adeRpcServer", () => {
       body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
@@ -3929,6 +4015,7 @@ describe("adeRpcServer", () => {
       body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });
@@ -4706,6 +4793,109 @@ describe("adeRpcServer", () => {
       variables: { first: 1 },
     });
     expect(graphql.structuredContent.result).toMatchObject({ viewer: { id: "user-1" } });
+  });
+
+  it("strips terminal.write fromUser for agents but keeps it for a user client", async () => {
+    const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
+
+    const agentFixture = createRuntime();
+    agentFixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "terminal-1" ? ownTerminal : null,
+    );
+    const agentHandler = createAdeRpcRequestHandler({ runtime: agentFixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+    await callTool(agentHandler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { terminalId: "terminal-1", data: "y\n", fromUser: true },
+    });
+    // An agent may not claim a shell as the person's: the flag is dropped.
+    expect(agentFixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      terminalId: "terminal-1",
+      data: "y\n",
+    });
+
+    const userFixture = createRuntime();
+    userFixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "terminal-1" ? ownTerminal : null,
+    );
+    const userHandler = createAdeRpcRequestHandler({ runtime: userFixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "ade-code:test", role: "cto" }, { clientName: "ade-code" });
+    await callTool(userHandler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { terminalId: "terminal-1", data: "y\n", fromUser: true },
+    });
+    // The user's own client may claim the shell, so the flag survives dispatch.
+    expect(userFixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      terminalId: "terminal-1",
+      data: "y\n",
+      fromUser: true,
+    });
+  });
+
+  it("strips a user's pending comments from an agent's chat sends and denies the comment actions", async () => {
+    // An agent runs at cto role here, so the cto-only action rule cannot be
+    // what denies it: the thread-comment gate has to.
+    const agentFixture = createRuntime();
+    const agentHandler = createAdeRpcRequestHandler({ runtime: agentFixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "cto", chatSessionId: "chat-1" });
+
+    // A stamp naming the person's desktop would steer where "show this"
+    // requests open; an agent may not claim to be that desktop.
+    const desktopStamp = { clientId: "macbook-desktop", local: false };
+    for (const action of ["sendMessage", "steer", "messageSession"] as const) {
+      await callTool(agentHandler, "run_ade_action", {
+        domain: "chat",
+        action,
+        args: { sessionId: "chat-1", text: "hello", includeThreadComments: true, inputOrigin: desktopStamp },
+      });
+    }
+    expect(getSessionInputOrigin("chat-1")).toBeNull();
+    // An ordinary agent's send is rebuilt by the chat scoping; the stamp must
+    // not survive that either.
+    const plainFixture = createRuntime();
+    const plainHandler = createAdeRpcRequestHandler({ runtime: plainFixture.runtime, serverVersion: "test" });
+    await initialize(plainHandler, { callerId: "agent-2", role: "agent", chatSessionId: "chat-1" });
+    await callTool(plainHandler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-1", text: "hello", inputOrigin: desktopStamp },
+    });
+    expect(plainFixture.runtime.agentChatService.sendMessage).toHaveBeenCalled();
+    expect(getSessionInputOrigin("chat-1")).toBeNull();
+    expect(agentFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+    expect(agentFixture.runtime.agentChatService.steer).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+    expect(agentFixture.runtime.agentChatService.messageSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+
+    for (const action of ["listThreadComments", "createThreadComment", "updateThreadComment", "deleteThreadComment"]) {
+      const denied = await callTool(agentHandler, "run_ade_action", {
+        domain: "chat",
+        action,
+        args: { sessionId: "chat-1" },
+      });
+      expect(denied.isError).toBe(true);
+    }
+
+    // A user's desktop client keeps the flag: the comments are the person's to send.
+    const userFixture = createRuntime();
+    const userHandler = createAdeRpcRequestHandler({ runtime: userFixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "ade-desktop:test", role: "cto" }, { clientName: "ade-desktop" });
+    await callTool(userHandler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-1", text: "hello", includeThreadComments: true, inputOrigin: desktopStamp },
+    });
+    expect(userFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ includeThreadComments: true }),
+    );
+    expect(getSessionInputOrigin("chat-1")).toEqual(desktopStamp);
   });
 
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
@@ -5861,9 +6051,13 @@ describe("adeRpcServer", () => {
 
     const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    const listDevServers = vi.fn(async (args: unknown) => args);
+    Object.assign(fixture.runtime.workToolsStateService, { listDevServers });
     for (const [action, args] of [
       ["getLaneState", { laneId: "lane-b" }],
       ["readObservationPreview", { path: "/tmp/obs.png", callerLaneId: "lane-b" }],
+      // Without a lane, "every lane" would list other lanes' server URLs.
+      ["listDevServers", {}],
     ] as const) {
       const denied = await callTool(stepHandler, "run_ade_action", {
         domain: "work_tools",
@@ -5874,6 +6068,7 @@ describe("adeRpcServer", () => {
     }
     expect(getLaneState).not.toHaveBeenCalled();
     expect(readObservationPreview).not.toHaveBeenCalled();
+    expect(listDevServers).not.toHaveBeenCalled();
 
     // Same shape for a bound chat the daemon cannot resolve to a lane.
     const staleHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -8349,8 +8544,7 @@ describe("CTO remote action policy", () => {
       action: "get",
       argsList: ["all", "provider_api_key", "openai"],
     });
-    expect(secretDenied.error).toBeDefined();
-    expect(JSON.stringify(secretDenied.error)).toMatch(/returns secrets, so the CTO can't run it/);
+    expect(secretDenied.error).toMatchObject({ code: JsonRpcErrorCode.policyDenied });
     expect(getSecret).not.toHaveBeenCalled();
   });
 });

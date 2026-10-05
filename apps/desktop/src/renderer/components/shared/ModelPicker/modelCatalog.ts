@@ -23,6 +23,7 @@ import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
   PERSONAL_CHAT_CATALOG_SCOPE,
+  getSharedRuntimeCatalog,
   isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
@@ -30,6 +31,28 @@ import {
 } from "./runtimeCatalogCache";
 
 export { PERSONAL_CHAT_CATALOG_SCOPE, personalChatCatalogScopeKey, isPersonalChatCatalogScopeKey } from "./runtimeCatalogCache";
+
+/**
+ * Parse this scope's loaded runtime catalog into its descriptor map.
+ *
+ * The map is normally built by the ModelPicker (or harness reach). Surfaces that
+ * only READ it — the composer's `@model` menu and the model chip — otherwise
+ * fell through to the static registry descriptor, which has no OpenCode
+ * inventory and therefore no reasoning tiers. Call before resolving a model so
+ * an OpenCode/DeepSeek chip keeps the tiers the catalog reported.
+ */
+export function ensureRuntimeCatalogDescriptors(
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+  force = false,
+): void {
+  const catalog = getSharedRuntimeCatalog(scopeKey);
+  if (!catalog) return;
+  if (!force) {
+    const existing = peekRuntimeCatalogScopeDescriptors(scopeKey);
+    if (existing && existing.size > 0) return;
+  }
+  descriptorsFromAgentChatModelCatalog(catalog, undefined, scopeKey);
+}
 
 /** True when the runtime catalog lists at least one model marked available. */
 export function agentChatModelCatalogHasAvailableModels(

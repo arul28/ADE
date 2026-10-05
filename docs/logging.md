@@ -176,6 +176,16 @@ a PostHog event. `capture.*` is the helper supervisor's family
 records why a chord was refused or a shot never arrived and carries no window
 title, app name, or image.
 
+When an agent switches its lane to a new branch during a turn, ADE adopts
+the branch or leaves the choice to the user, and writes the local structured
+line `lane.agent_branch_adopted` (lane id, session id, previous and new branch)
+or `lane.agent_branch_not_adopted` (lane id, session id, coarse reason such as
+`old_branch_has_unpushed_commits`); a failure is `lane.agent_branch_adopt_failed`.
+Neither is a PostHog event. The adoption is an automatic outcome of an agent's
+command, not a user decision, so an event here would report engagement nobody
+generated; the user's own `Switch back` / `Keep` choice uses the existing
+drift-resolution path, which this change does not instrument.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map
@@ -253,6 +263,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `proxy` | `sign_in` | `success` | Claude/Codex family |
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | Claude/Codex family; omitted when no account was named |
+| `usage` | `model_price_changed`, `model_mapping_changed` | `enabled` (set), `disabled` (cleared) | omitted; never the model id or the rates |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
@@ -264,6 +275,13 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+Saving a model price or "Map to" on the Usage page (desktop, web, phone or
+`ade usage prices set`) records `model_price_changed` or
+`model_mapping_changed` at the brain's `usage.setModelPriceOverride`, with
+`enabled` for a set and `disabled` for a clear. The model id and rates never
+leave the machine. The one-hour dedupe per action and outcome caps it at four
+events an hour, within the existing `ade_feature_used` ceilings.
 
 A Codex voice conversation records one `voice_conversation_started` fact after
 the realtime offer receives an answer. The event is scoped to the chat session
@@ -411,6 +429,10 @@ at most 140 per UTC day and 30 per minute (and the shared ceiling remains
 200).
 No account id, label, config-home path, email, plan, or refresh/list activity is
 captured.
+The phone and the hosted web client reach the same domain through the
+`providerAccounts.*` sync commands, so their mutations are captured by the same
+code with the same keys and limits. The command layer cannot tell a phone from
+a browser, so those events carry `surface: "api"`, like the CLI action.
 
 API-credential store and remove mutations are captured in
 `apps/desktop/src/main/services/ai/apiKeyStore.ts`, after the multi-credential
@@ -474,6 +496,16 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 30-per-minute limits are the hard accepted bound, and the shared daily budget
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
+
+When a user moves a chat to another Claude or Codex account
+(`chat.switchAccount`), the chat service emits `chat/account_switched` with
+`outcome: "completed"` after the thread copy and the account change succeed,
+through its `onAccountSwitched` hook. It carries only the Claude/Codex family:
+never the account ids, labels, emails, config-home paths, or the session. A
+refused switch (a turn running, a signed-out account) emits nothing. The
+one-hour action/outcome/family key admits at most 2 × 24 = 48 events per day
+before the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling; no ceiling was raised.
 
 A chat started in a new lane (the brain-owned launch in
 `chatLaunchService`) records `chat/new_lane_launch` once per outcome per
@@ -820,6 +852,21 @@ lane-mapping gate widened what an installation can do without needing any new
 instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
 deleting a merged PR's branch was reachable only from a mapped PR it was a
 corner of the product, and it is now an offer on every merged row.
+`prs.setChatWatch` (turning PR Watch / Ship on, switching it, or off for a
+chat) is in the set too: a deliberate choice, at most a few per PR — a person
+in the menu, or an agent arming its own watch through the same action. Which
+mode was picked is deliberately not a property — the product question is
+adoption, and the ledger row already answers it. The watch's own wakes, holds,
+and stops are background mechanics with no person behind them, so they stay in
+the local `prs.watch_*` lines and never reach analytics. `chat.restartSession`
+(a fresh provider process that keeps the conversation) joined for the same
+reason: one row per press.
+
+Chat goals, stop-mode choices, waits, and restart resume add no analytics.
+Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
+firing, and a chat continuing after a restart are things the app does with no
+person behind them; and a Stop press is high-frequency enough that which of
+six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.
 It is a parameter of `prs.land`, the merge itself is already counted, and there

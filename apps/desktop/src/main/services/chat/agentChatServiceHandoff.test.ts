@@ -33,6 +33,7 @@ import {
   zlib,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -442,6 +443,76 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("runs a native fork as the source chat's account, whatever the default is", async () => {
+      // The forked thread lives in the source account's config home, so a
+      // fork launched as the default account would resume nothing.
+      const work = getMachineProviderInstanceStore().create({ provider: "codex", label: "Work" }).instance;
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      source.threadId = "source-thread-account";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({ thread: { id: "forked-thread-account" } }));
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      expect(result.session.threadId).toBe("forked-thread-account");
+      expect((await service.getSessionSummary(result.session.id))?.instanceId).toBe(work.id);
+      expect((await service.getSessionSummary(source.id))?.instanceId).toBe(work.id);
+    });
+
+    it("forks from an earlier turn with only the turns through it", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-fork-point";
+      const turn = (turnId: string, minute: number, text: string): AgentChatEventEnvelope[] => [
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:00.000Z`, event: { type: "user_message", messageId: `${turnId}-user`, text: `${text} question`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:10.000Z`, event: { type: "text", messageId: `${turnId}-reply`, text: `${text} answer`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:20.000Z`, event: { type: "done", turnId, status: "completed" } },
+      ] as AgentChatEventEnvelope[];
+      writeTestTranscriptEnvelopes(source.id, [...turn("turn-1", 1, "KEEP-ONE"), ...turn("turn-2", 2, "DROP-TWO")]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-1",
+      });
+
+      const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${result.session.id}.jsonl`);
+      await vi.waitFor(() => {
+        const copied = fs.readFileSync(targetTranscript, "utf8");
+        expect(copied).toContain("KEEP-ONE answer");
+        expect(copied).not.toContain("DROP-TWO");
+      });
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-missing",
+      })).rejects.toThrow(/finished turn/i);
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+        throughTurnId: "turn-1",
+      })).rejects.toThrow(/only applies to a fork/i);
     });
 
     it("seeds local fork history with handoff provenance", async () => {
@@ -2005,6 +2076,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2037,8 +2109,8 @@ describe("createAgentChatService", () => {
       // A personal chat whose host named a `requestedCwd` runs in the user's
       // own repository while its lane still points at the synthetic scratch
       // worktree. Re-resolving the directory from the lane id ran
-      // `git checkout <sha> -- <path>` somewhere the user never asked about and
-      // reported success against it.
+      // `git restore --source=<sha> -- <path>` somewhere the user never asked
+      // about and reported success against it.
       const hostCwd = path.join(tmpRoot, "host-project");
       fs.mkdirSync(hostCwd, { recursive: true });
       const { service, sessionService } = createService();
@@ -2078,6 +2150,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2087,9 +2160,100 @@ describe("createAgentChatService", () => {
 
       await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
 
-      const checkout = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "checkout");
-      expect(checkout).toBeTruthy();
-      expect((checkout?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+      const restore = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "restore");
+      expect(restore).toBeTruthy();
+      expect((restore?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+    });
+
+    it.each([
+      {
+        name: "restores a file that was clean at turn start, in the index too",
+        dirtyAtStart: [] as string[] | undefined,
+        peerTouches: false,
+        restored: ["src/a.ts"],
+        skipped: [] as Array<{ path: string; reason: string }>,
+      },
+      {
+        name: "leaves a file that already had uncommitted changes",
+        dirtyAtStart: ["src/a.ts"],
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "dirty_before_turn" }],
+      },
+      {
+        name: "leaves a file another chat in the worktree changed since",
+        dirtyAtStart: [],
+        peerTouches: true,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "other_chat" }],
+      },
+      {
+        name: "leaves every file of a summary recorded before ADE kept the start state",
+        dirtyAtStart: undefined,
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "unknown_start_state" }],
+      },
+    ])("Codex file rewind $name", async ({ dirtyAtStart, peerTouches, restored, skipped }) => {
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({ thread: { id: "source-thread-1" } }));
+      const { service, sessionService } = createService();
+      const source = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const peer = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      const envelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: { type: "user_message", messageId: "user-1", text: "edit a", turnId: "turn-1" },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/a.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+            ...(dirtyAtStart ? { dirtyAtStart } : {}),
+          },
+        } as AgentChatEventEnvelope,
+        ...(peerTouches
+          ? [{
+              sessionId: peer.id,
+              timestamp: "2026-07-07T20:00:05.000Z",
+              event: {
+                type: "turn_diff_summary",
+                turnId: "peer-turn",
+                beforeSha: "before-sha",
+                afterSha: "before-sha",
+                files: [{ path: "src/a.ts", additions: 2, deletions: 0 }],
+                totalAdditions: 2,
+                totalDeletions: 0,
+                dirtyAtStart: [] as string[],
+              },
+            } as AgentChatEventEnvelope]
+          : []),
+      ];
+      for (const id of [source.id, peer.id]) {
+        fs.writeFileSync(String(sessionService.get(id)?.transcriptPath), "{}\n", "utf8");
+      }
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+      vi.mocked(runGit).mockImplementation(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+      const preview = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1", dryRun: true });
+      expect(preview.filesChanged).toEqual(restored);
+      expect(preview.skippedFiles ?? []).toEqual(skipped);
+
+      const result = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
+      expect(result.filesChanged).toEqual(restored);
+      const writes = vi.mocked(runGit).mock.calls.map(([args]) => args).filter((args) => args[0] === "restore" || args[0] === "checkout");
+      // Index and worktree: the file was clean at turn start, so whatever is
+      // staged for it the turn staged, and the next commit must not carry it.
+      expect(writes).toEqual(restored.map((file) => ["restore", "--source=before-sha", "--staged", "--worktree", "--", file]));
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {
@@ -2133,6 +2297,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/generated", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2385,6 +2550,129 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
         taskType: "handoff_summary",
       }));
+    });
+  });
+
+  describe("switchAccount", () => {
+    /** Signs an account in the way the provider CLI does: a login file in its config home. */
+    async function signIn(provider: "codex" | "claude", configHome: string, email: string): Promise<void> {
+      fs.mkdirSync(configHome, { recursive: true });
+      if (provider === "codex") {
+        const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+        fs.writeFileSync(path.join(configHome, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+      } else {
+        fs.writeFileSync(path.join(configHome, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: email } }));
+      }
+      await getMachineProviderInstanceStore().refreshAccounts(provider);
+    }
+
+    function writeCodexRollout(configHome: string, threadId: string): string {
+      const relative = path.join("sessions", "2026", "10", "05", `rollout-2026-10-05T00-00-00-${threadId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(configHome, relative)), { recursive: true });
+      fs.writeFileSync(path.join(configHome, relative), '{"type":"session_meta"}\n', "utf8");
+      return relative;
+    }
+
+    async function codexChatOnWorkAccount(overrides: Record<string, unknown> = {}) {
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "codex", label: "Work" }).instance;
+      const personal = store.create({ provider: "codex", label: "Personal" }).instance;
+      const events: AgentChatEventEnvelope[] = [];
+      const onAccountSwitched = vi.fn();
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event), onAccountSwitched, ...overrides });
+      const chat = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      chat.threadId = "thread-to-switch";
+      const rollout = writeCodexRollout(work.configHome, "thread-to-switch");
+      return { service, chat, work, personal, rollout, events, onAccountSwitched };
+    }
+
+    it("moves an idle chat to another account in place, keeping its thread", async () => {
+      const { service, chat, work, personal, rollout, events, onAccountSwitched } = await codexChatOnWorkAccount();
+      await signIn("codex", personal.configHome, "personal@example.com");
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(personal.id);
+      // The new account can resume the same thread id; the old one keeps its copy.
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(true);
+      expect(fs.existsSync(path.join(work.configHome, rollout))).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: chat.id,
+        event: expect.objectContaining({ type: "session_meta_updated", instanceId: personal.id }),
+      }));
+      expect(onAccountSwitched).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { name: "a turn is running", reason: "busy", signedIn: true, arrange: (chat: { status: string }) => { chat.status = "active"; } },
+      { name: "the account is signed out", reason: "signed_out", signedIn: false, arrange: () => {} },
+      { name: "a saved key pays for the chat", reason: "failed", signedIn: true, arrange: (chat: { credentialId?: string }) => { chat.credentialId = "cred-1"; } },
+    ])("refuses the switch when $name and leaves the chat where it was", async ({ reason, signedIn, arrange }) => {
+      const { service, chat, work, personal, rollout, onAccountSwitched } = await codexChatOnWorkAccount();
+      if (signedIn) await signIn("codex", personal.configHome, "personal@example.com");
+      arrange(chat as never);
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toMatchObject({ ok: false, reason });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(work.id);
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(false);
+      expect(onAccountSwitched).not.toHaveBeenCalled();
+    });
+
+    it("moves a fresh Claude fork with the source thread its first turn forks", async () => {
+      const makeWarmHandle = (sdkSessionId: string) => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(claudeSdkCreateSessionCompat)
+        .mockReturnValueOnce(makeWarmHandle("fork-source-sdk") as any)
+        .mockReturnValueOnce(makeWarmHandle("fork-target-warmup-sdk") as any);
+      // The fork's own id exists before any file for it does.
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(makeWarmHandle("fork-own-sdk") as any);
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "claude", label: "Work" }).instance;
+      const personal = store.create({ provider: "claude", label: "Personal" }).instance;
+      await signIn("claude", personal.configHome, "personal@example.com");
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        instanceId: work.id,
+      });
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
+      });
+      const sourceSdkSessionId = readPersistedChatState(source.id).sdkSessionId as string;
+      const sourceThread = path.join("projects", "-lane-1", `${sourceSdkSessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(work.configHome, sourceThread)), { recursive: true });
+      fs.writeFileSync(path.join(work.configHome, sourceThread), '{"type":"user"}\n', "utf8");
+      const fork = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(fork.session.id).forkFromSdkSessionId).toBe(sourceSdkSessionId);
+
+      const result = await service.switchAccount({ sessionId: fork.session.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect(fs.existsSync(path.join(personal.configHome, sourceThread))).toBe(true);
+      expect((await service.getSessionSummary(fork.session.id))?.instanceId).toBe(personal.id);
     });
   });
 

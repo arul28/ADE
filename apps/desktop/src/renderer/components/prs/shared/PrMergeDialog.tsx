@@ -20,6 +20,7 @@ import {
   buildDefaultCommitMessage,
   buildMergeCommandLineInstructions,
   canAttemptMerge,
+  MERGE_METHODS,
   mergeMethodLabel,
   mergeMethodShortLabel,
 } from "./prMergeRailUtils";
@@ -50,7 +51,6 @@ export type PrMergeDialogProps = {
   preferBypass?: boolean;
 };
 
-const MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
 
 export const PrMergeDialog = memo(function PrMergeDialog({
   open,

@@ -41,6 +41,9 @@ final class WorkRootBookkeeping {
   /// `workChatSummaryFullSweepInterval`.
   var summaryLaneSignatures: [String: Int] = [:]
   var lastFullChatSummarySweep = Date.distantPast
+  /// Which lanes came back out of the Working shelf, handed from one
+  /// presentation build to the next so returned lanes keep floating.
+  var laneReturnState = WorkLaneReturnState.empty
 }
 
 /// Mirrors `terminalBufferRevision` into the list only while a search is
@@ -143,6 +146,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
+  let machineFilterStorage: String
   /// Everything the rebuild reads off `SyncService` that can change it: the
   /// active roster revision, launches, pending creations, GitHub PRs, lane
   /// deletions. Already narrowed and compared once by `WorkRootScreen`.
@@ -154,6 +158,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   /// unrelated change happens to rebuild the presentation.
   let snoozeEpoch: Int
   let pinnedLaneIdsStorage: String
+  let foldBusyLanes: Bool
 }
 
 /// The slice of `SyncService` the Work list renders from, read once per
@@ -200,6 +205,9 @@ struct WorkRootSyncInputs: Equatable {
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
+  /// The Machine filter's choices: the focused machine, then the machines in
+  /// `remoteMachineRepos`. Tracked only while the list is visible.
+  var machineFilterOptions: [WorkMachineFilterOption] = []
 
   init() {}
 
@@ -248,10 +256,20 @@ struct WorkRootSyncInputs: Equatable {
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
       )
     }
+    machineFilterOptions = workMachineFilterOptions(
+      primaryName: sync.focusedMachineDisplayName,
+      primaryIsLive: isLive,
+      remote: remoteMachineRepos,
+      isLive: { fleet?.isLive($0) ?? false }
+    )
     #if DEBUG
     // The fixture has no machine to probe Cursor credentials on; show the entry
     // so the overflow menu can be screenshotted whole.
     if WorkRootPreviewFixture.active != nil { showsCursorCloud = true }
+    // Nor any other machine; add one so the filter panel's Machine row shows.
+    if WorkRootPreviewFixture.active != nil, machineFilterOptions.count == 1 {
+      machineFilterOptions.append(WorkMachineFilterOption(id: "preview-studio", name: "Mac Studio", isLive: true))
+    }
     #endif
   }
 }
@@ -393,7 +411,10 @@ struct WorkRootListScreen: View, Equatable {
   /// writes here, so pinning stays a Lanes-tab gesture with one owner.
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+  /// By-lane "Fold busy lanes", scoped per project+host like the grouping.
+  @State var foldBusyLanes = false
   @State var collapsedSectionIdsStorage = ""
+  @State var machineFilterStorage = ""
   /// The project+host scope the five view-state properties above currently hold.
   @State private var workViewStateScopeKey: String?
   /// True while a lane deeplink is framing the view. Its filter reset is shown
@@ -433,7 +454,9 @@ struct WorkRootListScreen: View, Equatable {
       laneFilter: selectedLaneId,
       statusFilter: selectedStatusRawValue,
       organization: sessionOrganizationRaw,
-      collapsedSectionIds: collapsedSectionIdsStorage
+      collapsedSectionIds: collapsedSectionIdsStorage,
+      machineFilter: machineFilterStorage,
+      foldBusyLanes: foldBusyLanes
     )
   }
 
@@ -452,6 +475,8 @@ struct WorkRootListScreen: View, Equatable {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
   }
 
   func persistWorkViewState() {
@@ -462,7 +487,9 @@ struct WorkRootListScreen: View, Equatable {
         laneFilter: selectedLaneId,
         statusFilter: selectedStatusRawValue,
         organization: sessionOrganizationRaw,
-        collapsedSectionIds: collapsedSectionIdsStorage
+        collapsedSectionIds: collapsedSectionIdsStorage,
+        machineFilter: machineFilterStorage,
+        foldBusyLanes: foldBusyLanes
       ),
       scope: scope
     )
@@ -481,6 +508,8 @@ struct WorkRootListScreen: View, Equatable {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
     workViewStateDeeplinkActive = false
     workViewStateBeforeDeeplink = nil
   }
@@ -553,6 +582,7 @@ struct WorkRootListScreen: View, Equatable {
   var hasActiveFilters: Bool {
     selectedStatus != .all
       || selectedLaneId != "all"
+      || !machineFilterStorage.isEmpty
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -577,6 +607,16 @@ struct WorkRootListScreen: View, Equatable {
     )
   }
 
+  var foldBusyLanesBinding: Binding<Bool> {
+    Binding(
+      get: { foldBusyLanes },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        foldBusyLanes = $0
+      }
+    )
+  }
+
   var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
     Binding(
       get: { selectedStatus },
@@ -593,6 +633,16 @@ struct WorkRootListScreen: View, Equatable {
       set: {
         restoreWorkViewStateAfterDeeplink()
         searchText = $0
+      }
+    )
+  }
+
+  var machineFilterBinding: Binding<String> {
+    Binding(
+      get: { machineFilterStorage },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        machineFilterStorage = $0
       }
     )
   }
@@ -678,6 +728,20 @@ struct WorkRootListScreen: View, Equatable {
     sessionPresentation.sessionGroups
   }
 
+  /// The groups on screen: lanes filed under the Working shelf render only
+  /// while that shelf is expanded.
+  var visibleSessionGroups: [WorkSessionGroup] {
+    let groups = sessionGroups
+    guard let shelf = groups.first(where: { $0.id == workWorkingSectionId }),
+          workGroupIsCollapsed(shelf) else { return groups }
+    return groups.filter { !$0.inWorkingShelf }
+  }
+
+  /// The first Snoozed/Settled shelf, which draws the quiet zone's rule.
+  var quietZoneStartGroupId: String? {
+    sessionGroups.first(where: { $0.isShelf && $0.id != workWorkingSectionId })?.id
+  }
+
   /// Lanes the user has pinned, read from the Lanes tab's store.
   var workPinnedLaneIds: Set<String> {
     Set(pinnedLaneIdsStorage.split(separator: ",").map(String.init).filter { !$0.isEmpty })
@@ -708,10 +772,12 @@ struct WorkRootListScreen: View, Equatable {
       searchOutputRevision: workSearchIsActive ? searchOutputRevision : nil,
       archivedSessionIdsStorage: archivedSessionIdsStorage,
       sessionOrganizationRaw: sessionOrganizationRaw,
+      machineFilterStorage: machineFilterStorage,
       sync: inputs,
       loadedProjectionProjectId: loadedProjectionProjectId,
       snoozeEpoch: snoozeEpoch,
-      pinnedLaneIdsStorage: pinnedLaneIdsStorage
+      pinnedLaneIdsStorage: pinnedLaneIdsStorage,
+      foldBusyLanes: foldBusyLanes
     )
   }
 
@@ -788,7 +854,10 @@ struct WorkRootListScreen: View, Equatable {
               selectedLaneId: selectedLaneBinding,
               selectedStatus: selectedStatusBinding,
               organization: sessionOrganizationBinding,
+              foldBusyLanes: foldBusyLanesBinding,
               filterOpen: $filterPanelOpen,
+              machineFilter: machineFilterBinding,
+              machineOptions: inputs.machineFilterOptions,
               lanes: workOrderedLanes,
               onClear: clearWorkFilters
             )
@@ -825,18 +894,27 @@ struct WorkRootListScreen: View, Equatable {
                 isLive: inputs.isLive
               )
             ) {
-              Button("New chat") {
-                pushNewChatRoute()
+              if hasActiveFilters {
+                // The rows exist; a filter hides them. Offer the way back.
+                Button("Clear filters") {
+                  withAnimation(.snappy(duration: 0.18)) { clearWorkFilters() }
+                }
+                .buttonStyle(.glass)
+                .tint(ADEColor.accent)
+              } else {
+                Button("New chat") {
+                  pushNewChatRoute()
+                }
+                .buttonStyle(.glassProminent)
+                .tint(ADEColor.accent)
+                .disabled(!inputs.isLive)
               }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.accent)
-              .disabled(!inputs.isLive)
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            ForEach(sessionGroups) { group in
+            ForEach(visibleSessionGroups) { group in
               workSessionGroupSection(group)
             }
           }
@@ -891,8 +969,14 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .onChange(of: path.count) { _, newCount in
-        if newCount == 0, selectedSessionTransitionId != nil {
+        if newCount == 0, let leftSessionId = selectedSessionTransitionId {
+          // Leaving a chat is what marks it seen (desktop stamps the same
+          // moment): everything it showed, including output that landed while
+          // the user was reading, no longer holds its lane out of the shelf.
+          WorkSeenStore.stamp([leftSessionId])
           selectedSessionTransitionId = nil
+          // The stamp lives outside the rebuild key, so re-derive the folds now.
+          scheduleSessionPresentationRebuild()
         }
         if newCount == 0 {
           syncService.clearOpenWorkSessionRoute()
@@ -1019,6 +1103,11 @@ struct WorkRootListScreen: View, Equatable {
       .onChange(of: inputs.workLaneNavigationRequestId) { _, requestId in
         guard isTabActive, requestId != nil else { return }
         Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
+      }
+      // The transcript draws lane and chat chips from these lists, so a lane
+      // id an agent prints shows the lane's name, colour and live state.
+      .onChange(of: projectionDataRevision, initial: true) { _, _ in
+        WorkThreadEntityDirectory.shared.record(lanes: lanes, sessions: sessions)
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
@@ -1302,7 +1391,8 @@ struct WorkRootListScreen: View, Equatable {
         // lane record to read it from.
         laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
         lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
-        laneMenu: workLaneMenuActions
+        laneMenu: workLaneMenuActions,
+        startsQuietZone: group.id == quietZoneStartGroupId
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -1359,24 +1449,41 @@ struct WorkRootListScreen: View, Equatable {
     )
   }
 
-  /// Subagent drawer then shell drawer. Nested subagents sit under a parent
-  /// that already names the lane, so they drop lane identity; shells keep the
-  /// previous compact default.
+  /// A chat's drawers start COLLAPSED (`workIsNestedDrawerCollapsed`).
+  /// Collapsed drawers share one thin line of marks under the card; an opened
+  /// drawer renders its rows below that line. Subagents before shells. Nested
+  /// subagents sit under a parent that already names the lane, so they drop
+  /// lane identity; shells keep the previous compact default.
   @ViewBuilder
   private func nestedChildDrawer(
     groups: [WorkSessionChildGroup],
     railColor: Color?,
     showsDivider: Bool
   ) -> some View {
-    ForEach(groups) { group in
+    let collapsedIds = collapsedSectionIds
+    let collapsed = groups.filter {
+      workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let open = groups.filter {
+      !workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let leadingInset = Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter)
+    if !collapsed.isEmpty {
+      WorkNestedDrawerMarks(groups: collapsed) { group in
+        toggleNestedDrawer(group)
+      }
+      .padding(.leading, leadingInset)
+      .padding(.bottom, 4)
+      .workRowHairline(showsDivider && open.isEmpty)
+      .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
+      .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+    }
+    ForEach(open) { group in
       WorkNestedSessionSection(
         group: group,
-        collapsed: collapsedSectionIds.contains(group.collapsedSectionId),
-        onToggle: {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            toggleCollapsed(group.collapsedSectionId)
-          }
-        }
+        onCollapse: { toggleNestedDrawer(group) }
       ) {
         ForEach(group.children) { child in
           sessionListRow(
@@ -1389,13 +1496,19 @@ struct WorkRootListScreen: View, Equatable {
           .id(child.id)
         }
       }
-      .padding(.leading, Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter))
+      .padding(.leading, leadingInset)
       .padding(.bottom, 6)
-      .workRowHairline(showsDivider && group.id == groups.last?.id)
+      .workRowHairline(showsDivider && group.id == open.last?.id)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
       .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
+    }
+  }
+
+  private func toggleNestedDrawer(_ group: WorkSessionChildGroup) {
+    withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      toggleCollapsed(workNestedDrawerOpenMarker(sectionId: group.collapsedSectionId))
     }
   }
 
@@ -1490,7 +1603,9 @@ struct WorkRootListScreen: View, Equatable {
   /// Lane and status filters count; search does not (it is visible in the
   /// field itself). Drives the filter chip's active state inside the field.
   var workActiveFilterCount: Int {
-    (selectedStatus != .all ? 1 : 0) + (selectedLaneId != "all" ? 1 : 0)
+    (selectedStatus != .all ? 1 : 0)
+      + (selectedLaneId != "all" ? 1 : 0)
+      + workParseMachineFilter(machineFilterStorage).count
   }
 
   var workHeaderActions: WorkRootHeaderActions {
@@ -1513,6 +1628,7 @@ struct WorkRootListScreen: View, Equatable {
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+    machineFilterStorage = ""
   }
 }
 

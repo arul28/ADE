@@ -5,6 +5,9 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types/prs";
 
+/** Every merge method, in the order the merge surfaces list them. */
+export const MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
+
 /** The merge method the user picked last. The key is shared by every merge surface. */
 export const LAST_MERGE_METHOD_KEY = "ade:prs:lastMergeMethod";
 

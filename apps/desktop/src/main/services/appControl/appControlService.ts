@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isPathInside } from "../shared/pathCompare";
 import { appControlProofCaption } from "../../../shared/proofProvenance";
 import { MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE } from "../../../shared/types/macDesktop";
 import type {
@@ -253,6 +254,20 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     throw error;
   };
 
+  /**
+   * Where a launch with no `cwd` runs: the lane's worktree when it sits inside
+   * the project root (the launch guard refuses anything outside it), else the
+   * project root as before.
+   */
+  const resolveLaneLaunchCwd = async (laneId: string, projectRoot: string): Promise<string | null> => {
+    const worktree = args.resolveLaneWorktreePath
+      ? await Promise.resolve(args.resolveLaneWorktreePath(laneId)).catch(() => null)
+      : null;
+    if (!worktree?.trim()) return null;
+    const resolved = path.resolve(worktree.trim());
+    return isPathInside(resolved, projectRoot) ? resolved : null;
+  };
+
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     requireSupportedDriver(launchArgs.driver);
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
@@ -264,7 +279,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     const requestedPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort);
     assertPortFree(requestedPort, laneId, "launch");
     await assertAppNotOnOtherLanesDesktop(requestedPort, laneId, "launch");
-    return await controllerFor(laneId).launch({ ...launchArgs, laneId });
+    const laneCwd = launchArgs.cwd?.trim() ? null : await resolveLaneLaunchCwd(laneId, projectRoot);
+    return await controllerFor(laneId).launch({ ...launchArgs, ...(laneCwd ? { cwd: laneCwd } : {}), laneId });
   };
 
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {

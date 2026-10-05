@@ -107,6 +107,19 @@ func workChatManualSteerDispatchModes(
   ).atomicDispatchModes
 }
 
+/// iOS half of desktop `queuedSteersCanReorder`: ADE holds the staged queue
+/// (and can reorder it) for every provider except Codex and OpenCode, which
+/// keep their own.
+func workChatQueuedSteersCanReorder(
+  session: TerminalSessionSummary?,
+  summary: AgentChatSessionSummary?
+) -> Bool {
+  guard let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType) else {
+    return false
+  }
+  return provider != "codex" && provider != "opencode"
+}
+
 /// iOS half of desktop `cursorSessionRunsInCloud`.
 ///
 /// `cursorRuntime` wins when the host sent it, including `"local"` over a
@@ -439,9 +452,15 @@ struct WorkSessionDestinationView: View {
   /// capped at one PR — the lane may own several, and a PR opened on another
   /// lane can be linked to this session explicitly.
   @State var laneChatPrs: [PullRequestListItem] = []
+  /// Project-wide PR catalog, used to find GitHub stack siblings that are not
+  /// yet linked to this chat.
+  @State var chatPrCatalog: [PullRequestListItem] = []
   /// The user's pick from the switcher. Nil means "show what the resolver
   /// chose", which is the primary row.
   @State var selectedChatPrId: String?
+  /// "Not now" on a stack offer, keyed by session+stack so it stays hidden.
+  @State var dismissedStackOfferKey: String?
+  @State var chatPrLinkBusy = false
   /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
   /// keep showing the current PR instead of clearing it first.
   @State var lastResolvedPrLaneId: String?
@@ -461,6 +480,13 @@ struct WorkSessionDestinationView: View {
   /// request cannot republish its older PR list or clear the newer pick either.
   @State var prDetailsRequestToken = 0
   @State var prLinkCopied = false
+  /// PR Watch / Ship for the PR on screen; nil reads as Off.
+  @State var prChatWatch: PrChatWatchSummary?
+  @State var prChatWatchBusy = false
+  @State var prChatWatchError: String?
+  @State var prChatWatchUnknown = false
+  /// "Restart agent session" was refused mid-turn; asks before stopping it.
+  @State var restartStopTurnConfirmPresented = false
   @State var sessionActionRenamePresented = false
   @State var sessionActionRenameText = ""
   @State var sessionIdCopied = false
@@ -565,6 +591,18 @@ struct WorkSessionDestinationView: View {
     isLive && hostReachable
   }
 
+  /// This chat's pending thread comments, or none when the host predates them.
+  var sendableThreadComments: [ChatThreadComment] {
+    guard syncService.supportsThreadComments(sessionId: sessionId) else { return [] }
+    return syncService.threadComments(sessionId: sessionId)
+  }
+
+  /// Re-lists comments when the chat opens and whenever it comes back online,
+  /// so changes made on the desktop while the phone was away show up.
+  var threadCommentsRefreshKey: String {
+    "\(sessionId)|\(isLiveAndReachable)|\(syncService.supportsThreadComments(sessionId: sessionId))"
+  }
+
   var canComposeChatMessages: Bool {
     session != nil || initialSession != nil
   }
@@ -662,6 +700,7 @@ struct WorkSessionDestinationView: View {
           onCopySessionId: { copyCurrentSessionId() },
           onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
           onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+          onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } },
           onAttachIssue: {
             ADEHaptics.light()
             syncService.linearPaneAttachSessionId = session.id
@@ -701,7 +740,9 @@ struct WorkSessionDestinationView: View {
       canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
       showsRename: !CursorCloudNaming.ownsName(
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
-      )
+      ),
+      // Optional on mobile: an older host has no restart, and the item hides.
+      showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id)
     )
   }
 
@@ -917,11 +958,36 @@ struct WorkSessionDestinationView: View {
           onOpenGitHub: openLanePrOnGitHub,
           linkedPrs: laneChatPrs,
           selectedPrId: chatDisplayPr?.id,
-          onSelectPr: { selectChatPr($0) }
+          onSelectPr: { selectChatPr($0) },
+          stackOffer: visibleChatStackOffer,
+          linkablePrs: chatPrLinkableCatalog,
+          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          linkBusy: chatPrLinkBusy,
+          onLinkStack: { Task { await linkChatStackOffer() } },
+          onDismissStackOffer: {
+            if let offer = visibleChatStackOffer {
+              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+            }
+          },
+          onLinkPr: { prId, allowCrossLane in
+            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+          },
+          onUnlink: { Task { await unlinkCurrentChatPr() } }
         )
         .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+      }
+      .task(id: prChatWatchTaskKey) {
+        await refreshPrChatWatch()
+      }
+      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
+        Button("Cancel", role: .cancel) {}
+        Button("Stop and restart", role: .destructive) {
+          Task { await restartAgentSession(stopFirst: true) }
+        }
+      } message: {
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
       }
       .alert("Rename session", isPresented: $sessionActionRenamePresented) {
         TextField("Title", text: $sessionActionRenameText)
@@ -1065,6 +1131,11 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: pollingKey) {
         await pollIfNeeded()
+      }
+      .task(id: threadCommentsRefreshKey) {
+        guard isLiveAndReachable, syncService.supportsThreadComments(sessionId: sessionId) else { return }
+        // Best effort: the live `session_meta_updated` path keeps it current.
+        try? await syncService.refreshThreadComments(sessionId: sessionId)
       }
       .task(id: cursorCloudMirrorWatchKey) {
         let watchId = sessionId
@@ -1282,6 +1353,20 @@ struct WorkSessionDestinationView: View {
         )
       : nil
     let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
+    let prWatchModel: WorkChatPrWatchModel? = chatPrBadge == nil ? nil : chatPrWatchModel
+    let setPrWatchAction: ((String?) -> Void)? = prWatchModel == nil
+      ? nil
+      : { mode in Task { await setPrChatWatch(mode: mode) } }
+    // Codex goal controls, host-gated per command like desktop's panel.
+    let setCodexGoalAction: ((String) -> Void)? = syncService.supportsChatRemoteAction("chat.setCodexGoal", sessionId: session.id)
+      ? { objective in Task { await setCodexGoal(objective: objective) } }
+      : nil
+    let setCodexGoalPausedAction: ((Bool) -> Void)? = syncService.supportsChatRemoteAction("chat.setCodexGoalStatus", sessionId: session.id)
+      ? { paused in Task { await setCodexGoalStatus(paused ? "paused" : "active") } }
+      : nil
+    let clearCodexGoalAction: (() -> Void)? = syncService.supportsChatRemoteAction("chat.clearCodexGoal", sessionId: session.id)
+      ? { Task { await clearCodexGoal() } }
+      : nil
     let inputLockMessage: String? = nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
     // Wired per mode, not per provider, so a provider that gains or loses a
@@ -1306,6 +1391,14 @@ struct WorkSessionDestinationView: View {
       dispatchSteerInterruptAction = { steerId in await dispatchSteerInterrupt(steerId) }
     } else {
       dispatchSteerInterruptAction = nil
+    }
+    // Host-gated like dispatch: an older brain has no `chat.moveSteer`.
+    let moveSteerAction: (@MainActor (String, Int) async -> Void)?
+    if syncService.supportsChatRemoteAction("chat.moveSteer", sessionId: session.id),
+       workChatQueuedSteersCanReorder(session: session, summary: composerChatSummary ?? chatSummary) {
+      moveSteerAction = { steerId, toIndex in await moveSteer(steerId, toIndex: toIndex) }
+    } else {
+      moveSteerAction = nil
     }
     let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
@@ -1357,6 +1450,29 @@ struct WorkSessionDestinationView: View {
       continueUsageLimitOnAlternateAction = nil
     }
     let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
+    // An older brain advertises no comment commands and the chip never appears.
+    let threadCommentsAvailable = syncService.supportsThreadComments(sessionId: session.id)
+    let threadCommentsForView = sendableThreadComments
+    let updateThreadCommentAction: (@MainActor (String, String?, Bool?) async throws -> Void)?
+    let deleteThreadCommentAction: (@MainActor (String) async throws -> Void)?
+    if threadCommentsAvailable {
+      let commentSessionId = session.id
+      let service = syncService
+      updateThreadCommentAction = { commentId, body, includeInNextSend in
+        try await service.updateThreadComment(
+          sessionId: commentSessionId,
+          commentId: commentId,
+          body: body,
+          includeInNextSend: includeInNextSend
+        )
+      }
+      deleteThreadCommentAction = { commentId in
+        try await service.deleteThreadComment(sessionId: commentSessionId, commentId: commentId)
+      }
+    } else {
+      updateThreadCommentAction = nil
+      deleteThreadCommentAction = nil
+    }
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -1443,6 +1559,7 @@ struct WorkSessionDestinationView: View {
       onEditSteer: editSteer,
       onDispatchSteerInline: dispatchSteerInlineAction,
       onDispatchSteerInterrupt: dispatchSteerInterruptAction,
+      onMoveSteer: moveSteerAction,
       onSelectModel: selectModel,
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
@@ -1484,6 +1601,11 @@ struct WorkSessionDestinationView: View {
       },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
+      prWatch: prWatchModel,
+      onSetPrWatch: setPrWatchAction,
+      onSetCodexGoal: setCodexGoalAction,
+      onSetCodexGoalPaused: setCodexGoalPausedAction,
+      onClearCodexGoal: clearCodexGoalAction,
       compactComposer: compactComposer,
       liveRedirectOnlySends: liveRedirectOnlySends,
       isPersonalChat: personalChat,
@@ -1509,7 +1631,10 @@ struct WorkSessionDestinationView: View {
         thread.retry()
       },
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
-      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil
+      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
+      threadComments: threadCommentsForView,
+      onUpdateThreadComment: updateThreadCommentAction,
+      onDeleteThreadComment: deleteThreadCommentAction
     )
   }
 

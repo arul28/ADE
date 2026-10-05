@@ -17,10 +17,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/AssistantOutputSelectionToolbar.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/chat/BrowserLoginImportDialog.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
@@ -29,19 +25,12 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/chat/ChatWorkflowActiveCard.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
-    },
-    "apps/desktop/src/renderer/components/chat/ChipHoverCard.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/chat/ComposerPromptStash.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -71,13 +60,6 @@
     },
     "apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LanePrBadgePopover.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/lanes/LinearIssueBadge.tsx": {
       "ade-ui/no-raw-z-index": 1
@@ -130,10 +112,6 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 1
     },

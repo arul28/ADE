@@ -10,6 +10,7 @@ import {
 } from "../../../shared/opencodeDataHome";
 import { killWindowsProcessTree, windowsPowerShellCommand } from "../shared/processExecution";
 import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
+import { signalProcessGroup } from "../shared/utils";
 
 /**
  * The OS side of ADE's OpenCode servers: finding their processes, stopping
@@ -281,7 +282,7 @@ const openCodeProcesses: OpenCodeProcessController = {
     // descendants with pkill -TERM -P as a fallback. Finally SIGTERM the pid
     // itself so at minimum the root process terminates.
     try {
-      process.kill(-pid, "SIGTERM");
+      signalProcessGroup(pid, "SIGTERM");
     } catch {
       // Not a group leader (or no permission); fall through to child-walk.
     }
@@ -309,6 +310,26 @@ let lastOrphanRecoveryResult: OpenCodeOrphanRecoveryResult = {
   skippedPids: [],
 };
 let orphanRecoveryCompleted = false;
+
+/**
+ * Stop one command an OpenCode server is running (a background shell), with
+ * its children. OpenCode starts each shell detached, so on Unix the pid leads
+ * its own process group; Windows walks the tree with `taskkill /T`. OpenCode
+ * sees the exit and reports the signal to the agent, which a delete of the
+ * shell record would not.
+ */
+export function killOpenCodeShellProcessTree(pid: number): boolean {
+  return openCodeProcesses.killProcessTree(pid);
+}
+
+/**
+ * Whether a process still exists. The tree kill's own result cannot say: the
+ * group signal can end the root before the final per-pid signal, which then
+ * reports failure for a process that is gone.
+ */
+export function isOpenCodeProcessAlive(pid: number): boolean {
+  return openCodeProcesses.isProcessAlive(pid);
+}
 
 export function stopChildProcess(proc: ChildProcess): void {
   if (proc.exitCode !== null || proc.signalCode !== null) return;

@@ -789,7 +789,11 @@ async function startEntry(args: {
   return entry;
 }
 
-function buildLease(entry: OpenCodeServerEntry, logger?: Logger | null): OpenCodeServerLease {
+function buildLease(
+  entry: OpenCodeServerEntry,
+  logger?: Logger | null,
+  owner?: { kind: OpenCodeServerOwnerKind; id: string | null },
+): OpenCodeServerLease {
   let released = false;
   const ownListeners = new Set<OpenCodeEventListener>();
   return {
@@ -823,6 +827,12 @@ function buildLease(entry: OpenCodeServerEntry, logger?: Logger | null): OpenCod
       ownListeners.clear();
       entry.refCount = Math.max(0, entry.refCount - 1);
       entry.lastUsedAt = Date.now();
+      // Paired with `opencode.server_acquired`: without it, the start of the
+      // idle-shutdown countdown is invisible in the logs.
+      logServerEvent(logger, "opencode.server_released", entry, {
+        ownerKind: owner?.kind ?? null,
+        ownerId: owner?.id ?? null,
+      });
       scheduleIdleShutdown(entry, logger);
     },
   };
@@ -882,7 +892,7 @@ export async function acquireOpenCodeServer(args: {
   clearIdleTimer(entry);
   entry.refCount += 1;
   entry.lastUsedAt = Date.now();
-  const lease = buildLease(entry, args.logger);
+  const lease = buildLease(entry, args.logger, { kind: args.ownerKind, id: args.ownerId ?? null });
   const configMode = args.configMode ?? "replace";
   try {
     if (args.config && configMode === "replace") lease.updateConfig(args.config);

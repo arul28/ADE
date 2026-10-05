@@ -314,6 +314,10 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.editSteer(args as never);
         break;
+      case "moveSteer":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.moveSteer(args as never);
+        break;
       case "dispatchSteer":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.dispatchSteer(args as never);
@@ -666,6 +670,19 @@ export class PersonalChatScope {
     const runtime = await pending?.catch(() => null);
     this.personalTerminalSessions.clear();
     runtime?.dispose();
+  }
+
+  /**
+   * The personal runtime, booting it when needed. For the brain's wake router,
+   * which delivers a child's completion into a personal chat that asked for it.
+   */
+  async runtimeForDelivery(): Promise<AdeRuntime> {
+    return await this.getRuntime();
+  }
+
+  /** The personal runtime only if it is already up; never boots it. */
+  peekRuntime(): Promise<AdeRuntime> | null {
+    return this.runtimePromise;
   }
 
   private async getRuntime(): Promise<AdeRuntime> {

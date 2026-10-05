@@ -63,6 +63,7 @@ import {
   type WorkLaneSortMode,
 } from "../components/terminals/workLaneOrder";
 import {
+  projectStateKeyForBinding,
   rootAppStoreApi,
   selectActiveProjectStateKey,
   useAppStore,
@@ -531,6 +532,26 @@ export function useLanesForPin(
     (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
   return useMemo(
     () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin],
+  );
+}
+
+const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
+
+/**
+ * The pinned machine's sessions, the twin of {@link useLanesForPin}: the union
+ * slice when the Work tab has loaded one, else the project-scoped session cache
+ * that `useWorkSessions` keeps for the same checkout. A local chat often has no
+ * union slice at all, so reading only the slice left every chat id unresolved.
+ */
+export function useSessionsForPin(
+  pin: OpenProjectBinding | null | undefined,
+): TerminalSessionSummary[] | null {
+  const entry = useMachineEntryForBinding(pin);
+  const cached = useAppStore((state) =>
+    (pin ? state.sessionsCacheByProject[projectStateKeyForBinding(pin)] ?? null : null));
+  return useMemo(
+    () => (!pin ? null : entry?.sessions ?? cached ?? EMPTY_SESSIONS),
     [cached, entry, pin],
   );
 }

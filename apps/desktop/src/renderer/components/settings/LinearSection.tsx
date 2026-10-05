@@ -16,6 +16,7 @@ import {
   SettingsManagerPage,
 } from "./primitives/SettingsManagerPage";
 import { LinearAgentSection } from "./LinearAgentSection";
+import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -287,6 +288,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           setOauthSessionIdState(null);
           setOauthStartingState(false);
           setConnection(session.connection ?? null);
+          announceLinearConnectionChanged();
           setError(null);
           if (session.connection?.connected) void loadProjects();
           else void loadStatus();
@@ -345,6 +347,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         return;
       }
       setConnection(status);
+      announceLinearConnectionChanged();
       if (status.connected) {
         void loadProjects(requestId);
         setTokenInput("");
@@ -409,6 +412,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     try {
       const status = await window.ade.cto.clearLinearToken();
       setConnection(status);
+      announceLinearConnectionChanged();
       setProjects([]);
       setTokenInput("");
       setError(null);

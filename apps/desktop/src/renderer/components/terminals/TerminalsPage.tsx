@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLatestCallback } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
@@ -25,6 +26,7 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -32,6 +34,9 @@ import {
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
+import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import { showToast } from "../app/toast/toastStore";
+import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
   AgentChatSession,
@@ -53,7 +58,13 @@ import {
   isChatToolType,
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
-import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import {
+  addSessionBesideTarget,
+  makeGridLayoutId,
+  makeGridSetId,
+  MAX_WORK_GRID_TILES,
+  removeSessionFromGrids,
+} from "../../lib/workGrid";
 import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
@@ -179,6 +190,14 @@ async function allSettledWithConcurrency<T>(
   return results;
 }
 
+
+/** Copy from a menu that has already closed, so a refused write still says so. */
+function copyToClipboard(text: string, what: string): void {
+  void navigator.clipboard.writeText(text).catch(() => {
+    showToast({ title: `Could not copy ${what}`, tone: "error" });
+  });
+}
+
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   // New-lane CLI launches this window started: open their PTY once the brain
@@ -204,6 +223,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   ));
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
+  const [bulkMenu, setBulkMenu] = useState<ContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -407,6 +427,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       openIn?: SessionContextMenuOpenIn | null,
       laneType?: LaneSummary["laneType"] | null,
     ) => {
+      // Right-clicking a row inside a multi-selection acts on the selection, the
+      // way Finder does; a row outside it keeps its own single-row menu.
+      if (selectedSessionIds.size > 1 && selectedSessionIds.has(session.id)) {
+        setContextMenu(null);
+        setBulkMenu({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      setBulkMenu(null);
       setContextMenu({
         session,
         x: e.clientX,
@@ -418,7 +446,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneType ? { laneType } : {}),
       });
     },
-    [],
+    [selectedSessionIds],
   );
   const handleOpenChatSession = useCallback(
     (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
@@ -725,6 +753,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .filter((session): session is TerminalSessionSummary => session != null),
     [selectableSessionsById, selectedSessionIds],
   );
+  // The bulk menu lists and grids the selection in sidebar order, not click
+  // order: this tab's roster first, then each other machine's rows.
+  const selectedSessionsInSidebarOrder = useMemo(
+    () => [...selectableSessionsById.values()].filter((session) => selectedSessionIds.has(session.id)),
+    [selectableSessionsById, selectedSessionIds],
+  );
+  // A bulk menu whose selection fell below two rows (a refresh dropped one) is
+  // closed, not parked to reappear at stale coordinates.
+  useEffect(() => {
+    if (selectedSessionsInSidebarOrder.length < 2) setBulkMenu(null);
+  }, [selectedSessionsInSidebarOrder.length]);
 
   // One selected row's delete, routed to the machine that owns it. Bulk delete
   // used to call the unpinned RPC for every row, so a selection spanning
@@ -1171,6 +1210,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     // remote machine — a null pin on a remote tab is still that tab's runtime.
     const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
       if (!request.openPanel) return;
+      // Addressed to the desktop the user is talking from; another one leaves it.
+      if (!isAddressedToThisDesktop(request.targetClientId)) return;
       // The pane that navigates and acks is unmounted while Git (or another
       // tool) is showing, and the runtime event is not replayed. Hold the
       // request so the Browser panel can drain it on mount.
@@ -1290,6 +1331,40 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => work.gridSets.flatMap((set) => set.sessionIds),
     [work.gridSets],
   );
+
+  // Bulk menu → grid: the selection becomes one new grid set, pulled out of any
+  // set its members already sat in.
+  const handleOpenSessionsInGrid = useCallback((sessionIds: string[]) => {
+    const ids = sessionIds.filter((id) => work.sessionsById.has(id)).slice(0, MAX_WORK_GRID_TILES);
+    if (ids.length < 2) return;
+    const detached = ids.reduce((sets, id) => removeSessionFromGrids(sets, id), work.gridSets);
+    const id = makeGridSetId();
+    const layoutId = makeGridLayoutId(projectStateKey, id);
+    window.ade.tilingTree.set(layoutId, buildWorkSessionTilingTree(ids)).catch(() => {});
+    work.setGridSets([...detached, { id, layoutId, sessionIds: ids }]);
+    work.openSessionTab(ids[0]!);
+    work.setActiveItemId(ids[0]!);
+  }, [projectStateKey, work]);
+
+  const handleRemoveSessionsFromGrid = useCallback((sessionIds: string[]) => {
+    work.setGridSets((prev) => sessionIds.reduce((sets, id) => removeSessionFromGrids(sets, id), prev));
+  }, [work]);
+
+  const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+
+  // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
+  // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
+  const handleBulkLanes = useCallback((laneIds: string[], intent: BulkLaneIntent) => {
+    if (!laneIds.length) return;
+    const params = new URLSearchParams({
+      action: intent === "open" ? "select" : "batch",
+      laneId: laneIds[0]!,
+      laneIds: laneIds.join(","),
+    });
+    if (intent === "archive" || intent === "delete") params.set("manageTab", intent);
+    work.selectLane(laneIds[0]!);
+    work.navigate(`/lanes?${params.toString()}`);
+  }, [work]);
 
   // Keep grid membership in sync with live sessions: drop members that no longer
   // exist (closed/deleted) and dissolve any set that falls below two tiles.
@@ -1691,6 +1766,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * List/Board toggle, filters, new chat — must be the same control in every
    * mode, and the pane's cross-machine subscription must not run twice.
    */
+  // Stable handles for the session list: these callbacks are rebuilt whenever
+  // the sessions, selection or filters change (several times a second while
+  // agents run), and each new identity re-rendered every lane header and card.
+  const listSelectSession = useLatestCallback(handleSelectSession);
+  const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
+  const listClearSelection = useLatestCallback(() => {
+    setSelectedSessionIds(new Set());
+    setSelectionAnchorId(null);
+  });
+  const listBulkClose = useLatestCallback(handleBulkCloseSelected);
+  const listBulkDelete = useLatestCallback(handleBulkDeleteSelected);
+  const listBulkStopAndDelete = useLatestCallback(handleBulkStopAndDeleteSelected);
+  const listRefreshOrphanSessions = useLatestCallback(handleRefreshOrphanSessions);
+
   const sessionListPane = useMemo(
     () => (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
@@ -1717,16 +1806,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
-            onSelectSession={handleSelectSession}
-            onSelectForeignRuntimeSession={handleSelectForeignRuntimeSession}
-            onClearSelection={() => {
-              setSelectedSessionIds(new Set());
-              setSelectionAnchorId(null);
-            }}
-            onBulkClose={handleBulkCloseSelected}
-            onBulkDelete={handleBulkDeleteSelected}
-            onBulkStopAndDelete={handleBulkStopAndDeleteSelected}
-            onRefreshOrphanSessions={handleRefreshOrphanSessions}
+            onSelectSession={listSelectSession}
+            onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
+            onClearSelection={listClearSelection}
+            onBulkClose={listBulkClose}
+            onBulkDelete={listBulkDelete}
+            onBulkStopAndDelete={listBulkStopAndDelete}
+            onRefreshOrphanSessions={listRefreshOrphanSessions}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -1746,6 +1832,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             toggleWorkLanePinned={work.toggleWorkLanePinned}
             workLaneSortMode={work.workLaneSortMode}
             setWorkLaneSortMode={work.setWorkLaneSortMode}
+            workFoldBusyLanes={work.workFoldBusyLanes}
+            setWorkFoldBusyLanes={work.setWorkFoldBusyLanes}
+            workSeenAtBySessionId={work.workSeenAtBySessionId}
             workLaneOrder={work.workLaneOrder}
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
@@ -1757,13 +1846,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work,
       active,
       sortedLanes,
-      handleSelectSession,
-      handleSelectForeignRuntimeSession,
+      listSelectSession,
+      listSelectForeignRuntimeSession,
+      listClearSelection,
       selectedSessionIds,
-      handleBulkCloseSelected,
-      handleBulkDeleteSelected,
-      handleBulkStopAndDeleteSelected,
-      handleRefreshOrphanSessions,
+      listBulkClose,
+      listBulkDelete,
+      listBulkStopAndDelete,
+      listRefreshOrphanSessions,
       handleContextMenu,
       handoffLaunchJobs,
       boardBesideList,
@@ -1845,7 +1935,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onDeleteSession={handleDeleteSession}
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
-        onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onCopySessionId={(id) => copyToClipboard(id, "session ID")}
         onSettle={handleSettleSession}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
@@ -1873,7 +1963,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               },
               { form: "ade" },
             );
-            await navigator.clipboard.writeText(href).catch(() => {});
+            copyToClipboard(href, "deep link");
           })();
         }}
         onOpenSessionInWeb={(session) => {
@@ -1926,6 +2016,34 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               }
             },
           });
+        }}
+      />
+
+      <SessionBulkContextMenu
+        menu={bulkMenu}
+        sessions={selectedSessionsInSidebarOrder}
+        lanes={work.lanes}
+        resolvePin={resolveSessionRuntimePin}
+        onClose={() => setBulkMenu(null)}
+        pinnedSessionIds={work.pinnedSessionIds}
+        onSetPinned={(sessionIds, pinned) => {
+          const current = new Set(work.pinnedSessionIds);
+          for (const id of sessionIds) {
+            if (current.has(id) !== pinned) work.togglePinnedSession(id);
+          }
+        }}
+        gridSessionIds={gridSessionIds}
+        gridableSessionIds={gridableSessionIds}
+        onOpenInGrid={handleOpenSessionsInGrid}
+        onRemoveFromGrid={handleRemoveSessionsFromGrid}
+        onStopRuntimes={() => { void handleBulkCloseSelected(); }}
+        onDelete={() => { void handleBulkDeleteSelected(); }}
+        onStopAndDelete={handleBulkStopAndDeleteSelected}
+        onCopySessionIds={(ids) => copyToClipboard(ids.join("\n"), "session IDs")}
+        onLanes={handleBulkLanes}
+        onClearSelection={() => {
+          setSelectedSessionIds(new Set());
+          setSelectionAnchorId(null);
         }}
       />
 

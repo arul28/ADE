@@ -1,3 +1,5 @@
+import { confirmDialog } from "../ui/dialog";
+import { remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
 import React, {
   Suspense,
   useCallback,
@@ -66,6 +68,7 @@ import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
+import { isInParkedSurface } from "../../lib/parkedSurface";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -153,6 +156,7 @@ export function AppleDevicePane({
   const [loadingStage, setLoadingStage] = useState<AppleLoadingStage>("starting");
   const [startError, setStartError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
+  const [endingRemoteSession, setEndingRemoteSession] = useState(false);
 
   /**
    * §A2: ONE toggle, 3D by default, remembered per project. A forced fallback
@@ -258,7 +262,9 @@ export function AppleDevicePane({
       observer = new IntersectionObserver((entries) => {
         const entry = entries[0];
         if (!entry) return;
-        offScreen = !entry.isIntersecting;
+        // A parked surface (another project or tab on screen) reports as not
+        // intersecting, but keeps its stream so switching back shows it live.
+        offScreen = !entry.isIntersecting && !isInParkedSurface(node);
         apply();
       });
       observer.observe(node);
@@ -953,6 +959,50 @@ export function AppleDevicePane({
     return { family: identity.family, model: identity.renamed ? identity.model : null };
   }
 
+  // Only this pane's lane: the status read falls back across lanes.
+  const remoteHolder = status?.remoteHolder
+    && (!status.activeSession?.laneId || !laneId || status.activeSession.laneId === laneId)
+    ? status.remoteHolder
+    : null;
+  // "An agent on Mac mini": the wording the phone's owner ribbon uses too.
+  const remoteHolderLabel = remoteHolder
+    ? remoteAgentHolderLabel(remoteHolder.machineName, { sentenceStart: true })
+    : null;
+  async function freeDeviceFromRemoteAgent(): Promise<void> {
+    const holderSessionId = status?.activeSession?.chatSessionId ?? null;
+    if (!holderSessionId) return;
+    const confirmed = await confirmDialog({
+      title: "Free this device?",
+      message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
+      confirmLabel: "Free device",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setEndingRemoteSession(true);
+    try {
+      // The service checks that the same agent still holds the device and
+      // ends it in one step, so a session that changed hands while the dialog
+      // was open is never ended by mistake.
+      const result = await window.ade.iosSimulator.shutdown(
+        { laneId: laneId ?? null, ignoreOwnership: true, expectedChatSessionId: holderSessionId },
+        runtimePinRef.current,
+      );
+      if (!result.released) {
+        showToast({
+          tone: "info",
+          title: result.previousSession
+            ? "Another session took the device first; nothing was freed."
+            : "The agent already let go of this device.",
+        });
+      }
+      refreshList();
+    } catch (cause: unknown) {
+      setError(cause);
+    } finally {
+      setEndingRemoteSession(false);
+    }
+  }
+
   const strip = error != null
     ? (
       <AppleDeviceStatusStrip
@@ -982,6 +1032,18 @@ export function AppleDevicePane({
             onSecondaryAction={chooseAnotherDevice}
           />
         )
+        /* An agent on another machine (`ade apple … --machine`) holds this
+           device. Said here, on the pane the person is looking at, so the
+           simulator moving on its own has a reason; ending it asks first. */
+        : remoteHolder && state !== "no-device"
+          ? (
+            <AppleDeviceNoticeStrip
+              sentence={`${remoteHolderLabel} is driving this device.`}
+              actionLabel="Free device"
+              onAction={() => { void freeDeviceFromRemoteAgent(); }}
+              busy={endingRemoteSession}
+            />
+          )
         /* §A1: the ONE sentence a fallback to flat is allowed to say. */
         : threeFailure
           ? (

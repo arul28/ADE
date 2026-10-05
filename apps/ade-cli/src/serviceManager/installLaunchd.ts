@@ -5,6 +5,8 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  BACKGROUND_ITEM_BLOCKED_MESSAGE,
+  type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
   MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
@@ -108,6 +110,76 @@ export function launchAgentPath(
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
 ): string {
   return path.join(homeDir, "Library", "LaunchAgents", `${serviceName}.plist`);
+}
+
+/**
+ * Asks macOS Background Task Management about a launch agent plist.
+ *
+ * `osascript`'s Objective-C bridge reaches `+[SMAppService
+ * statusForLegacyURL:]` (Swift: `statusForLegacyPlist(at:)`, macOS 13+)
+ * without shipping a native helper, and needs no admin rights — unlike
+ * `sfltool dumpbtm`, which prompts for a password. The raw values are
+ * `SMAppService.Status`: 0 notRegistered, 1 enabled, 2 requiresApproval,
+ * 3 notFound. Anything else, including an older macOS without the class, is
+ * `unknown`; callers must treat that as "no evidence", never as blocked.
+ */
+const BACKGROUND_ITEM_STATUS_SCRIPT = [
+  "ObjC.import('ServiceManagement');",
+  "function run(argv) {",
+  "  var service = $.SMAppService;",
+  "  if (!service || typeof service.statusForLegacyURL !== 'function') return -1;",
+  "  return service.statusForLegacyURL($.NSURL.fileURLWithPath(argv[0]));",
+  "}",
+].join("\n");
+
+export function parseBackgroundItemStatus(output: string): BackgroundItemStatus {
+  switch (output.trim()) {
+    case "0": return "not_registered";
+    case "1": return "enabled";
+    case "2": return "requires_approval";
+    case "3": return "not_found";
+    default: return "unknown";
+  }
+}
+
+/** The one command that reads a launch agent's Background Items status. */
+export function backgroundItemStatusCommand(plistPath: string): { command: string; args: string[] } {
+  return {
+    command: "/usr/bin/osascript",
+    args: ["-l", "JavaScript", "-e", BACKGROUND_ITEM_STATUS_SCRIPT, plistPath],
+  };
+}
+
+export function readLaunchdBackgroundItemStatus(
+  plistPath: string,
+  run: ServiceManagerSpawnSync = spawnSync,
+): BackgroundItemStatus {
+  if (process.platform !== "darwin") return "unknown";
+  try {
+    const { command, args } = backgroundItemStatusCommand(plistPath);
+    const result = run(command, args, { encoding: "utf8", timeout: 5_000 });
+    if (result.status !== 0) return "unknown";
+    return parseBackgroundItemStatus(launchdPrintOutputText(result));
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * The desktop asks for service status every couple of seconds while the brain
+ * is down, on its main thread; an `osascript` per poll would stall the UI. The
+ * answer only changes when a person flips a switch in System Settings, so a
+ * few seconds of staleness costs nothing.
+ */
+const BACKGROUND_ITEM_CACHE_MS = 5_000;
+const backgroundItemCache = new Map<string, { status: BackgroundItemStatus; at: number }>();
+
+function cachedBackgroundItemStatus(plistPath: string): BackgroundItemStatus {
+  const cached = backgroundItemCache.get(plistPath);
+  if (cached && Date.now() - cached.at < BACKGROUND_ITEM_CACHE_MS) return cached.status;
+  const status = readLaunchdBackgroundItemStatus(plistPath);
+  backgroundItemCache.set(plistPath, { status, at: Date.now() });
+  return status;
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
@@ -500,6 +572,12 @@ export async function installLaunchdService(
     );
   }
   if (replacementPid == null || replacementPid === oldPid) {
+    // launchd loaded the job and never started it. The usual reason on a
+    // healthy Mac is the "Allow in the Background" switch, and it is worth
+    // naming: every restart after this one would fail the same way.
+    if (replacementPid == null && readLaunchdBackgroundItemStatus(servicePath, run) === "requires_approval") {
+      return handoverFailure(servicePath, "background_item_blocked", BACKGROUND_ITEM_BLOCKED_MESSAGE);
+    }
     return handoverFailure(
       servicePath,
       "replacement_pid",
@@ -620,6 +698,18 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
   }
 
   const running = isLaunchdPrintRunning(print.stdout);
+  if (running) {
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "status",
+      installed: true,
+      running,
+      path: servicePath,
+      message: "ADE service launchd service is running.",
+    };
+  }
+  const backgroundItem = cachedBackgroundItemStatus(servicePath);
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -627,8 +717,9 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     installed: true,
     running,
     path: servicePath,
-    message: running
-      ? "ADE service launchd service is running."
+    backgroundItem,
+    message: backgroundItem === "requires_approval"
+      ? BACKGROUND_ITEM_BLOCKED_MESSAGE
       : "ADE service launchd service is loaded but not running.",
   };
 }

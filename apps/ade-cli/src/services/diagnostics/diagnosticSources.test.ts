@@ -280,8 +280,14 @@ describe("collectMachineDiagnosticSources — service definition", () => {
 
     const definition = collect({ home }).serviceDefinition;
 
-    expect(definition).toHaveLength(1);
-    expect(definition[0]?.label).toBe("launchd agent");
+    expect(definition).toHaveLength(3);
+    // The plist first, then what launchd actually loaded, then whether macOS
+    // will run it at all ("Allow in the Background").
+    expect(definition.map((entry) => entry.label)).toEqual([
+      "launchd agent",
+      "launchd job",
+      "Background Items",
+    ]);
     // The whole reason this section exists: a plist written without it boots the
     // desktop app as the background service.
     expect(definition[0]?.text).toContain("ELECTRON_RUN_AS_NODE");

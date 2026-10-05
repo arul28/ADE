@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -35,8 +34,13 @@ import {
 import {
   AGENT_CHAT_STOP_MODES,
   chatStopModeCopy,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
   parseAgentChatStopMode,
+  providerStopModeSupport,
+  providerSupportsStopModeChoice,
+  stopModeAvailable,
   stopModeClearsQueue,
+  stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
 import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
 import {
@@ -66,6 +70,8 @@ import {
 import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
+  CHAT_MENTION_DND_MIME,
+  parseChatMentionDragPayload,
   isChatMentionTokenBody,
   parseChatMentions,
   chatMentionKindFromToken,
@@ -116,7 +122,9 @@ import {
 } from "../shared/PermissionModePicker";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { ensureRuntimeCatalogDescriptors, resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
@@ -155,9 +163,11 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import type { ChatThreadComment } from "../../../shared/threadComments";
+import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
+import { countCommentsForNextSend } from "./threadCommentsStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
-import type { ZLayer } from "../ui/zLayers";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
 import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
@@ -180,6 +190,7 @@ import {
 } from "./ComposerPromptStash";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
@@ -206,6 +217,8 @@ export type ComposerDraftEditIntent = {
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
+
+const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -425,6 +438,9 @@ type SlashCommandEntry = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  server?: string;
 };
 
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
@@ -656,6 +672,9 @@ function buildSlashCommands(
       description: cmd.description || `Run ${name}`,
       argumentHint: cmd.argumentHint,
       source: cmd.source,
+      kind: cmd.kind,
+      origin: cmd.origin,
+      server: cmd.server,
     });
   }
 
@@ -925,9 +944,10 @@ function ComposerIdleSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div data-composer-idle-send-control className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+      <div data-composer-idle-send-control data-send-control="" className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
         <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
           <button
+            data-send-part=""
             type="button"
             disabled={!sendEnabled}
             onClick={onSend}
@@ -950,6 +970,7 @@ function ComposerIdleSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
@@ -974,7 +995,7 @@ function ComposerIdleSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -1017,7 +1038,7 @@ function ComposerIdleSendButton({
                 </button>
               ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1147,7 +1168,7 @@ function ComposerOverflowMenu({
       </SmartTooltip>
       {open && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1191,7 +1212,7 @@ function ComposerOverflowMenu({
                   </button>
                 ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1286,6 +1307,8 @@ function PendingSteerItem({
   onEdit,
   onSendNow,
   onInterrupt,
+  reorder,
+  attachmentTray,
 }: {
   steer: {
     steerId: string;
@@ -1298,11 +1321,71 @@ function PendingSteerItem({
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
+  /** Present only when the queue can be reordered and holds more than one row. */
+  reorder?: PendingSteerReorder;
+  /** The message's files and context, as the composer's own tray draws them. */
+  attachmentTray?: React.ReactNode;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
-      <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+    <div
+      ref={rowRef}
+      data-testid="pending-steer-item"
+      className={cn(
+        "group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5 transition-opacity",
+        reorder?.dragging && "opacity-40",
+        reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
+        reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
+      )}
+      onDragOver={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        reorder.onDragOverRow(event.clientY < rect.top + rect.height / 2 ? "before" : "after");
+      } : undefined}
+      onDrop={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        reorder.onDrop();
+      } : undefined}
+    >
+      {reorder ? (
+        <SmartTooltip forceEnabled side="left" content={{ label: "Reorder", description: "Drag to change when this message is sent, or focus and use the arrow keys." }}>
+          <button
+            type="button"
+            ref={reorder.handleRef}
+            draggable
+            data-testid="pending-steer-reorder-handle"
+            aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
+            aria-keyshortcuts="ArrowUp ArrowDown Home End"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-[var(--chat-accent)]/45 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
+              if (rowRef.current) event.dataTransfer.setDragImage(rowRef.current, 12, 12);
+              reorder.onDragStart();
+            }}
+            onDragEnd={reorder.onDragEnd}
+            onKeyDown={(event) => {
+              const target = event.key === "ArrowUp" ? reorder.index - 1
+                : event.key === "ArrowDown" ? reorder.index + 1
+                  : event.key === "Home" ? 0
+                    : event.key === "End" ? reorder.count - 1
+                      : null;
+              if (target == null) return;
+              event.preventDefault();
+              if (target < 0 || target >= reorder.count || target === reorder.index) return;
+              reorder.onMove(target);
+            }}
+          >
+            <DotsSixVertical size={11} weight="bold" />
+          </button>
+        </SmartTooltip>
+      ) : (
+        <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+      )}
       <div className="flex-1 min-w-0">
         <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
           Sends after turn
@@ -1310,6 +1393,7 @@ function PendingSteerItem({
         <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
           {steer.text}
         </div>
+        {attachmentTray}
       </div>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
@@ -1444,12 +1528,14 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  canReorder?: boolean;
   /** Why some staged messages cannot be sent during the turn, when any cannot. */
   inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
     ...(args.canInterrupt ? ["interrupt with this message"] : []),
+    ...(args.canReorder ? ["drag to reorder"] : []),
     "edit",
     "remove",
   ];
@@ -1470,10 +1556,10 @@ function activeTurnSendCopy(
   if (mode === "queue") {
     return { label: "Send after turn", description: "When this turn finishes." };
   }
-  return {
-    label: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
-    description: `Stop and redirect ${capability.agentLabel} now.`,
-  };
+  // Cursor's interrupt cancels the run; Claude's keeps slow tools running.
+  return capability.interruptContinues
+    ? { label: "Interrupt & continue", description: `Stop and redirect ${capability.agentLabel} now.` }
+    : { label: "Interrupt & send", description: `Redirect ${capability.agentLabel} now.` };
 }
 
 function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {
@@ -1513,14 +1599,6 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
   });
 }
 
-/**
- * Portal a composer menu into a viewport overlay layer. The layer is the
- * viewport, so the menu's `absolute` left/top are viewport coordinates, the
- * same numbers `fixedMenuAboveAnchorStyle` computes for a fixed element.
- */
-function ComposerMenuLayer({ layer, children }: { layer: ZLayer; children: React.ReactNode }) {
-  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
-}
 
 function ActiveTurnSendButton({
   enabled,
@@ -1555,7 +1633,7 @@ function ActiveTurnSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div className="inline-flex items-center overflow-hidden rounded-full">
+      <div data-send-control="" className="inline-flex items-center overflow-hidden rounded-full">
         <SmartTooltip
           forceEnabled
           content={{
@@ -1565,6 +1643,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             type="button"
             disabled={!enabled}
             onClick={onSend}
@@ -1587,6 +1666,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             aria-haspopup="menu"
@@ -1608,7 +1688,7 @@ function ActiveTurnSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-send-menu
               role="menu"
@@ -1661,7 +1741,7 @@ function ActiveTurnSendButton({
                 </div>
               ) : null}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1674,17 +1754,24 @@ function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
   backgroundJobCount,
+  childChatCount = 0,
+  provider = null,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
   backgroundJobCount: number;
+  /** Spawned chats of this chat that are working right now. */
+  childChatCount?: number;
+  provider?: string | null;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount, childChatCount);
+  // The child-chat choices only appear while there is a child chat to stop.
+  const visibleModes = ACTIVE_TURN_STOP_MODES.filter((option) => childChatCount > 0 || !stopModeStopsChildren(option));
 
   if (!allowQueueChoice) {
     return (
@@ -1708,13 +1795,15 @@ function ActiveTurnStopButton({
           <button
             type="button"
             className="inline-flex h-7 items-center justify-center px-2 text-red-400/80 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
-            aria-label={selectedCopy.label}
+            aria-label="Stop active turn"
+            aria-description={selectedCopy.label}
             onClick={onStop}
           >
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
+        {/* Off while the menu is open: it would sit on top of the menu's last rows. */}
+        <SmartTooltip forceEnabled={!menuOpen} content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1730,7 +1819,7 @@ function ActiveTurnStopButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-stop-menu
               role="menu"
@@ -1738,21 +1827,27 @@ function ActiveTurnStopButton({
               className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
-              {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                const copy = chatStopModeCopy(option, backgroundJobCount);
+              {visibleModes.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount, childChatCount);
                 const selected = option === mode;
+                const support = providerStopModeSupport(provider, option);
                 return (
                   <button
                     key={option}
                     type="button"
                     role="menuitemradio"
                     aria-checked={selected}
+                    aria-disabled={!support.supported}
+                    disabled={!support.supported}
+                    title={support.supported ? undefined : support.reason}
                     onClick={() => {
+                      if (!support.supported) return;
                       onModeChange(option);
                       setMenuOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
+                      support.supported ? "hover:bg-red-500/[0.08]" : "cursor-not-allowed opacity-45",
                       index > 0 && "border-t border-white/[0.05]",
                     )}
                   >
@@ -1761,7 +1856,9 @@ function ActiveTurnStopButton({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {support.supported ? copy.description : support.reason}
+                      </span>
                     </span>
                     <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
                       {selected ? <Check size={11} weight="bold" /> : null}
@@ -1770,7 +1867,7 @@ function ActiveTurnStopButton({
                 );
               })}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1784,6 +1881,11 @@ export function AgentChatComposer({
   composerMaxHeightPx = null,
   isActive = false,
   shouldAutofocus = isActive,
+  caretToEndRequest = 0,
+  threadComments = EMPTY_THREAD_COMMENTS,
+  threadCommentsSessionId = null,
+  threadCommentsPin = null,
+  onJumpToThreadComment,
   sdkSlashCommands = [],
   modelId,
   activeHarnessPresetId = null,
@@ -1812,6 +1914,7 @@ export function AgentChatComposer({
   machineChipAction = null,
   cursorRuntime = null,
   modelRuntimePin = null,
+  catalogScopeKey,
   attachmentPersistenceUnavailableReason = null,
   onUseThisComputer,
   contextAttachments = [],
@@ -1857,6 +1960,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel = "Background",
   onInterrupt,
   backgroundJobCount = 0,
+  childChatCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -1886,6 +1990,7 @@ export function AgentChatComposer({
   onEditSteer,
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
+  onMoveSteer,
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
@@ -1939,6 +2044,17 @@ export function AgentChatComposer({
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
   shouldAutofocus?: boolean;
+  /**
+   * Bumped when something outside the composer adds to the draft for the user
+   * to keep typing after (an "Add to chat" quote). Each new value focuses the
+   * editor with the caret at the very end, after the added chip.
+   */
+  caretToEndRequest?: number;
+  /** The chat's pending thread comments; the ones marked for send go with the next message. */
+  threadComments?: readonly ChatThreadComment[];
+  threadCommentsSessionId?: string | null;
+  threadCommentsPin?: OpenProjectBinding | null;
+  onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   /**
@@ -2001,6 +2117,12 @@ export function AgentChatComposer({
    * tab. `null` is only for surfaces with no composer machine.
    */
   modelRuntimePin?: OpenProjectBinding | null;
+  /**
+   * The machine bucket the model LIST was built from. Resolution must use the
+   * same bucket: a draft whose runtime pin differs from the list's scope looked
+   * up the static descriptor and lost the model's runtime reasoning tiers.
+   */
+  catalogScopeKey?: string;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
   /** Clears an unavailable draft machine without changing the project tab. */
@@ -2059,6 +2181,8 @@ export function AgentChatComposer({
   onInterrupt: (mode?: AgentChatStopMode) => void;
   /** Live background job count for stop-menu labels. */
   backgroundJobCount?: number;
+  /** This chat's spawned chats that are working now, for the Stop menu's child-chat choices. */
+  childChatCount?: number;
   /**
    * Resolves `false` when the response could not be delivered. The answer card
    * stays open in that case, so a caller that cleared a draft to send it has to
@@ -2120,6 +2244,12 @@ export function AgentChatComposer({
   ) => void;
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
+  /**
+   * Moves a staged message to `toIndex`. Absent when the provider keeps its own
+   * queue (see `queuedSteersCanReorder`). Rejects when the host refused, which
+   * drops the optimistic order.
+   */
+  onMoveSteer?: (steerId: string, toIndex: number) => Promise<void>;
   /**
    * Active-turn split-button primary: submit the current draft and immediately
    * fold it into the running turn (Claude Code parity). Only supplied for
@@ -2288,6 +2418,12 @@ export function AgentChatComposer({
       + appControlContextItems.length
       + builtInBrowserContextItems.length,
   });
+  const {
+    orderedSteers: orderedPendingSteers,
+    canReorder: canReorderSteers,
+    reorderPropsFor: steerReorderPropsFor,
+  } = usePendingSteerReorder(pendingSteers, onMoveSteer);
+
   const stagedSteerInlineBlock = (steer: {
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
@@ -2332,6 +2468,11 @@ export function AgentChatComposer({
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
     setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
+  // A remembered choice this chat cannot honour right now (a provider without
+  // background stop, a child-chat stop with no child chats) stops the default way.
+  const effectiveStopMode: AgentChatStopMode = stopModeAvailable(sessionProvider, activeTurnStopMode, childChatCount)
+    ? activeTurnStopMode
+    : DEFAULT_AGENT_CHAT_STOP_MODE;
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
     setActiveTurnStopMode(mode);
@@ -2341,7 +2482,7 @@ export function AgentChatComposer({
   }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
@@ -2430,14 +2571,43 @@ export function AgentChatComposer({
   latestComposerMachineBindingRef.current = composerMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
-  const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
-  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null =>
-    composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId)),
-  [modelCatalogScopeKey]);
+  const modelCatalogScopeKey = catalogScopeKey ?? modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null => {
+    // Warm the scope's runtime descriptors first: without this the chip fell
+    // back to the static descriptor and lost an OpenCode model's reasoning tiers.
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey);
+    return composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId));
+  }, [modelCatalogScopeKey]);
+  // The runtime catalog (OpenCode/DeepSeek reasoning tiers, aliases) is loaded by
+  // the model picker on open. The `@model` menu and chip read it without the
+  // picker ever opening, so fetch it here once per scope; the tick below
+  // re-renders the menu and any existing chips when it lands.
+  const [runtimeCatalogTick, setRuntimeCatalogTick] = useState(0);
+  const modelRuntimePinRef = useRef(modelRuntimePin);
+  modelRuntimePinRef.current = modelRuntimePin;
+  useEffect(() => {
+    let cancelled = false;
+    const pin = modelRuntimePinRef.current;
+    const load = async () => {
+      if (!getSharedRuntimeCatalog(modelCatalogScopeKey)) {
+        const result = await fetchSharedRuntimeCatalog({
+          scopeKey: modelCatalogScopeKey,
+          mode: "cached",
+          ...(pin ? { pin } : {}),
+        });
+        if (cancelled || result.status !== "ok") return;
+      }
+      ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
+      if (!cancelled) setRuntimeCatalogTick((tick) => tick + 1);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [modelCatalogScopeKey]);
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
   describeChipModelRef.current = describeChipModel;
   const modelMentionOptions = useMemo(() => {
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
     const ids = mentionModelIds ?? availableModelIds ?? [];
     const out = [];
     const seen = new Set<string>();
@@ -2448,13 +2618,31 @@ export function AgentChatComposer({
       out.push(composerModelSuggestion(descriptor));
     }
     return out;
-  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey]);
+  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey, runtimeCatalogTick]);
   // A model chip being edited: which chip, which part, which option is lit.
   const [modelChipEdit, setModelChipEdit] = useState<{
     chip: HTMLElement;
     segment: ModelChipSegment;
     index: number;
   } | null>(null);
+  // Mirror of `modelChipEdit` for the catalog-refresh effect, so re-rendering a
+  // chip the user is actively editing does not clobber its active segment.
+  const modelChipEditRef = useRef<HTMLElement | null>(null);
+  modelChipEditRef.current = modelChipEdit?.chip ?? null;
+  // A model chip is built once with whatever the catalog knew at that moment.
+  // The runtime catalog (which carries reasoning tiers) usually arrives after
+  // the chip, so without this the chip showed no thinking level while the
+  // footer — which reads the catalog live — did. Re-render existing chips when
+  // the catalog scope or its model list changes.
+  useEffect(() => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll<HTMLElement>("[data-composer-chip='model']").forEach((chip) => {
+      if (modelChipEditRef.current === chip) return;
+      const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+      if (mention) renderModelChip(chip, mention, describeChipModelRef.current(mention.modelId), null);
+    });
+  }, [modelMentionOptions, modelCatalogScopeKey]);
   // Set when a model is picked in the plain textarea: the chip only exists
   // after the switch to the rich editor, which then opens its first part.
   const pendingModelChipTokenRef = useRef<string | null>(null);
@@ -3324,6 +3512,41 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
+  // Applied on the first commit where the editor that will hold the text
+  // exists: a quote promotes the plain textarea to the rich editor one render
+  // later, and focusing the textarea in between would put the caret in an
+  // element that is about to unmount.
+  const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
+  useEffect(() => {
+    if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
+    if (hasChatOutputContext(draft) && !useRichComposer) return;
+    appliedCaretToEndRequestRef.current = caretToEndRequest;
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      let tail = editor.lastChild;
+      if (!(tail instanceof Text) || !/[ \u00a0]$/.test(tail.textContent ?? "")) {
+        tail = document.createTextNode(" ");
+        editor.appendChild(tail);
+        // Keep the draft equal to the editor, or the next render would
+        // treat the space as an outside edit and reset the editor.
+        syncRichDraft();
+      }
+      const range = document.createRange();
+      range.setStart(tail, (tail.textContent ?? "").length);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
   const getRichCursorTextOffset = useCallback((): number => {
     const editor = richEditorRef.current;
     const selection = window.getSelection();
@@ -5087,7 +5310,7 @@ export function AgentChatComposer({
       return;
     }
 
-    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(activeTurnStopMode); return; }
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(effectiveStopMode); return; }
 
     /* Tab to accept prompt suggestion */
     if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
@@ -5341,11 +5564,18 @@ export function AgentChatComposer({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
+      if (composerInputLocked) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
     const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
     if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
-    setDragActive(true);
+    setDragActive("files");
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5357,6 +5587,23 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
+      ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
+      : null;
+    if (mention) {
+      event.preventDefault();
+      if (composerInputLocked || mention.id === sessionId) return;
+      const token = formatChatMentionToken(mention.kind, mention.id);
+      mentionLabelsRef.current.set(token, mention.title);
+      onMentionLabelChange?.(token, mention.title);
+      if (useRichComposer) {
+        insertTextIntoRichEditor(`${token} `);
+      } else {
+        const separator = draft.length && !/\s$/.test(draft) ? " " : "";
+        onDraftChange(`${draft}${separator}${token} `);
+      }
+      return;
+    }
     const hasFiles = event.dataTransfer.files.length > 0;
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!hasFiles && !hasUriList)) return;
@@ -5538,8 +5785,23 @@ export function AgentChatComposer({
    * File attachments stay separate because local file-only sends are opt-in and
    * Cursor Cloud validates its own file-delivery path.
    */
+  const threadCommentSendCount = threadCommentsSessionId ? countCommentsForNextSend(threadComments) : 0;
+  /** Send, merged with the pending-comments pill when the chat has comments. */
+  const withThreadComments = (sendControl: React.ReactNode) => (
+    parallelChatMode ? sendControl : (
+      <ComposerThreadCommentsButton
+        sessionId={threadCommentsSessionId}
+        pin={threadCommentsPin}
+        comments={threadComments}
+        onJumpToComment={onJumpToThreadComment}
+      >
+        {sendControl}
+      </ComposerThreadCommentsButton>
+    )
+  );
   const hasComposerContextContent =
     draft.trim().length > 0
+    || threadCommentSendCount > 0
     || hasIosElementContext
     || hasAppControlContext
     || hasBuiltInBrowserContext
@@ -5749,7 +6011,7 @@ export function AgentChatComposer({
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
   const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
-    <ComposerMenuLayer layer="contextMenu">
+    <ViewportOverlayPortal layer="contextMenu">
       <div
         className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
         data-issue-context-menu="true"
@@ -5812,7 +6074,7 @@ export function AgentChatComposer({
           ) : null}
         </div>
       </div>
-    </ComposerMenuLayer>
+    </ViewportOverlayPortal>
   ) : null;
 
   const selectedLinearContextIssue = (
@@ -6397,11 +6659,13 @@ export function AgentChatComposer({
         turnActive ? (
           <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
             <ActiveTurnStopButton
-              mode={activeTurnStopMode}
-              allowQueueChoice={sessionProvider === "claude"}
+              mode={effectiveStopMode}
+              allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
               backgroundJobCount={backgroundJobCount}
+              childChatCount={childChatCount}
+              provider={sessionProvider}
               onModeChange={updateActiveTurnStopMode}
-              onStop={() => onInterrupt(activeTurnStopMode)}
+              onStop={() => onInterrupt(effectiveStopMode)}
             />
           </div>
         ) : undefined
@@ -6836,7 +7100,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {!composerInputLocked ? (
+                {!composerInputLocked ? withThreadComments(
                   activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
@@ -6855,6 +7119,8 @@ export function AgentChatComposer({
                     // queue affordance; it still explains itself on hover.
                     <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         disabled={!activeSteerEnabled}
                         className={cn(
@@ -6869,14 +7135,16 @@ export function AgentChatComposer({
                         <ArrowUp size={14} weight="bold" />
                       </button>
                     </SmartTooltip>
-                  )
+                  ),
                 ) : null}
                 <ActiveTurnStopButton
-                  mode={activeTurnStopMode}
-                  allowQueueChoice={sessionProvider === "claude"}
+                  mode={effectiveStopMode}
+                  allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
                   backgroundJobCount={backgroundJobCount}
+                  childChatCount={childChatCount}
+                  provider={sessionProvider}
                   onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(activeTurnStopMode)}
+                  onStop={() => onInterrupt(effectiveStopMode)}
                 />
               </>
             ) : (
@@ -6904,9 +7172,11 @@ export function AgentChatComposer({
 
                 // Without a background option this is a plain circular Send.
                 if (!backgroundAvailable) {
-                  return (
+                  return withThreadComments(
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         className={cn(
                           "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
@@ -6920,11 +7190,11 @@ export function AgentChatComposer({
                       >
                         {sendIcon}
                       </button>
-                    </SmartTooltip>
+                    </SmartTooltip>,
                   );
                 }
 
-                return (
+                return withThreadComments(
                   <ComposerIdleSendButton
                     label={label}
                     description={description}
@@ -6936,7 +7206,7 @@ export function AgentChatComposer({
                     backgroundBusy={backgroundLaunchBusy}
                     onSend={submitComposerDraft}
                     onSendInBackground={onSubmitInBackground!}
-                  />
+                  />,
                 );
               })()
             )}
@@ -6968,7 +7238,7 @@ export function AgentChatComposer({
         >
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-[1]">
-              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} kind={dragActive === "reference" ? "reference" : "files"} />
             </div>
           ) : null}
 
@@ -7013,6 +7283,9 @@ export function AgentChatComposer({
                 description: c.description,
                 argumentHint: c.argumentHint,
                 source: c.source,
+                kind: c.kind,
+                origin: c.origin,
+                server: c.server,
               }))}
               onFileSearch={onSearchAttachments}
               onMentionSearch={onSearchMentions}
@@ -7316,17 +7589,28 @@ export function AgentChatComposer({
                 canSendNow: Boolean(onDispatchSteerInline)
                   && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
                 canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
                 inlineBlockedReason: onDispatchSteerInline
                   ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
                   : null,
               })}
             </span>
           </div>
-          {pendingSteers.map((steer) => (
+          {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
+                <ChatAttachmentTray
+                  attachments={steer.attachments}
+                  contextAttachments={steer.contextAttachments}
+                  machinePin={composerMachineBinding}
+                  mode={surfaceMode}
+                  className="mt-1 gap-1.5 px-0 py-0"
+                />
+              ) : null}
+              reorder={canReorderSteers ? steerReorderPropsFor(steer.steerId, index) : undefined}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,

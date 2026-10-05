@@ -17,6 +17,11 @@ enum WorkComposerPreferences {
     var runtimeMode: String
     var reasoningEffort: String
     var codexFastMode: Bool
+    /// The saved Custom harness the last send ran under, when there was one.
+    /// Optional so a record written before presets existed still decodes; the
+    /// screen re-resolves it against the connected machine's list and drops it
+    /// when the preset is gone or unbound.
+    var presetId: String? = nil
   }
 
   /// Versioned so a future field change can migrate rather than mis-decode.
@@ -44,7 +49,13 @@ enum WorkComposerPreferences {
   }
 
   /// Convenience for call sites that have the fields loose rather than as a
-  /// `Selection` value.
+  /// `Selection` value — an in-session reasoning/fast/access tweak.
+  ///
+  /// An in-session change that leaves the model alone must not erase the Custom
+  /// harness the chat launched under: those call sites never knew the preset,
+  /// and dropping it would silently move the next New Chat send onto the
+  /// machine's default sign-in. A different provider or model is a different
+  /// brain, so the preset is dropped there.
   static func save(
     provider: String,
     modelId: String,
@@ -52,15 +63,19 @@ enum WorkComposerPreferences {
     reasoningEffort: String,
     codexFastMode: Bool
   ) {
-    save(
-      Selection(
-        provider: provider,
-        modelId: modelId,
-        runtimeMode: runtimeMode,
-        reasoningEffort: reasoningEffort,
-        codexFastMode: codexFastMode
-      )
+    var selection = Selection(
+      provider: provider,
+      modelId: modelId,
+      runtimeMode: runtimeMode,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode
     )
+    if let current = load(),
+       current.provider == selection.provider.trimmingCharacters(in: .whitespacesAndNewlines),
+       current.modelId == selection.modelId.trimmingCharacters(in: .whitespacesAndNewlines) {
+      selection.presetId = current.presetId
+    }
+    save(selection)
   }
 }
 
@@ -773,16 +788,85 @@ func providerSupportsLiveRedirect(_ provider: String) -> Bool {
 /// Hand mirror of desktop `chatStopModes.ts`. iOS cannot import the TS table,
 /// so the two stay in step by this struct plus `testWorkChatStopCapabilityMirrorsDesktopStopMatrix`.
 struct WorkChatStopCapability: Equatable {
+  /// Table order, matching desktop `AGENT_CHAT_STOP_MODES`. The two child-chat
+  /// modes are only offered while the chat has a child chat working.
   static let modes: [AgentChatStopMode] = [
     .stopOnly,
     .stopAndClear,
     .stopAndBackground,
     .stopAndClearAndBackground,
+    .stopAndClearAndChildren,
+    .stopEverythingAndChildren,
   ]
   static let defaultMode: AgentChatStopMode = .stopAndClear
 
-  static func copy(mode: AgentChatStopMode, jobCount: Int) -> (title: String, detail: String) {
+  static func clearsQueue(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndClear, .stopAndClearAndBackground, .stopAndClearAndChildren, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndBackground: return false
+    }
+  }
+
+  static func stopsBackground(_ mode: AgentChatStopMode) -> Bool {
+    switch mode {
+    case .stopAndBackground, .stopAndClearAndBackground, .stopEverythingAndChildren: return true
+    case .stopOnly, .stopAndClear, .stopAndClearAndChildren: return false
+    }
+  }
+
+  static func stopsChildren(_ mode: AgentChatStopMode) -> Bool {
+    mode == .stopAndClearAndChildren || mode == .stopEverythingAndChildren
+  }
+
+  private static func providerLabel(_ provider: String?) -> String {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    switch key {
+    case "claude": return "Claude"
+    case "codex": return "Codex"
+    case "opencode": return "OpenCode"
+    case "cursor": return "Cursor"
+    case "droid": return "Droid"
+    case "pi": return "Pi"
+    case "": return "This provider"
+    default: return key.prefix(1).uppercased() + key.dropFirst()
+    }
+  }
+
+  /// Mirrors desktop `providerStopModeSupport`. Background work: Claude,
+  /// OpenCode and Codex can stop it. Keeping the queue: Pi and ACP agents drop
+  /// queued messages on interrupt. Child chats are ADE chats, so every provider
+  /// can stop them. Nil reason means supported.
+  static func unsupportedReason(provider: String?, mode: AgentChatStopMode) -> String? {
+    let key = (provider ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let name = providerLabel(provider)
+    let canStopBackground = ["claude", "opencode", "codex"].contains(key)
+    let keepsQueue = ["claude", "opencode", "codex", "cursor", "droid"].contains(key)
+    if stopsBackground(mode) && !canStopBackground {
+      return "\(name) can't stop background work its agent started."
+    }
+    if !clearsQueue(mode) && !keepsQueue {
+      return "\(name) drops queued messages when stopped."
+    }
+    return nil
+  }
+
+  /// The modes the Stop menu lists: every mode, minus the child-chat ones while
+  /// there is no child chat to stop. Unsupported modes stay listed, disabled.
+  static func visibleModes(childChatCount: Int) -> [AgentChatStopMode] {
+    modes.filter { childChatCount > 0 || !stopsChildren($0) }
+  }
+
+  /// A remembered choice this chat cannot honour right now stops the default way.
+  static func effectiveMode(_ mode: AgentChatStopMode, provider: String?, childChatCount: Int) -> AgentChatStopMode {
+    if unsupportedReason(provider: provider, mode: mode) != nil { return defaultMode }
+    if stopsChildren(mode) && childChatCount <= 0 { return defaultMode }
+    return mode
+  }
+
+  static func copy(mode: AgentChatStopMode, jobCount: Int, childChatCount: Int = 0) -> (title: String, detail: String) {
     let jobs = jobCount == 1 ? "1 job" : "\(max(0, jobCount)) jobs"
+    let n = max(0, childChatCount)
+    let children = n == 1 ? "1 child chat" : "\(n) child chats"
     switch mode {
     case .stopOnly:
       return (
@@ -804,6 +888,16 @@ struct WorkChatStopCapability: Equatable {
         "Turn + queue + background (\(jobs))",
         "Stop the active turn, cancel queued messages, and stop \(jobs)."
       )
+    case .stopAndClearAndChildren:
+      return (
+        "Turn + queue + child chats (\(n))",
+        "Stop the active turn, cancel queued messages, and stop \(children) this chat started. Background jobs keep running."
+      )
+    case .stopEverythingAndChildren:
+      return (
+        "Everything + child chats (\(n))",
+        "Stop the turn, queued messages, \(jobs), and \(children) this chat started."
+      )
     }
   }
 
@@ -813,6 +907,8 @@ struct WorkChatStopCapability: Equatable {
     case .stopAndClear: return "trash"
     case .stopAndBackground: return "square.fill"
     case .stopAndClearAndBackground: return "xmark.square.fill"
+    case .stopAndClearAndChildren: return "person.2.slash"
+    case .stopEverythingAndChildren: return "xmark.octagon.fill"
     }
   }
 }
@@ -1033,8 +1129,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merged",
     "pr_merge_ready",
     "pr_conflict",
+    "pr_stack_land",
     "claude_session_quota",
     "lane_setup",
+    "pr_watch_wake",
   ]
 
   let id: String
@@ -1061,6 +1159,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   /// bottom on every progress emit. Stamped by `buildWorkAdeCards` from the
   /// envelope, so the decoders that have no envelope context can leave it.
   var timestamp: String = ""
+  /// PR Watch / Ship wake: the exact message ADE sent the agent. The wake is a
+  /// `user_message` the user did not write, so it renders as this card with the
+  /// text folded underneath. Nil for every ordinary card.
+  var wakeText: String? = nil
 
   var isKnownVariant: Bool {
     Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1108,7 +1210,8 @@ struct WorkAdeCardModel: Identifiable, Hashable {
       rowsTruncated: incoming.rowsTruncated ?? rowsTruncated,
       fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
       turnId: incoming.turnId ?? turnId,
-      timestamp: timestamp
+      timestamp: timestamp,
+      wakeText: incoming.wakeText ?? wakeText
     )
   }
 }
@@ -1838,6 +1941,15 @@ struct WorkChatTaskListSnapshot: Hashable {
   }
 }
 
+/// One routine warning absorbed by the mobile diagnostics fold — the notice's
+/// own title ("Warning", "Hook notice") plus the host's full sentence, which is
+/// what the expanded disclosure shows in place of the truncated collapsed line.
+struct WorkTurnDiagnosticWarning: Hashable {
+  let title: String
+  let message: String
+  let icon: String
+}
+
 struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
@@ -1881,6 +1993,14 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// of rendering each routine moderation or optional integration event.
   let diagnosticModerationChecks: Int
   let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
+  /// Routine warning notices (a Codex config warning, a hook notice, a
+  /// rate-limit warning) absorbed by the mobile diagnostics fold, in the order
+  /// they were seen. Empty for every other card.
+  let diagnosticWarnings: [WorkTurnDiagnosticWarning]
+  /// The host's `noticeKind` for a `notice` card ("warning", "config", "hook",
+  /// …). The fold reads it so a routine kind whose tint is not amber — a Codex
+  /// config notice — still folds with the diagnostics beside it.
+  let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
   /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
   /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
@@ -1922,6 +2042,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
+    diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
+    noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
@@ -1949,6 +2071,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.recoveryReceipt = recoveryReceipt
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
+    self.diagnosticWarnings = diagnosticWarnings
+    self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
@@ -2267,6 +2391,8 @@ enum WorkChatEvent: Equatable {
   /// carried by `WorkAdeCardModel` so this union member never has to grow when
   /// the wire contract adds a field.
   case adeCard(WorkAdeCardModel)
+  /// Staged-queue order only; draws nothing in the timeline.
+  case queueReordered(steerIds: [String])
   case unknown(type: String)
 
   var typeKey: String {
@@ -2312,6 +2438,7 @@ enum WorkChatEvent: Equatable {
     case .command: return "command"
     case .fileChange: return "file_change"
     case .adeCard: return "ade_card"
+    case .queueReordered: return "queue_reordered"
     case .unknown(let type): return type
     }
   }

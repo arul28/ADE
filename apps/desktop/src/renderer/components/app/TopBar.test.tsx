@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
 import { confirmDialog } from "../ui/dialog/confirm";
@@ -17,13 +17,11 @@ import {
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-
-const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
-const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
@@ -193,34 +191,6 @@ function resetStore() {
       displayName: "Remote App",
     })),
   } as any);
-}
-
-function makeDataTransfer(data: Record<string, string>, dropEffect = "move") {
-  return {
-    dropEffect,
-    effectAllowed: "move",
-    types: Object.keys(data),
-    getData: vi.fn((type: string) => data[type] ?? ""),
-    setData: vi.fn(),
-  };
-}
-
-function markHandledProjectTabDrop(rootPath: string, sourceWindowId = "1") {
-  window.localStorage.setItem(
-    `ade.projectTabDropHandled.v1:${sourceWindowId}:${encodeURIComponent(rootPath)}`,
-    String(Date.now()),
-  );
-}
-
-function fireProjectTabDragEnd(
-  element: HTMLElement,
-  dataTransfer: ReturnType<typeof makeDataTransfer>,
-) {
-  const event = createEvent.dragEnd(element, { dataTransfer });
-  Object.defineProperty(event, "clientX", { value: -1 });
-  Object.defineProperty(event, "clientY", { value: 12 });
-  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
-  fireEvent(element, event);
 }
 
 async function flushMicrotasks(count = 1) {
@@ -1297,25 +1267,6 @@ describe("TopBar", () => {
     expect(indicator.getAttribute("title")).not.toContain("agent process");
   });
 
-  it("consolidates a cross-window project tab dropped onto the same project", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    await waitFor(() => {
-      expect(globalThis.window.ade.app.getWindowSession).toHaveBeenCalled();
-    });
-
-    fireEvent.drop(tab, {
-      dataTransfer: makeDataTransfer({
-        "application/x-ade-project-root": "/Users/arul/ADE",
-        "application/x-ade-window-id": "2",
-      }),
-    });
-
-    expect(globalThis.window.ade.app.closeWindow).toHaveBeenCalledWith(2);
-    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
-  });
-
   it("does not render the active remote project as a local project tab", async () => {
     const remoteBinding = {
       kind: "remote" as const,
@@ -1493,86 +1444,6 @@ describe("TopBar", () => {
       expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
     });
     expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
-  });
-
-  it("does not detach again after a project tab is dropped onto an ADE target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    markHandledProjectTabDrop("/Users/arul/ADE");
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).not.toHaveBeenCalled();
-  });
-
-  it("detaches when a project tab is dragged over an ADE window but no ADE tab bar handles it", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("detaches a project tab when it is dragged outside without an ADE drop target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("keeps the source project tab active until the detached window is bound", async () => {
-    let resolveOpen!: (value: { windowId: number; project: { rootPath: string; name: string } }) => void;
-    const openPromise = new Promise<{ windowId: number; project: { rootPath: string; name: string } }>((resolve) => {
-      resolveOpen = resolve;
-    });
-    globalThis.window.ade.app.openProjectInNewWindow = vi.fn(() => openPromise) as any;
-    const closeProject = useAppStore.getState().closeProject;
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-    await act(async () => {
-      await flushMicrotasks();
-    });
-    expect(closeProject).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveOpen({
-        windowId: 2,
-        project: { rootPath: "/Users/arul/ADE", name: "ADE" },
-      });
-      await openPromise;
-    });
-
-    await waitFor(() => {
-      expect(closeProject).toHaveBeenCalled();
-    });
   });
 
   it("opens mobile sync from the connections control", async () => {
@@ -2133,7 +2004,10 @@ describe("TopBar", () => {
     expect(window.location.hash).toBe("#/work");
   });
 
-  it("reveals Linear quick view after a later connection refresh", async () => {
+  it.each([
+    ["window focus", "focus"],
+    ["a Settings connection change", LINEAR_CONNECTION_CHANGED_EVENT],
+  ])("reveals Linear quick view after a later connection refresh on %s", async (_trigger, eventName) => {
     const disconnected = {
       tokenStored: true,
       connected: false,
@@ -2169,7 +2043,7 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
     await waitFor(() => {
@@ -2178,14 +2052,54 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
 
     await act(async () => {
-      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event(eventName));
       await flushMicrotasks();
     });
 
     expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
   });
 
-  it("keeps button hidden while disconnected but retries on a 3s interval", async () => {
+  it("re-checks a Settings connection change that arrives while a check is in flight", async () => {
+    const disconnected = {
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: null,
+    };
+    let finishStaleCheck!: (status: typeof disconnected) => void;
+    const getLinearConnectionStatus = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishStaleCheck = resolve; }))
+      .mockResolvedValue({ ...disconnected, connected: true, viewerId: "user-1", viewerName: "Arul" });
+    globalThis.window.ade.cto = { getLinearConnectionStatus } as any;
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+
+    render(<TopBar />);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await flushMicrotasks();
+    });
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+
+    // The key is saved while the first check is still waiting on the brain.
+    await act(async () => {
+      window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      finishStaleCheck(disconnected);
+      await flushMicrotasks(4);
+    });
+
+    expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
+    expect(getLinearConnectionStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps button hidden while disconnected and retries only on the slow backstop", async () => {
     vi.useFakeTimers();
     const getLinearConnectionStatus = vi.fn(async () => ({
       tokenStored: true,
@@ -2214,7 +2128,13 @@ describe("TopBar", () => {
 
       const callsBefore = getLinearConnectionStatus.mock.calls.length;
       await act(async () => {
-        vi.advanceTimersByTime(6_000);
+        vi.advanceTimersByTime(30_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus.mock.calls.length).toBe(callsBefore);
+
+      await act(async () => {
+        vi.advanceTimersByTime(31_000);
         await flushMicrotasks(2);
       });
       expect(getLinearConnectionStatus.mock.calls.length).toBeGreaterThan(callsBefore);
@@ -2271,19 +2191,6 @@ describe("TopBar", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("shows project icon replacement errors", async () => {
-    globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
-      throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");
-    }) as any;
-
-    render(<TopBar />);
-
-    fireEvent.click(await screen.findByLabelText("Project icon"));
-    fireEvent.click(await screen.findByText("Replace"));
-
-      expect((await screen.findByRole("alert")).textContent).toMatch(/Project icon must be .* smaller/i);
   });
 
   it("confirms before closing a project tab", async () => {

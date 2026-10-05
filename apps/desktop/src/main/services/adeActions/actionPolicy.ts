@@ -2,6 +2,7 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -99,9 +100,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
-  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
+  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
+  // Restoring brings a lane's worktree and services back up — the CTO's call,
+  // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
+  archive: { only: ["restore"] },
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
@@ -169,6 +173,13 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "listPromptStashes",
       "createPromptStash",
       "deletePromptStash",
+      // The desktop's post-update resume arm: machine-wide, and each row it
+      // creates spends a real turn. A session-bound agent must not drive it.
+      "armUpdateResume",
+      // Thread comments are the user's unsent review of an agent's reply. An
+      // agent that could write or delete them could edit what the user is
+      // about to tell it.
+      ...THREAD_COMMENT_ACTION_NAMES,
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -254,6 +265,9 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // ADE never deletes from the archive on its own, and no agent or automation
+  // deletes for the person: a delete can take a lane's uncommitted work.
+  archive: ["delete"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -464,7 +478,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
+  diff: ["getChanges", "getBranchChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
   conflicts: [
     "applyProposal",
     "attachResolverSession",
@@ -582,6 +596,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "submitReview",
     "syncGithubStacks",
     "unstackGithubStack",
+    "linkChatSession",
+    "unlinkChatSession",
+    "linkChatStack",
+    "listChatSessionsForPr",
+    "getStackLinkOffer",
+    "setChatWatch",
+    "getChatWatches",
     "updateBody",
     "updateBranch",
     "updateComment",
@@ -599,7 +620,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "dispatchSteer",
     "editSteer",
     "ensureCtoSession",
+    "moveSteer",
     "getAvailableModels",
+    "getLaunchDefaults",
     "getClaudeSessionInfo",
     "getClaudeSessionMessages",
     "getChatEventHistory",
@@ -627,6 +650,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "interrupt",
     "interruptWithQueueMode",
     "stopTask",
+    "restartSession",
+    "waitFor",
+    "armWait",
+    "listWaits",
+    "cancelWait",
+    "holdBackgroundWork",
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",
@@ -646,6 +675,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createScheduledWork",
     "listScheduledWork",
     "getScheduledWorkState",
+    // Update-install resume. The read is open; the arm is CTO-only (see
+    // ADE_ACTION_CTO_ONLY.chat) because it spends real turns on every chat the
+    // desktop names, and only the desktop's main process should do that.
+    "listInterruptedChats",
+    "armUpdateResume",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",
@@ -657,6 +691,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listPromptStashes",
     "createPromptStash",
     "deletePromptStash",
+    ...THREAD_COMMENT_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",
@@ -693,6 +728,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cancelScheduledWork",
     "resumeUsageLimitNow",
     "continueUsageLimitOnAlternate",
+    "switchAccount",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -907,7 +943,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getCostBreakdown",
+    "getModelDetail",
+    "getModelPriceOverrides",
     "getModelRoutes",
+    "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",
     "getUsageSnapshot",
@@ -916,11 +956,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "poll",
     "previewModelRoute",
     "refreshModelRegistry",
+    "setModelPriceOverride",
     "start",
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -951,7 +993,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // so phones and the hosted web client can mirror it. `show` is an agent
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
+  // `listDevServers` and `probePort` let a Browser on another machine see this
+  // machine's dev servers; both only read.
+  work_tools: [
+    "getLaneState",
+    "setActiveTool",
+    "readObservationPreview",
+    "show",
+    "acknowledgeShow",
+    "listDevServers",
+    "probePort",
+  ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -1097,6 +1149,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * anything on disk. So none of these methods can leak or destroy a
    * credential, which is the bar the CTO gate exists to enforce.
    *
+   * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
+   * account in a private PTY. That opens the user's browser and, once the user
+   * approves there, the CLI writes a new login into that account's directory,
+   * which can replace the login it held (tracked as `replacedAccount`). ADE
+   * still never sees the token, and nothing changes without the user's
+   * approval in the browser.
+   *
    * The locked decision is that an agent may both see and manage accounts:
    * a worker agent that needs a second Claude login (rate limits, a separate
    * work identity) must be able to create it and point a session at it without
@@ -1110,6 +1169,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rename",
     "setDefault",
     "setAccent",
+    "dismissReplaced",
+    "loginStart",
+    "loginStatus",
+    "loginSubmitCode",
+    "loginCancel",
     "getSettings",
     "setSettings",
     "loginCommand",

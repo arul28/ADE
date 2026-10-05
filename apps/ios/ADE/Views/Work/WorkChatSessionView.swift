@@ -185,6 +185,7 @@ struct WorkChatSummaryRenderContext: Equatable {
   let modelLabel: String
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
+  let codexGoal: AgentChatCodexGoal?
   let spawnKind: AgentChatSpawnKind?
   let orchestrationParentSessionId: String?
   let subagentTakeoverPromptShownAt: String?
@@ -218,6 +219,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelLabel = "Model"
       self.contextWindowFallback = nil
       self.claudeGoal = nil
+      self.codexGoal = nil
       self.spawnKind = nil
       self.orchestrationParentSessionId = nil
       self.subagentTakeoverPromptShownAt = nil
@@ -245,6 +247,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelLabel = prettyWorkChatModelName(summary.model)
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
+    self.codexGoal = summary.codexGoal
     self.spawnKind = summary.spawnKind
     self.orchestrationParentSessionId = summary.orchestrationParentSessionId
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
@@ -524,6 +527,9 @@ struct WorkChatSessionView: View {
   let onEditSteer: @MainActor (String, String) async -> Void
   let onDispatchSteerInline: (@MainActor (String) async -> Void)?
   let onDispatchSteerInterrupt: (@MainActor (String) async -> Void)?
+  /// Moves a staged message to a new position; nil when the provider keeps
+  /// its own queue or the host predates `chat.moveSteer`.
+  let onMoveSteer: (@MainActor (String, Int) async -> Void)?
   let onSelectModel: @MainActor (String) async -> Void
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
@@ -548,6 +554,15 @@ struct WorkChatSessionView: View {
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
+  /// PR Watch / Ship for the chat's open PR. Nil hides the chip (no open PR,
+  /// or a host without `prs.setChatWatch`).
+  var prWatch: WorkChatPrWatchModel? = nil
+  var onSetPrWatch: ((String?) -> Void)? = nil
+  /// Codex goal controls. Nil when the host lacks the command; Claude goals go
+  /// through `/goal` as a message and need none of these.
+  var onSetCodexGoal: ((String) -> Void)? = nil
+  var onSetCodexGoalPaused: ((Bool) -> Void)? = nil
+  var onClearCodexGoal: (() -> Void)? = nil
   var compactComposer = false
   /// The CTO identity session, which may never queue: the host rewrites a
   /// queued delivery on that session into the provider's first live-redirect
@@ -579,7 +594,14 @@ struct WorkChatSessionView: View {
   var onRetryTranscript: (() -> Void)? = nil
   var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
   var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
+  /// The chat's pending thread comments. Empty on a host that predates them.
+  var threadComments: [ChatThreadComment] = []
+  /// `chat.updateThreadComment` (comment id, new body, new send flag). Nil
+  /// hides the comments chip, which is how an older host shows nothing new.
+  var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
+  var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
 
+  @State private var threadCommentsSheetPresented = false
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
@@ -958,10 +980,25 @@ struct WorkChatSessionView: View {
     inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
   }
 
+  /// The thread-comments chip: only while the chat has at least one comment
+  /// and the host can edit and delete them.
+  var showsComposerThreadCommentsChip: Bool {
+    inputLockMessage == nil
+      && !threadComments.isEmpty
+      && onUpdateThreadComment != nil
+      && onDeleteThreadComment != nil
+  }
+
+  /// True when a send would carry comments, so an empty field may still send.
+  var hasSendableThreadComments: Bool {
+    showsComposerThreadCommentsChip && workThreadCommentsHaveSendable(threadComments)
+  }
+
   /// Whether the floating badge row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
+      || showsComposerThreadCommentsChip
   }
 
   /// Chat-info / PR / lane tool badges: small glass capsules sitting just
@@ -971,11 +1008,21 @@ struct WorkChatSessionView: View {
   var composerBadgeChipRow: some View {
     let chatInfoCount = composerBadgeChatInfoCount
     let chips = HStack(spacing: 8) {
+      // First: it is the one chip that changes what the next send carries.
+      if showsComposerThreadCommentsChip {
+        WorkThreadCommentsChip(comments: threadComments) {
+          ADEHaptics.light()
+          threadCommentsSheetPresented = true
+        }
+      }
       if showsComposerChatInfoBadge, let onOpenChatInfo {
         WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
       }
       if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
         WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
+        if let prWatch, let onSetPrWatch {
+          WorkChatPrWatchChip(model: prWatch, onSelect: onSetPrWatch)
+        }
       }
       if showsComposerLaneToolChips {
         ForEach(laneTools.chips) { chip in
@@ -1355,6 +1402,27 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// The chat's goal for the composer chip: the transcript's live Claude goal
+  /// wins over the summary's, and a Codex chat reads its `thread/goal`.
+  var composerGoal: WorkChatGoalModel? {
+    let claude: AgentChatClaudeGoal? = frame.map(\.claudeGoal) ?? chatSummaryContext.claudeGoal
+    return workChatGoalModel(
+      provider: chatSummaryContext.provider,
+      claudeGoal: claude,
+      codexGoal: chatSummaryContext.codexGoal
+    )
+  }
+
+  /// Claude's goal lives in its own `/goal` command, sent like a typed one
+  /// between turns (desktop `sendClaudeGoalCommand`).
+  func sendClaudeGoalCommand(_ argument: String) {
+    Task { @MainActor in
+      if await !onSend("/goal \(argument)", [], .queue), $errorMessage.wrappedValue == nil {
+        $errorMessage.wrappedValue = "Couldn't send the goal change to the chat."
+      }
+    }
+  }
+
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
@@ -1363,9 +1431,20 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
-      if let claudeGoal = frame.map(\.claudeGoal) ?? chatSummaryContext.claudeGoal {
-        WorkClaudeGoalPill(goal: claudeGoal)
-          .workChatGlass(in: Capsule(style: .continuous))
+      if let goal = composerGoal {
+        WorkChatGoalChip(
+          goal: goal,
+          turnActive: sessionStatus == "active" || isStreamingTurn,
+          onEdit: goal.provider == .claude
+            ? { condition in sendClaudeGoalCommand(condition) }
+            : onSetCodexGoal,
+          onClear: goal.provider == .claude
+            ? { sendClaudeGoalCommand("clear") }
+            : onClearCodexGoal,
+          onSetPaused: goal.provider == .codex ? onSetCodexGoalPaused : nil
+        )
+        .workChatGlass(in: Capsule(style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
 
       if !pendingSteers.isEmpty {
@@ -1406,6 +1485,11 @@ struct WorkChatSessionView: View {
                 transcriptScroller.scrollToLatest(animated: true, reason: "steer-dispatched")
                 unreadBelowCount = 0
               }
+            }
+          },
+          onMove: onMoveSteer.map { move in
+            { steerId, toIndex in
+              await runSessionAction { await move(steerId, toIndex) }
             }
           }
         )
@@ -1549,7 +1633,8 @@ struct WorkChatSessionView: View {
         onSend: onSend,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
-        }
+        },
+        hasSendableThreadComments: hasSendableThreadComments
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
@@ -2006,6 +2091,13 @@ struct WorkChatSessionView: View {
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $threadCommentsSheetPresented) {
+          WorkThreadCommentsSheet(
+            comments: threadComments,
+            onUpdate: onUpdateThreadComment,
+            onDelete: onDeleteThreadComment
+          )
+        }
         .sheet(isPresented: $modelPickerPresented) {
           let currentModelId = chatSummaryContext.currentModelId
           WorkModelPickerSheet(
@@ -2336,6 +2428,9 @@ private struct WorkChatComposerCard: View {
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
+  /// Pending thread comments will ride the next send, so an empty field may
+  /// still send.
+  var hasSendableThreadComments = false
 
   var body: some View {
     WorkChatComposerDraftInput(
@@ -2368,7 +2463,8 @@ private struct WorkChatComposerCard: View {
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
-      onSent: onSent
+      onSent: onSent,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 }
@@ -2410,6 +2506,9 @@ private struct WorkChatComposerDraftInput: View {
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
+  /// Pending thread comments will ride the next send, so an empty field may
+  /// still send.
+  var hasSendableThreadComments = false
 
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
@@ -2440,6 +2539,7 @@ private struct WorkChatComposerDraftInput: View {
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
+      || hasSendableThreadComments
   }
 
   /// One capability lookup for the whole active-turn send affordance. See
@@ -2568,7 +2668,8 @@ private struct WorkChatComposerDraftInput: View {
       text: draftState.text,
       attachments: inputAttachments,
       baseEnabled: canSend,
-      canUploadAttachments: canUploadAttachments
+      canUploadAttachments: canUploadAttachments,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 
@@ -2896,11 +2997,39 @@ private struct WorkChatComposerDraftInput: View {
     )
   }
 
+  /// Mirrors `providerSupportsStopModeChoice` on desktop: every provider gets
+  /// the choice menu, which disables what that provider cannot honour and says
+  /// why (`WorkChatStopCapability.unsupportedReason`). Host-gated on
+  /// `chat.interruptWithQueueMode`, since an older brain only knows one stop.
   private var queueAwareStop: Bool {
-    chatSummary.provider.lowercased() == "claude" && queueAwareStopAvailable
+    !chatSummary.provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && queueAwareStopAvailable
   }
 
   private var stopJobCount: Int { chatSummary.activeBackgroundTaskCount ?? 0 }
+
+  /// This chat's spawned chats that are working now, read off the summary
+  /// cache the Work list fills. The child-chat Stop choices appear only while
+  /// there is one to stop, and only on a host that knows them: an older host
+  /// reads an unknown mode as the default and would leave the children running.
+  /// Child-chat stop modes shipped with `chat.restartSession`.
+  private var activeChildChatCount: Int {
+    let parentId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !parentId.isEmpty, syncService.supportsRemoteAction("chat.restartSession") else { return 0 }
+    return syncService.chatSummaryCache.values.reduce(into: 0) { count, summary in
+      if summary.orchestrationParentSessionId == parentId && summary.status == "active" { count += 1 }
+    }
+  }
+
+  /// The mode one tap of Stop uses: the remembered choice, unless this chat
+  /// cannot honour it right now (desktop `effectiveStopMode`).
+  private var effectiveStopMode: AgentChatStopMode {
+    guard queueAwareStop else { return .stopAndClear }
+    return WorkChatStopCapability.effectiveMode(
+      stopMode,
+      provider: chatSummary.provider,
+      childChatCount: activeChildChatCount
+    )
+  }
 
   /// Send modes this chat can choose between. A single mode is still listed
   /// (checked), so the submenu always says what a send during a turn does.
@@ -2908,14 +3037,15 @@ private struct WorkChatComposerDraftInput: View {
     activeSendModePickerVisible ? activeSendCapability.modes : [effectiveActiveSendMode]
   }
 
-  /// Stop modes this chat can choose between: the full queue-aware table for
-  /// Claude chats that support it, otherwise the one plain stop.
+  /// Stop modes this chat lists: the full table (child-chat modes only while a
+  /// child chat is working) when the host takes a stop mode, otherwise the one
+  /// plain stop. Modes the provider cannot honour stay listed, disabled.
   private var stopAndSendSettingsStopModes: [AgentChatStopMode] {
-    queueAwareStop ? WorkChatStopCapability.modes : [.stopAndClear]
+    queueAwareStop ? WorkChatStopCapability.visibleModes(childChatCount: activeChildChatCount) : [.stopAndClear]
   }
 
   private var stopAndSendSettingsCurrentStopMode: AgentChatStopMode {
-    queueAwareStop ? stopMode : .stopAndClear
+    effectiveStopMode
   }
 
   /// The last thing in the "⋯" menu, active turn or not: one "Stop and send
@@ -2933,23 +3063,29 @@ private struct WorkChatComposerDraftInput: View {
         // Written bottom-up: the menu opens upward from the composer and iOS
         // lays items out nearest-first, so this reads Send, then Stop, each
         // listing its modes in table order.
-        Picker(selection: Binding(
-          get: { stopAndSendSettingsCurrentStopMode },
-          set: { mode in
-            if queueAwareStop { rememberStopMode(mode) }
-          }
-        )) {
+        // Buttons, not a Picker: a mode the provider cannot honour is listed
+        // disabled with the reason under it, as on desktop.
+        Menu {
+          let current = stopAndSendSettingsCurrentStopMode
+          let childCount = activeChildChatCount
           ForEach(stopAndSendSettingsStopModes.reversed(), id: \.self) { mode in
-            Label(
-              WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title,
-              systemImage: WorkChatStopCapability.systemImage(for: mode)
-            )
-            .tag(mode)
+            let copy = WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount, childChatCount: childCount)
+            let reason = WorkChatStopCapability.unsupportedReason(provider: chatSummary.provider, mode: mode)
+            Button {
+              if queueAwareStop { rememberStopMode(mode) }
+            } label: {
+              Label {
+                Text(copy.title)
+                if let reason { Text(reason) }
+              } icon: {
+                Image(systemName: mode == current ? "checkmark" : WorkChatStopCapability.systemImage(for: mode))
+              }
+            }
+            .disabled(queueAwareStop && reason != nil)
           }
         } label: {
           Label("Stop", systemImage: "stop.circle")
         }
-        .pickerStyle(.menu)
         .accessibilityIdentifier("Work.Chat.Composer.StopSettings")
 
         Picker(selection: Binding(
@@ -3005,6 +3141,7 @@ private struct WorkChatComposerDraftInput: View {
             canUploadAttachments: canUploadAttachments,
             sending: sending,
             accessibilityLabelText: "Stage message",
+            hasSendableThreadComments: hasSendableThreadComments,
             action: { performSend(mode: .queue) }
           )
         }
@@ -3018,6 +3155,7 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
+        hasSendableThreadComments: hasSendableThreadComments,
         action: { performSend(mode: .queue) }
       )
     }
@@ -3034,6 +3172,7 @@ private struct WorkChatComposerDraftInput: View {
       sending: sending,
       accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
       systemImageName: activeSendModeIcon(effectiveActiveSendMode),
+      hasSendableThreadComments: hasSendableThreadComments,
       action: { performSend(mode: effectiveActiveSendMode) }
     )
   }
@@ -3050,9 +3189,9 @@ private struct WorkChatComposerDraftInput: View {
   /// settings".
   @ViewBuilder
   private func stopButton() -> some View {
-    let mode: AgentChatStopMode = queueAwareStop ? stopMode : .stopAndClear
+    let mode: AgentChatStopMode = effectiveStopMode
     let title = queueAwareStop
-      ? WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title
+      ? WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount, childChatCount: activeChildChatCount).title
       : (interruptInFlight ? "Interrupting turn" : "Stop turn")
     Button {
       stopHapticToken &+= 1
@@ -3510,6 +3649,7 @@ private struct WorkChatComposerSendButton: View {
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
   var minimumTapTargetSize: CGFloat = 28
+  var hasSendableThreadComments = false
   /// The send itself lives on the composer, not here: the retry row runs the
   /// exact same action, and two copies of "clear the field, stage, restore on
   /// failure" is how the two drift apart.
@@ -3520,7 +3660,8 @@ private struct WorkChatComposerSendButton: View {
       text: draftState.text,
       attachments: attachments,
       baseEnabled: canSend,
-      canUploadAttachments: canUploadAttachments
+      canUploadAttachments: canUploadAttachments,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 

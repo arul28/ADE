@@ -9,26 +9,18 @@
  * join here means the panel renders a row for an instance the snapshot has
  * never heard of instead of dropping it.
  */
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
+import {
+  providerInstanceHasAccount,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../../../shared/types/providerInstances";
 import type { UsageAccount, UsageSnapshot } from "../../../../../shared/types";
-import { accountNoticeLine } from "../../../usage/usageLimitModel";
-
-/**
- * Eight accents that stay legible on both themes and do not collide with the
- * status vocabulary (no red, no green — those already mean something here).
- * Deliberately a fixed list rather than a generated ramp: the point is telling
- * two accounts apart at a glance, which needs hue separation, not coverage.
- */
-export const ACCOUNT_ACCENT_SWATCHES: readonly string[] = [
-  "#d97757",
-  "#2dd4bf",
-  "#5b93f5",
-  "#a78bfa",
-  "#e0a82e",
-  "#a3e635",
-  "#f472b6",
-  "#93a6c4",
-];
+import {
+  accountNoticeLine,
+  buildAccountRows,
+  poolAccounts,
+  type AccountLimitRow,
+} from "../../../usage/usageLimitModel";
 
 /** The mini usage line's two numbers. Either half can be missing. */
 type AccountUsagePercents = {
@@ -61,6 +53,39 @@ function usageAccountFor(
   return unattributed.length === 1 ? unattributed[0]! : null;
 }
 
+/** The windows that belong to this instance, by the same rule as the usage line. */
+function instanceWindows(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+  account: UsageAccount | null,
+) {
+  return (snapshot?.windows ?? []).filter((window) => {
+    if (window.provider !== provider) return false;
+    if (window.accountId) return window.accountId === account?.id;
+    return instance.isDefault;
+  });
+}
+
+/**
+ * This instance's usage as the usage popover draws it: one meter per window,
+ * built by the same model so Settings and the popover cannot disagree about a
+ * number. `null` when the snapshot has neither windows nor an account for it.
+ */
+export function accountLimitRow(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+  nowMs: number,
+): AccountLimitRow | null {
+  const account = usageAccountFor(snapshot, provider, instance);
+  const windows = instanceWindows(snapshot, provider, instance, account);
+  // An account with no windows yet is still a row (it says why it has none).
+  if (windows.length === 0 && !account) return null;
+  const views = poolAccounts(account ? [account] : []);
+  return buildAccountRows(provider, windows, views, nowMs)[0] ?? null;
+}
+
 /**
  * `5h NN% · wk NN%` for one instance.
  *
@@ -74,11 +99,7 @@ function accountUsagePercents(
   instance: ProviderInstance,
 ): AccountUsagePercents {
   const account = usageAccountFor(snapshot, provider, instance);
-  const windows = (snapshot?.windows ?? []).filter((window) => {
-    if (window.provider !== provider) return false;
-    if (window.accountId) return window.accountId === account?.id;
-    return instance.isDefault;
-  });
+  const windows = instanceWindows(snapshot, provider, instance, account);
   const pick = (type: "five_hour" | "weekly"): number | null => {
     const found = windows.find((window) => window.windowType === type);
     return found ? Math.round(found.percentUsed) : null;
@@ -143,21 +164,27 @@ export function providerHasFiveHourWindow(
   );
 }
 
+/**
+ * True when the account's saved login no longer works.
+ *
+ * `instance.signedIn` only says the config home still names an email, and the
+ * email stays after the CLI clears a broken login. The usage poller reads the
+ * login itself, so its `signed_out` outranks the email.
+ */
+export function accountSignedOut(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+): boolean {
+  if (!instance.signedIn) return true;
+  return usageAccountFor(snapshot, provider, instance)?.login === "signed_out";
+}
+
 /** `email · plan`, whichever halves exist, or the not-signed-in sentence. */
-export function accountIdentityLine(instance: ProviderInstance): string {
-  if (!instance.signedIn) return "Not signed in";
-  const parts = [instance.account?.email, instance.account?.plan].filter(
+export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
+  if (!providerInstanceHasAccount(instance)) return "Not signed in";
+  const parts = [instance.account?.email, signedOut ? "Signed out" : instance.account?.plan].filter(
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );
   return parts.length ? parts.join(" · ") : "Signed in";
-}
-
-/** The dot's colour: the account's own accent, else the provider's brand. */
-export function accountAccent(instance: ProviderInstance, providerBrand: string): string {
-  return instance.accentColor ?? providerBrand;
-}
-
-/** A soft tint of an accent, the same `color-mix` treatment `AlertBanner` uses. */
-export function accentTint(color: string, percent: number): string {
-  return `color-mix(in srgb, ${color} ${percent}%, transparent)`;
 }

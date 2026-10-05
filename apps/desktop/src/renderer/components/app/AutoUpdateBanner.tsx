@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, Wrench } from "@phosphor-icons/react";
+import { ArrowsClockwise, Bell, Wrench } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { useBrainRepair, type BrainRepair } from "../../hooks/useBrainRepair";
@@ -80,16 +80,18 @@ export function AutoUpdateBanner() {
   }, [snapshot.status, updateVersion]);
 
   const handleRestart = useCallback(() => {
-    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
+    // The same confirmation every other manual install affordance uses, so a
+    // retry after a failed or parked install also names the chats it will
+    // interrupt and offers to resume them.
     setRestarting(true);
-    void window.ade.updateQuitAndInstall()
+    void requestDownloadedUpdateInstall(snapshot, () => setRestarting(true))
       .then((started) => {
         if (!started) setRestarting(false);
       })
       .catch(() => {
         setRestarting(false);
       });
-  }, [currentVersion, updateVersion]);
+  }, [snapshot]);
 
   const handleCancelAutoApply = useCallback(() => {
     captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "deferred");
@@ -184,7 +186,9 @@ export function AutoUpdateBanner() {
       ? {
           id: "auto-update-ready",
           tone: "accent",
-          icon: <ArrowsClockwise size={13} weight="bold" />,
+          // A notice mark on the left; the install action on the right keeps
+          // its arrow so the button still reads as "restart and install".
+          icon: <Bell size={13} weight="bold" />,
           title: `Update v${updateVersion} is ready to install`,
           actions: [{
             label: installRequested ? "Restarting…" : "Restart and install",

@@ -796,7 +796,7 @@ _    ____  _____
     $ ade chat interrupt <session> --stop-background
                                                     Also stop background jobs; combine with --keep-queue
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
-    $ ade chat stop-task <session> <taskId>         Stop one Claude background task; siblings keep running
+    $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
@@ -1677,6 +1677,7 @@ _    ____  _____
 
   Capture and context:
     $ ade --socket browser screenshot --tab <tab-id> --text
+    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode

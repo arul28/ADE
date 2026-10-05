@@ -453,6 +453,30 @@ function releaseGitSlot(): void {
   else runningGitProcesses -= 1;
 }
 
+/**
+ * The records of `git diff --name-status -z`, in order. A rename or copy
+ * (`R100`, `C75`) carries its source in `oldPath`; every other status names
+ * one path.
+ */
+export function parseNameStatusRecords(stdout: string): Array<{ letter: string; path: string; oldPath: string | null }> {
+  const tokens = stdout.split("\0");
+  const records: Array<{ letter: string; path: string; oldPath: string | null }> = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const letter = (tokens[index] ?? "").trim().charAt(0);
+    if (!letter) continue;
+    const first = tokens[index + 1] ?? "";
+    index += 1;
+    if (letter === "R" || letter === "C") {
+      const destination = tokens[index + 1] ?? "";
+      index += 1;
+      if (destination) records.push({ letter, path: destination, oldPath: first });
+      continue;
+    }
+    if (first) records.push({ letter, path: first, oldPath: null });
+  }
+  return records;
+}
+
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   // Mutations skip the queue. The cap exists to bound read fan-out — one
   // refresh issues ~130 reads across services that do not know about each

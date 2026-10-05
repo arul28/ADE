@@ -1,4 +1,4 @@
-import type { DevServerRecord, DevServersArgs } from "../../../shared/types";
+import { devServerKey, type DevServerRecord, type DevServersArgs } from "../../../shared/types";
 
 /**
  * Passive dev-server discovery.
@@ -101,15 +101,21 @@ function safeUrl(value: string): URL | null {
 
 export type DevServerRegistry = ReturnType<typeof createDevServerRegistry>;
 
-/** Keyed by `${laneId}:${port}` so two lanes can serve the same port. */
-function registryKey(laneId: string | null, port: number): string {
-  return `${laneId ?? ""}:${port}`;
-}
-
 export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
   const maxEntries = Math.max(1, options.maxEntries ?? 64);
   const records = new Map<string, DevServerRecord>();
   const listeners = new Set<(record: DevServerRecord) => void>();
+  const removedListeners = new Set<(record: DevServerRecord) => void>();
+
+  const notifyRemoved = (record: DevServerRecord): void => {
+    for (const listener of [...removedListeners]) {
+      try {
+        listener(record);
+      } catch {
+        // A bad subscriber must not break the caller that removed the record.
+      }
+    }
+  };
 
   return {
     /**
@@ -132,7 +138,7 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
     }): DevServerRecord | null {
       if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) return null;
       const laneId = input.laneId?.trim() || null;
-      const key = registryKey(laneId, input.port);
+      const key = devServerKey(laneId, input.port);
       const previous = records.get(key) ?? null;
       const next: DevServerRecord = {
         port: input.port,
@@ -170,12 +176,27 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
     /** Forgets everything a terminal session discovered (session closed). */
     forgetSession(sessionId: string): void {
       for (const [key, record] of [...records.entries()]) {
-        if (record.source.sessionId === sessionId) records.delete(key);
+        if (record.source.sessionId !== sessionId) continue;
+        records.delete(key);
+        notifyRemoved(record);
       }
+    },
+    /** A port that stopped listening. Returns whether anything was forgotten. */
+    forget(laneId: string | null, port: number): boolean {
+      const key = devServerKey(laneId?.trim() || null, port);
+      const record = records.get(key);
+      if (!record) return false;
+      records.delete(key);
+      notifyRemoved(record);
+      return true;
     },
     onDetected(listener: (record: DevServerRecord) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onRemoved(listener: (record: DevServerRecord) => void): () => void {
+      removedListeners.add(listener);
+      return () => removedListeners.delete(listener);
     },
     clear(): void {
       records.clear();

@@ -16,13 +16,45 @@ enum WorkChatTypography {
   /// Markdown table cells (dense by design).
   static let tableCell: Font = .caption
   static let tableHeader: Font = .caption.weight(.semibold)
+  /// Chips an agent's text names: one fixed size and weight, never bold,
+  /// italic or heading-sized from the text around them (desktop: medium,
+  /// not-italic, 11/14 of the chat size).
+  static let chip: Font = .footnote.weight(.medium)
 
+  /// Section headings step clearly above the body (`callout`), semibold like
+  /// the desktop's. Level 3 used to be `callout` bold — body size — so a
+  /// `###` section read as a bold sentence.
   static func heading(level: Int) -> Font {
     switch level {
-    case 1: return .title3.weight(.bold)
-    case 2: return .headline.weight(.bold)
-    default: return .callout.weight(.bold)
+    case 1: return .title2.weight(.semibold)
+    case 2: return .title3.weight(.semibold)
+    case 3: return .headline
+    default: return .callout.weight(.semibold)
     }
+  }
+
+  /// Extra space above a heading that follows other content, on top of the
+  /// block spacing, so a section never sits flush against the paragraph above.
+  static func headingTopSpacing(level: Int) -> CGFloat {
+    switch level {
+    case 1: return 12
+    case 2: return 10
+    case 3: return 8
+    default: return 6
+    }
+  }
+}
+
+/// Overrides the text colour of rendered markdown, for a surface that is not
+/// the transcript canvas — a user bubble's accent gradient wants white text.
+private struct WorkMarkdownForegroundKey: EnvironmentKey {
+  static let defaultValue: Color? = nil
+}
+
+extension EnvironmentValues {
+  var workMarkdownForeground: Color? {
+    get { self[WorkMarkdownForegroundKey.self] }
+    set { self[WorkMarkdownForegroundKey.self] = newValue }
   }
 }
 
@@ -32,13 +64,239 @@ struct WorkInlineMarkdownText: View {
   /// stay out of the shared inline-markdown cache.
   var isStreamingTail = false
 
+  /// The lanes, chats and keys the entity chips resolve against.
+  @ObservedObject private var entities = WorkThreadEntityDirectory.shared
+  /// Timestamps the reader tapped to see as the agent wrote them.
+  @State private var revealedTimes: Set<String> = []
+  @Environment(\.workMarkdownForeground) private var foregroundOverride
+
   var body: some View {
-    Text(markdownAttributedString(text, intermediate: isStreamingTail))
-      .foregroundStyle(ADEColor.textPrimary)
-      .tint(ADEColor.accent)
+    Text(
+      workThreadEntityAttributedString(
+        text,
+        intermediate: isStreamingTail,
+        lookup: entities.lookup,
+        lookupRevision: entities.revision,
+        revealedTimes: revealedTimes
+      )
+    )
+      .foregroundStyle(foregroundOverride ?? ADEColor.textPrimary)
+      .tint(foregroundOverride ?? ADEColor.accent)
       .frame(maxWidth: .infinity, alignment: .leading)
       .textSelection(.enabled)
+      .environment(\.openURL, OpenURLAction { url in
+        if let raw = workThreadTimeRaw(from: url) {
+          if revealedTimes.contains(raw) {
+            revealedTimes.remove(raw)
+          } else {
+            revealedTimes.insert(raw)
+          }
+          return .handled
+        }
+        return workOpenChipURL(url)
+      })
   }
+}
+
+// MARK: - Thread entities in agent text
+
+/// The scheme a timestamp run links to. Never leaves the view: the
+/// `openURL` handler above toggles local time / original text on a tap.
+private let workThreadTimeScheme = "ade-thread-time"
+
+func workThreadTimeRaw(from url: URL) -> String? {
+  guard url.scheme?.lowercased() == workThreadTimeScheme else { return nil }
+  return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+    .queryItems?
+    .first(where: { $0.name == "raw" })?
+    .value
+}
+
+private let workThreadTimeSameDayFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("jmmss")
+  return formatter
+}()
+
+private let workThreadTimeOtherDayFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("MMMdjmm")
+  return formatter
+}()
+
+private let workThreadTimeRangeFormatter: DateIntervalFormatter = {
+  let formatter = DateIntervalFormatter()
+  formatter.dateStyle = .none
+  formatter.timeStyle = .short
+  return formatter
+}()
+
+private let workThreadTimeDayFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("MMMd")
+  return formatter
+}()
+
+/// A zoned timestamp in the reader's local time: the time alone today, the
+/// date and time otherwise. A range converts BOTH ends ("9:52 – 10:24 PM",
+/// "Sep 30, 9:52 – 10:24 PM"). Mirrors `formatThreadTimestamp` on the desktop.
+func workFormatThreadTimestamp(_ date: Date, end: Date? = nil, now: Date = Date()) -> String {
+  let sameDay = Calendar.current.isDate(date, inSameDayAs: now)
+  if let end {
+    let range = workThreadTimeRangeFormatter.string(from: date, to: end)
+    return sameDay ? range : "\(workThreadTimeDayFormatter.string(from: date)), \(range)"
+  }
+  return sameDay
+    ? workThreadTimeSameDayFormatter.string(from: date)
+    : workThreadTimeOtherDayFormatter.string(from: date)
+}
+
+private final class WorkThreadEntityCacheBox {
+  let value: AttributedString
+  init(_ value: AttributedString) { self.value = value }
+}
+
+/// Decorated renders of completed blocks, keyed by text and lookup revision,
+/// so a transcript pass re-runs no entity regex for a block it already drew.
+private let workThreadEntityCache: NSCache<NSString, WorkThreadEntityCacheBox> = {
+  let cache = NSCache<NSString, WorkThreadEntityCacheBox>()
+  cache.countLimit = 256
+  return cache
+}()
+
+/// Inline markdown with the ADE things an agent names drawn as chips: the
+/// iOS half of `remarkThreadEntities` on the desktop.
+///
+/// Inline code spans and plain prose are matched by `WorkThreadEntityRules`;
+/// existing links are never rewritten, except an `ade://` link this build
+/// understands, which becomes the same pill. Code blocks never reach here.
+/// "`lane-name` (`lane-id`)" names one lane twice, so the echo is dropped.
+func workThreadEntityAttributedString(
+  _ text: String,
+  intermediate: Bool,
+  lookup: WorkThreadEntityLookup,
+  lookupRevision: Int,
+  revealedTimes: Set<String>
+) -> AttributedString {
+  let base = markdownAttributedString(text, intermediate: intermediate)
+  // Every shape the rules know needs one of these characters somewhere.
+  guard text.contains("`") || text.contains("-") || text.contains("#") || text.contains("@") else {
+    return base
+  }
+  // The local day is part of the key: a timestamp formatted "today" as a bare
+  // time must gain its date after midnight, not stay cached as today's.
+  let day = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+  let key = "\(workStableDigest(text)):\(lookupRevision):\(day):\(revealedTimes.sorted().joined(separator: "\u{1}"))" as NSString
+  if !intermediate, let cached = workThreadEntityCache.object(forKey: key) {
+    return cached.value
+  }
+
+  enum Piece {
+    case keep(AttributedString)
+    case entity(WorkThreadEntity)
+
+    var plain: String? {
+      if case .keep(let value) = self { return String(value.characters) }
+      return nil
+    }
+  }
+
+  var pieces: [Piece] = []
+  var changed = false
+  for (link, linkRange) in base.runs[\.link] {
+    if let link {
+      if let chip = WorkThreadEntityRules.adeLinkChip(link) {
+        pieces.append(.entity(.chip(chip)))
+        changed = true
+      } else {
+        pieces.append(.keep(AttributedString(base[linkRange])))
+      }
+      continue
+    }
+    for run in base[linkRange].runs {
+      let slice = AttributedString(base[run.range])
+      let plain = String(slice.characters)
+      if (run.inlinePresentationIntent ?? []).contains(.code) {
+        if let entity = WorkThreadEntityRules.matchInlineCode(plain, lookup: lookup) {
+          pieces.append(.entity(entity))
+          changed = true
+        } else {
+          pieces.append(.keep(slice))
+        }
+        continue
+      }
+      let matches = WorkThreadEntityRules.findProse(plain, lookup: lookup)
+      guard !matches.isEmpty else {
+        pieces.append(.keep(slice))
+        continue
+      }
+      changed = true
+      let ns = plain as NSString
+      var cursor = 0
+      for match in matches {
+        if match.range.location > cursor {
+          let before = ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+          pieces.append(.keep(AttributedString(before, attributes: run.attributes)))
+        }
+        pieces.append(.entity(match.entity))
+        cursor = NSMaxRange(match.range)
+      }
+      if cursor < ns.length {
+        pieces.append(.keep(AttributedString(ns.substring(from: cursor), attributes: run.attributes)))
+      }
+    }
+  }
+  guard changed else {
+    if !intermediate { workThreadEntityCache.setObject(WorkThreadEntityCacheBox(base), forKey: key) }
+    return base
+  }
+
+  // `lane-name` (`lane-id`): the chip already carries the id, so drop the
+  // parenthesised echo and its closing paren.
+  var index = 0
+  while index + 3 < pieces.count {
+    defer { index += 1 }
+    guard case .entity(let first) = pieces[index], let entityKey = first.key,
+          let open = pieces[index + 1].plain,
+          open.range(of: "^\\s*\\($", options: .regularExpression) != nil,
+          case .entity(let echo) = pieces[index + 2], echo.key == entityKey,
+          case .keep(let close) = pieces[index + 3], close.characters.first == ")"
+    else { continue }
+    var trimmed = close
+    trimmed.characters.removeFirst()
+    pieces[index + 3] = .keep(trimmed)
+    pieces.removeSubrange((index + 1)...(index + 2))
+  }
+
+  var out = AttributedString()
+  for piece in pieces {
+    switch piece {
+    case .keep(let value):
+      out.append(value)
+    case .entity(.chip(let chip)):
+      out.append(
+        workChipPill(
+          chip,
+          facts: lookup.facts(for: chip),
+          foreground: ADEColor.textPrimary,
+          background: ADEColor.textPrimary.opacity(0.1),
+          font: WorkChatTypography.chip
+        )
+      )
+    case .entity(.time(let date, let end, let raw)):
+      var run = AttributedString(revealedTimes.contains(raw) ? raw : workFormatThreadTimestamp(date, end: end))
+      run.foregroundColor = ADEColor.textPrimary
+      run.underlineStyle = Text.LineStyle(pattern: .dot)
+      var components = URLComponents()
+      components.scheme = workThreadTimeScheme
+      components.host = "toggle"
+      components.queryItems = [URLQueryItem(name: "raw", value: raw)]
+      run.link = components.url
+      out.append(run)
+    }
+  }
+  if !intermediate { workThreadEntityCache.setObject(WorkThreadEntityCacheBox(out), forKey: key) }
+  return out
 }
 
 struct WorkMarkdownRenderer: View {
@@ -62,15 +320,22 @@ struct WorkMarkdownRenderer: View {
     // Only the last block of a streaming message is still growing; everything
     // above it is final and belongs in the shared caches.
     let streamingTailId = streamingCacheKey == nil ? nil : blocks.last?.id
+    let firstBlockId = blocks.first?.id
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
         WorkMarkdownBlockView(
           block: block,
           isStreamingTail: block.id == streamingTailId
         )
+        .padding(.top, block.id == firstBlockId ? 0 : workMarkdownHeadingTopSpacing(block))
       }
     }
   }
+}
+
+private func workMarkdownHeadingTopSpacing(_ block: WorkMarkdownBlock) -> CGFloat {
+  guard case .heading(let level, _) = block.kind else { return 0 }
+  return WorkChatTypography.headingTopSpacing(level: level)
 }
 
 struct WorkMarkdownBlockView: View {
@@ -158,6 +423,7 @@ struct WorkMarkdownListMarkerView: View {
   let column: WorkMarkdownListMarkerColumn
   /// The visible marker, or nil for an indentation-only slot.
   let label: String?
+  @Environment(\.workMarkdownForeground) private var foregroundOverride
 
   var body: some View {
     Text(workMarkdownListMarkerPlaceholder(column))
@@ -167,7 +433,7 @@ struct WorkMarkdownListMarkerView: View {
         if let label {
           Text(label)
             .monospacedDigit()
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(foregroundOverride ?? ADEColor.accent)
             .fixedSize()
         }
       }

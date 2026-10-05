@@ -7,10 +7,11 @@ import type {
   OpenProjectBinding,
   PrSummary,
 } from "../../../shared/types";
-import { selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
-import type { WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
+import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
   EMPTY_WORK_TOOL_ERRORS,
@@ -71,6 +72,12 @@ export type WorkToolStatus = {
    * dot is asking for a hand.
    */
   attention?: boolean;
+  /**
+   * The line repeats numbers that were not measured within their freshness
+   * window (a lane's ahead/behind while its status read is out, or after one
+   * failed). The card shows them quietly, never as current.
+   */
+  stale?: boolean;
 };
 
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
@@ -218,12 +225,18 @@ export function browserStatusLine(
   rawStatus: BuiltInBrowserStatus | null,
   laneId: string | null,
   errorCount = 0,
+  /** Ports the lane is serving, from the lane's machine. Lights an empty browser. */
+  devServerPorts: readonly number[] = [],
 ): WorkToolStatus {
   // Exported and called with whatever a feed handed the caller, including the
   // web client's shape-breaking "unsupported" stub — so the array is checked
   // here too rather than trusted from the type.
   const status = asBuiltInBrowserStatus(rawStatus);
-  if (!status || status.tabs.length === 0) return statusLine("No tabs", false);
+  if (!status || status.tabs.length === 0) {
+    if (devServerPorts.length === 0) return statusLine("No tabs", false);
+    const extra = devServerPorts.length > 1 ? ` +${devServerPorts.length - 1}` : "";
+    return statusLine(`localhost:${devServerPorts[0]} running${extra}`, true);
+  }
   const activeTab = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0];
   const held = status.tabs.some((tab) => tab.ownerLaneId != null)
     || status.ownerLaneId != null;
@@ -255,7 +268,7 @@ export function browserStatusLine(
   return statusLine(`${label}${suffix}`, true, { errorCount, attention: handedOff });
 }
 
-export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
+export function gitStatusLine(lane: LaneSummary | null, statusStale = false): WorkToolStatus {
   if (!lane?.status) return IDLE;
   const { dirty, rebaseInProgress } = lane.status;
   if (rebaseInProgress) return statusLine("Rebasing", true);
@@ -289,7 +302,9 @@ export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   const syncParts: string[] = [];
   if (ahead > 0) syncParts.push(`${formatStatusCount(ahead)} ahead`);
   if (behind > 0) syncParts.push(`${formatStatusCount(behind)} behind`);
-  if (syncParts.length > 0) return statusLine(syncParts.join(" · "), ahead > 0);
+  if (syncParts.length > 0) {
+    return statusLine(syncParts.join(" · "), ahead > 0, statusStale ? { stale: true } : undefined);
+  }
 
   const age = relativeCommitAge(lastCommitAt);
   if (age) return statusLine(`${hasUpstream ? "Pushed" : "Committed"} ${age}`, false);
@@ -506,6 +521,8 @@ export function useWorkToolStatuses(args: {
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
+  // The store's status is this tab's machine's; a pinned lane carries its own.
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -545,6 +562,12 @@ export function useWorkToolStatuses(args: {
     supported: (desktopTool === "windows-desktop" ? context.supportsWindowsDesktop : context.supportsMacDesktop) ?? null,
   });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
+
+  // The lane's dev servers, read from the lane's machine, so an empty Browser
+  // still says something is ready to open.
+  const devServers = useLaneDevServers(laneId, runtimePin, enabled && !offline);
+  // The store keeps the array's identity until a port or URL changes.
+  const devServerPorts = useMemo(() => devServers.map((server) => server.port), [devServers]);
 
   /*
     The lane's Apple device, for the card's one line. Polled here rather than
@@ -622,8 +645,13 @@ export function useWorkToolStatuses(args: {
     terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
       ? IDLE
-      : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
-    git: gitStatusLine(lane),
+      : browserStatusLine(
+        browserStatus,
+        laneId,
+        workToolBrowserErrorCount(browserErrors, browserStatus),
+        devServerPorts,
+      ),
+    git: gitStatusLine(lane, laneStatusStale),
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(appleDevice),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
@@ -639,8 +667,10 @@ export function useWorkToolStatuses(args: {
     appleDevice,
     browserErrors,
     browserStatus,
+    devServerPorts,
     lane,
     laneId,
+    laneStatusStale,
     offline,
     panelShellCount,
     prCount,

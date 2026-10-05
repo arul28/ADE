@@ -1,4 +1,5 @@
 import type { PrLaneNextStep } from "../prNextStep";
+import type { PrChatWatchSummary } from "../prWatch";
 
 // ---------------------------------------------------------------------------
 // PR types
@@ -113,6 +114,11 @@ export type PrSummary = {
   changedFiles?: number | null;
   /** Chats that explicitly opened or worked on this PR. Empty/absent means legacy lane-wide routing. */
   chatSessionIds?: string[];
+  /**
+   * Chats that unlinked this PR. Fallback display must not revive these;
+   * an explicit re-link clears the tombstone.
+   */
+  dismissedChatSessionIds?: string[];
 };
 
 /**
@@ -297,6 +303,12 @@ export type GitHubPrStackMembership = {
   /** One-based position, where 1 is closest to the stack base. */
   position: number;
   baseBranch: string;
+  /**
+   * How many open PRs a merge of this PR covers: this one and every open PR
+   * below it. 1 means it is the bottom open PR, the only one GitHub lets a
+   * merge bypass rules from. 0 when this PR is not open.
+   */
+  openThroughHere?: number;
 };
 
 export type GitHubPrStackEntry = {
@@ -343,6 +355,49 @@ export type AddGitHubPrStackPullRequestsArgs = {
 export type UnstackGitHubPrStackArgs = {
   repo?: GitHubRepoRef | null;
   stackNumber: number;
+};
+
+export type LinkPrChatSessionArgs = {
+  prId: string;
+  sessionId: string;
+  /** Explicit picker / stack member: allow a chat on another lane. */
+  allowCrossLane?: boolean;
+};
+
+export type UnlinkPrChatSessionArgs = {
+  prId: string;
+  sessionId: string;
+  /** Default true. Stack-link rollback passes false so a failed offer does not hide the PR. */
+  dismiss?: boolean;
+};
+
+export type LinkPrChatStackArgs = {
+  sessionId: string;
+  stackNumber: number;
+  prId?: string | null;
+};
+
+export type ListPrChatSessionsArgs = {
+  prId: string;
+};
+
+export type PrChatSessionLink = {
+  sessionId: string;
+  title: string | null;
+  laneId: string | null;
+};
+
+export type StackLinkOffer = {
+  sessionId: string;
+  prId: string;
+  stackNumber: number;
+  siblings: Array<{
+    prId: string;
+    githubPrNumber: number;
+    title: string;
+    laneId: string;
+    claimedByOtherChat: boolean;
+  }>;
 };
 
 export type GitHubPrListItem = {
@@ -455,6 +510,13 @@ export type PrEventPayload =
       prs: PrSummary[];
     }
   | {
+      /** A chat's PR Watch / Ship started, switched, told the agent, or stopped. */
+      type: "pr-chat-watch-changed";
+      sessionId: string;
+      prId: string;
+      watch: PrChatWatchSummary | null;
+    }
+  | {
       type: "pr-sessions-auto-settled";
       timestamp: string;
       laneId: string;
@@ -555,6 +617,14 @@ export type LandResult = {
   branchDeleted: boolean;
   laneArchived: boolean;
   error: string | null;
+  /**
+   * Set only for a GitHub Stack merge, which GitHub runs in the background.
+   * `enqueued` and `pending` come back with `success: false` and a message in
+   * `error`, so an older client never reads them as merged.
+   */
+  mergeStatus?: "merged" | "enqueued" | "pending";
+  /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
+  stackPrNumbers?: number[];
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";
@@ -563,6 +633,11 @@ export type CreatePrFromLaneArgs = {
   laneId: string;
   /** The chat that initiated this PR, when the action came from a chat surface. */
   sessionId?: string | null;
+  /**
+   * Agents silent-expand the next GitHub stack layer onto the parent chat.
+   * Humans get a stack-link offer instead. Unset is treated as human.
+   */
+  source?: "agent" | "human";
   title: string;
   body: string;
   draft: boolean;
@@ -674,7 +749,10 @@ export type LandPrArgs = {
    * someone's branch is their call, so the caller has to ask for it.
    */
   deleteRemoteBranch?: boolean;
-  /** When true, retry blocked merges with `gh pr merge --admin`. */
+  /**
+   * When true, retry blocked merges with `gh pr merge --admin`. For a GitHub
+   * Stack, sends `bypass_rules` with the async merge instead.
+   */
   bypassRules?: boolean;
   /** Custom merge commit title (`commit_title`). Ignored for the `rebase` method. */
   commitTitle?: string;

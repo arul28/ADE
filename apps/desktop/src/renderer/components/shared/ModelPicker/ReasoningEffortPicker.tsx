@@ -54,6 +54,17 @@ function tierLabel(tier: string, useCodex56Labels = false): string {
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 
+/** The footer's effort label for a tier, so a chip can show the same word. */
+export function reasoningEffortTierLabel(tier: string, useCodex56Labels = false): string {
+  return tierLabel(tier, useCodex56Labels);
+}
+
+/** The footer's colour for an effort on a model's tiers, so a chip can match it. */
+export function reasoningEffortToneColor(effort: string | null, tiers: readonly string[]): string {
+  const index = effort ? tiers.indexOf(effort) : -1;
+  return REASONING_TONE_STYLES[reasoningToneKeyForTier(effort, index, tiers.length)].color;
+}
+
 type ReasoningToneKey = "auto" | "low" | "steady" | "smart" | "deep" | "max" | "ultra";
 
 const REASONING_TONE_STYLES: Record<

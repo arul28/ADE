@@ -40,17 +40,26 @@ import {
   type Rgb,
 } from "./color";
 import {
+  ADE_SYNTAX_KEYS,
   ADE_TERMINAL_ANSI_KEYS,
   ADE_THEME_PALETTE_KEYS,
+  type AdeFlairFont,
+  type AdeFlairRadius,
+  type AdeSyntaxKey,
   type AdeTheme,
+  type AdeThemeFlair,
   type AdeThemePalette,
   type AdeThemePaletteKey,
   type AdeTerminalPalette,
+  type ResolvedAdeSyntaxPalette,
   type ResolvedAdeTheme,
   type ResolvedAdeThemePalette,
   type ThemeBaseMode,
   type ThemeContrastIssue,
 } from "./types";
+
+/** The contrast a derived syntax colour is nudged up to, against the theme background. */
+const SYNTAX_MIN_CONTRAST = 4.2;
 
 /** The two ids whose values live in `index.css` and must not be shadowed. */
 export const STYLESHEET_THEME_IDS: readonly string[] = ["dark", "light"];
@@ -373,6 +382,174 @@ export function resolveCssVars(theme: AdeTheme, palette: ResolvedAdeThemePalette
     "--color-diff-hunk": p.diffHunk,
   };
 
+  Object.assign(vars, resolveFlairVars(theme.flair, p, isDark));
+  return vars;
+}
+
+type RadiusScale = Record<string, number>;
+
+/**
+ * Every corner variable the app reads, per radius name. `default` is absent on
+ * purpose: ADE's own corners are the stylesheet's, so a theme that keeps them
+ * emits nothing.
+ */
+const RADIUS_SCALES: Record<Exclude<AdeFlairRadius, "default">, RadiusScale> = {
+  sharp: { xs: 0, sm: 2, md: 3, lg: 4, xl: 6, "2xl": 8, "3xl": 10, pane: 4, shell: 6, card: 5 },
+  soft: { xs: 4, sm: 8, md: 10, lg: 14, xl: 18, "2xl": 22, "3xl": 28, pane: 14, shell: 22, card: 20 },
+  round: { xs: 6, sm: 10, md: 14, lg: 18, xl: 24, "2xl": 28, "3xl": 36, pane: 18, shell: 28, card: 24 },
+};
+
+const FONT_STACKS: Record<Exclude<AdeFlairFont, "default">, string> = {
+  mono: "var(--font-mono)",
+  serif: 'ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif',
+  rounded: 'ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Geist", system-ui, sans-serif',
+};
+
+/**
+ * The backdrop layers. Each is a static background image painted over the whole
+ * window with the pointer ignored, so it adds no layout work and no listeners.
+ * Colours come from the palette so the layer always matches its theme.
+ */
+function backdropVars(
+  kind: Exclude<NonNullable<AdeThemeFlair["backdrop"]>, "none">,
+  p: ResolvedAdeThemePalette,
+  isDark: boolean,
+): Record<string, string> {
+  const tint = (color: string, alpha: number): string => alphaCss(color, alpha, BLACK);
+  switch (kind) {
+    case "grid": {
+      const line = tint(p.accent, isDark ? 0.07 : 0.09);
+      return {
+        "--ade-flair-backdrop": `linear-gradient(to right, ${line} 1px, transparent 1px), linear-gradient(to bottom, ${line} 1px, transparent 1px)`,
+        "--ade-flair-backdrop-size": "36px 36px, 36px 36px",
+        "--ade-flair-backdrop-opacity": "1",
+      };
+    }
+    case "dots": {
+      const dot = tint(p.fg, isDark ? 0.1 : 0.13);
+      return {
+        "--ade-flair-backdrop": `radial-gradient(${dot} 1px, transparent 1.3px)`,
+        "--ade-flair-backdrop-size": "20px 20px",
+        "--ade-flair-backdrop-opacity": "1",
+      };
+    }
+    case "scanlines":
+      return {
+        "--ade-flair-backdrop": [
+          `repeating-linear-gradient(0deg, rgba(0, 0, 0, ${isDark ? 0.22 : 0.07}) 0, rgba(0, 0, 0, ${isDark ? 0.22 : 0.07}) 1px, transparent 1px, transparent 3px)`,
+          `radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, ${isDark ? 0.4 : 0.1}) 100%)`,
+        ].join(", "),
+        "--ade-flair-backdrop-size": "auto, auto",
+        "--ade-flair-backdrop-opacity": "1",
+      };
+    case "noise": {
+      // A fixed turbulence tile, as an SVG data URI so there is nothing to load.
+      const svg =
+        "<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'>"
+        + "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/>"
+        + "<feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0.9 0'/></filter>"
+        + "<rect width='160' height='160' filter='url(%23n)'/></svg>";
+      return {
+        "--ade-flair-backdrop": `url("data:image/svg+xml;utf8,${svg}")`,
+        "--ade-flair-backdrop-size": "160px 160px",
+        "--ade-flair-backdrop-opacity": isDark ? "0.07" : "0.1",
+      };
+    }
+    case "aurora":
+      return {
+        "--ade-flair-backdrop": [
+          `radial-gradient(60% 46% at 12% 0%, ${tint(p.accent, isDark ? 0.17 : 0.13)}, transparent 70%)`,
+          `radial-gradient(50% 42% at 92% 8%, ${tint(p.info, isDark ? 0.13 : 0.1)}, transparent 70%)`,
+          `radial-gradient(64% 50% at 58% 104%, ${tint(p.accentDeep, isDark ? 0.15 : 0.1)}, transparent 70%)`,
+        ].join(", "),
+        "--ade-flair-backdrop-size": "auto, auto, auto",
+        "--ade-flair-backdrop-opacity": "1",
+      };
+  }
+}
+
+function hardShadows(color: string): Record<string, string> {
+  const block = (offset: number): string => `${offset}px ${offset}px 0 0 ${color}`;
+  return {
+    "--shadow-card": block(4),
+    "--shadow-card-hover": block(6),
+    "--shadow-float": block(8),
+    "--shadow-popup": block(5),
+    "--shadow-modal": block(8),
+    "--shadow-panel": block(3),
+    "--shadow-inset": "none",
+    "--chat-shell-shadow": block(6),
+    "--chat-card-shadow": block(4),
+    "--chat-composer-shadow": "none",
+    "--work-popover-shadow": block(4),
+  };
+}
+
+function flatShadows(border: string): Record<string, string> {
+  const ring = `0 0 0 1px ${border}`;
+  return {
+    "--shadow-card": ring,
+    "--shadow-card-hover": ring,
+    "--shadow-float": ring,
+    "--shadow-popup": ring,
+    "--shadow-modal": ring,
+    "--shadow-panel": ring,
+    "--shadow-inset": "none",
+    "--chat-shell-shadow": ring,
+    "--chat-card-shadow": "none",
+    "--chat-composer-shadow": "none",
+    "--work-popover-shadow": ring,
+  };
+}
+
+function glowShadows(p: ResolvedAdeThemePalette, isDark: boolean): Record<string, string> {
+  const glow = (alpha: number, blur: number, spread = 0): string =>
+    `0 0 ${blur}px ${spread}px ${alphaCss(p.accent, alpha, BLACK)}`;
+  const ring = (alpha: number): string => `0 0 0 1px ${alphaCss(p.accent, alpha, BLACK)}`;
+  const lift = isDark ? "0 14px 34px -18px rgba(0, 0, 0, 0.8)" : "0 14px 30px -18px rgba(15, 23, 42, 0.25)";
+  return {
+    "--shadow-card": [ring(0.32), glow(0.18, 16), lift].join(", "),
+    "--shadow-card-hover": [ring(0.5), glow(0.3, 22), lift].join(", "),
+    "--shadow-float": [ring(0.4), glow(0.24, 30), lift].join(", "),
+    "--shadow-popup": [ring(0.42), glow(0.24, 26), lift].join(", "),
+    "--shadow-modal": [ring(0.45), glow(0.28, 44), lift].join(", "),
+    "--shadow-panel": [ring(0.26), glow(0.14, 14)].join(", "),
+    "--chat-shell-shadow": [ring(0.3), glow(0.2, 34), lift].join(", "),
+    "--chat-card-shadow": [ring(0.22), glow(0.12, 18)].join(", "),
+    "--work-popover-shadow": [ring(0.4), glow(0.22, 24)].join(", "),
+  };
+}
+
+/**
+ * The CSS variables a theme's flair sets. Empty for a theme with no flair, so a
+ * plain palette theme paints exactly the geometry ADE ships.
+ */
+export function resolveFlairVars(
+  flair: AdeThemeFlair | undefined,
+  palette: ResolvedAdeThemePalette,
+  isDark: boolean,
+): Record<string, string> {
+  if (!flair) return {};
+  const vars: Record<string, string> = {};
+
+  if (flair.radius && flair.radius !== "default") {
+    const scale = RADIUS_SCALES[flair.radius];
+    for (const size of ["xs", "sm", "md", "lg", "xl", "2xl", "3xl"] as const) vars[`--radius-${size}`] = `${scale[size]}px`;
+    vars["--pane-radius"] = `${scale.pane}px`;
+    vars["--chat-radius-shell"] = `${scale.shell}px`;
+    vars["--chat-radius-card"] = `${scale.card}px`;
+  }
+
+  if (flair.shadow === "hard") {
+    Object.assign(vars, hardShadows(alphaCss(flair.shadowColor ?? palette.fg, 1, BLACK)));
+  } else if (flair.shadow === "flat") {
+    Object.assign(vars, flatShadows(palette.border));
+  } else if (flair.shadow === "glow") {
+    Object.assign(vars, glowShadows(palette, isDark));
+  }
+
+  if (flair.sansFont && flair.sansFont !== "default") vars["--theme-font-sans"] = FONT_STACKS[flair.sansFont];
+  if (flair.backdrop && flair.backdrop !== "none") Object.assign(vars, backdropVars(flair.backdrop, palette, isDark));
   return vars;
 }
 
@@ -435,6 +612,50 @@ export function resolveTerminalPalette(theme: AdeTheme, palette: ResolvedAdeThem
   return out;
 }
 
+/**
+ * The syntax colours for a code surface.
+ *
+ * What the theme states wins. The rest come from its terminal palette, which is
+ * where an editor-style theme already keeps its keyword, string and function
+ * colours, so a theme that pins ANSI colours paints a matching editor.
+ */
+export function resolveSyntaxPalette(
+  theme: AdeTheme,
+  palette: ResolvedAdeThemePalette,
+  terminal: AdeTerminalPalette,
+): ResolvedAdeSyntaxPalette {
+  const stated = theme.syntax ?? {};
+  const fg = rgb(palette.fg, WHITE);
+  const bg = rgb(palette.bg, BLACK);
+  // A derived colour is nudged until it reads against the background, because
+  // the terminal's bright ANSI colours are tuned for a terminal, not for text.
+  // A colour the theme states is the author's choice and is left alone.
+  const readable = (color: string | undefined, last: string): string => {
+    let candidate = rgb(color ?? last, rgb(last, WHITE));
+    const step = theme.baseMode === "dark" ? 0.025 : -0.025;
+    for (let attempt = 0; attempt < 16 && contrastRatio(candidate, bg) < SYNTAX_MIN_CONTRAST; attempt += 1) {
+      candidate = shiftLightness(candidate, step);
+    }
+    return toHex(candidate);
+  };
+  const pick = (key: AdeSyntaxKey, fallback: string | undefined, last: string): string =>
+    stated[key] ? css(stated[key]!, rgb(last, WHITE)) : readable(fallback, last);
+  const out = {
+    comment: stated.comment ? css(stated.comment, rgb(palette.mutedFg, WHITE)) : palette.mutedFg,
+    keyword: pick("keyword", terminal.magenta, palette.accent),
+    string: pick("string", terminal.green, palette.success),
+    number: pick("number", terminal.yellow, palette.warning),
+    function: pick("function", terminal.blue, palette.info),
+    type: pick("type", terminal.cyan, palette.accentBright),
+    constant: pick("constant", terminal.brightMagenta, palette.accentBright),
+    variable: stated.variable ? css(stated.variable, fg) : palette.fg,
+    property: pick("property", terminal.brightBlue, palette.accentBright),
+    operator: stated.operator ? css(stated.operator, fg) : toHex(mixColors(fg, bg, 0.72)),
+  } satisfies ResolvedAdeSyntaxPalette;
+  for (const key of ADE_SYNTAX_KEYS) if (!out[key]) out[key] = palette.fg;
+  return out;
+}
+
 /** Contrast pairs the customizer reports on; only below-threshold pairs surface. */
 function collectContrastIssues(palette: ResolvedAdeThemePalette): ThemeContrastIssue[] {
   const issues: ThemeContrastIssue[] = [];
@@ -468,10 +689,12 @@ export function resolveTheme(theme: AdeTheme): ResolvedAdeTheme {
     theme.source === "builtin" && STYLESHEET_THEME_IDS.includes(theme.id)
       ? {}
       : resolveCssVars(theme, palette);
+  const terminal = resolveTerminalPalette(theme, palette);
   return {
     theme,
     palette,
-    terminal: resolveTerminalPalette(theme, palette),
+    terminal,
+    syntax: resolveSyntaxPalette(theme, palette, terminal),
     cssVars,
     contrastIssues: collectContrastIssues(palette),
   };

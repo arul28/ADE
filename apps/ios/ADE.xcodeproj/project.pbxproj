@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */; };
+		CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */; };
 		CA1A00000000000000000017 /* WorkChatLaunchSetupCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */; };
 		CA1A00000000000000000018 /* WorkChatLaunchPendingScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */; };
 		CA1A00000000000000000019 /* WorkLaneSetupTranscriptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */; };
@@ -27,6 +28,10 @@
 		E20000000000000000000F40 /* PrConversationDigest.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F40 /* PrConversationDigest.swift */; };
 		E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */; };
 		E20000000000000000000F31 /* SettingsMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F31 /* SettingsMachines.swift */; };
+		E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */; };
+		E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */; };
+		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
+		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
@@ -161,6 +166,7 @@
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
 		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
 		E10000000000000000000F03 /* WorkPromptStash.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkPromptStash.swift */; };
+		7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A001 /* WorkThreadComments.swift */; };
 		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E200000000000000000000B2 /* WorkProofSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B2 /* WorkProofSheet.swift */; };
@@ -174,6 +180,7 @@
 		E200000000000000000000BA /* H264SampleBufferFeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000BA /* H264SampleBufferFeeder.swift */; };
 		E200000000000000000000B7 /* MacDesktopLiveMount.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B7 /* MacDesktopLiveMount.swift */; };
 		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
+		E1000000000000000000E84E /* WorkThreadEntityRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000E84E /* WorkThreadEntityRules.swift */; };
 		E10000000000000000000031 /* WorkModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000031 /* WorkModels.swift */; };
 		E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000601 /* WorkDraftPersistence.swift */; };
 		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
@@ -197,6 +204,7 @@
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
 		E1000000000000000000003D /* WorkSpawnNesting.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003D /* WorkSpawnNesting.swift */; };
+		E1000000000000000000AF01 /* WorkLaneFocus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AF01 /* WorkLaneFocus.swift */; };
 		E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F01 /* WorkLaneOrder.swift */; };
 		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
@@ -246,6 +254,7 @@
 		D30000000000000000000015 /* ActivityDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* ActivityDrawerModelTests.swift */; };
 		AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7100000000000000000001 /* ActivityContractDecodingTests.swift */; };
 		AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */; };
+		AC72000000000000000000B7 /* ProviderAccountsMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000B7 /* ProviderAccountsMachineTests.swift */; };
 		AC72000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */; };
 		AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000001 /* ActivityAckQueueTests.swift */; };
 		AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7300000000000000000002 /* ActivityPollingTests.swift */; };
@@ -396,6 +405,7 @@
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
 		E20000000000000000000F01 /* MachineConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F01 /* MachineConnection.swift */; };
 		E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F07 /* SyncService+Fleet.swift */; };
+		7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */; };
 		E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F10 /* SyncService+RemoteLanes.swift */; };
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
@@ -435,6 +445,7 @@
 
 /* Begin PBXFileReference section */
 		CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ChatLaunch.swift"; path = "ADE/Services/SyncService+ChatLaunch.swift"; sourceTree = "<group>"; };
+		CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+MachineInventory.swift"; path = "ADE/Services/SyncService+MachineInventory.swift"; sourceTree = "<group>"; };
 		CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchSetupCard.swift; path = ADE/Views/Work/WorkChatLaunchSetupCard.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchPendingScreen.swift; path = ADE/Views/Work/WorkChatLaunchPendingScreen.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneSetupTranscriptCard.swift; path = ADE/Views/Work/WorkLaneSetupTranscriptCard.swift; sourceTree = "<group>"; };
@@ -452,6 +463,10 @@
 		D20000000000000000000F40 /* PrConversationDigest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrConversationDigest.swift; path = ADE/Views/PRs/PrConversationDigest.swift; sourceTree = "<group>"; };
 		D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatMachinePicker.swift; path = ADE/Views/Work/WorkNewChatMachinePicker.swift; sourceTree = "<group>"; };
 		D20000000000000000000F31 /* SettingsMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachines.swift; path = ADE/Views/Settings/SettingsMachines.swift; sourceTree = "<group>"; };
+		D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountsPreviews.swift; path = ADE/Views/Settings/SettingsProviderAccountsPreviews.swift; sourceTree = "<group>"; };
+		D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSignIn.swift; path = ADE/Views/Settings/SettingsProviderAccountSignIn.swift; sourceTree = "<group>"; };
+		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
+		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
@@ -547,6 +562,7 @@
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
 		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000F03 /* WorkPromptStash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStash.swift; path = ADE/Views/Work/WorkPromptStash.swift; sourceTree = "<group>"; };
+		7C0FFEE0000000000000A001 /* WorkThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkThreadComments.swift; path = ADE/Views/Work/WorkThreadComments.swift; sourceTree = "<group>"; };
 		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D200000000000000000000B2 /* WorkProofSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofSheet.swift; path = ADE/Views/Work/WorkProofSheet.swift; sourceTree = "<group>"; };
@@ -560,6 +576,7 @@
 		D200000000000000000000BA /* H264SampleBufferFeeder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = H264SampleBufferFeeder.swift; path = ADE/Views/Work/H264SampleBufferFeeder.swift; sourceTree = "<group>"; };
 		D200000000000000000000B7 /* MacDesktopLiveMount.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopLiveMount.swift; path = ADE/Views/Work/MacDesktopLiveMount.swift; sourceTree = "<group>"; };
 		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
+		D1000000000000000000E84E /* WorkThreadEntityRules.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkThreadEntityRules.swift; path = ADE/Views/Work/WorkThreadEntityRules.swift; sourceTree = "<group>"; };
 		D10000000000000000000031 /* WorkModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModels.swift; path = ADE/Views/Work/WorkModels.swift; sourceTree = "<group>"; };
 		D10000000000000000000601 /* WorkDraftPersistence.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftPersistence.swift; path = ADE/Views/Work/WorkDraftPersistence.swift; sourceTree = "<group>"; };
 		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
@@ -609,6 +626,7 @@
 		D1000000000000000000004A /* SwiftTermSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SwiftTermSessionView.swift; path = ADE/Views/Work/SwiftTermSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		D1000000000000000000003D /* WorkSpawnNesting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSpawnNesting.swift; path = ADE/Views/Work/WorkSpawnNesting.swift; sourceTree = "<group>"; };
+		D1000000000000000000AF01 /* WorkLaneFocus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneFocus.swift; path = ADE/Views/Work/WorkLaneFocus.swift; sourceTree = "<group>"; };
 		D10000000000000000000F01 /* WorkLaneOrder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneOrder.swift; path = ADE/Views/Work/WorkLaneOrder.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
@@ -646,6 +664,7 @@
 		D30000000000000000000005 /* ActivityDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityDrawerModelTests.swift; path = ADETests/ActivityDrawerModelTests.swift; sourceTree = "<group>"; };
 		AC7100000000000000000001 /* ActivityContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityContractDecodingTests.swift; path = ADETests/ActivityContractDecodingTests.swift; sourceTree = "<group>"; };
 		AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UsageQuotaAccountDecodingTests.swift; path = ADETests/UsageQuotaAccountDecodingTests.swift; sourceTree = "<group>"; };
+		AC71000000000000000000B7 /* ProviderAccountsMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsMachineTests.swift; path = ADETests/ProviderAccountsMachineTests.swift; sourceTree = "<group>"; };
 		AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerFileAttachmentGateTests.swift; path = ADETests/WorkComposerFileAttachmentGateTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000001 /* ActivityAckQueueTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityAckQueueTests.swift; path = ADETests/ActivityAckQueueTests.swift; sourceTree = "<group>"; };
 		AC7300000000000000000002 /* ActivityPollingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityPollingTests.swift; path = ADETests/ActivityPollingTests.swift; sourceTree = "<group>"; };
@@ -819,6 +838,7 @@
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000F01 /* MachineConnection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineConnection.swift; path = ADE/Services/MachineConnection.swift; sourceTree = "<group>"; };
 		D20000000000000000000F07 /* SyncService+Fleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Fleet.swift"; path = "ADE/Services/SyncService+Fleet.swift"; sourceTree = "<group>"; };
+		7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ThreadComments.swift"; path = "ADE/Services/SyncService+ThreadComments.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F10 /* SyncService+RemoteLanes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+RemoteLanes.swift"; path = "ADE/Services/SyncService+RemoteLanes.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
@@ -1142,6 +1162,7 @@
 				D1000000000000000000004A /* SwiftTermSessionView.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000003D /* WorkSpawnNesting.swift */,
+				D1000000000000000000AF01 /* WorkLaneFocus.swift */,
 				D10000000000000000000F01 /* WorkLaneOrder.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -1157,6 +1178,7 @@
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
+				7C0FFEE0000000000000A001 /* WorkThreadComments.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D200000000000000000000B2 /* WorkProofSheet.swift */,
@@ -1170,6 +1192,7 @@
 				D200000000000000000000BA /* H264SampleBufferFeeder.swift */,
 				D200000000000000000000B7 /* MacDesktopLiveMount.swift */,
 				D10000000000000000000030 /* WorkMarkdownViews.swift */,
+				D1000000000000000000E84E /* WorkThreadEntityRules.swift */,
 				D10000000000000000000031 /* WorkModels.swift */,
 				D10000000000000000000601 /* WorkDraftPersistence.swift */,
 				D10000000000000000000032 /* WorkTranscriptParser.swift */,
@@ -1209,6 +1232,10 @@
 				F20000000000000000000001 /* SettingsSupportTypes.swift */,
 				F20000000000000000000002 /* SettingsConnectionHeader.swift */,
 				D20000000000000000000F31 /* SettingsMachines.swift */,
+				D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */,
+				D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */,
+				D2000000000000000000A610 /* SettingsProviderAccounts.swift */,
+				D2000000000000000000A600 /* ProviderAccountsStore.swift */,
 				D20000000000000000000F35 /* SettingsMachinesPreviews.swift */,
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
@@ -1239,6 +1266,7 @@
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
+				7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */,
 				D20000000000000000000F10 /* SyncService+RemoteLanes.swift */,
 				D20000000000000000000F33 /* SyncService+CtoHome.swift */,
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
@@ -1247,6 +1275,7 @@
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
+				CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */,
 				B80000000000000000000005 /* SyncMachineWake.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
 				CA1A00000000000000000002 /* ChatLaunchStore.swift */,
@@ -1460,6 +1489,7 @@
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */,
+				AC71000000000000000000B7 /* ProviderAccountsMachineTests.swift */,
 				AC71000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
 				AC7300000000000000000002 /* ActivityPollingTests.swift */,
@@ -1841,6 +1871,7 @@
 				E20000000000000000000F02 /* MachineFleet.swift in Sources */,
 				E20000000000000000000F01 /* MachineConnection.swift in Sources */,
 				E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */,
+				7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */,
 				E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */,
 				E20000000000000000000F33 /* SyncService+CtoHome.swift in Sources */,
 				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,
@@ -1864,6 +1895,7 @@
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
 				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
 				CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */,
+				CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */,
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
 				CA1A00000000000000000012 /* ChatLaunchStore.swift in Sources */,
@@ -1924,6 +1956,10 @@
 				F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */,
 				F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */,
 				E20000000000000000000F31 /* SettingsMachines.swift in Sources */,
+				E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */,
+				E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */,
+				E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */,
+				E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */,
 				E20000000000000000000F35 /* SettingsMachinesPreviews.swift in Sources */,
 				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
@@ -2027,6 +2063,7 @@
 				E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000003D /* WorkSpawnNesting.swift in Sources */,
+				E1000000000000000000AF01 /* WorkLaneFocus.swift in Sources */,
 				E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
@@ -2043,6 +2080,7 @@
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
 				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,
+				7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */,
 				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E200000000000000000000B2 /* WorkProofSheet.swift in Sources */,
@@ -2056,6 +2094,7 @@
 				E200000000000000000000BA /* H264SampleBufferFeeder.swift in Sources */,
 				E200000000000000000000B7 /* MacDesktopLiveMount.swift in Sources */,
 				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,
+				E1000000000000000000E84E /* WorkThreadEntityRules.swift in Sources */,
 				E10000000000000000000031 /* WorkModels.swift in Sources */,
 				E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */,
 				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
@@ -2121,6 +2160,7 @@
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */,
+				AC72000000000000000000B7 /* ProviderAccountsMachineTests.swift in Sources */,
 				AC72000000000000000000A2 /* WorkComposerFileAttachmentGateTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
 				AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */,

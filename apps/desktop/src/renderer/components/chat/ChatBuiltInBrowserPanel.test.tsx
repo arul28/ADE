@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PARKED_SURFACE_ATTRIBUTE } from "../../lib/parkedSurface";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 import {
@@ -1317,7 +1318,10 @@ describe("ChatBuiltInBrowserPanel", () => {
       outside.remove();
     });
 
-    it("declines from a mounted-but-inert pane, so a hidden browser cannot steal the chord", async () => {
+    it.each([
+      ["inert", "inert"],
+      ["parked", PARKED_SURFACE_ATTRIBUTE],
+    ])("declines from a mounted-but-%s pane, so a hidden browser cannot steal the chord", async (_state, attribute) => {
       const { api } = installBrowserApi();
       const { container } = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
@@ -1329,16 +1333,22 @@ describe("ChatBuiltInBrowserPanel", () => {
         hidden — a tool switch (`WorkSidebar`: `active && effectiveTool`), a
         route change (`App.tsx`: `<TerminalsPage active={active && isWorkRoute}>`)
         and leaving the project tab (`ProjectSurface`). But the app's habit is
-        to keep hidden surfaces MOUNTED behind `inert` + `opacity: 0`, and
-        "focus is nowhere in the DOM" is true of a hidden pane exactly as it is
-        of one the user just clicked into. If any of those three guards became a
-        CSS hide, this is what stops a parked browser eating the app's zoom.
+        to keep hidden surfaces MOUNTED and parked (lib/parkedSurface, or
+        `inert` without `content-visibility`), and "focus is nowhere in the
+        DOM" is true of a hidden pane exactly as it is of one the user just
+        clicked into. If any of those three guards became a CSS hide, this is
+        what stops a parked browser eating the app's zoom.
       */
-      (container.parentElement ?? container).setAttribute("inert", "");
-      (document.activeElement as HTMLElement | null)?.blur();
+      const surface = container.parentElement ?? container;
+      surface.setAttribute(attribute, "");
+      try {
+        (document.activeElement as HTMLElement | null)?.blur();
 
-      expect(consumeAppZoomCommand("in")).toBe(false);
-      expect(api.setZoom).not.toHaveBeenCalled();
+        expect(consumeAppZoomCommand("in")).toBe(false);
+        expect(api.setZoom).not.toHaveBeenCalled();
+      } finally {
+        surface.removeAttribute(attribute);
+      }
     });
 
     it("releases the claim when the pane unmounts", async () => {
@@ -1760,18 +1770,22 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(screen.queryByRole("region", { name: "Local servers" })).toBeNull();
     });
 
-    it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
+    it.each([
+      ["a local pane", undefined, null],
+      ["a pane on another machine", REMOTE_PIN, REMOTE_PIN],
+    ])("asks the lane's machine for dev servers by lane from %s", async (_label, runtimePin, expectedPin) => {
       const { api } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={runtimePin as never} />);
 
       // `browserScope` is `{projectRoot} | {tabCollection} | {}` and never
-      // carries a laneId, so the registry's lane filter never ran. Discovery is
-      // also a fact about THIS machine's PTYs, so it takes no runtime pin.
+      // carries a laneId, so the registry's lane filter never ran. The list
+      // lives on the machine that runs the lane, so a remote pane asks that
+      // machine instead of skipping discovery.
       await waitFor(() => expect(api.getDevServers).toHaveBeenCalled());
-      const [args, ...rest] = api.getDevServers.mock.calls[0];
+      const [args, pin] = api.getDevServers.mock.calls[0];
       expect(args).toHaveProperty("laneId");
       expect(args).not.toHaveProperty("projectRoot");
-      expect(rest).toEqual([]);
+      expect(pin ?? null).toEqual(expectedPin);
     });
 
     it("probes the usual ports when discovery comes back empty", async () => {

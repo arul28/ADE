@@ -522,3 +522,162 @@ chained and the thread jumped. Preserve all of these:
 Tests: `chatTranscriptRows.test.ts` "row keys are position-independent" and
 `AgentChatMessageList.test.tsx` "stable row keys, list anchoring, and scroll
 restore" (fake per-key layout, both render paths).
+
+### Chat thread scrolling and history (measured with `scripts/perf-chat-scroll.mjs`)
+
+Bench: launch the dev app with `ade app-control launch --command "NO_DEVTOOLS=1 node scripts/dev-desktop.mjs --auto"`
+(`dev.cjs` forwards `ADE_APP_CONTROL_DEBUG_FLAGS`; without them a window behind
+others stops painting and every frame metric reads 0), then
+`node scripts/perf-chat-scroll.mjs --port <cdp> --reload --park <small chat> --session <big chat> [--scenario wheel|top|idle]`.
+`--park` matters: Work reopens the last chat on reload, which pages its history
+in before the run starts. CDP `Input.dispatchMouseEvent` does not ack in the
+dev build, so the bench drives `scrollTop` in-page with a wheel event per frame.
+
+Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
+
+- A scroll event must not commit a render unless the mounted window or the
+  active minimap tick changes (`scrollCommitKey`), with one exact commit after
+  the scroll settles. Renderer JS 259→126 ms/s scrolling up, 281→161 down.
+- Cache row offsets on the `measuredHeights` version, not on `measurementTick`:
+  the tick trails measurements by a debounce, and offsets from stale heights
+  misplace the spacers (prepend jumps grew 568→1333 px until fixed).
+- The scroll memory is snapshotted in `handleScroll` too; a scroll that does not
+  render must still be what a chat switch restores.
+- Older history backfills in idle slots (immediately when the reader is in the
+  prefetch runway). Cold open → whole transcript resident in ~0.65 s with two
+  frames over 33 ms; jump-to-top waited 1.2 s at the top before, ~0.65 s after
+  (the rest is image and markdown work for rows mounting at the top).
+- Attachment image data URLs are cached per owner and path. Each uncached read
+  was a multi-MB base64 reply that held transcript pages queued behind it on the
+  runtime socket for ~370 ms.
+- Not wins (reverted): skipping selection reads on scroll, keying row
+  measurement by key. `measureNow` self time is the layout of newly mounted rows.
+- Open: `backdrop-filter` is ~half the GPU while scrolling (52→26% of a core with
+  it off): composer/banner ~10 pts, user bubbles (`ade-liquid-glass`) ~5, shell
+  header ~4. Changing it changes the look; it is a design decision.
+
+### Background cost with no visual change (measured, second pass)
+
+- An infinite animation over a `backdrop-filter` re-runs the blur and
+  composites the window every frame. The header live-activity dot (6px opacity
+  pulse, shown whenever an agent is live) cost ~32% of a GPU core and ~67% of
+  the main process at idle. Its keyframes now hold eased steps of 0.02 opacity
+  (`step-end`): GPU ~6.5%, main ~20%, pixel diff vs the smooth pulse ≤1/255.
+  Treat any new looping animation in blurred chrome the same way. Find running
+  ones with `document.getAnimations()`.
+- Props into the message list and its rows must keep identity across pane
+  renders (`useLatestCallback`, `useStableIdentity` in `lib/stableIdentity.ts`).
+  Inline closures, a fresh `Set`, a rebuilt turn-diff array or per-turn copy
+  objects re-rendered every mounted row: 1,105 row renders in 20 idle seconds
+  (now 0), ~5,100 row renders per 400 streamed events (now ~450).
+- `toLocaleTimeString(locales, options)` builds an `Intl.DateTimeFormat` per
+  call; every row renders a timestamp. Cached formatter: streaming JS
+  10.2 → 7.3 ms/event.
+- Minimap previews (`summarizeInlineText`) are cached per event object; they
+  were recomputed for the whole transcript on every streamed delta (~9%).
+- Streaming bench: `scripts/perf-chat-stream.mjs` replays a real transcript into
+  the browser-mock renderer (`window.__adeMockEmitChatEvent`) in Playwright's
+  Chromium. Pass `--render-hook` with a DevTools hook to count renders; count a
+  component only when its props or state object changed, because bailed-out
+  subtrees keep stale PerformedWork flags.
+- Not wins (reverted): gating the selection toolbar's scroll listener (its
+  self time is forced layout that moves), a `Date.parse` cache in
+  `chatHistoryMerge` (<1 ms per flush either way).
+- Machine state drifts between dev-app launches; compare A/B in one session.
+- Next candidate: `AgentChatComposer` is not memoized and gets ~100 props
+  (many inline), so it re-renders ~2x per streamed event with its tooltips.
+
+### Work list scaling and other third-pass results
+
+- `SessionCard` uses `memoWithLatestHandlers` (lib/stableIdentity.ts): the list
+  hands every card fresh `onSelect`/`onContextMenu`/PR handlers, so plain memo
+  never held. TerminalsPage passes the list stable handles (`useLatestCallback`)
+  and lanes without PRs share `NO_LANE_PRS`. In the real app at idle, 20 s:
+  card renders 1,092 → under 100 (only cards whose session changed), lane headers 870 → 440, idle renderer JS
+  270 → 184 ms per 10 s with 32 cards. Lane headers take JSX props, so they
+  still re-render with the list; the rest of those renders are real session data.
+- Measured and not kept: memoizing `AgentChatComposer` (renders halved, no
+  time change; median 5.97 vs 5.77 ms per streamed event), dropping the blur
+  on hidden (`opacity-0`) hover toolbars (Chromium already skips it).
+- Background chats are cheap: streaming into a chat that is not open costs
+  0.24 ms per event (`perf-chat-stream.mjs --background`).
+- Cold chat open measured 21–28 ms to first rows (history read 6 ms).
+
+### Looping animations and repeated background work (fourth pass, 240 Hz display)
+
+Measured on a 240 Hz display with per-process CPU sampling (`ps` cputime
+deltas) and CDP `Performance.getMetrics`. A smooth looping animation ticks at
+the display rate. On a 240 Hz display that is 240 style passes a second.
+
+- Hold any looping opacity animation at 0.02-opacity steps with `step-end`.
+  The Work sidebar `Working` breathe used a smooth curve. With three working
+  sessions the GPU process used ~19.5% of a core and the renderer ~7%. Stepped:
+  3.8% and 3.2%. Derive the stops from the same ease curve, as for
+  `activity-hdr-pulse`.
+- Do not animate an SVG element itself. Chromium repaints an animated SVG on
+  the main thread each frame. Rotate an HTML wrapper of the same size, and use
+  `steps(N)` so the rate is 60 a second. The Lanes working mark (five lanes)
+  went from a renderer at ~20% to 6.4%.
+- Do not let xterm's DOM renderer run its CSS cursor blink. A paused animation
+  that `lib/xtermCursorBlink.ts` flips every 500 ms gives the same blink. An
+  idle focused shell went from a renderer at 11.7% to 3.6%.
+- Do not re-tokenize a growing code block from the start. `CodeHighlighter`
+  keeps the HTML of the complete lines and Shiki's grammar state. While an
+  agent streamed code, highlighting fell from 14.6% to 0.5% of renderer
+  main-thread samples. The output is byte-identical to `codeToHtml`.
+- Keep periodic disk snapshots slow when live readers use memory. The PTY
+  snapshot (full 2,000-line scrollback, ~0.5 MB) wrote every 500 ms. At 5 s the
+  brain went from 6.3% to 2.2% with three busy shells.
+
+Open finding, not fixed: a switch into a long chat (four long replies, ~48k
+DOM nodes) blocks the main thread for 600–900 ms. The cost is two full style
+passes over ~60k elements, the markdown parse, and `ThreadCommentLayer`
+`getBoundingClientRect` reads (~150 ms). A fix needs virtualization or deferred
+row mount, so measure the visual effect before you change it.
+
+The WebGL terminal renderer was never active until the fifth pass:
+`loadAddonCtor` imported a variable specifier with `@vite-ignore`, so neither
+Vite nor the packaged `app.asar` resolved `@xterm/addon-webgl`. Keep the
+specifier a string literal (`loadWebglAddonCtor`). A streaming shell demo:
+renderer 23.7% (DOM) → 12.7% (WebGL).
+
+### Project and page switches (fifth pass)
+
+Measured with two warm projects, one holding a long chat (12,900 elements)
+and one with a printing shell. Use long tasks, the worst frame gap, a
+screencast filmstrip, and per-toggle style timings on the surface root.
+
+- Do not let recency set the DOM order of keep-alive surfaces. Moving a
+  node detaches and re-attaches its subtree: a full restyle and relayout,
+  and every scroll container in it starts at 0. `mountedProjects` picks warm
+  surfaces by recency and renders them in tab order. Before: a chat scrolled
+  up into history reopened at its first message.
+- Hide a parked surface with `content-visibility: hidden`
+  (`HIDDEN_PAGE_STYLE`), not with `inert`, `pointer-events: none` or a
+  `[attr] *` CSS rule. Each of those three restyled every element of the
+  surface (~200 ms apiece); `content-visibility` toggles in ~3 ms, keeps the
+  rendering state, stops animations and blocks hit-testing and focus. Code
+  that asks "is my surface parked?" checks `[data-ade-surface-hidden]`.
+  Result: switch long tasks 450–640 ms → 0, worst frame gap ~480 → ~120 ms.
+- Never use a Tailwind `selection:` variant on a large container. It compiles
+  to `.x *::selection`, matched against every element on every restyle (40% of
+  selector time). Chromium inherits `::selection`, so one rule on the root
+  (`.ade-app-selection::selection`) colors the same. Full restyle of the chat
+  surface: 205 → 39 ms. Measure selector cost with a trace that includes the
+  `disabled-by-default-blink.debug` category (SelectorStats events).
+- A project switch must not force a machine-wide AI re-probe. Forced
+  `ai.getStatus` re-reads the login shell's PATH with synchronous shells,
+  which blocks the brain's event loop and every call behind it (the terminal
+  stream resumed 323 ms after the click; now 83 ms). Use
+  `invalidateAiDiscoveryCache(root, { forceRefresh: false })` and
+  `getAiStatusCached({ revalidate: true })` for a cache bypass.
+- Do not rebuild the WebGL terminal renderer on reveal. Creating the DOM
+  renderer measures glyphs with a forced full-document layout (~157 ms).
+- `onRuntimeStatusChanged` is also a 15 s heartbeat. Use
+  `subscribeRuntimeIdentityChanges` for "the brain may have changed".
+
+Open findings: the return to a project with a long chat still costs ~100 ms
+of native layout and paint; `useWorkSessions` polls `session.list` every 5 s
+for a hidden project too (~6 ms of brain time each round); opening a long
+chat still forces layout in `ThreadCommentLayer` and re-parses markdown
+(~45 ms).

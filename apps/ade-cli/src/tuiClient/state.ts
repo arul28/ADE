@@ -49,6 +49,8 @@ export type AdeCodeState = {
   lastModelByProject: Record<string, AdeCodeModelMemory>;
   /** projectRoot → provider → last settings used for that provider. */
   providerSettingsByProject: Record<string, Record<string, AdeCodeProviderSettingsMemory>>;
+  /** projectRoot → epoch ms before which the weekly archive reminder stays quiet. */
+  archiveReminderNextAtByProject: Record<string, number>;
 };
 
 const STATE_DIR = path.join(os.homedir(), ".ade");
@@ -204,6 +206,19 @@ export function providerSettingsFromModelMemory(
   };
 }
 
+/** When ADE Code may next show the archive reminder for this project (0 = now). */
+export function archiveReminderNextAt(state: AdeCodeState, projectRoot: string): number {
+  return state.archiveReminderNextAtByProject[normalizeProjectKey(projectRoot)] ?? 0;
+}
+
+export function saveArchiveReminderNextAt(projectRoot: string, nextAt: number): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    const current = await readAdeCodeStateUnlocked();
+    current.archiveReminderNextAtByProject[normalizeProjectKey(projectRoot)] = nextAt;
+    await writeAdeCodeStateUnlocked(current);
+  }));
+}
+
 export function flushAdeCodeStateWrites(): Promise<void> {
   return stateWriteQueue;
 }
@@ -221,7 +236,17 @@ export function normalizeAdeCodeState(value: unknown): AdeCodeState {
     draftKindByProject: normalizeDraftKindRecord(parsed.draftKindByProject),
     lastModelByProject: normalizeModelMemoryRecord(parsed.lastModelByProject),
     providerSettingsByProject: normalizeProviderSettingsRecord(parsed.providerSettingsByProject),
+    archiveReminderNextAtByProject: normalizeNumberRecord(parsed.archiveReminderNextAtByProject),
   };
+}
+
+function normalizeNumberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) out[key] = entry;
+  }
+  return out;
 }
 
 function emptyAdeCodeState(): AdeCodeState {
@@ -234,6 +259,7 @@ function emptyAdeCodeState(): AdeCodeState {
     draftKindByProject: {},
     lastModelByProject: {},
     providerSettingsByProject: {},
+    archiveReminderNextAtByProject: {},
   };
 }
 

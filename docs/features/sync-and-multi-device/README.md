@@ -23,6 +23,9 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- `cross-machine-agents.md` — agents and the CLI on other machines:
+  `--machine`, `--all-machines`, children that wake parents across machines and
+  projects, remote device drive with proof filed back.
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
   bounded context capsule, destination setup, route binding, and
   idempotent recovery used by **Continue on another machine**.
@@ -1712,6 +1715,14 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ios_simulator` method by name. It refuses any method outside the
   `ios_simulator` action allowlist (`APPLE_AGENT_ACTIONS` plus
   `APPLE_USER_ONLY_ACTIONS`). See [Apple device](../apple-device/README.md).
+- `providerAccountRemoteCommands.ts` — the `providerAccounts.*` remote commands
+  (runtime-scoped) that forward to the `provider_instances` action domain, so
+  the phone and browser manage the host's Claude and Codex logins through the
+  same implementation the desktop uses. `list` / `getSettings` / `refresh` are
+  viewer-allowed; every login change and running sign-in read is
+  controller-only. The policy table is `PROVIDER_ACCOUNT_REMOTE_COMMANDS` in
+  `shared/types/sync.ts`. See
+  [remote commands](remote-commands.md#action-categories).
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the
@@ -3079,6 +3090,21 @@ phone flow:
    client switched projects is adopted in place and never disconnects.
    If the switch fails, the previous host is restored so the listener
    is never left unowned.
+5. A project that follows another machine's brain cannot be hosted here.
+   `prepareProjectConnection` asks the target's sync service
+   (`getHostBlocker`) before it answers, and replies `ok: false` with the
+   reason. Completion passes `requireHostRole`, so `switchSyncHost` refuses
+   such a target before it deactivates the current host. Without this
+   check, the old host released the machine-wide lease, the target never
+   took it, and every connected client dropped until the switch timed out.
+
+The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
+pairing directory, but joining another brain is a choice about one project
+database. The draft records the `projectSiteId` of the project that made it,
+and every other project ignores it. A draft written before that tag applies
+only to a project whose cluster record already names another machine's
+brain. A project with no cluster record (for example, one first opened from
+the phone) becomes its own host instead of a viewer of an unrelated machine.
 
 The hosted browser uses the same machine catalog and project-switch protocol
 behind a different shell. Its permanent Hub chooses a machine, while the top

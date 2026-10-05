@@ -1,18 +1,7 @@
 /** Shared formatting utilities for the renderer. */
 
-/** Format a byte count into a short human-readable size (e.g. "1.4 GB"). */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const digits = unit === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(digits)} ${units[unit]}`;
-}
+// Lives in shared so main-process and ADE Code text can use the same sizes.
+export { formatBytes } from "../../shared/formatting";
 
 /** Returns a compact relative time label (e.g. "now", "2m", "1h", "3d") for sidebar cards. */
 export function relativeTimeCompact(iso: string | null | undefined): string {
@@ -62,14 +51,37 @@ export function formatDate(ts: string | null, fallback = "-"): string {
 export function formatDayShort(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+  return cachedFormatter(dayShortFormatter).format(parsed);
 }
 
 /** Format an ISO timestamp to HH:MM time string. */
 export function formatTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return cachedFormatter(timeFormatter).format(d);
+}
+
+// `toLocaleTimeString(locales, options)` is defined as formatting with a new
+// `Intl.DateTimeFormat(locales, options)`, and building one is the expensive
+// part. One cached formatter per option set gives the same strings, and every
+// transcript row formats a timestamp on each render. It is rebuilt at most once
+// a minute so a time zone or locale change (a laptop that travelled) shows up.
+type CachedFormatter = {
+  options: Intl.DateTimeFormatOptions;
+  formatter: Intl.DateTimeFormat | null;
+  builtAtMs: number;
+};
+const FORMATTER_REBUILD_MS = 60_000;
+const timeFormatter: CachedFormatter = { options: { hour: "2-digit", minute: "2-digit" }, formatter: null, builtAtMs: 0 };
+const dayShortFormatter: CachedFormatter = { options: { month: "short", day: "numeric" }, formatter: null, builtAtMs: 0 };
+
+function cachedFormatter(cache: CachedFormatter): Intl.DateTimeFormat {
+  const now = Date.now();
+  if (!cache.formatter || now - cache.builtAtMs > FORMATTER_REBUILD_MS) {
+    cache.formatter = new Intl.DateTimeFormat([], cache.options);
+    cache.builtAtMs = now;
+  }
+  return cache.formatter;
 }
 
 /** Format milliseconds into a compact human-readable duration. */
@@ -178,6 +190,11 @@ export function formatCost(usd: number, currency?: string): string {
   }
   if (usd < 0.01) return "<$0.01";
   return `$${withThousandsSeparators(usd.toFixed(2))}`;
+}
+
+/** A spend figure where nothing spent reads `$0.00` rather than `<$0.01`. */
+export function formatSpend(usd: number): string {
+  return usd > 0 ? formatCost(usd) : "$0.00";
 }
 
 /** Map a status string to Tailwind text+border classes (automations style). */

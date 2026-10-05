@@ -1230,8 +1230,35 @@ describe("macDesktopService real input and the lease", () => {
     expect("effect" in first ? first.effect.status : null).toBe("not_checked");
 
     const second = await service.click({ laneId: "lane-1", text: "Save", chatSessionId: "chat-1" });
-    expect("effect" in second ? second.effect : null)
-      .toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
+    const effect = "effect" in second ? second.effect : null;
+    expect(effect?.status).toBe("unconfirmed");
+    expect(effect?.reason).toBe("nothing on screen changed");
+    // The unconfirmed effect now carries the one next method to try, so the
+    // agent does not repeat the accessibility action that just did nothing.
+    expect(effect?.next?.method).toBe("observe");
+    expect(effect?.next?.command).toBeNull();
+    service.dispose();
+  });
+
+  it("appends the next step to a refused accessibility click's error", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => {
+        const error = new Error('AXStaticText "Read more" answered no press action.') as Error & { code: string };
+        error.code = "invalid_argument";
+        throw error;
+      },
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+
+    // No lease: the refusal names the lease as the fix and prints its command,
+    // instead of leaving the agent to repeat the same accessibility click.
+    const failure = (await service
+      .click({ laneId: "lane-1", text: "Read more", chatSessionId: "chat-1" })
+      .catch((error: Error) => error)) as Error;
+    expect(failure.message).toContain("answered no press action.");
+    expect(failure.message).toContain("Next: the element has no press action");
+    expect(failure.message).toContain("mac-desktop lease");
     service.dispose();
   });
 

@@ -44,6 +44,7 @@ vi.mock("../state", async () => {
       lastLaneId: null,
       draftKind: "chat",
       draftKindByProject: {},
+      archiveReminderNextAtByProject: {},
     }),
     saveAdeCodeProjectState: vi.fn(),
   };
@@ -611,7 +612,7 @@ describe("AdeCodeApp polling", () => {
     const calls = actionMock.mock.calls;
     expect(calls.filter(([domain, action]) => domain === "file" && action === "quickOpen")).toHaveLength(2);
     expect(calls.filter(([domain, action]) => domain === "git" && action === "listRecentCommits")).toHaveLength(1);
-    expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(1);
+    expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(2);
 
     await unmountApp(instance);
   });

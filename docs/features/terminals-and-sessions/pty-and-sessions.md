@@ -169,12 +169,14 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   output so the renderer-less surfaces (TUI `TerminalPane`, mobile
   Work tab, `ade terminal preview`) can render a real xterm buffer
   snapshot without subscribing to the live data stream. Writes are
-  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500`) and flushed to
+  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000`, because each write
+  serializes the whole scrollback) and flushed to
   `.ade/cache/terminal-snapshots/<sessionId>.json` as a
   `TerminalSerializedSnapshot` (version 1: cols / rows / cursor /
   viewport / buffer-type / serialized scrollback + per-cell visible
-  rows). Flushed on PTY exit, on resize, and on every
-  `terminal.preview` call.
+  rows). Flushed on PTY exit, on dispose, on resize, and on every
+  `terminal.preview` call, so the debounce only bounds how stale the
+  file is when the brain dies.
 - initial input: `initialInputTimer` — deferred initial-input write for
   callers that pass `args.initialInput` with an `initialInputDelayMs`;
   `userInputGeneration` advances on every user write so a deferred launch
@@ -413,7 +415,12 @@ these labels.
 `terminatePtyProcessTree(entry, signal, logger)` replaces the older
 single-process `entry.pty.kill(signal)` call. On POSIX, node-pty's
 `forkpty(3)` child is normally its own session and process-group leader, so
-the service first signals that process group directly. In parallel it runs a
+the service first signals that process group directly. Every `kill(-pid)` in
+ADE goes through `signalProcessGroup` (`services/shared/utils.ts`), which
+refuses a pid below 2 with the same `ESRCH` an exited group throws:
+`kill(-1, …)` would signal every process the user owns and `-0` is ADE's own
+group, and a test fake, a stale ledger or a parse bug is all it takes to reach
+one. In parallel it runs a
 bounded asynchronous `ps` scan (PID, parent PID, process group, and foreground
 process group) to include descendants and groups that a shell or foreground job
 created after launch. The initial signal is never held behind that scan: a

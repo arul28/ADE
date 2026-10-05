@@ -89,7 +89,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -178,10 +178,12 @@ import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOr
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
+import { createProjectTabDragService } from "./services/projects/projectTabDragService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createPrWatchService } from "./services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -244,7 +246,9 @@ import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
   OpenProjectBinding,
+  RemoteOpenProjectBinding,
   AppNavigationRequest,
+  AgentChatInterruptedChatRef,
   AttentionItem,
   AttentionNotchAcknowledgeRequest,
   AttentionNotchSettings,
@@ -270,6 +274,7 @@ import type {
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
+  UpdateInterruptedChat,
 } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
@@ -286,6 +291,7 @@ import {
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
@@ -429,7 +435,6 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
 
-type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 
@@ -811,6 +816,12 @@ async function createWindow(args: {
   onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
   onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
+  /**
+   * Opens the window at these bounds without taking focus. A tab dragged out
+   * of another window uses this: the new window must appear under the cursor
+   * and must not steal the pointer from the window that owns the drag.
+   */
+  bounds?: { x: number; y: number; width: number; height: number };
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory. In dev (`npm run dev` sets
   // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
@@ -854,7 +865,8 @@ async function createWindow(args: {
   const MIN_WINDOW_WIDTH = 1026;
 
   const win = new BrowserWindow({
-    ...defaultWindowBounds,
+    ...(args.bounds ?? defaultWindowBounds),
+    ...(args.bounds ? { show: false } : {}),
     minWidth: MIN_WINDOW_WIDTH,
     icon,
     ...windowChromeOptions(process.platform),
@@ -877,6 +889,7 @@ async function createWindow(args: {
   });
 
   args.onCreated?.(win);
+  if (args.bounds) win.showInactive();
   installEditableContextMenu(win);
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
@@ -1290,6 +1303,26 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 // Register the user-facing `ade://` deeplink scheme + single-instance lock so a
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
+// A dev app that lost the single-instance lock shares its user-data folder with
+// another running dev app. Electron then never fires `ready`: no window, no
+// error, a process that waits forever. Say so and exit instead.
+function exitDevAppSharingUserData(): void {
+  const userData = app.getPath("userData");
+  let holder = "another ADE dev app";
+  try {
+    const target = fs.readlinkSync(path.join(userData, "SingletonLock"));
+    holder = `another ADE dev app (pid ${target.slice(target.lastIndexOf("-") + 1)})`;
+  } catch {
+    // Windows, or no readable lock link: the generic name will do.
+  }
+  const message = `${holder} is already using ${userData}. Close it, or start this one with `
+    + "ADE_DESKTOP_USER_DATA_PATH=<another folder>. `npm run dev:desktop` from a lane worktree picks a folder of its own.";
+  logMachineEvent("error", "desktop.dev_user_data_in_use", { userData, holder });
+  flushMachineMainLog();
+  process.stderr.write(`[ade] ${message}\n`);
+  app.exit(1);
+}
+
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
@@ -1299,6 +1332,7 @@ registerAdeProtocolHandler({
   // structured logger existed this early; the machine log does.
   log: (event, fields) => logMachineEvent("info", event, fields),
   flushLog: flushMachineMainLog,
+  ...(app.isPackaged ? {} : { onLockLostWithoutForward: exitDevAppSharingUserData }),
 });
 
 let pendingProjectOpenFiles: string[] = [];
@@ -1537,6 +1571,28 @@ app.whenReady().then(async () => {
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
     saved.lastRemoteProjectBinding,
   );
+  /**
+   * A binding that came from a renderer. Main stores and persists it, so it is
+   * rebuilt field by field: a remote binding goes through the saved-binding
+   * parser with its key recomputed, and a local one needs a string root.
+   */
+  const sanitizeRendererProjectBinding = (value: unknown): OpenProjectBinding | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (record.kind === "remote") {
+      const remote = parseSavedRemoteProjectBinding(value);
+      return remote ? { ...remote, key: remoteProjectBindingKey(remote.targetId, remote.projectId) } : null;
+    }
+    const rootPath = readString(record, "rootPath")?.trim();
+    if (record.kind !== "local" || !rootPath) return null;
+    return {
+      kind: "local",
+      key: `local:${rootPath}`,
+      rootPath,
+      displayName: readString(record, "displayName") ?? path.basename(rootPath),
+    };
+  };
+
   const readLastRemoteProjectBinding = (): RemoteOpenProjectBinding | null =>
     parseSavedRemoteProjectBinding(
       readGlobalState(globalStatePath).lastRemoteProjectBinding,
@@ -1546,6 +1602,31 @@ app.whenReady().then(async () => {
       .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  // First launch after a hard reset: say what it saved and what it could not
+  // remove. A clean reset with nothing rescued needs no dialog; the fresh
+  // first-run screens say enough.
+  const resetReceipt = takeMachineResetReceipt(machineAdeLayout.adeDir);
+  if (resetReceipt) {
+    logMachineEvent(resetReceipt.ok ? "info" : "warn", "desktop.machine_reset_receipt", {
+      ok: resetReceipt.ok,
+      removed: resetReceipt.removed.length,
+      rescued: resetReceipt.rescued.length,
+      failed: resetReceipt.failed.length,
+    });
+    if (resetReceipt.rescued.length || resetReceipt.failed.length) {
+      const lines = [
+        ...resetReceipt.rescued.map((lane) => lane.mode === "move"
+          ? `Lane "${lane.lane}" was moved to ${lane.location}.`
+          : `Lane "${lane.lane}" was saved on branch ${lane.branch} in ${lane.projectRoot}.`),
+        ...resetReceipt.failed.slice(0, 10).map((failure) => `Not removed: ${failure.target} (${failure.error})`),
+      ];
+      void dialog.showMessageBox({
+        type: resetReceipt.failed.length ? "warning" : "info",
+        message: resetReceipt.failed.length ? "ADE was reset, with a few problems" : "ADE was reset",
+        detail: lines.join("\n"),
+      }).catch(() => undefined);
+    }
+  }
   // One subscription proxy supervisor belongs to this ADE install, not to the
   // currently-open project. Project contexts all point at the same machine
   // state.json; keeping the lazy instance here prevents duplicate children and
@@ -2803,9 +2884,12 @@ app.whenReady().then(async () => {
     runtimeServiceUninstalledForUpdate = false;
     updateLogger.info("autoUpdate.runtime_service_reinstalled_after_abort", payload);
   };
-  const prepareAutoUpdateInstall = async (): Promise<void> => {
+  const prepareAutoUpdateInstall = async (
+    resumeRequested: boolean,
+  ): Promise<UpdateInterruptedChat[]> => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
+      resumeRequested,
     });
     // Windows are still open here. The quit that follows closes them, and each
     // closed handler would otherwise save an empty tab list over this snapshot.
@@ -2816,11 +2900,17 @@ app.whenReady().then(async () => {
     localRuntimePool.beginUpdateWindow("prepare_quit_and_install");
     runtimeServiceUninstalledForUpdate = false;
     autoUpdateInstallRollbackReason = null;
+    // Read the interrupted chats while the runtime is definitely reachable;
+    // the service uninstall below can take the brain down. Nothing is armed
+    // here — the list is persisted with the pending install and only becomes a
+    // resume on the launch that actually lands it. That is what makes an
+    // aborted handoff harmless: no install, no resume rows.
+    const interruptedChats = resumeRequested ? await collectInterruptedChats() : [];
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
       });
-      return;
+      return interruptedChats;
     }
     const result = await uninstallRuntimeService();
     if (!result.ok) {
@@ -2843,11 +2933,12 @@ app.whenReady().then(async () => {
     runtimeServiceUninstalledForUpdate = true;
     if (autoUpdateInstallRollbackReason) {
       await reinstallRuntimeServiceAfterUpdateAbort(autoUpdateInstallRollbackReason);
-      return;
+      return interruptedChats;
     }
     updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
       serviceManaged: true,
     });
+    return interruptedChats;
   };
   const rollbackAutoUpdateInstall = async (reason: string): Promise<void> => {
     autoUpdateInstallRollbackReason = reason;
@@ -3772,6 +3863,7 @@ app.whenReady().then(async () => {
     prServiceRef = prService;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let prWatchServiceRef: ReturnType<typeof createPrWatchService> | null = null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -3789,9 +3881,15 @@ app.whenReady().then(async () => {
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
     // PR event channel, and a freshly created worktree lane triggers a
     // best-effort auto-map of any existing open PR on its branch (Trigger #1).
-    prService.setEventEmitter(emitPrEvent);
+    prService.setEventEmitter((event) => {
+      emitPrEvent(event);
+      prWatchServiceRef?.onPrEvent(event);
+    });
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
+    });
+    laneService.setOnBranchHistoryObserved((args) => {
+      void prService.autoLinkLaneBranchHistory(args);
     });
 
     let prMergeAutoSettlementServiceRef: ReturnType<typeof createPrMergeAutoSettlementService> | null = null;
@@ -3805,7 +3903,7 @@ app.whenReady().then(async () => {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementServiceRef?.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.
@@ -3830,6 +3928,7 @@ app.whenReady().then(async () => {
           ),
         );
         const chatService = agentChatServiceRef;
+        prWatchServiceRef?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         if (chatService) {
           await Promise.all(changes.map(async (change) => {
             try {
@@ -3837,6 +3936,7 @@ app.whenReady().then(async () => {
                 change,
                 dataSource: prService,
                 chat: chatService,
+                relatedPrs: prs,
               });
             } catch (error) {
               logger.warn("prs.chat_card_emit_failed", {
@@ -4147,7 +4247,49 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
+    /**
+     * An OS notification about one chat that opens it on click. Skipped while
+     * any ADE window is focused: there is no per-window "which chat is open"
+     * signal in main, and the chat's own transcript already says what happened.
+     */
+    const showChatOsNotification = (args: {
+      sessionId: string;
+      title: string;
+      body: string;
+      source: string;
+      failureEvent: string;
+    }): void => {
+      if (!Notification.isSupported()) return;
+      if (BrowserWindow.getFocusedWindow()) return;
+      try {
+        const notification = new Notification({ title: args.title, body: args.body });
+        // Clicking it opens the chat, through the same protocol dispatcher
+        // an `ade://` click from outside the app goes through.
+        notification.on("click", () => {
+          handleDeeplinkUrl(
+            buildDeeplink({ kind: "session", sessionId: args.sessionId }, { form: "ade" }),
+            args.source,
+            (request) => {
+              if (dispatchAppNavigationForProjectRoot) {
+                dispatchAppNavigationForProjectRoot(projectRoot, request);
+                return;
+              }
+              dispatchOrQueueAppNavigationRequest(request);
+            },
+            (event, fields) => logger.warn(event, fields),
+          );
+        });
+        notification.show();
+      } catch (error) {
+        logger.warn(args.failureEvent, {
+          sessionId: args.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     const agentChatService = createAgentChatService({
+      machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
       analytics: productAnalyticsService,
@@ -4177,6 +4319,7 @@ app.whenReady().then(async () => {
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
+      getAccountUsage: () => usageTrackingService,
       // The CTO's domain coverage. All lazy — several of these are created
       // later in this same bootstrap, and the CTO's tool map is only built when
       // a CTO session actually runs.
@@ -4255,44 +4398,30 @@ app.whenReady().then(async () => {
         surface: "api",
         provider,
       }),
+      onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        provider,
+      }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
-        if (!Notification.isSupported()) return;
-        // An OS notification for something the user is already looking at is
-        // noise. There is no per-window "which chat is open" signal in main, so
-        // the check is the coarse one that is actually available: any focused
-        // ADE window means the user is here, and the chat's own transcript
-        // notice already says the resume happened.
-        if (BrowserWindow.getFocusedWindow()) return;
-        try {
-          const notification = new Notification({
-            title: "Chat resumed",
-            body: title?.trim()
-              ? `"${title.trim()}" continued after its usage limit reset.`
-              : "A chat continued after its usage limit reset.",
-          });
-          // Clicking it opens the chat, through the same protocol dispatcher
-          // an `ade://` click from outside the app goes through.
-          notification.on("click", () => {
-            handleDeeplinkUrl(
-              buildDeeplink({ kind: "session", sessionId }, { form: "ade" }),
-              "notification:usage_limit_resume",
-              (request) => {
-                if (dispatchAppNavigationForProjectRoot) {
-                  dispatchAppNavigationForProjectRoot(projectRoot, request);
-                  return;
-                }
-                dispatchOrQueueAppNavigationRequest(request);
-              },
-              (event, fields) => logger.warn(event, fields),
-            );
-          });
-          notification.show();
-        } catch (error) {
-          logger.warn("agent_chat.usage_limit_resume_notification_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        showChatOsNotification({
+          sessionId,
+          title: "Chat resumed",
+          body: title?.trim()
+            ? `"${title.trim()}" continued after its usage limit reset.`
+            : "A chat continued after its usage limit reset.",
+          source: "notification:usage_limit_resume",
+          failureEvent: "agent_chat.usage_limit_resume_notification_failed",
+        });
+      },
+      onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        showChatOsNotification({
+          sessionId,
+          title: outcome === "reached" ? "Goal reached" : "Goal blocked",
+          body: `${title ? `"${title}": ` : ""}${objective}`,
+          source: "notification:goal_ended",
+          failureEvent: "agent_chat.goal_ended_notification_failed",
+        });
       },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
@@ -4328,6 +4457,14 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    prWatchServiceRef = createPrWatchService({
+      logger,
+      prService,
+      sessionService,
+      messageSession: (args) => agentChatService.messageSession(args),
+      emitPrEvent,
+      getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
+    });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
       sessionService,
@@ -4945,6 +5082,8 @@ app.whenReady().then(async () => {
         const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
         return chatSession?.laneId ?? null;
       },
+      resolveLaneWorktreePath: async (laneId) =>
+        (await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null))?.worktreePath ?? null,
       onEvent: (payload) => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
@@ -5206,7 +5345,10 @@ app.whenReady().then(async () => {
 
     scheduleBackgroundProjectTask(
       "prs.polling_start",
-      () => prPollingService.start(),
+      () => {
+        prPollingService.start();
+        prWatchServiceRef?.start();
+      },
       (error) => {
         logger.warn("prs.polling_start_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -5783,6 +5925,7 @@ app.whenReady().then(async () => {
       feedbackReporterService,
       prService,
       prPollingService,
+      prWatchService: prWatchServiceRef,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -5998,6 +6141,7 @@ app.whenReady().then(async () => {
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,
+      prWatchService: null,
       prSummaryService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
@@ -6248,6 +6392,7 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService?.dispose();
+      ctx.prWatchService?.dispose();
     } catch {
       // ignore
     }
@@ -7655,6 +7800,120 @@ app.whenReady().then(async () => {
     return Array.from(new Set(labels));
   };
 
+  /**
+   * Runs one chat action across every project runtime this machine knows
+   * about: in-process services in test, the runtime action channel in packaged
+   * builds. Best-effort — an unreachable runtime contributes nothing.
+   */
+  const forEachProjectRuntime = async (
+    run: (target: {
+      projectName: string;
+      projectRoot: string;
+      inProcessService: AppContext["agentChatService"] | null;
+    }) => Promise<void>,
+  ): Promise<void> => {
+    if (shouldUseInProcessProjectRuntime()) {
+      for (const ctx of projectContexts.values()) {
+        await run({
+          projectName: labelForProjectRoot(ctx.project?.rootPath ?? ""),
+          projectRoot: ctx.project?.rootPath ?? "",
+          inProcessService: ctx.agentChatService,
+        });
+      }
+      return;
+    }
+    const roots = new Set<string>([
+      ...rootsBoundToWindows(),
+      ...projectContexts.keys(),
+    ]);
+    await Promise.all(Array.from(roots).map(async (root) => {
+      await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
+    }));
+  };
+
+  /** The chat list a chat-domain action returned, or nothing. */
+  const runtimeChatRefs = (result: unknown): AgentChatInterruptedChatRef[] => {
+    const payload = result as { chats?: AgentChatInterruptedChatRef[] } | undefined;
+    return Array.isArray(payload?.chats) ? payload.chats : [];
+  };
+
+  // Chats with a live turn on this machine right now. An ADE restart stops
+  // them mid-flight, so the install dialog names them and offers to resume.
+  const collectInterruptedChats = async (): Promise<UpdateInterruptedChat[]> => {
+    const chats: UpdateInterruptedChat[] = [];
+    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
+      try {
+        const refs = inProcessService
+          ? runtimeChatRefs(await inProcessService.listInterruptedChats())
+          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+              domain: "chat",
+              action: "listInterruptedChats",
+            })).result);
+        for (const chat of refs) {
+          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+      } catch {
+        // Best-effort probe.
+      }
+    });
+    return chats;
+  };
+
+  // Arms one durable continue row per chat the update interrupted. Called on
+  // the launch that lands an install, with the ids the previous process
+  // persisted — a freshly started brain has no live turns to discover.
+  const armUpdateResumeForSessions = async (
+    sessionIds: readonly string[],
+  ): Promise<UpdateInterruptedChat[]> => {
+    if (sessionIds.length === 0) return [];
+    const armed: UpdateInterruptedChat[] = [];
+    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
+      try {
+        const refs = inProcessService
+          ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
+          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+              domain: "chat",
+              action: "armUpdateResume",
+              args: { sessionIds },
+            })).result);
+        for (const chat of refs) {
+          armed.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+      } catch (error) {
+        localRuntimeLogger.warn("update_resume.arm_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    return armed;
+  };
+
+  /**
+   * Drops the sessions that actually armed from the persisted resume list, so
+   * the next launch does not arm them a second time. Sessions whose project was
+   * not reachable stay on the list and get another attempt on a later launch.
+   */
+  const consumeArmedResumeChats = (sessionIds: readonly string[]): void => {
+    if (sessionIds.length === 0) return;
+    const armed = new Set(sessionIds);
+    try {
+      const state = readGlobalState(globalStatePath);
+      const installed = state.recentlyInstalledUpdate;
+      const remaining = (installed?.resumedChats ?? []).filter((chat) => !armed.has(chat.sessionId));
+      if (!installed || remaining.length === (installed.resumedChats?.length ?? 0)) return;
+      const { resumedChats: _armed, ...installedWithoutResume } = installed;
+      writeGlobalState(globalStatePath, {
+        ...state,
+        recentlyInstalledUpdate: remaining.length > 0
+          ? { ...installed, resumedChats: remaining }
+          : installedWithoutResume,
+      });
+    } catch {
+      // Best-effort: a failed consume only means a later launch retries.
+    }
+  };
+
   // Live-connection probe shown before an update install or quit. Mirrors the
   // lane-delete quit probe: in-process services in dev, runtime actions against
   // the brain in packaged builds. Best-effort — an unreachable runtime simply
@@ -7699,7 +7958,13 @@ app.whenReady().then(async () => {
         deviceId,
         deviceName,
       })),
+      interruptedChats: await collectInterruptedChats(),
     };
+  };
+
+  const EMPTY_UPDATE_INSTALL_IMPACT: UpdateInstallImpact = {
+    connectedPhones: [],
+    interruptedChats: [],
   };
 
   // Quit/update dialogs are synchronous, so cap how long the impact probe can
@@ -7708,9 +7973,9 @@ app.whenReady().then(async () => {
     timeoutMs = 1_500,
   ): Promise<UpdateInstallImpact> => {
     return await Promise.race([
-      collectUpdateInstallImpact().catch((): UpdateInstallImpact => ({ connectedPhones: [] })),
+      collectUpdateInstallImpact().catch((): UpdateInstallImpact => EMPTY_UPDATE_INSTALL_IMPACT),
       new Promise<UpdateInstallImpact>((resolve) => {
-        const timer = setTimeout(() => resolve({ connectedPhones: [] }), timeoutMs);
+        const timer = setTimeout(() => resolve(EMPTY_UPDATE_INSTALL_IMPACT), timeoutMs);
         timer.unref?.();
       }),
     ]);
@@ -8048,20 +8313,37 @@ app.whenReady().then(async () => {
   };
 
   const openAdeWindow = async (
-    args: { projectRoot?: string | null } = {},
+    args: {
+      projectRoot?: string | null;
+      /** Opens the window on a project that lives on another machine. */
+      remoteBinding?: RemoteOpenProjectBinding | null;
+      bounds?: { x: number; y: number; width: number; height: number };
+      /** Fires once the window exists, before its project loads. */
+      onWindow?: (win: BrowserWindow) => void;
+    } = {},
   ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
     const openWindows = BrowserWindow.getAllWindows().filter(
       (win) => !win.isDestroyed(),
     );
+    const requestedRemote = args.remoteBinding
+      ? sanitizeRendererProjectBinding(args.remoteBinding)
+      : null;
+    if (args.remoteBinding && requestedRemote?.kind !== "remote") {
+      throw new Error("Invalid project binding.");
+    }
     const restoredRemoteBinding =
-      args.projectRoot || openWindows.length > 0
+      (requestedRemote?.kind === "remote" ? requestedRemote : null)
+      ?? (args.projectRoot || openWindows.length > 0
         ? null
-        : readLastRemoteProjectBinding();
+        : readLastRemoteProjectBinding());
     const win = await createWindow({
       logger: getActiveContext().logger,
+      bounds: args.bounds,
       onRendererRecovery: reportRendererRecovery,
-      onCreated: (createdWindow) =>
-        registerWindowSession(createdWindow, null, restoredRemoteBinding),
+      onCreated: (createdWindow) => {
+        registerWindowSession(createdWindow, null, restoredRemoteBinding);
+        args.onWindow?.(createdWindow);
+      },
       onCloseRequested: handleMainWindowCloseRequested,
     });
     builtInBrowserService.attachToWindow(win);
@@ -8307,6 +8589,20 @@ app.whenReady().then(async () => {
   for (const filePath of pendingProjectOpenFiles.splice(0)) {
     handleProjectOpenFile(filePath);
   }
+
+  const projectTabDrag = createProjectTabDragService({
+    sanitizeBinding: sanitizeRendererProjectBinding,
+    openWindow: ({ binding, bounds, onWindow }) =>
+      binding.kind === "remote"
+        ? openAdeWindow({ remoteBinding: binding, bounds, onWindow })
+        : openAdeWindow({ projectRoot: binding.rootPath, bounds, onWindow }),
+    closeWindow: (win) => closeWindowWithoutPrompt(win),
+    sendAdopt: (target, request) => {
+      if (!target.webContents.isDestroyed()) {
+        target.webContents.send(IPC.appAdoptProjectTab, request);
+      }
+    },
+  });
 
   const closeAdeWindow = async (windowId: number | null): Promise<{ closed: boolean }> => {
     if (windowId == null) return { closed: false };
@@ -9009,6 +9305,7 @@ app.whenReady().then(async () => {
     },
     autoDiagnosticsService,
     createWindow: openAdeWindow,
+    projectTabDrag,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
     attemptedProjectRoots,
@@ -9108,6 +9405,18 @@ app.whenReady().then(async () => {
       }
     }
   }
+  // The launch that lands an install is the only one that arms a resume. The
+  // previous process persisted the chats it interrupted into the pending
+  // install, and reconcile has just moved them onto `recentlyInstalledUpdate`.
+  // Arming here rather than at quit is what keeps a failed install harmless:
+  // no landed install, no resumed chats, no rows.
+  const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
+  if (resumedAfterUpdate.length > 0) {
+    void armUpdateResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
+      .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
+      .catch(() => undefined);
+  }
+
   const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
   const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
     ?? restoredLocalRoots[0]

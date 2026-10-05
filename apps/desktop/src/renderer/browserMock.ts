@@ -30,6 +30,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import {
+  browserMockRecoveryScenario,
+  createBrowserMockRecoveryBridges,
+  showBrowserMockRecoveryScreen,
+} from "./browserMockRecovery";
 import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
 import type {
   AppControlEventPayload,
@@ -40,6 +45,14 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import {
+  formatThreadReviewBlock,
+  normalizeThreadCommentAnchor,
+  prependThreadReview,
+  type ChatThreadComment,
+  type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
 import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
@@ -73,6 +86,10 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSendArgs,
+  type AgentChatSteerArgs,
+  type AgentChatCancelSteerArgs,
+  type AgentChatMoveSteerArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
@@ -106,6 +123,17 @@ import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./lib/zoom";
+import {
+  DEFAULT_ARCHIVE_STALE_DAYS,
+  type ArchiveActionArgs,
+  type ArchiveActionResult,
+  type ArchivedItem,
+  type ArchiveListArgs,
+  type ArchiveListResult,
+  type ArchiveSummary,
+  type ArchiveSummaryArgs,
+} from "../shared/types/archive";
+import { emptyArchiveCounts } from "../shared/archive";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -214,6 +242,64 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+
+/**
+ * In-memory archive for the browser preview: a few archived lanes, chats, and
+ * shells of different ages, so Settings → Archive and the reminder banner have
+ * something to show. Restore and delete drop the item from the list.
+ */
+function createMockArchive() {
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+  let items: ArchivedItem[] = [
+    { kind: "chat", id: "mock-archived-chat-1", title: "Refactor auth middleware", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(2), sizeBytes: 412_000, toolType: "claude-chat" },
+    { kind: "shell", id: "mock-archived-shell-1", title: "npm run dev", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(5), sizeBytes: 38_000, toolType: "shell", parentChatId: "mock-archived-chat-1" },
+    { kind: "lane", id: "lane-old-spike", title: "old-spike", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(21), sizeBytes: 184 * 1024 ** 2, worktreePresent: true, branchRef: "ade/old-spike" },
+    { kind: "chat", id: "mock-archived-chat-2", title: "Investigate flaky test", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(30), sizeBytes: 1_250_000, toolType: "codex-chat" },
+    { kind: "lane", id: "lane-reclaimed", title: "reclaimed-experiment", laneId: "lane-reclaimed", laneName: "reclaimed-experiment", laneColor: "#a3e635", archivedAt: daysAgo(60), sizeBytes: null, worktreePresent: false, branchRef: "ade/reclaimed-experiment" },
+  ];
+  const ageDays = (item: ArchivedItem) => (Date.now() - Date.parse(item.archivedAt)) / (24 * 60 * 60_000);
+  const remove = async (args: ArchiveActionArgs, _pin?: unknown): Promise<ArchiveActionResult> => {
+    const result: ArchiveActionResult = { done: [], failed: [] };
+    for (const ref of args?.items ?? []) {
+      const before = items.length;
+      items = items.filter((item) => !(item.kind === ref.kind && item.id === ref.id));
+      if (items.length < before) result.done.push(ref);
+      else result.failed.push({ ...ref, error: "Not archived." });
+    }
+    return result;
+  };
+  return {
+    list: async (args?: ArchiveListArgs, _pin?: unknown): Promise<ArchiveListResult> => ({
+      items: items.filter((item) =>
+        (!args?.kinds?.length || args.kinds.includes(item.kind))
+        && (!args?.olderThanDays || ageDays(item) >= args.olderThanDays)),
+    }),
+    summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
+      const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
+      const byKind = emptyArchiveCounts();
+      const staleByKind = emptyArchiveCounts();
+      let staleBytes: number | null = null;
+      for (const item of items) {
+        byKind[item.kind] += 1;
+        if (ageDays(item) < olderThanDays) continue;
+        staleByKind[item.kind] += 1;
+        if (item.sizeBytes != null) staleBytes = (staleBytes ?? 0) + item.sizeBytes;
+      }
+      const oldest = [...items].sort((a, b) => Date.parse(a.archivedAt) - Date.parse(b.archivedAt))[0];
+      return {
+        total: items.length,
+        byKind,
+        olderThanDays,
+        staleTotal: staleByKind.lane + staleByKind.chat + staleByKind.shell,
+        staleByKind,
+        staleBytes,
+        oldestArchivedAt: oldest?.archivedAt ?? null,
+      };
+    },
+    restore: remove,
+    delete: remove,
+  };
+}
 /* ── chatLaunch (browser preview) ─────────────────────────────────────────
    A small simulator so the Vite preview shows a new-lane launch moving:
    fetch → check out files (with %) → start agent, a few hundred ms apart. A
@@ -726,6 +812,8 @@ const now = new Date().toISOString();
  * the real store synthesizes on read. Mutable so the mock's create/rename/
  * remove handlers round-trip in the preview instead of looking broken.
  */
+const mockLogins = new Map<string, import("../shared/types").ProviderLoginStatus>();
+
 const mockProviderInstances: Array<{
   id: string;
   provider: "claude" | "codex";
@@ -736,6 +824,9 @@ const mockProviderInstances: Array<{
   createdAt: string;
   account?: { email?: string; plan?: string };
   signedIn: boolean;
+  loginBroken?: boolean;
+  sameLoginAs?: string;
+  replacedAccount?: { email: string; plan?: string; replacedAt: string };
 }> = [
   {
     id: "claude",
@@ -1268,6 +1359,9 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetKind: "session",
       targetId: "mock-session-claude-1",
       launch: {},
+      // Launched on the second Claude sign-in, so the chat account note has
+      // a non-default account to show.
+      instanceId: "claude-work",
     },
   },
   {
@@ -1484,19 +1578,21 @@ const MOCK_COMMIT_TRAILERS = [
 ];
 const MOCK_COMMIT_MESSAGES = new Map<string, string>();
 
-function mockLaneRecentCommits(args: any = {}): any[] | null {
-  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
-  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
-  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
-  const ahead = lane.laneType === "primary" ? limit : Math.max(0, lane.status?.ahead ?? 0);
-  const count = Math.min(limit, ahead + 5);
+function mockCommitsForLane(lane: any, count: number): any[] {
+  const ahead = lane.laneType === "primary" ? count : Math.max(0, lane.status?.ahead ?? 0);
+  const total = Math.min(count, ahead + 5);
   let seed = 0;
   for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
   const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
-  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, count)));
+  // A stable denominator (not the request-dependent row count), so a commit's
+  // timestamp does not shift between pages and reorder the union.
+  const timestampSlots = lane.laneType === "primary"
+    ? Math.max(1, MOCK_COMMIT_POOL.length)
+    : Math.max(1, lane.status?.ahead ?? 0);
+  const step = Math.max(12 * 60_000, (end - start) / timestampSlots);
   const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
-  return Array.from({ length: count }, (_, index) => {
+  return Array.from({ length: total }, (_, index) => {
     const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];
     const sourceSha = String(source.sha);
     const sha = `${sourceSha.slice(0, 7)}${index.toString(16).padStart(4, "0")}${lanePrefix}${sourceSha.slice(19)}`;
@@ -1513,6 +1609,21 @@ function mockLaneRecentCommits(args: any = {}): any[] | null {
       pushed: index > 0,
     };
   });
+}
+
+function mockLaneRecentCommits(args: any = {}): any[] | null {
+  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
+  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
+  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
+  const skip = Number.isFinite(args?.skip) ? Math.max(0, Math.floor(args.skip)) : 0;
+  // "All lanes" unions every lane; both scopes page by `skip` so the preview's
+  // "Load older" advances instead of re-reading page one.
+  const lanes = args?.scope === "lanes"
+    ? [lane, ...MOCK_LANES.filter((row) => row.id !== lane.id)]
+    : [lane];
+  const rows = lanes.flatMap((row) => mockCommitsForLane(row, limit + skip));
+  rows.sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
+  return rows.slice(skip, skip + limit);
 }
 
 const ADE_DB_OPERATIONS: any[] =
@@ -1906,7 +2017,25 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId)];
+  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+}
+
+// Live chat events in the preview: messages sent here and thread-comment
+// changes reach the pane through the same `onEvent` path the host uses.
+const browserMockChatListeners = new Set<(envelope: any) => void>();
+const browserMockSentEvents = new Map<string, any[]>();
+const browserMockStagedSteers = new Map<string, string[]>();
+const browserMockThreadComments = new Map<string, ChatThreadComment[]>();
+
+function emitBrowserMockChatEvent(sessionId: string, event: Record<string, unknown>, persist = false): void {
+  const envelope = { sessionId, timestamp: new Date().toISOString(), event };
+  if (persist) browserMockSentEvents.set(sessionId, [...(browserMockSentEvents.get(sessionId) ?? []), envelope]);
+  for (const listener of browserMockChatListeners) listener(envelope);
+}
+
+function setBrowserMockThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
+  browserMockThreadComments.set(sessionId, comments);
+  emitBrowserMockChatEvent(sessionId, { type: "session_meta_updated", threadComments: comments });
 }
 
 function latestMockDoneEvent(events: any[]): any | null {
@@ -1982,6 +2111,9 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    instanceId: session.resumeMetadata?.instanceId ?? undefined,
+    presetId: session.resumeMetadata?.presetId ?? undefined,
+    credentialId: session.resumeMetadata?.credentialId ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -3508,6 +3640,55 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+/** A PR's stack membership, the way the host's githubStackStore builds it. */
+function mockStackMembership(stack: any, entry: any): any {
+  const isOpen = (candidate: any) => candidate.state === "open" && !candidate.mergedAt;
+  return {
+    id: stack.id,
+    number: stack.number,
+    size: stack.entries.length,
+    position: entry.position,
+    baseBranch: stack.baseBranch,
+    openThroughHere: isOpen(entry)
+      ? stack.entries.filter((candidate: any) => candidate.position <= entry.position && isOpen(candidate)).length
+      : 0,
+  };
+}
+
+// A demo GitHub Stack: #151 sits on #142, so previews can show the stack UI.
+{
+  const stackPrs = [142, 151];
+  const pulls = stackPrs.map((number) =>
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.repoPullRequests.find((pull: any) => pull.githubPrNumber === number));
+  if (pulls.every(Boolean)) {
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks = [{
+      id: "mock-stack-7",
+      number: 7,
+      nodeId: "MOCK_STACK_7",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      open: true,
+      createdAt: now,
+      syncedAt: now,
+      lastError: null,
+      entries: pulls.map((pull: any, index: number) => ({
+        githubPrNumber: pull.githubPrNumber,
+        position: index + 1,
+        state: "open",
+        isDraft: false,
+        mergedAt: null,
+        headBranch: pull.headBranch,
+        headSha: `mock-sha-${pull.githubPrNumber}`,
+      })),
+    }];
+    const stack = BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks[0];
+    pulls.forEach((pull: any, index: number) => {
+      pull.stack = mockStackMembership(stack, stack.entries[index]);
+    });
+  }
+}
+
 const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
     ? ADE_DB_SNAPSHOT.githubSnapshot
@@ -4200,8 +4381,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           // One preset bound to something this machine has, one that is not:
           // the unbound row is the state the "not set up here" note exists for.
           presets: [
-            { id: "hp_1", name: "Opus on work account", harness: "claude", model: "claude-opus-4-1", bound: true },
-            { id: "hp_9", name: "Droid on a key this Mac lacks", harness: "droid", model: "claude-sonnet-4-5", bound: false },
+            {
+              id: "hp_1",
+              name: "Opus on work account",
+              harness: "claude",
+              model: "claude-opus-4-1",
+              logo: { kind: "provider", providerId: "anthropic" },
+              accentColor: "#7c5ce0",
+              bound: true,
+            },
+            {
+              id: "hp_9",
+              name: "Droid on a key this Mac lacks",
+              harness: "droid",
+              model: "claude-sonnet-4-5",
+              logo: { kind: "ade" },
+              bound: false,
+            },
           ],
         }),
         listMachines: async () => {
@@ -4415,6 +4611,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         windowId: 2,
         project: MOCK_PROJECT,
       }),
+      projectTabDragStart: resolvedArg({ windowId: null }),
+      projectTabDragMove: () => {},
+      projectTabDragEnd: resolvedArg({ merged: false, intoSender: false }),
+      onAdoptProjectTab: () => () => {},
       closeWindow: resolvedArg({ closed: false }),
       onProjectChanged: () => () => {},
       onProjectBindingChanged: () => () => {},
@@ -4516,6 +4716,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dbSizeBytes: 20 * 1024 ** 2,
       }),
     },
+    archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
@@ -4717,6 +4918,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         openableProjectRoot: null,
         entries: [],
       }),
+      chooseProjectIcon: async (_id: string, _rootPath: string) => null,
+      removeProjectIcon: async (_id: string, _rootPath: string) => null,
       getProjectDetail: async (_id: string, rootPath: string) => ({
         rootPath,
         isGitRepo: true,
@@ -5944,6 +6147,45 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         get: resolvedArg(null),
         set: resolvedArg(undefined),
       },
+      threadComments: {
+        list: async (args: { sessionId: string }) => browserMockThreadComments.get(args.sessionId) ?? [],
+        create: async (args: ChatThreadCommentCreateArgs) => {
+          const anchor = normalizeThreadCommentAnchor(args.anchor);
+          if (!anchor || !args.body.trim()) throw new Error("A comment needs text and an anchor.");
+          const at = new Date().toISOString();
+          const comment: ChatThreadComment = {
+            id: globalThis.crypto.randomUUID(),
+            sessionId: args.sessionId,
+            messageKey: args.messageKey,
+            messageExcerpt: args.messageExcerpt,
+            anchor,
+            body: args.body.trim(),
+            includeInNextSend: true,
+            createdAt: at,
+            updatedAt: at,
+          };
+          setBrowserMockThreadComments(args.sessionId, [...(browserMockThreadComments.get(args.sessionId) ?? []), comment]);
+          return comment;
+        },
+        update: async (args: ChatThreadCommentUpdateArgs) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const previous = current.find((comment) => comment.id === args.commentId);
+          if (!previous) throw new Error("That comment no longer exists.");
+          const next: ChatThreadComment = {
+            ...previous,
+            ...(typeof args.body === "string" ? { body: args.body.trim() } : {}),
+            ...(typeof args.includeInNextSend === "boolean" ? { includeInNextSend: args.includeInNextSend } : {}),
+            updatedAt: new Date().toISOString(),
+          };
+          setBrowserMockThreadComments(args.sessionId, current.map((comment) => (comment.id === next.id ? next : comment)));
+          return next;
+        },
+        delete: async (args: { sessionId: string; commentId: string }) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => comment.id !== args.commentId));
+          return { deleted: current.some((comment) => comment.id === args.commentId) };
+        },
+      },
       promptStashes: {
         list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
           ...entry,
@@ -6013,13 +6255,53 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
-      send: resolvedArg(undefined),
-      steer: async () => ({
-        steerId: globalThis.crypto.randomUUID(),
-        queued: true,
-      }),
-      cancelSteer: resolvedArg(undefined),
+      send: async (args: AgentChatSendArgs) => {
+        let text = args.text;
+        if (args.includeThreadComments) {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const block = formatThreadReviewBlock(current.filter((comment) => comment.includeInNextSend));
+          text = prependThreadReview(text, block);
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => !comment.includeInNextSend));
+        }
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text,
+          ...(args.displayText !== undefined ? { displayText: args.displayText } : {}),
+        }, true);
+      },
+      // The staged queue behaves like the host's: a steer stages a queued
+      // bubble, a cancel retires it, and a move publishes the new order.
+      steer: async (args: AgentChatSteerArgs) => {
+        const steerId = globalThis.crypto.randomUUID();
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, [...queue, steerId]);
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text: args.text,
+          steerId,
+          deliveryState: "queued",
+          ...(args.attachments?.length ? { attachments: args.attachments } : {}),
+          ...(args.contextAttachments?.length ? { contextAttachments: args.contextAttachments } : {}),
+        }, true);
+        return { steerId, queued: true };
+      },
+      cancelSteer: async (args: AgentChatCancelSteerArgs) => {
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, queue.filter((id) => id !== args.steerId));
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: args.steerId,
+          message: "Queued message cancelled.",
+        }, true);
+      },
       editSteer: resolvedArg(undefined),
+      moveSteer: async (args: AgentChatMoveSteerArgs) => {
+        const queue = (browserMockStagedSteers.get(args.sessionId) ?? []).filter((id) => id !== args.steerId);
+        queue.splice(Math.max(0, Math.min(queue.length, args.toIndex)), 0, args.steerId);
+        browserMockStagedSteers.set(args.sessionId, queue);
+        emitBrowserMockChatEvent(args.sessionId, { type: "queue_reordered", steerIds: queue }, true);
+      },
       dispatchSteer: resolvedArg({
         delivered: false,
         reason: "Browser mock does not run chat sessions.",
@@ -6030,6 +6312,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         cancelledQueuedCount: 0,
       }),
       stopTask: resolvedArg({ sessionId: "", taskId: "", stopped: false }),
+      restartSession: resolvedArg({ sessionId: "", restarted: true, stoppedTurn: false, backgroundJobsStopped: 0 }),
       restoreCancelledQueue: resolvedArg<AgentChatRestoreCancelledQueueResult>({
         restored: false,
         restoredCount: 0,
@@ -6070,6 +6353,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       dismissPendingInput: resolvedArg(undefined),
+      launchDefaults: resolvedArg(null),
       models: resolvedArg([]),
       modelCatalog: resolvedArg({ groups: [], fetchedAt: new Date(0).toISOString() }),
       archive: resolvedArg(undefined),
@@ -6095,7 +6379,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         nextWakeAt: null,
       }),
       warmupModel: resolvedArg(undefined),
-      onEvent: noop,
+      onEvent: (listener: (envelope: any) => void) => {
+        browserMockChatListeners.add(listener);
+        // `window.__adeMockEmitChatEvent(sessionId, event)` streams a chat event
+        // into the preview the way the host would (scripts/perf-chat-stream.mjs).
+        (window as unknown as Record<string, unknown>).__adeMockEmitChatEvent ??= emitBrowserMockChatEvent;
+        return () => {
+          browserMockChatListeners.delete(listener);
+        };
+      },
       slashCommands: resolvedArg([]),
       listClaudePlugins: resolvedArg([]),
       listCodexPlugins: resolvedArg([]),
@@ -6954,6 +7246,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }
         return instance;
       },
+      // A simulated sign-in: the link appears at once, the code prompt after a
+      // beat, and a pasted code finishes it — enough to walk every state.
+      loginStart: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        const loginId = `mock-login-${Date.now()}`;
+        mockLogins.set(loginId, {
+          loginId,
+          instanceId: instance.id,
+          provider: instance.provider,
+          state: "running",
+          url: instance.provider === "claude"
+            ? "https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code"
+            : "https://auth.openai.com/oauth/authorize?client_id=mock",
+          awaitingCode: false,
+          output: "Opening browser to sign in…\nIf the browser didn't open, visit the link below.\n",
+          startedAt: new Date().toISOString(),
+        });
+        setTimeout(() => {
+          const login = mockLogins.get(loginId);
+          if (login?.state === "running") {
+            login.awaitingCode = true;
+            login.output += "Paste code here if prompted > ";
+          }
+        }, 1500);
+        return { ...mockLogins.get(loginId)! };
+      },
+      loginStatus: async (args: { loginId: string }) => ({ ...mockLogins.get(args.loginId)! }),
+      loginSubmitCode: async (args: { loginId: string; code: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.awaitingCode = false;
+        login.state = "verifying";
+        login.output += "\nLogin successful.\n";
+        setTimeout(() => {
+          const instance = mockProviderInstanceById(login.instanceId);
+          instance.signedIn = true;
+          instance.account = instance.account ?? { email: "new.account@example.com", plan: "Claude Max 20x" };
+          login.state = "succeeded";
+          login.email = instance.account.email;
+          login.endedAt = new Date().toISOString();
+        }, 900);
+        return { ...login };
+      },
+      loginCancel: async (args: { loginId: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.state = "cancelled";
+        return { ...login };
+      },
+      dismissReplaced: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.replacedAccount;
+        return instance;
+      },
       setAccent: async (args: { id: string; accentColor: string | null }) => {
         const instance = mockProviderInstanceById(args.id);
         if (args.accentColor) instance.accentColor = args.accentColor;
@@ -7569,7 +7913,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         title: "AI-drafted title",
         body: "AI-drafted body",
       }),
-      land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
+      land: async (args: { prId?: string }) => {
+        const pr = ALL_PRS.find((item: any) => item.id === args?.prId) ?? null;
+        const stack = pr ? browserMockPrSummaryWithStack(pr).stack : null;
+        // A stacked PR merges with every open PR below it, as the host's async stack merge does.
+        const stackPrNumbers = stack
+          ? (MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries ?? [])
+              .filter((entry: any) => entry.position <= stack.position && entry.state === "open" && !entry.mergedAt)
+              .map((entry: any) => entry.githubPrNumber)
+          : null;
+        // Record the merge, so the next list read shows it as the host would.
+        const mergedAt = new Date().toISOString();
+        for (const number of stackPrNumbers ?? (pr ? [pr.githubPrNumber] : [])) {
+          for (const item of [...ALL_PRS, ...MOCK_GITHUB_SNAPSHOT.repoPullRequests]) {
+            if (item.githubPrNumber !== number) continue;
+            Object.assign(item, { state: "merged", mergedAt });
+            if (item.id && MOCK_STATUS_BY_PR[item.id]) MOCK_STATUS_BY_PR[item.id].state = "merged";
+          }
+          const entry = stack
+            ? MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries
+                ?.find((candidate: any) => candidate.githubPrNumber === number)
+            : null;
+          if (entry) Object.assign(entry, { state: "closed", mergedAt });
+        }
+        return {
+          prId: args?.prId ?? "",
+          prNumber: pr?.githubPrNumber ?? 142,
+          success: true,
+          mergeCommitSha: "abc123",
+          branchDeleted: false,
+          laneArchived: false,
+          error: null,
+          ...(stack ? { mergeStatus: "merged", stackPrNumbers } : {}),
+        };
+      },
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
       createIntegration: resolvedArg({}),
@@ -7607,7 +7984,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
           ]),
         ),
-      listWithConflicts: resolved(ALL_PRS),
+      // Fresh copies, so a refresh after a mock merge re-renders the rows.
+      listWithConflicts: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
         let snapshots = ADE_DB_PR_SNAPSHOTS;
         const prId = args?.prId?.trim();
@@ -7659,6 +8037,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           }),
         };
         MOCK_GITHUB_SNAPSHOT.stacks = [...MOCK_GITHUB_SNAPSHOT.stacks, stack];
+        // Mark each PR as stacked, as the host's stack membership does.
+        for (const entry of stack.entries) {
+          const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+            (item: any) => item.githubPrNumber === entry.githubPrNumber,
+          );
+          if (!pull) continue;
+          pull.stack = mockStackMembership(stack, entry);
+        }
         return stack;
       },
       addGitHubStackPullRequests: async (args: {
@@ -7702,6 +8088,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const [stack] = MOCK_GITHUB_SNAPSHOT.stacks.splice(index, 1);
         return stack ?? null;
       },
+      linkChatSession: async () => ({ ok: true }),
+      unlinkChatSession: async () => ({ ok: true }),
+      setChatWatch: async () => null,
+      getChatWatches: async () => [],
+      linkChatStack: async () => ({ ok: true, linked: 0 }),
+      listChatSessionsForPr: async () => [],
+      getStackLinkOffer: async () => null,
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",
@@ -7952,11 +8345,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateSetPreferences: async (
       preferences: AutoUpdatePreferences,
     ): Promise<AutoUpdatePreferences> => preferences,
-    updateGetInstallImpact: resolved({ connectedPhones: [] }),
+    updateGetInstallImpact: resolved({ connectedPhones: [], interruptedChats: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
+    // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`).
+    ...createBrowserMockRecoveryBridges(),
   };
   void attachBrowserRuntimeBridge();
+  if (browserMockRecoveryScenario()) {
+    // After the mock project has opened; that open clears transition errors.
+    window.setTimeout(() => {
+      void import("./state/appStore").then(({ useAppStore }) => {
+        showBrowserMockRecoveryScreen(
+          (error) => useAppStore.setState({ projectTransitionError: error }),
+          MOCK_PROJECT.rootPath,
+        );
+      });
+    }, 2_500);
+  }
 } // window

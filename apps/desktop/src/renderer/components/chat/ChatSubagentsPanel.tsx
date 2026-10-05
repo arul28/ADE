@@ -856,6 +856,7 @@ function SubagentRow({
   const modelAttribution = subagentModelAttribution({
     snapshotModel: snapshot.model,
     sessionModelLabel,
+    reasoningEffort: snapshot.reasoningEffort,
   });
   const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
@@ -958,6 +959,7 @@ function SubagentRow({
           {modelAttribution ? (
             <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-fg/45">
               {modelAttribution.label}
+              {modelAttribution.effortLabel ? ` · ${modelAttribution.effortLabel}` : null}
               {modelAttribution.inherited ? (
                 <span className="text-fg/28"> · inherited</span>
               ) : null}
@@ -1113,6 +1115,9 @@ export function ChatSubagentsPanel({
   onClose,
   goal,
   claudeGoal,
+  onEditClaudeGoal,
+  onClearClaudeGoal,
+  claudeGoalLocked = false,
   onEditGoal,
   onClearGoal,
   onSetGoalStatus,
@@ -1151,8 +1156,12 @@ export function ChatSubagentsPanel({
   variant?: "drawer" | "pane";
   onClose?: () => void;
   goal?: CodexThreadGoal | null;
-  /** Read-only Claude goal (owned by the CLI's /goal loop); Claude sessions only. */
+  /** Claude's `/goal`; edited and cleared by sending `/goal …` between turns. */
   claudeGoal?: ClaudeActiveGoal | null;
+  onEditClaudeGoal?: (condition: string) => void;
+  onClearClaudeGoal?: () => void;
+  /** A Claude turn is running; its goal changes wait for the turn boundary. */
+  claudeGoalLocked?: boolean;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
@@ -1593,7 +1602,13 @@ export function ChatSubagentsPanel({
           pending={goalPending}
         />
       ) : hasClaudeGoal && claudeGoal ? (
-        <GoalCard variant="claude" goal={claudeGoal} />
+        <GoalCard
+          variant="claude"
+          goal={claudeGoal}
+          onEdit={onEditClaudeGoal}
+          onClear={onClearClaudeGoal}
+          locked={claudeGoalLocked}
+        />
       ) : null}
 
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}

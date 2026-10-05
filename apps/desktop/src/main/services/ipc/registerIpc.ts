@@ -1,4 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { execFile } from "node:child_process";
+import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
+import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -6,6 +9,8 @@ import {
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
+import type { ProjectTabDragService } from "../projects/projectTabDragService";
+import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -120,6 +125,13 @@ import {
   deletePromptStash,
   listPromptStashes,
 } from "../chat/promptStashService";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
 import {
@@ -127,6 +139,8 @@ import {
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
+import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
+import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
   parseProductAnalyticsCapture,
@@ -295,6 +309,7 @@ import type {
   GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   BranchPullRequest,
@@ -402,6 +417,11 @@ import type {
   UpdateBranchArgs,
   UpdateBranchResult,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -497,6 +517,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -515,6 +537,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -556,6 +580,7 @@ import type {
   ProjectIcon,
   ProjectInfo,
   OpenProjectBinding,
+  RemoteOpenProjectBinding,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -677,6 +702,12 @@ import type {
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  SetAdeUsageModelPriceArgs,
+  AdeUsageCostBreakdown,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
   UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
@@ -741,6 +772,7 @@ import type {
   ProviderInstanceProvider,
   ProviderInstanceRemoveResult,
   ProviderInstanceSettings,
+  ProviderLoginStatus,
 } from "../../../shared/types";
 import type {
   ApiCredentialGetArgs,
@@ -762,6 +794,12 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
+import { createArchiveService } from "../archive/archiveService";
+import type {
+  ArchiveActionResult,
+  ArchiveListResult,
+  ArchiveSummary,
+} from "../../../shared/types/archive";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
@@ -855,6 +893,9 @@ import type {
 } from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
+import type { PrWatchService } from "../prs/prWatchService";
+import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
@@ -1209,6 +1250,7 @@ export type AppContext = {
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
+  prWatchService: PrWatchService | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
@@ -1759,6 +1801,32 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
   ];
 }
 
+function prChatLinkRecord(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("PR chat-link payload must be an object.");
+  }
+  return raw as Record<string, unknown>;
+}
+
+function requirePrChatLinkString(raw: unknown, field: string): string {
+  const value = prChatLinkRecord(raw)[field];
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) throw new Error(`PR chat-link payload requires ${field}.`);
+  return trimmed;
+}
+
+function prChatLinkOptionalString(raw: unknown, field: string): string | undefined {
+  const value = prChatLinkRecord(raw)[field];
+  if (value == null) return undefined;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || undefined;
+}
+
+function prChatLinkBoolean(raw: unknown, field: string): boolean | undefined {
+  const value = prChatLinkRecord(raw)[field];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 export function registerIpc({
   getCtx,
   getResourceUsageContexts,
@@ -1773,6 +1841,7 @@ export function registerIpc({
   projectRecoveryConnectionPool,
   injectedProjectRecoveryService,
   createWindow,
+  projectTabDrag,
   closeWindow,
   switchProjectFromDialog,
   closeCurrentProject,
@@ -1816,8 +1885,13 @@ export function registerIpc({
    * real instead of splitting it across two objects.
    */
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
-  createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
+  createWindow?: (args?: {
+    projectRoot?: string | null;
+    remoteBinding?: RemoteOpenProjectBinding;
+  }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
+  /** Chrome-style project tab drag between windows. Absent in headless hosts. */
+  projectTabDrag?: ProjectTabDragService | null;
   switchProjectFromDialog: (
     selectedPath: string,
     options?: { trustGitOwnership?: boolean; webContentsId?: number | null },
@@ -3619,11 +3693,75 @@ export function registerIpc({
     return { windowId: result.windowId };
   });
 
-  ipcMain.handle(IPC.appOpenProjectInNewWindow, async (_event, arg: { rootPath?: string }) => {
-    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-    if (!rootPath) throw new Error("rootPath is required");
-    if (!createWindow) return { windowId: null, project: null };
-    return createWindow({ projectRoot: rootPath });
+  ipcMain.handle(
+    IPC.appOpenProjectInNewWindow,
+    async (_event, arg: { binding?: OpenProjectBinding }) => {
+      const binding = arg?.binding;
+      const rootPath = typeof binding?.rootPath === "string" ? binding.rootPath.trim() : "";
+      if (!rootPath) throw new Error("rootPath is required");
+      if (!createWindow) return { windowId: null, project: null };
+      if (binding?.kind === "remote") return createWindow({ remoteBinding: binding });
+      return createWindow({ projectRoot: rootPath });
+    },
+  );
+
+  const screenPointArg = (arg: { x?: number; y?: number } | null | undefined) => {
+    const x = Number(arg?.x);
+    const y = Number(arg?.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null;
+  };
+
+  ipcMain.handle(
+    IPC.appProjectTabDragStart,
+    async (
+      event,
+      arg: {
+        binding?: OpenProjectBinding;
+        grab?: { x?: number; y?: number };
+        moveSource?: boolean;
+        point?: { x?: number; y?: number } | null;
+      } = {},
+    ) => {
+      const source = BrowserWindow.fromWebContents(event.sender);
+      const binding = arg?.binding;
+      const grabX = Number(arg?.grab?.x);
+      const grabY = Number(arg?.grab?.y);
+      if (
+        !projectTabDrag
+        || !source
+        || !binding
+        || (binding.kind !== "local" && binding.kind !== "remote")
+        || !Number.isFinite(grabX)
+        || !Number.isFinite(grabY)
+      ) {
+        return { windowId: null };
+      }
+      return projectTabDrag.start({
+        source,
+        binding,
+        grab: { x: grabX, y: grabY },
+        moveSource: arg?.moveSource === true,
+        point: screenPointArg(arg?.point),
+      });
+    },
+  );
+
+  // Fire-and-forget: the source window reports the pointer on every move.
+  ipcMain.on(IPC.appProjectTabDragMove, (_event, arg: { x?: number; y?: number } | null) => {
+    const point = screenPointArg(arg);
+    if (point) projectTabDrag?.move(point);
+  });
+
+  // A null point means the renderer cancelled the drag: end it without a drop.
+  ipcMain.handle(IPC.appProjectTabDragEnd, async (event, arg: { point?: { x?: number; y?: number } | null } = {}) => {
+    if (!projectTabDrag) return { merged: false, intoSender: false };
+    const point = screenPointArg(arg?.point);
+    const result = projectTabDrag.end(point, { cancelled: point == null });
+    const senderId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    return {
+      merged: result.merged,
+      intoSender: result.merged && senderId != null && result.targetWindowId === senderId,
+    };
   });
 
   ipcMain.handle(IPC.appCloseWindow, async (event, arg: { windowId?: number | null } = {}) => {
@@ -4447,7 +4585,7 @@ export function registerIpc({
         defaultPath: validatedRoot,
         properties: ["openFile"],
         filters: [
-          { name: "Images", extensions: ["ico", "jpeg", "jpg", "png", "svg", "webp"] },
+          { name: "Images", extensions: [...PROJECT_ICON_DIALOG_EXTENSIONS] },
         ],
       };
       const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
@@ -4789,6 +4927,83 @@ export function registerIpc({
         event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
       },
     });
+  });
+
+  // The one place "Allow in the Background" can be switched back on. Apple's
+  // own opener first (it lands on the right pane on every macOS that has
+  // one); the settings URL is the fallback for a Mac where the bridge fails.
+  ipcMain.handle(IPC.recoveryOpenBackgroundSettings, async (): Promise<{ opened: boolean }> => {
+    if (process.platform !== "darwin") return { opened: false };
+    const openedViaServiceManagement = await new Promise<boolean>((resolve) => {
+      execFile(
+        "/usr/bin/osascript",
+        ["-l", "JavaScript", "-e", "ObjC.import('ServiceManagement'); $.SMAppService.openSystemSettingsLoginItems(); 'ok'"],
+        { timeout: 5_000 },
+        (error) => resolve(!error),
+      );
+    });
+    if (openedViaServiceManagement) return { opened: true };
+    try {
+      await shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
+      return { opened: true };
+    } catch {
+      return { opened: false };
+    }
+  });
+
+  // The hard reset. The plan and the work both run in the CLI engine; this
+  // process only shows the plan, hands off, and gets out of the way.
+  ipcMain.handle(IPC.machineResetPlan, async (): Promise<MachineResetPlan> => {
+    return await planMachineResetFromDesktop(app.getVersion());
+  });
+
+  // One confirmation at a time: a second call while the dialog is up would
+  // otherwise start a second detached reset once both are answered.
+  let machineResetConfirmPending = false;
+  ipcMain.handle(IPC.machineResetStart, async (event, arg: MachineResetOptions): Promise<{ started: boolean; cancelled?: boolean; error?: string }> => {
+    const rescue = arg?.rescue === "move" || arg?.rescue === "none" ? arg.rescue : "commit";
+    const rescueDir = typeof arg?.rescueDir === "string" && arg.rescueDir.trim() ? path.resolve(arg.rescueDir.trim()) : null;
+    // The typed RESET lives in the renderer, which this process does not
+    // trust with a wipe of the whole machine. The last word is a native
+    // dialog only a person can answer.
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const confirmOptions: Electron.MessageBoxOptions = {
+      type: "warning",
+      buttons: ["Cancel", "Reset ADE"],
+      defaultId: 0,
+      cancelId: 0,
+      message: "Reset ADE completely?",
+      detail: "ADE quits, removes everything it put on this computer, and opens again as a new install. Your code and repositories stay.",
+    };
+    if (machineResetConfirmPending) return { started: false, cancelled: true };
+    machineResetConfirmPending = true;
+    let confirmed: Electron.MessageBoxReturnValue;
+    try {
+      confirmed = owner
+        ? await dialog.showMessageBox(owner, confirmOptions)
+        : await dialog.showMessageBox(confirmOptions);
+    } finally {
+      machineResetConfirmPending = false;
+    }
+    if (confirmed.response !== 1) return { started: false, cancelled: true };
+    const result = startMachineResetFromDesktop({ rescue, rescueDir }, app.getVersion());
+    if (!result.started) return { started: false, error: result.error };
+    // Long enough for this reply to reach the window. `exit`, not `quit`: a
+    // quit can be held open by "chats are still running" prompts, and the
+    // engine is waiting for this process to be gone.
+    setTimeout(() => app.exit(0), 600);
+    return { started: true };
+  });
+
+  ipcMain.handle(IPC.machineResetChooseRescueDir, async (event): Promise<string | null> => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: Electron.OpenDialogOptions = {
+      title: "Where should ADE move the lane folders?",
+      buttonLabel: "Move lanes here",
+      properties: ["openDirectory", "createDirectory"],
+    };
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
   /**
@@ -6505,6 +6720,12 @@ export function registerIpc({
     return id;
   };
 
+  /** A sign-in field that must arrive as a string; a coerced value never reaches the PTY. */
+  const providerLoginString = (value: unknown, label: string): string => {
+    if (typeof value !== "string") throw new Error(`A provider sign-in ${label} is required.`);
+    return value;
+  };
+
   const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
     if (!isProviderInstanceProvider(value)) {
       throw new Error("A provider account provider must be \"claude\" or \"codex\".");
@@ -6563,6 +6784,32 @@ export function registerIpc({
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
   });
 
+  ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().dismissReplaced(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().start(providerInstanceId(arg), {
+      deviceAuth: providerInstanceArgs(arg).deviceAuth === true,
+    });
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    const args = providerInstanceArgs(arg);
+    return getMachineProviderLoginRunner().submitCode(
+      providerLoginString(args.loginId, "id"),
+      providerLoginString(args.code, "code"),
+    );
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().cancel(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
   ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     return getMachineProviderInstanceStore()
       .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
@@ -6589,10 +6836,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
-    const provider = providerInstanceArgs(arg).provider;
-    return getMachineProviderInstanceStore().refreshAccounts(
-      provider == null ? undefined : providerInstanceProvider(provider),
-    );
+    const args = providerInstanceArgs(arg);
+    const provider = args.provider == null ? undefined : providerInstanceProvider(args.provider);
+    const instanceId = typeof args.instanceId === "string" ? args.instanceId : undefined;
+    return refreshProviderAccounts({ provider, instanceId }, getCtx().usageTrackingService);
   });
 
 
@@ -6718,6 +6965,39 @@ export function registerIpc({
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
+
+  ipcMain.handle(
+    IPC.usageGetCostBreakdown,
+    async (_event, arg: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> => {
+      if (!isRecord(arg)) throw new Error("usage cost breakdown expects an object payload.");
+      return (await getCtx().usageTrackingService?.getCostBreakdown(arg)) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelDetail,
+    async (_event, arg: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> => {
+      if (!isRecord(arg) || typeof arg.provider !== "string" || typeof arg.model !== "string") {
+        throw new Error("usage model detail needs a provider and a model.");
+      }
+      return getCtx().usageTrackingService?.getModelDetail(arg) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelPriceOverrides,
+    async (): Promise<AdeUsagePriceOverrides | null> => getCtx().usageTrackingService?.getModelPriceOverrides() ?? null,
+  );
+
+  ipcMain.handle(
+    IPC.usageSetModelPriceOverride,
+    async (_event, arg: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> => {
+      const service = getCtx().usageTrackingService;
+      if (!service) throw new Error("Model prices are not available on this host.");
+      if (!isRecord(arg)) throw new Error("usage set model price expects an object payload.");
+      return service.setModelPriceOverride(arg);
+    },
+  );
 
   /**
    * Spend one banked reset credit.
@@ -7594,6 +7874,22 @@ export function registerIpc({
       throw new Error("Agent chat edit steer text must be a string");
     }
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
+  };
+
+  const parseAgentChatMoveSteerArgs = (
+    value: unknown,
+  ): AgentChatMoveSteerArgs => {
+    const record = requireRecord(value, "Agent chat move steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat move steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat move steer steerId must be a non-empty string");
+    }
+    if (typeof record.toIndex !== "number" || !Number.isInteger(record.toIndex) || record.toIndex < 0) {
+      throw new Error("Agent chat move steer toIndex must be a non-negative integer");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), toIndex: record.toIndex };
   };
 
   const parseAgentChatDispatchSteerArgs = (
@@ -8507,6 +8803,11 @@ export function registerIpc({
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
+  ipcMain.handle(IPC.agentChatMoveSteer, async (_event, arg: unknown): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    await ctx.agentChatService.moveSteer(parseAgentChatMoveSteerArgs(arg));
+  });
+
   ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
@@ -8531,6 +8832,18 @@ export function registerIpc({
       ...(rawMode ? { mode: rawMode } : {}),
     };
     return await ctx.agentChatService.interrupt(request);
+  });
+
+  ipcMain.handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("A chat session id is required.");
+    }
+    return await ctx.agentChatService.restartSession({
+      sessionId: record.sessionId,
+      ...(record.stopFirst === true ? { stopFirst: true } : {}),
+    });
   });
 
   ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
@@ -8625,6 +8938,11 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(IPC.agentChatLaunchDefaults, async (): Promise<AgentChatLaunchDefaults | null> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getLaunchDefaults();
+  });
+
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getAvailableModels(arg);
@@ -8648,6 +8966,43 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.deleteSession(arg);
+  });
+
+  // One archive across lanes, chats, and shells (Settings → Archive). Built
+  // from the window's own services; a runtime-bound window never reaches these
+  // handlers because the preload routes `archive.*` to the runtime action.
+  const ensureArchiveService = () => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["db", "laneService", "sessionService", "ptyService"] as const);
+    return createArchiveService(ctx);
+  };
+
+  ipcMain.handle(IPC.archiveList, async (_event, arg: unknown): Promise<ArchiveListResult> =>
+    ensureArchiveService().list(arg));
+
+  ipcMain.handle(IPC.archiveSummary, async (_event, arg: unknown): Promise<ArchiveSummary> =>
+    ensureArchiveService().summary(arg));
+
+  ipcMain.handle(IPC.archiveRestore, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
+    ensureArchiveService().restore(arg));
+
+  ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
+    ensureArchiveService().delete(arg));
+
+  ipcMain.handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
+    return ensureAgentChatContext().agentChatService.listThreadComments(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsCreate, async (_event, arg: ChatThreadCommentCreateArgs): Promise<ChatThreadComment> => {
+    return ensureAgentChatContext().agentChatService.createThreadComment(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsUpdate, async (_event, arg: ChatThreadCommentUpdateArgs): Promise<ChatThreadComment> => {
+    return ensureAgentChatContext().agentChatService.updateThreadComment(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsDelete, async (_event, arg: ChatThreadCommentDeleteArgs): Promise<{ deleted: boolean }> => {
+    return ensureAgentChatContext().agentChatService.deleteThreadComment(arg);
   });
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
@@ -8714,6 +9069,14 @@ export function registerIpc({
     ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.continueUsageLimitOnAlternate(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatSwitchAccount,
+    async (_event, arg: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.switchAccount(arg);
     },
   );
 
@@ -10307,6 +10670,13 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
+    const ctx = ensureDiffContext();
+    return await withIpcTiming(ctx, "diff.getBranchChanges", async () => await ctx.diffService.getBranchChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
+  });
+
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(
@@ -10558,7 +10928,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
+  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
   });
@@ -11827,6 +12197,91 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.prsLinkChatSession,
+    async (_event, raw: unknown): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const arg: LinkPrChatSessionArgs = {
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        ...(prChatLinkBoolean(raw, "allowCrossLane") === true ? { allowCrossLane: true } : {}),
+      };
+      const result = ctx.prService.linkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsUnlinkChatSession,
+    async (_event, raw: unknown): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const arg: UnlinkPrChatSessionArgs = {
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        ...(prChatLinkBoolean(raw, "dismiss") === false ? { dismiss: false } : {}),
+      };
+      const result = ctx.prService.unlinkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatStack,
+    async (_event, raw: unknown): Promise<{ ok: boolean; linked: number }> => {
+      const ctx = ensurePrMutationContext();
+      const stackNumber = prChatLinkRecord(raw).stackNumber;
+      if (typeof stackNumber !== "number" || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+        throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+      }
+      const prId = prChatLinkOptionalString(raw, "prId");
+      const arg: LinkPrChatStackArgs = {
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        stackNumber,
+        ...(prId ? { prId } : {}),
+      };
+      const result = ctx.prService.linkChatStack(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsListChatSessionsForPr,
+    async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
+      ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
+  );
+
+  ipcMain.handle(
+    IPC.prsSetChatWatch,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
+      return ensurePrMutationContext().prService.setChatWatch({
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        mode: parsePrWatchMode(prChatLinkOptionalString(raw, "mode")),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsGetChatWatches,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary[]> =>
+      ensurePrReadContext().prService.getChatWatches({
+        sessionId: prChatLinkOptionalString(raw, "sessionId") ?? undefined,
+        prId: prChatLinkOptionalString(raw, "prId") ?? undefined,
+      }),
+  );
+
+  ipcMain.handle(
+    IPC.prsGetStackLinkOffer,
+    async (_event, raw: unknown): Promise<StackLinkOffer | null> =>
+      ensurePrReadContext().prService.getStackLinkOffer({
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        prId: prChatLinkOptionalString(raw, "prId") ?? null,
+      }),
+  );
+
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> =>
     ensurePrReadContext().prService.simulateIntegration(arg));
 
@@ -12869,18 +13324,21 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
     const provider = getCtx().updateInstallImpactProvider;
-    if (!provider) return { connectedPhones: [] };
+    if (!provider) return { connectedPhones: [], interruptedChats: [] };
     try {
       return await provider();
     } catch {
       // Best-effort probe: a failed impact query must never block the update UI.
-      return { connectedPhones: [] };
+      return { connectedPhones: [], interruptedChats: [] };
     }
   });
 
-  ipcMain.handle(IPC.updateQuitAndInstall, () => {
-    return getCtx().autoUpdateService?.quitAndInstall() ?? false;
-  });
+  ipcMain.handle(
+    IPC.updateQuitAndInstall,
+    (_event, args?: { resumeChats?: boolean }) => {
+      return getCtx().autoUpdateService?.quitAndInstall(args?.resumeChats === true) ?? false;
+    },
+  );
 
   ipcMain.handle(IPC.updateCancelAutoApply, () => {
     return getCtx().autoUpdateService?.cancelAutoApply() ?? false;

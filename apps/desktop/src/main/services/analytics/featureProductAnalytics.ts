@@ -33,7 +33,10 @@ export type FeatureAnalyticsAction =
   | "start"
   | "stop"
   | "reset_credit_consumed"
+  | "model_price_changed"
+  | "model_mapping_changed"
   | "pending_input_dismissed"
+  | "account_switched"
   | "new_lane_launch"
   | "voice_conversation_started"
   | "session_continue_chat"
@@ -204,6 +207,20 @@ export function captureResetCreditAnalytics(args: {
   });
 }
 
+/**
+ * A price the user set (`enabled`) or cleared back to automatic (`disabled`)
+ * on the Usage page, or a "Map to" added or removed. Never the model id or
+ * the rates.
+ */
+export function captureModelPriceAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: Extract<FeatureAnalyticsAction, "model_price_changed" | "model_mapping_changed">;
+  outcome: Extract<FeatureAnalyticsOutcome, "enabled" | "disabled">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "usage" });
+}
+
 export function capturePendingInputDismissedAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
@@ -213,6 +230,20 @@ export function capturePendingInputDismissedAnalytics(args: {
     ...args,
     feature: "chat",
     action: "pending_input_dismissed",
+    outcome: "completed",
+  });
+}
+
+/** The user moved a chat to another account of its provider. */
+export function captureChatAccountSwitchedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  provider: unknown;
+}): void {
+  captureFeatureUsedAnalytics({
+    ...args,
+    feature: "chat",
+    action: "account_switched",
     outcome: "completed",
   });
 }

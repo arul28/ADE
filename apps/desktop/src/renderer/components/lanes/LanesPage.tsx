@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
 import { X } from "@phosphor-icons/react";
 import {
@@ -9,6 +10,7 @@ import {
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { isTypingTarget } from "../../lib/typingTarget";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { COLORS, primaryButton } from "./laneDesignTokens";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
@@ -103,6 +105,7 @@ import type {
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { historyCommitsPath } from "../history/historyUrlHydration";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -226,6 +229,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return {
       action: p.get("action"),
       laneIdsRaw: p.get("laneIds"),
+      /** Batch manage dialog's opening tab (`archive` / `delete`), from the Work bulk menu. */
+      manageTab: p.get("manageTab"),
       laneId: p.get("laneId"),
       /** Owning machine of `laneId` when it is not the tab's (see foreign deep link below). */
       machineId: p.get("machineId"),
@@ -1431,7 +1436,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           if (result.status === "fulfilled") return;
           const lane = result.lane;
           blockedLaneIds.add(lane.id);
-          errors.push(`${lane.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+          errors.push(`${lane.name}: ${stripElectronErrorWrapper(result.reason instanceof Error ? result.reason.message : String(result.reason))}`);
           setDeleteProgressByLaneId((prev) => {
             const next = { ...prev };
             delete next[lane.id];
@@ -1658,7 +1663,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Git pane selection ---- */
 
-  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
+  const handleSelectFile = useCallback((laneId: string, path: string, mode: LaneDiffMode) => {
     setLanePaneDetails((prev) => ({
       ...prev,
       [laneId]: { selectedFilePath: path, selectedFileMode: mode, selectedCommit: null }
@@ -1749,10 +1754,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
     } else if (action === "split-remove" || action === "select-all") {
       handled = true;
-    } else if (action === "batch") {
-      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+    } else if (action === "batch" || action === "select") {
+      // Both leave the lanes multi-selected in the sidebar, exactly as a
+      // Cmd-click selection would; `batch` also opens the manage dialog on them.
+      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim())
+        .filter((id) => id && lanesById.has(id) && !deletingLaneIds.has(id));
       if (ids.length > 0) {
-        openBatchManage(ids);
+        selectDetailLane(ids[0]!);
+        setMultiSelectedLaneIds(ids.length > 1 ? new Set(ids) : EMPTY_LANE_ID_SET);
+        if (action === "batch") {
+          const tab = urlLaneDeeplinks.manageTab;
+          openBatchManage(ids, tab === "archive" || tab === "delete" ? tab : null);
+        }
         handled = true;
       }
     }
@@ -1764,6 +1777,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneId,
     urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.manageTab,
     lanesById,
     deletingLaneIds,
     active,
@@ -2147,7 +2161,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .catch((error) => {
         showToast({
           title: `Could not delete ${target.lane.name}`,
-          message: error instanceof Error ? error.message : String(error),
+          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
           tone: "error",
           durationMs: 0,
         });
@@ -2355,6 +2369,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
                       machine={detailForeignRow.pin ? {
                         pin: detailForeignRow.pin,
+                        machineId: detailForeignRow.machineId,
                         machineName: detailForeignRow.machineName,
                         lanes: foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES,
                         prs: allMachineLanes.prsByMachineId.get(detailForeignRow.machineId) ?? EMPTY_PRS,
@@ -2472,6 +2487,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={selectDetailLane}
           onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
+          onOpenHistory={(id) => navigate(historyCommitsPath(id))}
         />
       ) : null}
       {laneContextMenu && contextMenuForeignRow?.pin ? (
@@ -2487,6 +2503,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={(realLaneId) => selectDetailLane(foreignLaneKey(contextMenuForeignRow.machineId, realLaneId))}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(contextMenuForeignRow.machineId)}
           onStartChatInLane={(realLaneId) => startChatInLane(realLaneId, { machineId: contextMenuForeignRow.machineId })}
+          onOpenHistory={(realLaneId) => navigate(historyCommitsPath(realLaneId, contextMenuForeignRow.machineId))}
           runtimePin={contextMenuForeignRow.pin}
         />
       ) : null}

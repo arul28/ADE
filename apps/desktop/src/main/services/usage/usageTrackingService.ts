@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AdeUsageCostBreakdown,
+  AdeUsageCostBreakdownBy,
+  AdeUsageCostSplit,
   AdeUsageDailyPoint,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
+  SetAdeUsageModelPriceArgs,
   AdeUsageEstimationKind,
   AdeUsagePricingSource,
   AdeUsageModelSummary,
@@ -36,6 +44,8 @@ import type {
   UsageProviderStatus,
   UsageProviderStatusMap,
   UsageAccount,
+  UsageAccountLogin,
+  AccountBalanceIssue,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
@@ -44,6 +54,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import {
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
@@ -71,21 +82,23 @@ import {
 } from "../shared/providerConfigHomes";
 import {
   PROVIDER_INSTANCE_ENV_KEY,
+  PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isBaseProviderInstance,
+  providerInstanceHasAccount,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { pickInstanceForNewChat } from "./accountBalance";
+import { machineProviderUsageHomes } from "./providerUsageHomes";
+import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
-  cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
-  readClaudeCredentialsWithRefresh,
+  readClaudeLogin,
   readCodexCredentials,
-  refreshClaudeCredentials,
+  type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -93,15 +106,17 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  priceTokenSplit,
+  isZeroTokenPrice,
+  priceTokenSplitDetailed,
   refreshDynamicTokenPricing,
   resetDynamicTokenPricingForTest,
-  ratesForRequest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
   WEB_SEARCH_COST_USD,
 } from "./usagePricing";
+import { applyUsageModelAlias, readUsagePriceOverrides, updateUsagePriceOverrides } from "./usagePriceOverrides";
+import { buildModelDetail, type ModelDetailDayRow } from "./usageModelDetail";
 import {
   type TokenEntry,
   discoverClaudeProjectDirs,
@@ -137,6 +152,8 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
+import { buildCostBreakdown } from "./usageCostBreakdown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
   resetCreditOutcomeKey,
@@ -144,6 +161,7 @@ import {
 } from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
 import {
+  captureModelPriceAnalytics,
   captureResetCreditAnalytics,
   type ResetCreditAnalyticsOutcome,
 } from "../analytics/featureProductAnalytics";
@@ -176,7 +194,7 @@ import {
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
-import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
 import { usageAccountId } from "./usageAccountId";
 import {
@@ -237,8 +255,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v5: Claude fast-mode requests now price at the fast multiple, which the
  * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
  * without the flag, so they must be re-derived once.
+ *
+ * v6: Codex Fast/Ultrafast requests price at their published tier rates (the
+ * scan reads `service_tier`), Claude fast mode at models.dev's fast rate, and
+ * costs carry their split by token type and speed.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 5;
+const USAGE_SNAPSHOT_CACHE_VERSION = 6;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -829,6 +851,69 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
 /** Drops the per-account cooldowns so a test starts from a clean cadence. */
 function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
+  accountLogins.clear();
+}
+
+/**
+ * The last login state each account's poll saw, by usage account id.
+ *
+ * Smart balance reads this through `UsageAccount.login`: an account whose
+ * login is gone keeps its old windows on screen until they reset, and those
+ * windows must not make it look like the account with the most room.
+ */
+const accountLogins = new Map<string, UsageAccountLogin>();
+
+function noteAccountLogin(accountId: string, instanceId: string, login: UsageAccountLogin): void {
+  accountLogins.set(accountId, login);
+  // The registry reports `signedIn` from the email in the config home, which
+  // outlives a cleared login. Every account list (model picker, Settings, the
+  // AI status) reads the registry, so it learns the real state here.
+  try {
+    getMachineProviderInstanceStore().setLoginBroken(instanceId, login === "signed_out");
+  } catch {
+    // An unreadable registry already degrades every reader to its defaults.
+  }
+}
+
+/**
+ * Reads the saved login of Claude accounts marked signed out, now, for a
+ * refresh the user asked for. Returns the ids whose login works again.
+ *
+ * Only a usage poll clears the signed-out mark, and a background poll serves
+ * the credential miss cache, so a fresh sign-in stayed "signed out" for one
+ * idle poll cycle (up to five minutes). The add-account sheet refreshes once
+ * when its login shell exits, so it reported a successful sign-in as failed.
+ * `instanceId` re-reads that one account even when it is not marked.
+ */
+export async function recheckSignedOutLogins(
+  args: { provider?: ProviderInstanceProvider; instanceId?: string } = {},
+): Promise<string[]> {
+  if (args.provider && args.provider !== "claude") return [];
+  const wanted = args.instanceId?.trim();
+  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
+    wanted ? instance.id === wanted : instance.loginBroken === true
+  ));
+  const restored: string[] = [];
+  await Promise.all(targets.map(async (instance) => {
+    const configHome = isBaseProviderInstance(instance) ? undefined : instance.configHome;
+    invalidateCachedClaudeCredentials(configHome);
+    const login = await readClaudeLogin({
+      allowKeychain: true,
+      skipMissCache: true,
+      ...(configHome ? { configHome } : {}),
+    }).catch((): ClaudeLoginRead => ({ state: "unreadable" }));
+    if (login.state === "unreadable") return;
+    noteAccountLogin(usageAccountId({ provider: "claude", instanceId: instance.id }), instance.id, login.state);
+    if (login.state !== "signed_out" && instance.loginBroken === true) restored.push(instance.id);
+  }));
+  return restored;
+}
+
+function attachAccountLogins(accounts: UsageAccount[]): void {
+  for (const account of accounts) {
+    const login = accountLogins.get(account.id);
+    if (login) account.login = login;
+  }
 }
 
 /**
@@ -1109,11 +1194,13 @@ async function pollClaudeInstance(
   // A successful read is cached per account, and later polls reuse the cache.
   const allowInteractiveSources = context.reason === "user";
   const configHome = scopedConfigHome("claude", instance);
-  const creds = await measureUsagePhase(
+  const accountId = usageAccountId({ provider: "claude", instanceId: instance.id });
+  const allowKeychain = claudePollAllowsKeychain(context.reason, configHome);
+  const login = await measureUsagePhase(
     logger,
     { provider: "claude", phase: "credentials", reason: context.reason },
-    () => readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: claudePollAllowsKeychain(context.reason, configHome),
+    () => readClaudeLogin({
+      allowKeychain,
       // A scoped background poll may open the Keychain once, then has to
       // honor the miss cache. Treating allowKeychain as "user initiated"
       // made every automatic poll of a missing login run `security` again.
@@ -1121,7 +1208,30 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
-  if (!creds) {
+  // On macOS the login lives in the Keychain. A read that skipped it saw only
+  // the credentials file, so its miss says nothing about the account.
+  if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
+    noteAccountLogin(accountId, instance.id, login.state);
+  }
+  if (login.state === "expired") {
+    // The CLI refreshes and saves its own token. A user poll may run it;
+    // a background poll waits for the next chat on this account to do it.
+    if (allowInteractiveSources) {
+      return await measureUsagePhase(
+        logger,
+        { provider: "claude", phase: "cli_fallback", reason: context.reason },
+        () => pollClaudeViaCli(logger, configHome),
+      );
+    }
+    if (!instance.isDefault) return null;
+    return {
+      disposition: "preserve_previous",
+      windows: [],
+      errors: [],
+      source: "oauth",
+    };
+  }
+  if (login.state === "signed_out" || login.state === "unreadable") {
     // A secondary account with no credentials file is simply unsigned-in.
     // Spawning the Claude CLI for it holds a pty until the sign-in timeout.
     if (allowInteractiveSources && instance.isDefault) {
@@ -1139,6 +1249,7 @@ async function pollClaudeInstance(
       source: "oauth",
     };
   }
+  const creds = login.credentials;
 
   try {
     const result = await measureUsagePhase(
@@ -1151,31 +1262,12 @@ async function pollClaudeInstance(
     );
 
     if (!result.ok) {
-      if (result.status === 401 && creds.refreshToken) {
-        logger.info("usage.token_refresh.401_retry");
+      if (result.status === 401) {
+        // The token was rejected before its expiry. ADE does not spend the
+        // refresh token (see `readClaudeLogin`); the CLI fallback below, or the
+        // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
-        const refreshed = await measureUsagePhase(
-          logger,
-          { provider: "claude", phase: "token_refresh", reason: context.reason },
-          () => refreshClaudeCredentials(creds.refreshToken!),
-        );
-        if (refreshed) {
-          cacheClaudeCredentials(refreshed, configHome);
-          const retry = await measureUsagePhase(
-            logger,
-            { provider: "claude", phase: "oauth_http_retry", reason: context.reason },
-            () => fetchJsonWithRetry(CLAUDE_USAGE_URL, {
-              Authorization: `Bearer ${refreshed.accessToken}`,
-              "anthropic-beta": "oauth-2025-04-20",
-            }),
-          );
-          if (retry.ok) {
-            const parsed = parseClaudeWindows(retry.data as ClaudeUsageResponse);
-            if (parsed.windows.length > 0) {
-              return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
-            }
-          }
-        }
+        noteAccountLogin(accountId, instance.id, "expired");
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -1938,8 +2030,7 @@ async function probeClaudeResetCredits(args: {
 }
 
 /**
- * The cached (and possibly refreshed) access token for one Claude account, or
- * null. `allowKeychain` is false so the reset path never opens the macOS
+ * The cached access token for one Claude account, or null when it expired. `allowKeychain` is false so the reset path never opens the macOS
  * Keychain; the quota poll that runs earlier in the same pass has usually
  * already warmed this cache.
  */
@@ -1947,11 +2038,11 @@ async function readClaudeCredentialAccessToken(
   logger: Logger,
   configHome: string | undefined,
 ): Promise<string | null> {
-  const creds = await readClaudeCredentialsWithRefresh(logger, {
+  const login = await readClaudeLogin({
     allowKeychain: false,
     ...(configHome ? { configHome } : {}),
   });
-  return creds?.accessToken ?? null;
+  return login.state === "ok" ? login.credentials.accessToken : null;
 }
 
 /** Spends in flight, keyed by config home — one per account at a time. */
@@ -2053,16 +2144,18 @@ type TokenBreakdown = Record<string, CostTokenBreakdown & { cacheWrite: number; 
 type DailyTokenBreakdown = Record<string, number>;
 type DailyModelTokenBreakdown = Record<string, TokenBreakdown>;
 
-function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry): void {
+function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry, cost: EntryCost = calculateTokenEntryCost(entry)): void {
   const modelKey = entry.model || "unknown";
   if (!breakdown[modelKey]) {
-    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0 };
+    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0, costSplit: emptyCostSplit() };
   }
-  breakdown[modelKey].input += entry.inputTokens;
-  breakdown[modelKey].output += entry.outputTokens;
-  breakdown[modelKey].cached += entry.cachedTokens;
-  breakdown[modelKey].cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
-  breakdown[modelKey].costUsd += calculateTokenEntryCost(entry);
+  const row = breakdown[modelKey];
+  row.input += entry.inputTokens;
+  row.output += entry.outputTokens;
+  row.cached += entry.cachedTokens;
+  row.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
+  row.costUsd += cost.costUsd;
+  addCostSplit(row.costSplit ??= emptyCostSplit(), cost.split);
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
@@ -2072,30 +2165,56 @@ function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): 
   breakdown[date] = (breakdown[date] ?? 0) + tokens;
 }
 
-function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry): void {
+function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry, cost: EntryCost): void {
   const date = localDayKey(entry.timestamp);
   if (!date) return;
   if (!breakdown[date]) breakdown[date] = {};
-  addTokenBreakdownEntry(breakdown[date]!, entry);
+  addTokenBreakdownEntry(breakdown[date]!, entry, cost);
 }
 
-function calculateTokenEntryCost(entry: TokenEntry): number {
-  const override = finiteNumberOrNull(entry.costOverrideUsd);
-  if (override != null && override >= 0) return override;
-  const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
-    contextTokens: entry.requestContextTokens,
-    timestampMs: entry.timestamp,
-    fast: entry.fast === true,
-  });
-  const tokensUsd = priceTokenSplit(rates, {
+type EntryCost = { costUsd: number; split: AdeUsageCostSplit };
+
+/**
+ * One ledger entry's dollars and where they went. A provider-reported cost
+ * (`costOverrideUsd`) is the figure; it is split in proportion to what the
+ * list rates would have charged each token type, and lands in `other` when no
+ * list rate prices the model. Web search is a per-request fee: `other`.
+ */
+function calculateTokenEntryCost(entry: TokenEntry): EntryCost {
+  const listed = priceTokenSplitDetailed(entry.model, resolveTokenPrice(entry.model), {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
     output: toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens),
     cacheRead: toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens),
     cacheWrite: toNonNegativeInt(entry.cacheWriteTokens),
     cacheWrite1h: toNonNegativeInt(entry.oneHourCacheWriteTokens),
+  }, {
+    contextTokens: entry.requestContextTokens,
+    timestampMs: entry.timestamp,
+    speed: entry.speed ?? "standard",
   });
-  // Web search is a per-request fee, not a token rate, so it stays out of the shared split price.
-  return tokensUsd + toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  const override = finiteNumberOrNull(entry.costOverrideUsd);
+  if (override != null && override >= 0) {
+    if (listed.totalUsd > 0) return { costUsd: override, split: splitFromListed(listed, entry.speed, override / listed.totalUsd) };
+    return { costUsd: override, split: { ...emptyCostSplit(), other: override } };
+  }
+  const split = splitFromListed(listed, entry.speed, 1);
+  const webSearchUsd = toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  split.other += webSearchUsd;
+  return { costUsd: listed.totalUsd + webSearchUsd, split };
+}
+
+/** A listed price's split, scaled (a provider's own figure over the list total), with its speed premium. */
+function splitFromListed(
+  listed: ReturnType<typeof priceTokenSplitDetailed>,
+  speed: TokenEntry["speed"],
+  scale: number,
+): AdeUsageCostSplit {
+  const split = emptyCostSplit();
+  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
+  const premiumUsd = listed.speedPremiumUsd * scale;
+  if (premiumUsd > 0 && speed === "ultrafast") split.ultrafastPremium += premiumUsd;
+  else if (premiumUsd > 0 && speed === "fast") split.fastPremium += premiumUsd;
+  return split;
 }
 
 function aggregateCosts(
@@ -2142,16 +2261,19 @@ function aggregateCosts(
     adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    // "Map to": a mapped model's usage is bucketed and priced as its target.
+    const mappedModel = applyUsageModelAlias(rawEntry.model);
+    const entry = mappedModel === rawEntry.model ? rawEntry : { ...rawEntry, model: mappedModel };
     const cost = calculateTokenEntryCost(entry);
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;
       const accumulator = accumulators[preset];
-      accumulator.costUsd += cost;
-      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
+      accumulator.costUsd += cost.costUsd;
+      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry, cost);
       addDailyTokenEntry(accumulator.dailyTokens, entry);
-      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
+      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry, cost);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
         const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
@@ -2346,6 +2468,15 @@ type ResolvedAdeUsageRange = {
   until: string;
 };
 
+/** One row from the project database, or null when the read fails (a table missing on an old schema). */
+function safeUsageRow<T extends Record<string, unknown>>(db: AdeDb, sql: string, params: (string | number | null)[]): T | null {
+  try {
+    return db.get<T>(sql, params) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function toFiniteNumber(value: unknown): number {
   const numberValue = Number(value ?? 0);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -2468,11 +2599,13 @@ function addProviderModelUsage(
     inputTokens?: number;
     outputTokens?: number;
     cachedTokens?: number;
+    cacheWriteTokens?: number;
     calls?: number;
     costUsd?: number;
     rangeCostUsd?: number;
     todayCostUsd?: number;
     last30dCostUsd?: number;
+    costSplit?: AdeUsageCostSplit | null;
   },
 ): void {
   const provider = normalizeUsageLabel(args.provider, "unknown");
@@ -2514,6 +2647,7 @@ function addProviderModelUsage(
   providerSummary.rangeCostUsd += rangeCostUsd;
   providerSummary.todayCostUsd += todayCostUsd;
   providerSummary.last30dCostUsd += last30dCostUsd + costUsd;
+  if (args.costSplit) addCostSplit(providerSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 
   const model = normalizeUsageLabel(args.model, "");
   if (!model) return;
@@ -2539,6 +2673,9 @@ function addProviderModelUsage(
   modelSummary.cachedTokens += cachedTokens;
   modelSummary.totalTokens += totalTokens;
   modelSummary.costUsd += rangeCostUsd;
+  const cacheWriteTokens = toNonNegativeInt(args.cacheWriteTokens);
+  if (cacheWriteTokens > 0) modelSummary.cacheWriteTokens = toNonNegativeInt(modelSummary.cacheWriteTokens) + cacheWriteTokens;
+  if (args.costSplit) addCostSplit(modelSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 }
 
 function roundUsd(value: number): number {
@@ -2557,8 +2694,16 @@ function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
     provider.rangeCostUsd = roundUsd(provider.rangeCostUsd);
     provider.todayCostUsd = roundUsd(provider.todayCostUsd);
     provider.last30dCostUsd = roundUsd(provider.last30dCostUsd);
+    const providerSplit = finalizeCostSplit(provider.costSplit);
+    if (providerSplit) provider.costSplit = providerSplit;
+    else delete provider.costSplit;
   }
-  for (const model of models) model.costUsd = roundUsd(model.costUsd);
+  for (const model of models) {
+    model.costUsd = roundUsd(model.costUsd);
+    const modelSplit = finalizeCostSplit(model.costSplit);
+    if (modelSplit) model.costSplit = modelSplit;
+    else delete model.costSplit;
+  }
   return { providers, models };
 }
 
@@ -2634,6 +2779,10 @@ function addCostSnapshotsProviderUsage(
         inputTokens: modelInput,
         outputTokens: modelOutput,
         cachedTokens: modelCached,
+        cacheWriteTokens: toNonNegativeInt(tokens.cacheWrite),
+        // Only a breakdown that carries its own dollars carries a split of
+        // them; a share-of-provider estimate has nothing to split.
+        costSplit: tokens.costUsd != null ? parseCostSplit(tokens.costSplit) : null,
         rangeCostUsd: modelCostUsd,
         todayCostUsd: cost.todayCostUsd * share,
         last30dCostUsd: cost.last30dCostUsd * share,
@@ -2663,6 +2812,8 @@ function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsage
       selected[model].cached += toNonNegativeInt(entry.cached);
       selected[model].cacheWrite += toNonNegativeInt(entry.cacheWrite);
       selected[model].costUsd += Math.max(0, toFiniteNumber(entry.costUsd));
+      const daySplit = parseCostSplit(entry.costSplit);
+      if (daySplit) addCostSplit(selected[model].costSplit ??= emptyCostSplit(), daySplit);
     }
   }
   return selected;
@@ -3273,10 +3424,16 @@ async function stampProviderAccounts(
   machineLabel: string,
   activeAccountIds: ReadonlySet<string>,
   listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
-): Promise<{ accounts: UsageAccount[]; defaultAccountIdByProvider: Map<UsageProvider, string> }> {
+): Promise<{
+  accounts: UsageAccount[];
+  defaultAccountIdByProvider: Map<UsageProvider, string>;
+  /** Accounts left out because an earlier one holds the same login. */
+  duplicateAccountIds: Set<string>;
+}> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
   const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
+  const duplicateAccountIds = new Set<string>();
   const defaultAccountIdByProvider = new Map<UsageProvider, string>();
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
@@ -3324,6 +3481,7 @@ async function stampProviderAccounts(
     // The provider line stays singular and describes the DEFAULT account, so it
     // is stamped once the loop below has read whichever account that is.
     let defaultIdentity = baseIdentity;
+    let registryStale = false;
     for (const instance of listInstances(key)) {
       const id = usageAccountId({ provider: key, instanceId: instance.id });
       if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
@@ -3336,6 +3494,10 @@ async function stampProviderAccounts(
         ? baseIdentity
         : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
+      if (identity.email && instance.account?.email
+        && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
+        registryStale = true;
+      }
       const known = Boolean(identity.email || identity.plan);
       const signedIn = instance.signedIn === true;
       if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
@@ -3359,9 +3521,42 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
+    for (const id of sameLoginDuplicates(accounts.filter((account) => account.provider === key))) {
+      duplicateAccountIds.add(id);
+    }
+    if (registryStale) {
+      // The registry reads identities once per process. A login that changed
+      // under it (a new sign-in in the same config home) left Settings and the
+      // picker on the old email. Once it matches, this stops firing.
+      void getMachineProviderInstanceStore().refreshAccounts(key).catch(() => undefined);
+    }
     stampStatus(defaultIdentity);
   }
-  return { accounts, defaultAccountIdByProvider };
+  return {
+    accounts: accounts.filter((account) => !duplicateAccountIds.has(account.id)),
+    defaultAccountIdByProvider,
+    duplicateAccountIds,
+  };
+}
+
+/**
+ * The accounts after the first that are signed in to the same email.
+ *
+ * Two config homes can hold one login: signing a second account in while the
+ * browser is still on the first account's claude.ai session does exactly that.
+ * They are one quota, so the snapshot shows the login once and balance never
+ * counts it twice. Accounts arrive default first, so the default stays.
+ */
+function sameLoginDuplicates(accounts: readonly UsageAccount[]): string[] {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const account of accounts) {
+    const email = account.email?.trim().toLowerCase();
+    if (!email || !account.instanceId) continue;
+    if (seen.has(email)) duplicates.push(account.id);
+    else seen.add(email);
+  }
+  return duplicates;
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
@@ -3543,7 +3738,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   /**
    * The machine-wide model router (shadow mode). When present, the router
    * actions read it: `getModelRoutes`, `previewModelRoute`,
-   * `getRouterShadowSummary`, `refreshModelRegistry`.
+   * `getRouterShadowSummary`, `getRouterEfficiency`, `refreshModelRegistry`.
    */
   modelRouter?: ModelRouterService | null;
   scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
@@ -4446,8 +4641,116 @@ export function createUsageTrackingService({
    * a fresher snapshot without emitting it gave one window a value no other
    * window could ever receive, which is exactly how two windows drifted.
    */
+  /**
+   * The last new-chat balance decision that could not balance, per provider.
+   * Cleared by the next decision that picks an account on the numbers.
+   */
+  const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
+
+  function providerTitle(provider: ProviderInstanceProvider): string {
+    return provider === "claude" ? "Claude" : "Codex";
+  }
+
+  /**
+   * What stops smart balance right now, for every provider that has it on.
+   * Recomputed on each publish from the accounts in the snapshot, so a
+   * signed-out login shows while it lasts and goes away with the next poll
+   * after the user signs in again.
+   */
+  function computeBalanceIssues(snapshot: UsageSnapshot): AccountBalanceIssue[] {
+    const issues: AccountBalanceIssue[] = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
+        // Accounts the user added, signed in or with a broken login: a broken
+        // one is exactly what this warning is for.
+        const known = providerInstanceStore.list(provider).filter(providerInstanceHasAccount);
+        if (known.length < 2) continue;
+        const signedOut = known.filter((instance) => instance.loginBroken || snapshot.accounts?.some((account) => (
+          account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
+        )));
+        if (signedOut.length > 0) {
+          const names = signedOut.map((instance) => instance.account?.email || instance.label || instance.id);
+          issues.push({
+            provider,
+            kind: "signed_out",
+            title: signedOut.length === 1
+              ? `${providerTitle(provider)} account signed out`
+              : `${signedOut.length} ${providerTitle(provider)} accounts signed out`,
+            detail: `Smart balance skips ${names.join(", ")} because the saved login no longer works. Sign in to it again in Settings > Provider accounts.`,
+            instanceIds: signedOut.map((instance) => instance.id),
+            at: snapshot.lastPolledAt,
+          });
+        }
+        const pickIssue = balancePickIssues.get(provider);
+        if (pickIssue) issues.push(pickIssue);
+      } catch (error) {
+        logger.warn("usage.account_balance_issue_scan_failed", { provider, error: getErrorMessage(error) });
+      }
+    }
+    return issues;
+  }
+
+  function windowsByAccount(windows: readonly UsageWindow[]): Map<string, UsageWindow[]> {
+    const byAccount = new Map<string, UsageWindow[]>();
+    for (const window of windows) {
+      if (!window.accountId) continue;
+      const accountWindows = byAccount.get(window.accountId) ?? [];
+      accountWindows.push(window);
+      byAccount.set(window.accountId, accountWindows);
+    }
+    return byAccount;
+  }
+
+  /**
+   * Smart balance's pick for a provider on one snapshot, or `null` when the
+   * provider has balance off. Chat creation and the Settings preview both use
+   * it, so the account marked "Next chat" is the one a new chat gets.
+   */
+  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    return pickInstanceForNewChat({
+      provider,
+      instances: providerInstanceStore.list(provider),
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs: Date.now(),
+    });
+  }
+
+  /**
+   * The account each balancing provider would give a new chat now, so
+   * Settings can mark it. A pick that skipped balancing is not a decision and
+   * is left out.
+   */
+  function computeBalanceNext(snapshot: UsageSnapshot): NonNullable<UsageSnapshot["balanceNext"]> {
+    const next: NonNullable<UsageSnapshot["balanceNext"]> = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        const result = balancedPick(provider, snapshot);
+        if (result && !result.skip) next.push({ provider, instanceId: result.instanceId });
+      } catch {
+        // A preview that cannot run leaves the mark off; chat creation reports
+        // its own failure through `balanceIssues`.
+      }
+    }
+    return next;
+  }
+
+  /** The snapshot with this moment's balance issues and next picks in place of any it carried. */
+  function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
+    const { balanceIssues: _previousIssues, balanceNext: _previousNext, ...rest } = snapshot;
+    const balanceIssues = computeBalanceIssues(rest);
+    const balanceNext = computeBalanceNext(rest);
+    return {
+      ...rest,
+      ...(balanceIssues.length > 0 ? { balanceIssues } : {}),
+      ...(balanceNext.length > 0 ? { balanceNext } : {}),
+    };
+  }
+
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
-    const published = stampRevision(snapshot);
+    const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
     autoStartScheduler.onSnapshot(published);
@@ -4470,6 +4773,62 @@ export function createUsageTrackingService({
     });
   }
 
+  /**
+   * Spend by chat, lane, or account, from the per-turn ledger. Chats and lanes
+   * are the calling project's (their names live in its database); accounts
+   * are the machine's, like the quota they draw on. The ledger keeps three
+   * months, so a longer range reports what it still holds.
+   */
+  async function getCostBreakdown(
+    args: GetAdeUsageCostBreakdownArgs,
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeUsageCostBreakdown> {
+    const by: AdeUsageCostBreakdownBy = isAdeUsageCostBreakdownBy(args?.by) ? args.by : "chat";
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const rangeOut = { since: range.since, until: range.until };
+    const ledger = dependencies?.turnUsageLedger ?? null;
+    if (!ledger) {
+      return { by, range: rangeOut, available: false, rows: [], other: null, totals: { turns: 0, totalTokens: 0, costUsd: 0, billedUsd: 0, planValueUsd: 0 } };
+    }
+    const sinceMs = range.since ? Date.parse(range.since) : 0;
+    const untilMs = Date.parse(range.until);
+    const scopeRoot = forScope.projectRoot ? pathKey(path.resolve(forScope.projectRoot)) : null;
+    const rows = (await ledger.store.readTurns({ sinceMs })).filter((row) => {
+      const atMs = Date.parse(row.at);
+      if (!(atMs >= sinceMs && atMs <= untilMs)) return false;
+      if (by === "account" || !scopeRoot) return true;
+      return Boolean(row.projectRoot) && pathKey(path.resolve(row.projectRoot!)) === scopeRoot;
+    }).map(repriceTurnForUserPrices);
+    const db = forScope.db;
+    const chatCache = new Map<string, { title: string | null; laneId: string | null } | null>();
+    const laneCache = new Map<string, string | null>();
+    return buildCostBreakdown({
+      rows,
+      by,
+      range: rangeOut,
+      laneId: args.laneId ?? null,
+      limit: args.limit,
+      rankBy: args.rankBy === "tokens" ? "tokens" : "cost",
+      labels: {
+        chat: (sessionId) => {
+          if (!chatCache.has(sessionId)) {
+            const row = db ? safeUsageRow<{ title: string | null; lane_id: string | null }>(db, "select title, lane_id from terminal_sessions where id = ?", [sessionId]) : null;
+            chatCache.set(sessionId, row ? { title: row.title ?? null, laneId: row.lane_id ?? null } : null);
+          }
+          return chatCache.get(sessionId) ?? null;
+        },
+        lane: (laneId) => {
+          if (!laneCache.has(laneId)) {
+            const row = db ? safeUsageRow<{ name: string | null }>(db, "select name from lanes where id = ?", [laneId]) : null;
+            laneCache.set(laneId, row?.name?.trim() || null);
+          }
+          return laneCache.get(laneId) ?? null;
+        },
+      },
+    });
+  }
+
   const requireModelRouter = (): ModelRouterService => {
     const router = dependencies?.modelRouter;
     if (!router) throw new Error("The model router is not available in this host.");
@@ -4481,6 +4840,8 @@ export function createUsageTrackingService({
   const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
   /** What the shadow router would have changed over the last days. */
   const getRouterShadowSummary = (args: { days?: number } = {}) => requireModelRouter().shadowSummary(args);
+  /** What the router would have saved against what ran: ledger threads replayed, plus shadow-logged subagents. */
+  const getRouterEfficiency = (args: { days?: number } = {}) => requireModelRouter().efficiency(args);
   const refreshModelRegistry = (args: { force?: boolean } = {}) => requireModelRouter().refreshRegistry(args);
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
@@ -4512,7 +4873,7 @@ export function createUsageTrackingService({
     if (!hasInjectedLedgerScanners) {
       const roots = scopeProjectRoots();
       scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal, allRoots) => (
-        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots })
+        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots, extraProviderHomes: machineProviderUsageHomes() })
       )))(projectRoot ?? null, ledgerAbortController.signal, roots);
     } else {
       // Recorded, not merely logged: a provider whose scan failed produced no
@@ -4967,7 +5328,7 @@ export function createUsageTrackingService({
             force: reason === "user",
           })),
         ]);
-        const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
+        const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
           readLocalMachineIdentity()?.label ?? os.hostname(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
@@ -4977,10 +5338,11 @@ export function createUsageTrackingService({
           if (window.accountId) return window;
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
-        });
+        }).filter((window) => !window.accountId || !duplicateAccountIds.has(window.accountId));
         // After attribution, so a legacy window with no accountId counts as the
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);
+        attachAccountLogins(accounts);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -5297,6 +5659,88 @@ export function createUsageTrackingService({
     }
   }
 
+  /**
+   * One model's cost, tokens, cache hit rate, daily trend, split, and the
+   * price ADE bills it at, read from the same cached history as the stats.
+   * Account scope reads this machine's history: other machines publish only
+   * day totals, not a model's split.
+   */
+  function getModelDetail(args: GetAdeUsageModelDetailArgs, forScope: AttachedScope = defaultScope): AdeUsageModelDetail {
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const costs = normalizeScope(args.scope) === "project"
+      ? cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? []
+      : lastSnapshot.costs;
+    const provider = String(args.provider ?? "");
+    const model = String(args.model ?? "");
+    const rows: ModelDetailDayRow[] = [];
+    for (const cost of costs) {
+      if (cost.provider !== provider) continue;
+      for (const [date, models] of Object.entries(cost.dailyTokenBreakdownByPreset?.all ?? {})) {
+        if (!dateIntersectsRange(date, range)) continue;
+        for (const [modelId, row] of Object.entries(models)) {
+          if (displayModelName(modelId) !== model) continue;
+          rows.push({
+            date,
+            modelId,
+            input: toNonNegativeInt(row.input),
+            output: toNonNegativeInt(row.output),
+            cacheRead: toNonNegativeInt(row.cached),
+            cacheWrite: toNonNegativeInt(row.cacheWrite),
+            costUsd: Math.max(0, toFiniteNumber(row.costUsd)),
+            costSplit: parseCostSplit(row.costSplit),
+          });
+        }
+      }
+    }
+    return buildModelDetail({ provider, model, range: { since: range.since, until: range.until }, rows });
+  }
+
+  function getModelPriceOverrides(): AdeUsagePriceOverrides {
+    const file = readUsagePriceOverrides();
+    return { prices: { ...file.prices }, aliases: { ...file.aliases } };
+  }
+
+  /**
+   * Saves one price or mapping and re-prices history in the background: the
+   * history scan is what applies it, and it can take a minute on a large
+   * machine, so the caller gets the saved overrides now and the page updates
+   * when the scan's snapshot lands. A scan already running read the old
+   * prices when it started, so the re-price runs after it, not joined to it.
+   */
+  function setModelPriceOverride(args: SetAdeUsageModelPriceArgs): AdeUsagePriceOverrides {
+    const models = [args?.model, ...(Array.isArray(args?.models) ? args.models : [])]
+      .filter((model): model is string => typeof model === "string" && model.trim().length > 0);
+    if (models.length === 0) throw new Error("usage.setModelPrice needs a model id.");
+    updateUsagePriceOverrides({
+      models,
+      ...(args.price !== undefined ? { price: args.price } : {}),
+      ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
+    });
+    const sink = dependencies?.captureInternalAnalytics;
+    // The save already happened; analytics failing must not report it failed
+    // or skip the re-price below.
+    if (sink) {
+      try {
+        const analytics = { captureInternal: sink };
+        if (args.price !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
+        }
+        if (args.mapTo !== undefined) {
+          captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+        }
+      } catch (error) {
+        logger.debug("usage.price_override_analytics_failed", { error: getErrorMessage(error) });
+      }
+    }
+    const reprice = () => refreshHistory({ reason: "user" });
+    const running = inFlightHistoryRefresh;
+    void (running ? running.then(reprice, reprice) : reprice()).catch((error) => {
+      logger.warn("usage.price_override.reprice_failed", { error: getErrorMessage(error) });
+    });
+    return getModelPriceOverrides();
+  }
+
   async function getAdeUsageStats(
     args: GetAdeUsageStatsArgs = {},
     forScope: AttachedScope = defaultScope,
@@ -5396,28 +5840,60 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
-  function resolveBalancedInstance(provider: ProviderInstanceProvider) {
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
+    const previous = balancePickIssues.get(provider);
+    if (!issue && !previous) return;
+    if (issue && previous?.kind === issue.kind) return;
+    if (issue) balancePickIssues.set(provider, issue);
+    else balancePickIssues.delete(provider);
+    // Only the issue list changed: no quota reading for the ledger or the
+    // auto-start scheduler, which `publishSnapshot` would feed again.
+    lastSnapshot = stampRevision(withBalanceIssues(lastSnapshot));
+    emitUpdate(lastSnapshot);
+  }
+
+  /**
+   * The account a new chat should use when smart balance is on, or `null` when
+   * balance is off or the machine has one signed-in account.
+   *
+   * A result the picker could not base on quota is still returned, with
+   * `skip` set, and it is shown in the top bar through `balanceIssues`. A
+   * silent fallback to the default account is how smart balance stayed off
+   * for weeks without anyone seeing it.
+   */
+  function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
-      const settings = providerInstanceStore.getProviderSettings(provider);
-      if (!settings.smartBalance) return null;
-      const instances = providerInstanceStore.list(provider);
-      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
-      const windowsByAccountId = new Map<string, UsageWindow[]>();
-      for (const window of lastSnapshot.windows) {
-        if (!window.accountId) continue;
-        const accountWindows = windowsByAccountId.get(window.accountId) ?? [];
-        accountWindows.push(window);
-        windowsByAccountId.set(window.accountId, accountWindows);
+      const result = balancedPick(provider, lastSnapshot);
+      if (!result) return null;
+      if (result.skip === "one_account") {
+        // Nothing to balance; an issue from an earlier pick no longer applies.
+        setBalancePickIssue(provider, null);
+        return null;
       }
-      return pickInstanceForNewChat({
-        provider,
-        instances,
-        accounts: lastSnapshot.accounts ?? [],
-        windowsByAccountId,
-        nowMs: Date.now(),
-      });
+      if (result.skip === "no_usage_data") {
+        logger.warn("usage.account_balance_skipped", { provider, ...result });
+        setBalancePickIssue(provider, {
+          provider,
+          kind: "no_usage_data",
+          title: `${providerTitle(provider)} balance has no usage data`,
+          detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
+          at: nowIso(),
+        });
+      } else {
+        if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
+        setBalancePickIssue(provider, null);
+      }
+      return result;
     } catch (error) {
-      logger.warn("usage.account_balance_resolve_failed", { error: getErrorMessage(error), provider });
+      const message = getErrorMessage(error);
+      logger.error("usage.account_balance_resolve_failed", { error: message, provider });
+      setBalancePickIssue(provider, {
+        provider,
+        kind: "error",
+        title: `${providerTitle(provider)} balance failed`,
+        detail: `Smart balance could not choose an account for the last new chat: ${message}`,
+        at: nowIso(),
+      });
       return null;
     }
   }
@@ -5537,9 +6013,14 @@ export function createUsageTrackingService({
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
+      getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
+      getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args, scope),
+      getModelPriceOverrides,
+      setModelPriceOverride,
       getModelRoutes,
       previewModelRoute,
       getRouterShadowSummary,
+      getRouterEfficiency,
       refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
@@ -5575,9 +6056,14 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
+    getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),
+    getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args),
+    getModelPriceOverrides,
+    setModelPriceOverride,
     getModelRoutes,
     previewModelRoute,
     getRouterShadowSummary,
+    getRouterEfficiency,
     refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,
@@ -5616,7 +6102,6 @@ export const _testing = {
   isCodexTokenStale,
   isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
   isClaudeTokenExpiredOrExpiring,
-  refreshClaudeCredentials,
   parseClaudeWindows,
   parseClaudeCliUsage,
   parseCodexRateLimitSnapshot,

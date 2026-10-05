@@ -14,6 +14,26 @@
 
 import type { ChatMentionDetail, ChatMentionKind } from "./types/chatMentions";
 
+/**
+ * Drag payload a chat or terminal row carries, so dropping it on a composer
+ * inserts an @-mention of it. JSON `{ kind, id, title }`.
+ */
+export const CHAT_MENTION_DND_MIME = "application/x-ade-chat-mention";
+
+export type ChatMentionDragPayload = { kind: ChatMentionKind; id: string; title: string };
+
+export function parseChatMentionDragPayload(raw: string): ChatMentionDragPayload | null {
+  try {
+    const value = JSON.parse(raw) as Partial<ChatMentionDragPayload>;
+    if ((value.kind !== "chat" && value.kind !== "terminal" && value.kind !== "lane") || typeof value.id !== "string" || !value.id) {
+      return null;
+    }
+    return { kind: value.kind, id: value.id, title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : value.id };
+  } catch {
+    return null;
+  }
+}
+
 /** Chip token prefix per kind. `term` is deliberately short for typing. */
 const CHAT_MENTION_TOKEN_PREFIX: Record<ChatMentionKind, string> = {
   chat: "chat",

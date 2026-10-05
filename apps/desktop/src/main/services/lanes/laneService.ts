@@ -68,9 +68,11 @@ import type {
   ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
+  RecreateMissingWorktreeResult,
   RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
+  AdoptAgentBranchSwitchResult,
   RebaseAbortArgs,
   RebaseRun,
   RebaseRunEventPayload,
@@ -90,9 +92,9 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   detectLaneBranchDrift,
-  laneNameAdvertisesBranch,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
+import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -332,6 +334,68 @@ export async function removeWorktreeDirectoryWithRecovery(targetPath: string): P
       }
     }
   }
+}
+
+/**
+ * A lane folder renamed aside so its files can be removed after the delete
+ * returns: `.<name>.ade-deleting-<8 hex>`, next to where it lived. The name is
+ * ADE's own, which is what makes sweeping a forgotten one safe.
+ */
+const DELETING_TRASH_SUFFIX = ".ade-deleting-";
+const DELETING_TRASH_NAME = /^\..+\.ade-deleting-[0-9a-f]{8}$/;
+const trashRemovalsInFlight = new Set<string>();
+
+function removeTrashInBackground(trashPath: string, logger: Logger): void {
+  const key = normAbs(trashPath);
+  if (trashRemovalsInFlight.has(key)) return;
+  trashRemovalsInFlight.add(key);
+  const t0 = Date.now();
+  void removeWorktreeDirectoryWithRecovery(key)
+    .then(() => {
+      logger.info("lane.delete.background_remove_done", { path: key, durationMs: Date.now() - t0 });
+    })
+    .catch((error) => {
+      // Left for the next sweep of this folder.
+      logger.warn("lane.delete.background_remove_failed", {
+        path: key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      trashRemovalsInFlight.delete(key);
+    });
+}
+
+/** Finish removing renamed-aside lane folders an earlier run did not get to. */
+async function sweepDeletingTrash(parentDir: string, logger: Logger): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !DELETING_TRASH_NAME.test(entry.name)) continue;
+    const trashPath = path.join(parentDir, entry.name);
+    // A folder Git still has metadata for was never pruned — its move back
+    // failed, or Git kept a locked worktree. That checkout is not trash.
+    if (await gitAdminDirStillExists(trashPath)) continue;
+    removeTrashInBackground(trashPath, logger);
+  }
+}
+
+async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
+  let pointer: string;
+  try {
+    pointer = await fs.promises.readFile(path.join(checkoutPath, ".git"), "utf8");
+  } catch (error) {
+    // No `.git` at all is the pruned case. Anything else (a `.git` directory,
+    // an unreadable file) is not something to sweep.
+    return (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
+  }
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
+  if (!gitdir) return true;
+  return fs.existsSync(path.resolve(checkoutPath, gitdir));
 }
 
 async function managedTreeBytes(targetPath: string): Promise<number> {
@@ -917,6 +981,20 @@ async function resolveTrackedFileCount(
   }
 }
 
+/**
+ * `refs/remotes/origin/<base>` for a short branch name, or null when the base is
+ * already qualified (a remote or full ref) or is a commit id.
+ */
+function remoteTrackingBaseRef(baseRef: string): string | null {
+  const base = baseRef.trim();
+  if (!base || base.startsWith("refs/") || base.startsWith("origin/")) return null;
+  // Only a full commit id (SHA-1 40, SHA-256 64) is a commit id. An
+  // abbreviated one is not a valid ref anyway, and a hex-looking branch name
+  // (e.g. "deadbeef") is a branch, so it still deserves the remote retry.
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return null;
+  return `refs/remotes/origin/${base}`;
+}
+
 async function computeLaneStatus(
   worktreePath: string,
   baseRef: string,
@@ -969,10 +1047,19 @@ async function computeLaneStatus(
   const lastCommitAt = lastCommitIso || null;
   const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHash, options.trackedFileCountCache);
 
-  const countsRes = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
-    cwd: worktreePath,
-    timeoutMs: 8_000
-  });
+  const countAgainst = (base: string) =>
+    runGit(["rev-list", "--left-right", "--count", `${base}...${branchRef}`], {
+      cwd: worktreePath,
+      timeoutMs: 8_000
+    });
+  let countsRes = await countAgainst(baseRef);
+  // A base that exists only as a remote-tracking branch (a clone that never
+  // checked out `main`) does not resolve by its short name: git's lookup skips
+  // `refs/remotes/origin/<name>`. Counting against nothing reported 0/0, which
+  // reads as "even with main". Retry once against the remote-tracking ref; the
+  // extra spawn happens only on that failure.
+  const remoteBase = countsRes.exitCode === 0 ? null : remoteTrackingBaseRef(baseRef);
+  if (remoteBase) countsRes = await countAgainst(remoteBase);
   let behind = 0;
   let ahead = 0;
   if (countsRes.exitCode === 0) {
@@ -3250,6 +3337,25 @@ export function createLaneService({
     invalidateLaneListCache();
   };
 
+  const branchHistory = createLaneBranchHistoryObserver<LaneRow>({
+    db,
+    projectId,
+    projectRoot,
+    defaultBaseRef,
+    logger,
+    getLaneRow,
+    hasBranchProfile: (laneId, branchRef) => Boolean(getBranchProfileRow(laneId, branchRef)),
+    recordBranchProfile: (row, visit) => {
+      upsertBranchProfileForRow(row, {
+        branchRef: visit.branchRef,
+        baseRef: row.base_ref,
+        parentLaneId: row.parent_lane_id,
+        sourceBranchRef: row.branch_ref,
+        lastCheckedOutAt: new Date(visit.lastVisitedAtMs).toISOString(),
+      });
+    },
+  });
+
   const repairPrimaryParentedRootLanes = (): void => {
     const primary = getActivePrimaryLane();
     if (!primary?.id) return;
@@ -3645,6 +3751,7 @@ export function createLaneService({
             status,
             updatedAt: new Date().toISOString(),
           });
+          if (worktreeAvailable) branchHistory.observe(row, status.headBranchRef);
         }
       } catch (err) {
         // If building the summary for a single lane fails entirely, skip it
@@ -4782,6 +4889,93 @@ export function createLaneService({
     } catch (error) { warn("stop_apple_device", error); }
   };
 
+  const missingWorktreeRecreates = new Map<string, Promise<RecreateMissingWorktreeResult>>();
+
+  const recreateMissingWorktreeOnce = async (laneId: string): Promise<RecreateMissingWorktreeResult> => {
+    const row = getLaneRow(laneId);
+    if (!row) return { recreated: false, reason: "Lane not found." };
+    // Archived lanes go through Restore; the primary lane IS the project root.
+    if (row.status === "archived" || row.archived_at) return { recreated: false, reason: "The lane is archived." };
+    if (row.lane_type === "primary") return { recreated: false, reason: "The primary lane has no separate worktree." };
+    if (laneReclaimInFlight.has(laneId) || deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+      return { recreated: false, reason: "The lane is being deleted or reclaimed." };
+    }
+    const configured = typeof row.worktree_path === "string" ? row.worktree_path.trim() : "";
+    if (!configured) return { recreated: false, reason: "The lane has no worktree configured." };
+    const targetPath = normAbs(configured);
+    if (fs.existsSync(targetPath)) return { recreated: false };
+    // A folder the user placed elsewhere (another drive, a path from another
+    // machine) is not ADE's to rebuild; it may only be unmounted.
+    if (!isDirectlyInsideManagedWorktreesDir(targetPath)) {
+      return { recreated: false, reason: "The worktree lives outside ADE's worktrees folder." };
+    }
+    if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
+      return { recreated: false, reason: "The worktree path goes through a symbolic link." };
+    }
+    const branchName = branchNameForDelete(row.branch_ref, "origin");
+    if (!branchName) return { recreated: false, reason: "The lane has no branch." };
+
+    const storageLock = acquireStorageLifecycleLock({
+      laneId,
+      worktreePath: targetPath,
+      ownerLabel: `Recreate worktree: ${row.name}`,
+    });
+    try {
+      return await runGitWorktreeMutation(async (): Promise<RecreateMissingWorktreeResult> => {
+        // Re-check under the mutation queue: another writer may have rebuilt
+        // or claimed the folder, or archived, reclaimed or deleted the lane,
+        // while this call waited.
+        if (fs.existsSync(targetPath)) return { recreated: false };
+        const current = getLaneRow(laneId);
+        if (!current || current.status === "archived" || current.archived_at
+          || laneReclaimInFlight.has(laneId) || deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+          return { recreated: false, reason: "The lane changed while waiting to rebuild its worktree." };
+        }
+        const localBranch = await runGit(
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+          { cwd: projectRoot, timeoutMs: 8_000 },
+        );
+        if (localBranch.exitCode !== 0) {
+          return { recreated: false, reason: `Branch '${branchName}' no longer exists locally.` };
+        }
+        const worktrees = await listGitWorktrees();
+        const branchKey = normalizeBranchKey(branchName);
+        const holder = worktrees.find((wt) =>
+          !wt.isBare && normalizeBranchKey(wt.branch) === branchKey && !pathsEqual(wt.path, targetPath));
+        if (holder) {
+          return { recreated: false, reason: `Branch '${branchName}' is checked out at '${holder.path}'.` };
+        }
+        if (worktrees.some((wt) => pathsEqual(wt.path, targetPath))) {
+          // Path-scoped: clears only this lane's stale entry. Fails (and so
+          // refuses) on a locked worktree, which is what a lock is for.
+          await runGitOrThrow(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+        const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
+        try {
+          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: 120_000 });
+        } catch (error) {
+          // The folder was absent before `add`, so anything there now is this
+          // failed attempt's. Clear it and its registration, or every later
+          // attempt would see a folder and stop without a reason.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          if (fs.existsSync(targetPath)) await removeWorktreeDirectoryWithRecovery(targetPath).catch(() => undefined);
+          // With the folder gone, a path-scoped `remove` clears an entry the
+          // first one could not. Never a repository-wide `prune`: that would
+          // also drop other lanes whose folders are only briefly missing.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          throw error;
+        } finally {
+          untrack();
+        }
+        invalidateLanePathCaches();
+        logger.info("lane.worktree_recreated", { laneId, worktreePath: targetPath, branch: branchName });
+        return { recreated: true, worktreePath: targetPath, branch: branchName };
+      });
+    } finally {
+      storageLock.release();
+    }
+  };
+
   // Named so a few methods (branch-drift resolution) can delegate to sibling
   // methods instead of duplicating their transaction/rollback handling.
   const laneServiceApi = {
@@ -5864,6 +6058,26 @@ export function createLaneService({
     },
 
     /**
+     * Every branch each active lane has used, from its branch profiles: the
+     * recorded branch plus any the worktree moved to (see
+     * `observeLaneBranchHistory`). One query for the whole project, so PR
+     * matching can ask "which lane worked on this branch" without a git call.
+     */
+    listBranchHistory(): Array<{ laneId: string; branchRef: string }> {
+      return db.all<{ lane_id: string; branch_ref: string }>(
+        `
+          select p.lane_id, p.branch_ref
+          from lane_branch_profiles p
+          join lanes l on l.id = p.lane_id and l.project_id = p.project_id
+          where p.project_id = ?
+            and l.status != 'archived'
+            and l.archived_at is null
+        `,
+        [projectId],
+      ).map((row) => ({ laneId: row.lane_id, branchRef: row.branch_ref }));
+    },
+
+    /**
      * Lightweight branch ownership lookup that avoids the full `list()` work
      * (status resolution, queue rebase overrides, primary-lane bootstrap).
      * Returns a map of branch ref → owning lane info for active, non-primary
@@ -6086,12 +6300,17 @@ export function createLaneService({
      *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
      *   when the worktree is dirty, and rolls the checkout back if the DB write
      *   fails.
-     * - `keep-head` re-points `branch_ref` at the live HEAD and, when the lane
-     *   name was merely advertising the old branch, renames the lane to match —
-     *   both inside one transaction, so the lane can never end up pointing at
-     *   one branch while its name advertises another.
+     * - `keep-head` re-points `branch_ref` (and the branch profile) at the
+     *   live HEAD in one transaction. It never renames the lane.
+     *
+     * `internal` is unreachable from IPC, remote commands, and actions, which
+     * all pass one argument: only `adoptAgentBranchSwitch` marks an adoption
+     * as the agent's.
      */
-    async resolveBranchDrift(args: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> {
+    async resolveBranchDrift(
+      args: ResolveLaneBranchDriftArgs,
+      internal: { adoptedByAgent?: boolean } = {},
+    ): Promise<ResolveLaneBranchDriftResult> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required.");
       const row = getLaneRow(laneId);
@@ -6146,26 +6365,6 @@ export function createLaneService({
         throw new Error(`Branch '${targetBranchRef}' is already active in lane '${duplicate.name}'.`);
       }
 
-      // Only re-point the name when it is literally advertising the branch the
-      // lane no longer tracks. A hand-written lane name ("Auth work") advertises
-      // nothing and must survive.
-      const previousLaneName = row.name;
-      const nameAdvertisesOldBranch = laneNameAdvertisesBranch(row.name, drift.expectedBranchRef);
-      const nameTaken = db.get<{ id: string }>(
-        `
-          select id from lanes
-          where project_id = ?
-            and id != ?
-            and archived_at is null
-            and lower(name) = lower(?)
-          limit 1
-        `,
-        [projectId, row.id, targetBranchRef],
-      );
-      const nextLaneName = row.lane_type !== "primary" && nameAdvertisesOldBranch && !nameTaken
-        ? targetBranchRef
-        : row.name;
-
       db.run("begin");
       try {
         const existingProfile = getBranchProfileRow(row.id, targetBranchRef);
@@ -6182,8 +6381,7 @@ export function createLaneService({
             update lanes
             set branch_ref = ?,
                 base_ref = ?,
-                parent_lane_id = ?,
-                name = ?
+                parent_lane_id = ?
             where id = ?
               and project_id = ?
           `,
@@ -6191,7 +6389,6 @@ export function createLaneService({
             targetBranchRef,
             profile?.base_ref ?? row.base_ref ?? defaultBaseRef,
             profile?.parent_lane_id ?? row.parent_lane_id,
-            nextLaneName,
             row.id,
             projectId,
           ],
@@ -6202,16 +6399,17 @@ export function createLaneService({
         throw err;
       }
       invalidateLaneListCache();
-
-      if (nextLaneName !== previousLaneName) {
-        broadcastLifecycleEvent({
-          type: "lane-renamed",
-          laneId: row.id,
-          laneName: nextLaneName,
-          previousLaneName,
-          color: row.color,
-        });
-      }
+      // The lane keeps its name: a name says what the work is about, and the
+      // agent renames the lane itself when that changes.
+      broadcastLifecycleEvent({
+        type: "lane-branch-updated",
+        laneId: row.id,
+        laneName: row.name,
+        color: row.color,
+        previousBranchRef: drift.expectedBranchRef,
+        branchRef: targetBranchRef,
+        ...(internal.adoptedByAgent ? { adoptedByAgent: true } : {}),
+      });
 
       const refreshed = (await listLanes({ includeArchived: false, includeStatus: true }))
         .find((lane) => lane.id === row.id);
@@ -6221,9 +6419,59 @@ export function createLaneService({
         resolution: "keep-head",
         previousBranchRef: drift.expectedBranchRef,
         branchRef: targetBranchRef,
-        previousLaneName: nextLaneName !== previousLaneName ? previousLaneName : null,
-        laneName: nextLaneName,
+        previousLaneName: null,
+        laneName: refreshed.name,
       };
+    },
+
+    /**
+     * Adopt the branch an agent switched this lane to during one of its turns,
+     * without asking. `branchAtTurnStart` is the lane's recorded branch when
+     * the turn began; it guards against adopting a switch someone else made
+     * before the turn. Refuses, so the drift chip asks instead, when the lane
+     * is the primary checkout, or when the old branch has commits that are on
+     * neither the new branch nor any remote: adopting would drop that local
+     * work out of the lane's view unseen. Pushed work (a merged or open PR)
+     * stays reachable, and the chat keeps that PR linked.
+     */
+    async adoptAgentBranchSwitch(args: {
+      laneId: string;
+      branchAtTurnStart: string;
+    }): Promise<AdoptAgentBranchSwitchResult> {
+      const row = getLaneRow(args.laneId.trim());
+      if (!row || row.status === "archived") return { adopted: false, reason: "unavailable" };
+      if (row.lane_type === "primary") return { adopted: false, reason: "primary_lane" };
+      const drift = await laneServiceApi.getBranchDrift({ laneId: row.id });
+      if (!drift) return { adopted: false, reason: "no_drift" };
+      if (normalizeBranchKey(args.branchAtTurnStart) !== drift.expectedBranchRef) {
+        return { adopted: false, reason: "branch_moved_before_turn" };
+      }
+      if (findActiveBranchOwner(drift.headBranchRef, row.id)) {
+        return { adopted: false, reason: "branch_owned_by_other_lane" };
+      }
+      const oldRef = `refs/heads/${drift.expectedBranchRef}`;
+      const oldExists = await runGit(["show-ref", "--verify", "--quiet", oldRef], {
+        cwd: row.worktree_path,
+        timeoutMs: 5_000,
+      }).catch(() => null);
+      // A deleted old branch has nothing left to lose.
+      if (oldExists?.exitCode === 0) {
+        // HEAD is the checked-out commit itself, whatever its branch is called.
+        const unpushed = await runGit(
+          ["rev-list", "--count", oldRef, "--not", "HEAD", "--remotes"],
+          { cwd: row.worktree_path, timeoutMs: 5_000 },
+        ).catch(() => null);
+        const unpushedCount = unpushed?.exitCode === 0 ? Number.parseInt(unpushed.stdout.trim(), 10) : Number.NaN;
+        if (!Number.isFinite(unpushedCount)) return { adopted: false, reason: "unavailable" };
+        if (unpushedCount > 0) {
+          return { adopted: false, reason: "old_branch_has_unpushed_commits" };
+        }
+      }
+      const result = await laneServiceApi.resolveBranchDrift(
+        { laneId: row.id, resolution: "keep-head", expectedHeadBranchRef: drift.headBranchRef },
+        { adoptedByAgent: true },
+      );
+      return { adopted: true, previousBranchRef: result.previousBranchRef, branchRef: result.branchRef };
     },
 
     async getChildren(laneId: string): Promise<LaneSummary[]> {
@@ -7734,6 +7982,28 @@ export function createLaneService({
       }
     },
 
+    /**
+     * Rebuilds an ACTIVE lane's worktree whose folder vanished from disk (the
+     * user deleted it, a cleanup tool reaped it), so the next chat turn can run
+     * instead of failing with "Restore or recreate the lane".
+     *
+     * Deliberately narrower than `unarchive`: only ADE-managed paths, only from
+     * the LOCAL branch (a branch the user deleted is a decision, not damage),
+     * never through a lock, a delete, a reclaim, or a folder that came back.
+     * The stale registration is cleared with a path-scoped `worktree remove`,
+     * not a repository-wide `prune` that would drop other lanes' entries too.
+     * Concurrent callers for one lane share a single attempt.
+     */
+    recreateMissingWorktree({ laneId }: { laneId: string }): Promise<RecreateMissingWorktreeResult> {
+      const inFlight = missingWorktreeRecreates.get(laneId);
+      if (inFlight) return inFlight;
+      const attempt = recreateMissingWorktreeOnce(laneId).finally(() => {
+        missingWorktreeRecreates.delete(laneId);
+      });
+      missingWorktreeRecreates.set(laneId, attempt);
+      return attempt;
+    },
+
     listDeleteProgress(): LaneDeleteProgress[] {
       pruneDeleteProgressHistory();
       return Array.from(deleteProgressByLaneId.values())
@@ -8110,6 +8380,67 @@ export function createLaneService({
                 }
                 return { detail };
               };
+              // Windows: deleting a few hundred thousand node_modules files
+              // one at a time (each scanned by Defender) takes minutes, and
+              // every other lane delete in the project waits behind it in
+              // this queue. Renaming the checkout aside is instant on the
+              // same volume; once Git prunes the now-missing worktree the
+              // lane is gone, and the files are removed after the queue moves
+              // on. The git_status step already refused a dirty tree without
+              // `force`, which is the check `git worktree remove` would make.
+              const renameAsideWorktree = async (): Promise<{ detail: string } | null> => {
+                if (process.platform !== "win32") return null;
+                const target = normAbs(row.worktree_path);
+                if (!fs.existsSync(target) || !(await isExpectedGitWorktreeRoot(target))) return null;
+                // Git refuses to remove a worktree with submodules unless forced.
+                if (!force && fs.existsSync(path.join(target, ".gitmodules"))) return null;
+                const isRegistered = () => listGitWorktrees().then(
+                  (worktrees) => worktrees.some((worktree) =>
+                    !worktree.isBare
+                    && (worktree.path === target || canonicalPath(worktree.path) === canonicalPath(target))),
+                  () => null,
+                );
+                // Only a folder Git lists as this worktree is renamed: pruning
+                // the missing entry is what makes the rename a removal.
+                if ((await isRegistered()) !== true) return null;
+                const trashPath = path.join(
+                  path.dirname(target),
+                  `.${path.basename(target)}${DELETING_TRASH_SUFFIX}${randomUUID().replace(/-/g, "").slice(0, 8)}`,
+                );
+                try {
+                  await fs.promises.rename(target, trashPath);
+                } catch (error) {
+                  // A handle still open inside the tree blocks the rename;
+                  // `git worktree remove` gets its usual chance below.
+                  logger.info("lane.delete.rename_aside_skipped", {
+                    laneId,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                  return null;
+                }
+                const pruneFailure = await pruneWorktreesBestEffort();
+                // Unknown counts as registered: the folder goes back.
+                if (pruneFailure !== null || (await isRegistered()) !== false) {
+                  // Git kept the worktree (it is locked, or prune failed). Put
+                  // the folder back and let `git worktree remove` decide.
+                  try {
+                    await fs.promises.rename(trashPath, target);
+                  } catch (restoreError) {
+                    throw new Error(
+                      `ADE moved the lane folder to ${trashPath} and could not move it back: ${
+                        restoreError instanceof Error ? restoreError.message : String(restoreError)
+                      }`,
+                    );
+                  }
+                  return null;
+                }
+                residualWorktreeCleanup.deleteRow(target);
+                removeTrashInBackground(trashPath, logger);
+                void sweepDeletingTrash(path.dirname(target), logger);
+                return { detail: `${target} (removing files in the background)` };
+              };
+              const renamedAside = await renameAsideWorktree();
+              if (renamedAside) return renamedAside;
               // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
               // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
               // state that blocks future deletes.
@@ -8133,6 +8464,24 @@ export function createLaneService({
               }
               const original = (removeRes.stderr || removeRes.stdout || "").trim();
               if (!managedWorktreePath) {
+                // Git can give up partway: it unregisters the worktree and
+                // deletes `.git`, then fails on a file Windows still holds open
+                // (an AV scan, an indexer) somewhere in a huge node_modules.
+                // The lane is gone as far as Git knows, so finish deleting it
+                // and offer the remaining files the same way as above.
+                if (
+                  fs.existsSync(row.worktree_path)
+                  && !(await isStillRegisteredWorktree())
+                  && !(await isExpectedGitWorktreeRoot(row.worktree_path))
+                ) {
+                  logger.warn("lane.delete.git_worktree_remove_partial", { laneId, error: original });
+                  progress.leftoverWorktree = {
+                    path: normAbs(row.worktree_path),
+                    canDelete: true,
+                    laneName: row.name,
+                  };
+                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
+                }
                 // No filesystem escalation for a folder ADE does not own: the
                 // git failure is the answer the user gets.
                 throw new Error(original || `git worktree remove exited ${removeRes.exitCode}`);
@@ -8402,7 +8751,9 @@ export function createLaneService({
           throw new Error("That folder was replaced after the lane was deleted.");
         }
       }
-      await fs.promises.rm(targetPath, { recursive: true, force: false });
+      // Same Windows lock retries as a lane delete: the files left behind are
+      // often the ones an AV scan or indexer was holding a moment ago.
+      await removeWorktreeDirectoryWithRecovery(targetPath);
       leftoverWorktreeByLaneId.delete(laneId);
       persistLeftoverWorktrees();
       return { removed: true };
@@ -8472,6 +8823,16 @@ export function createLaneService({
      */
     setOnWorktreeLaneCreated(hook: ((lane: LaneSummary) => void | Promise<void>) | null): void {
       onWorktreeLaneCreated = hook ?? null;
+    },
+
+    /**
+     * A lane's worktree is on, or has visited, branches other than the one the
+     * lane records — usually an agent cutting a follow-up PR branch. The PR
+     * service links the PRs opened from them. Late-bound for the same reason
+     * as `setOnWorktreeLaneCreated`.
+     */
+    setOnBranchHistoryObserved(hook: ((args: { laneId: string; branchRefs: string[] }) => void) | null): void {
+      branchHistory.setOnObserved(hook);
     },
 
     /**

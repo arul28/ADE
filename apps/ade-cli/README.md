@@ -522,6 +522,8 @@ ade report-issue --send                           # also upload the same redacte
 ade triage                                        # build a redacted context.md + repair playbook and hand them to your first installed agent CLI
 ade triage --provider codex                       # pick the agent CLI (claude | codex | cursor-agent | opencode | droid)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
+ade reset --all --dry-run --text                  # list everything a hard reset would remove, changing nothing
+ade reset --all                                   # remove everything ADE put on this computer (asks you to type RESET first)
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
@@ -556,6 +558,13 @@ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --a
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
+ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
+ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
+ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
+ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat send <B> --after <A> "start the review"             # send B this once A is idle
+ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
@@ -616,6 +625,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
 ade chat resume-now session-id --text                        # alias `resume`: send the usage-limit continue prompt now instead of waiting for the reset
+ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
 ade chat message session-id --kind auto --text "status/context"
@@ -650,6 +660,7 @@ ade chat promote [session-id]                                    # restore a pee
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
@@ -752,7 +763,7 @@ ade --socket browser authorize --text                             # ask the user
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
-ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
+ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed
 ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
                                                                   # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
 ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end
@@ -799,6 +810,7 @@ ade usage turns --group-by provider --recent 20 --text  # group by provider (def
 ade router routes --provider codex --limit 20 --text  # rated routes (harness × model × effort) with score, cost, and who bills it
 ade router pick "fix the parser bug" --provider codex --model gpt-6-sol --kind light_edit --text  # dry-run the route the router would pick for one task
 ade router shadow --days 7 --text                     # what the shadow router would have changed for recent subagents (changes no turn)
+ade router efficiency --days 7 --text                 # what it would have saved across every chat thread (turn-ledger replay) and subagent, at list prices
 ade router refresh --text                             # fetch the newest model registry (signed-in accounts)
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs
@@ -811,6 +823,12 @@ ade storage snapshot --refresh --text                # force a fresh scan instea
 ade storage compress --text                          # losslessly compress old chat/terminal history
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
+ade archive list --text                              # archived lanes, chats, and shells, newest first (archived rows are hidden from chat/terminal lists unless --include-archived)
+ade archive list --kind chat --older-than 14 --text  # archived chats from 14+ days ago
+ade archive summary --text                           # counts per kind and what is 14+ days old
+ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Settings → Archive — the CLI refuses `ade archive delete`
+ade chat list --include-archived --text              # archived chats too
+ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text
 ade actions run account_settings.list --args-list-json '["all"]' --text
 ade actions run account_settings.set --args-list-json '["all","appearance.theme","dark"]' --text

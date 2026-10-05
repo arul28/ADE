@@ -708,6 +708,54 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("settles a one-shot Claude delivered without a claim as done and cancels the ADE backstop", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const transitions: string[] = [];
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      onTransition: (schedule, status) => { transitions.push(`${schedule.id}:${status}`); },
+    });
+    await scheduler.upsert(wakeup({ fireAt: START, durable: true, provider: "claude" }));
+    await scheduler.upsert(wakeup({
+      id: "cron-1",
+      kind: "cron",
+      cron: "*/5 * * * *",
+      fireAt: START + 300_000,
+      durable: true,
+      provider: "claude",
+    }));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await scheduler.markFired("wake-1")).toMatchObject({ status: "done", lastFiredAt: START });
+    // Recurring work is never settled this way: its next occurrence stays armed.
+    expect(await scheduler.markFired("cron-1")).toMatchObject({ status: "scheduled" });
+    // A fire ADE claimed for a running turn waits for that turn, which
+    // records its outcome, instead of settling here with no summary.
+    await scheduler.upsert(wakeup({ id: "wake-claimed", fireAt: START, durable: true, provider: "claude", providerScheduleId: "claimed" }));
+    expect(scheduler.claimNativeFire("session-1", "turn-claimed", "claimed")).toMatchObject({ status: "fired" });
+    // The Stop hook's snapshot arrives after the claim has been persisted.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await scheduler.markFired("wake-claimed")).toMatchObject({ status: "fired", activeTurnId: "turn-claimed" });
+    await scheduler.recordTurnFinished("turn-claimed", "Deploy still queued.");
+    expect(requireState(state).schedules.find((schedule) => schedule.id === "wake-claimed"))
+      .toMatchObject({ status: "done", outcomeSummary: "Deploy still queued." });
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules.find((schedule) => schedule.id === "wake-1")?.status).toBe("done");
+    // The transcript learns the wake-up fired (`Woke at …`), not that it was cancelled.
+    expect(transitions).toContain("wake-1:done");
+    expect(transitions).not.toContain("wake-1:cancelled");
+    scheduler.dispose();
+  });
+
   it("does not let a native Claude turn claim provider-neutral scheduled work", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -1005,6 +1053,34 @@ describe("createChatScheduledWorkScheduler", () => {
       status: "done",
       lastFiredAt: START + 20_000,
     }));
+    scheduler.dispose();
+  });
+
+  it("does not deliver a one-shot that is cancelled while it is being marked fired", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const schedulerRef: { current: ReturnType<typeof createChatScheduledWorkScheduler> | null } = { current: null };
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      onTransition: async (schedule, status) => {
+        // A user message (or a superseding schedule) can cancel the row in the
+        // window between the fired transition and dispatch.
+        if (status === "fired") await schedulerRef.current?.cancel(schedule.id);
+      },
+    });
+    schedulerRef.current = scheduler;
+    await scheduler.upsert(wakeup({ fireAt: START }));
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]?.status).toBe("cancelled");
     scheduler.dispose();
   });
 

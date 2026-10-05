@@ -3227,7 +3227,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects branch-drift resolution the host cannot run", async () => {
+  it("rejects branch-drift resolution and branch switches the host cannot run", async () => {
     // The drift strip disarms its warning as soon as this resolves, so an
     // unreachable host must reject instead of handing back a status object.
     fake.descriptors = descriptors(["lanes.getBranchDrift"]);
@@ -3239,6 +3239,13 @@ describe("createAdeWebAdapter", () => {
       laneId: "lane-1",
       resolution: "switch-back",
     })).rejects.toThrow(/unavailable/i);
+    // No remote command switches a branch: "Switch back" must fail, not read
+    // a null fallback as a switch that happened.
+    await expect(adapter.ade.lanes.switchBranch({
+      laneId: "lane-1",
+      branchName: "ade/lane",
+      mode: "existing",
+    })).rejects.toThrow(/not available/i);
     // Reads still degrade to their typed fallback.
     await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" })).resolves.toBeNull();
 

@@ -291,7 +291,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       }, {
         fallbackToExternal: false,
         onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
-      });
+      }, event.detail.runtimePin ?? null);
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
     return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);

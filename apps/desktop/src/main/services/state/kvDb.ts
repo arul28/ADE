@@ -933,6 +933,9 @@ const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: 
  *   references. It needs a terminal-status + `finished_at` policy instead.
  */
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  // Which dead agent shells this machine may archive. It describes this
+  // machine's own launches and typing, so a peer must never receive it.
+  "agent_shell_cleanup",
   // Per-device ingress dedup log. It carries a non-PK UNIQUE index
   // (project_id, source, event_key) for dedup, which cr-sqlite forbids on CRR
   // tables ("has unique indices besides the primary key. This is not allowed
@@ -962,6 +965,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
+  // A PR watch wakes a chat on THIS machine. A replicated row would let a
+  // second machine's brain wake its own copy of the chat too, so the watch and
+  // the ids of comments ADE posted (which never wake it) stay local.
+  "pull_request_ade_comments",
+  "pull_request_chat_watches",
   // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
   // clients read effective config through RPC, never from a synced replica,
   // so these tables must not be CRRs.
@@ -1506,6 +1514,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   }
   if (rawHasTable(db, "pull_request_chat_sessions")) {
     runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
+  }
+  if (rawHasTable(db, "pull_request_chat_session_dismissals")) {
+    runStatement(db, `delete from pull_request_chat_session_dismissals where session_id in (${placeholders})`, retiredSessionIds);
   }
   if (rawHasTable(db, "session_deltas")) {
     runStatement(db, `delete from session_deltas where session_id in (${placeholders})`, retiredSessionIds);
@@ -2541,6 +2552,18 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
   safeAddColumn(db, "alter table terminal_sessions add column owner_process_started_at text");
   try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
+  // Machine-local ledger of the shells an agent started under a chat, read by
+  // `agentShellCleanup` to archive them once they are dead. Local-only (see
+  // LOCAL_ONLY_CRR_EXCLUDED_TABLES): it records what this machine's processes
+  // launched and saw typed, which no other machine can know.
+  db.run(`
+    create table if not exists agent_shell_cleanup (
+      session_id text primary key,
+      launched_at text not null,
+      user_input_at text,
+      retired_reason text
+    )
+  `);
 
   // Machine-local process liveness registry. Every ADE process (desktop main,
   // TUI runtime, ade-serve daemon) writes its process incarnation here on boot
@@ -2918,6 +2941,55 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_pull_request_chat_sessions_pr on pull_request_chat_sessions(project_id, pr_id)");
   db.run("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)");
   db.run("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)");
+
+  // Unlink is a tombstone, not a missing edge: a zero-edge chat may display
+  // unedged current-branch PRs, and a deleted edge would otherwise revive.
+  // CRR-friendly PK-only table; tuple uniqueness is enforced by the service.
+  db.run(`
+    create table if not exists pull_request_chat_session_dismissals (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      session_id text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)");
+  db.run("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)");
+
+  // PR Watch / Ship (`prChatWatchStore.ts`). Machine-local: see
+  // LOCAL_ONLY_CRR_EXCLUDED_TABLES.
+  db.run(`
+    create table if not exists pull_request_chat_watches (
+      id text primary key,
+      project_id text not null,
+      pr_id text not null,
+      session_id text not null,
+      mode text not null,
+      armed_by text not null,
+      state_json text not null,
+      started_at text not null,
+      stopped_at text,
+      stop_reason text,
+      last_told_at text,
+      last_told_summary text,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_chat_watches_session on pull_request_chat_watches(project_id, session_id)");
+  db.run("create index if not exists idx_pull_request_chat_watches_pr on pull_request_chat_watches(project_id, pr_id)");
+  db.run(`
+    create table if not exists pull_request_ade_comments (
+      comment_key text primary key,
+      project_id text not null,
+      pr_id text not null,
+      comment_id text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_pull_request_ade_comments_pr on pull_request_ade_comments(project_id, pr_id)");
   safeAddColumn(db, "alter table pull_requests add column last_polled_at text");
   safeAddColumn(db, "alter table pull_requests add column head_sha text");
   safeAddColumn(db, "alter table pull_requests add column creation_strategy text");

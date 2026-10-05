@@ -177,7 +177,14 @@ These are operational mistakes this playbook explicitly guards against:
    coordinator handoff. Reserve `stack-coordinator-*` for a restack, a base
    retarget, a fix that belongs to a lower layer, or an exhausted iteration
    budget.
-8. **Do not record `ready-stacked` over a known gap.** A mandatory proof
+8. **Bot status belongs to one head.** A "rate limited", "usage limit",
+   "skipped" or "trial expired" notice describes the head it was posted on,
+   not the PR. Classify every bot again on each poll from current-head
+   evidence. A bot that was rate-limited on the first push can review the
+   third one, and that review is work like any other.
+9. **Never merge over an open review thread.** Phase 3c reads the unresolved
+   threads one last time before merging; see 3c's pre-merge check.
+10. **Do not record `ready-stacked` over a known gap.** A mandatory proof
    scenario is satisfied by a captured artifact bound to the validated head, or
    it is missing. "Ready, except the clean-host run is still outstanding" is
    `blocked` with the scenario id, not a caveat on a terminal success.
@@ -488,6 +495,9 @@ Harvest fixes stay local until every signal on the remote head is terminal.
   finished job is final for that head.
 - **Posted bot reviews and comments** are final for that head. A bot still in
   flight is recorded under `pendingReviewBots` and read at the next harvest.
+  Read them from the open review threads (Phase 1.2's `ade prs comments`
+  query), not only from comments newer than the last push, and do not carry a
+  bot's "rate limited" status over to a later harvest (failure mode 8).
 - **Drop what the phase already fixed.** For each comment, check the current
   working tree: if the requested change is present or the line is gone, record
   the id in `addressedCommentIds` as stale and move on. Most round-1 comments
@@ -814,6 +824,25 @@ gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
 
 Filter out any comment whose `id` is in `addressedCommentIds`.
 
+**Then read every open review thread, whatever its age.** The `SINCE` filter
+only finds what is new. A review that lands while you wait on CI is older than
+the next push (a docs fix, a rebase), so the next poll's `SINCE` drops it as
+old — and nothing answers it. PR #1410 merged over seven CodeRabbit comments
+this way. Every poll also lists the unresolved threads:
+
+```bash
+ade prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads
+# gh fallback:
+gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{databaseId author{login} path body}}}}}}}' \
+  -F o="$OWNER" -F r="$REPO" -F n="$PR_NUMBER" \
+  -q '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)'
+```
+
+An unresolved thread whose first comment id is not in `addressedCommentIds`
+is fix work, even when the code it points at moved ("outdated" is not
+"answered"). It goes to Phase 3b: fix it, or reply with the reason it is
+rejected, then resolve the thread.
+
 ### 1.3 Return structured summary
 
 ```json
@@ -1058,6 +1087,14 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 ## Phase 3c — Merge
 
 Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
+
+**Pre-merge check: zero open review threads.** Immediately before the merge,
+list the unresolved threads again (Phase 1.2's `ade prs comments` / GraphQL
+query) — fresh, not from an earlier poll or a remembered bot status. Every
+thread must be fixed, or answered with the reason it is rejected and then
+resolved. One open thread routes back to Phase 3b; it is never "noise", never
+"rate-limited", and never disclosed after the merge instead. The summary lists
+each thread with its outcome (fixed in `<sha>` / rejected: `<reason>`).
 
 Before resolving merge style, run the canonical **Validate the current quality
 binding** procedure. A missing or mismatched binding means a later head or base

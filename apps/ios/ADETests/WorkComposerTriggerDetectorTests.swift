@@ -559,6 +559,8 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .artifact: return "artifact"
     case .webPage: return "web_page"
     case .model: return "model"
+    case .permission: return "permission"
+    case .skill: return "skill"
     case .adeLink: return "ade_link"
     }
   }
@@ -1032,7 +1034,8 @@ final class WorkComposerSlashRegistryTests: XCTestCase {
       command("/plan", description: "Plan."),
     ]
     let suggestions = WorkComposerSlashRegistry.suggestions(from: registry, query: "re")
-    XCTAssertEqual(suggestions.map(\.title), ["/review", "/refactor"])
+    // Both are prefix hits; the shared ranker breaks the tie by name, like desktop.
+    XCTAssertEqual(suggestions.map(\.title), ["/refactor", "/review"])
   }
 
   func testEmptyQueryReturnsEveryCommand() {

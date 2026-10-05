@@ -20,6 +20,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
+- `apps/ade-cli/src/services/account/machineBridge.ts`,
+  `agentMachineBridge.ts` — brain-to-brain connection pools (one per caller
+  class: CTO, agents) and the agents' `machines.call` forwarding. The host's
+  paired channel passes the authenticated peer device into each runtime handler
+  (`SyncRuntimeRpcHandlerContext`), which binds an `ade-agent-remote` caller's
+  per-request claim to it. See
+  [Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md).
+
 - `apps/desktop/src/main/services/remoteRuntime/` — paired transport
   (`syncRuntimeTransport.ts`), loopback preview forwarding
   (`syncPortForwardClient.ts`), paired credential and endpoint history
@@ -721,6 +729,32 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     Only navigation forwards;
     `observe` / `click` and the rest act on a specific live tab and still fail,
     with an error that says where the browser runs.
+
+    **A machine WITH a desktop also reaches the user's other screen.** When the
+    Mac Studio runs ADE Desktop, its bridge takes every browser call, because an
+    agent drives the tab it opened through that bridge (`observe`, `click`). A
+    call that asks to show the user (`showPanel`, which `ade browser panel`
+    sends, or `openPanel: true`, which `ade browser open --panel` sends) is
+    also forwarded as a
+    `built_in_browser_remote_request`, addressed to the desktop that sent the
+    chat its last message (see "Which desktop shows it" below). When that
+    desktop is another machine, the Studio's own copy loads without revealing
+    its panel. When nobody can tell where the user is, the request goes to
+    every connected desktop and the Studio's panel opens too. If the addressed
+    desktop does not acknowledge, the request is sent again to every desktop.
+
+    **Links in a chat open the chat machine's `localhost`.** A chat link to
+    `http://localhost:4180` carries the chat's pin (`openLinkFromUi(url,
+    event, { runtimePin })`). An unpinned link means the window's own binding,
+    which may itself be another machine. `withLocalizedBrowserUrl` falls back to
+    that binding when no pin is passed, so even the plain navigate path tunnels.
+    A mounted Browser panel on that machine takes the click itself, so the URL
+    bar keeps showing `localhost:4180` and the tab gets its tunnel badge. When
+    the panel is not mounted, the link waits in `pendingBrowserLinkOpens` until
+    the pane the click revealed mounts, with a 3 s fallback to the plain
+    navigate. Another machine's `localhost` exists only through ADE's tunnel,
+    so such a link always opens in the ADE browser, even when links are set to
+    open in the system browser.
   - **Read caches are namespaced by binding.** The preload process is shared by
     every machine a window talks to, so a read cache keyed by arguments alone is
     machine-blind: once an action can carry a pin, one machine's rows could be
@@ -802,7 +836,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `dataUrl`, `sourcePath`, and `mimeType` fields, under a 24-icon / 750 ms
   connect-path budget with 128 KiB per-icon and 512 KiB aggregate wire caps,
   so a connected desktop can render real project logos without letting an
-  oversized registry stall connection setup. It also serves
+  oversized registry stall connection setup. `projects.setIcon` and
+  `projects.removeIcon` let a desktop store or clear a project's icon on the
+  host: the bytes arrive base64 with an extension-derived MIME check, a 2 MB
+  cap, and a basename-only file name, the host imports them under the
+  project's `.ade/project-icons` folder, and both methods answer with the icon
+  the host now resolves. Older hosts advertise `machineProjects.setIcon:
+  false`, so the desktop asks the user to update that machine instead of
+  calling. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
@@ -1313,6 +1354,52 @@ The update command stages the next release under `$ADE_HOME/runtime/updates/`, v
 ## What works remotely
 
 Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, native GitHub stack actions, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route deliberately retains the window binding: when opened from a remote-bound project tab, `personalChats.call` / `streamEvents` go to that remote machine's hidden personal-chat scope; from a local or no-project window they go to the local brain. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.iconDataUrl` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+
+### Which desktop shows it
+
+Two desktops can show one chat: the Mac Studio that runs it and a MacBook
+connected to it. A request to put something on screen should land on the
+screen of the person talking to the chat, not on both.
+
+- **Every message names its desktop.** Preload stamps `chat.sendMessage`,
+  `chat.steer` and a CLI chat's Enter (`pty.write` with a newline) with
+  `inputOrigin: { clientId, local }` (`shared/sessionInputOrigin.ts`).
+  `clientId` is one id per desktop install (`window.ade.app.desktopClientId`,
+  kept in the renderer origin's storage, so every window of that desktop
+  shares it). `local` says whether the runtime is on the same machine, which
+  only the preload's routing knows. The runtime keeps the last stamp per
+  session in memory (`main/services/chat/sessionInputOrigins.ts`). A message
+  sent without a stamp (the phone, the CLI, another agent) resets it to
+  unknown. Only a user client may supply a stamp; the runtime strips one from
+  an agent's call.
+- **Requests carry `targetClientId`.** `ade ui show` and the agent-driven
+  floating offers (`work_tool_show_request`), forwarded browser opens
+  (`built_in_browser_remote_request`) and Apple drawer reveals
+  (`drawer-open-requested`) name the sending desktop. A desktop acts on a
+  request only when the target is empty or is its own id
+  (`renderer/lib/desktopClient.ts`). An `ade ui show` that the target does not
+  answer within 4 s goes out again with no target. It keeps the same request
+  id, so the target ignores the repeat if it was only slow.
+- **Unacknowledged requests only follow a recent sender.** Automatic float
+  offers and Apple drawer reveals have no answer to fall back on, so they are
+  addressed to the sender only while its last message is under 10 minutes old
+  (`RECENT_INPUT_ORIGIN_MS`), and to every desktop after that. When the
+  addressed desktop answers `held`, `ade ui show` asks every desktop at once
+  and waits 3.5 s for one of them to show it.
+- **Unknown means everywhere.** After a runtime restart, or for a chat nobody
+  has messaged from a desktop, requests carry no target and every desktop
+  showing the chat acts, as before.
+
+### Dev servers on another machine
+
+A dev server a Studio lane starts lights the Browser on the MacBook exactly as
+it does on the Studio: the globe button in the Work header, the Tools-pane
+Browser status, and the launchpad chips. The Studio's runtime finds the
+server (terminal output, agent shell output, a listener scan that never
+polls; see `docs/features/chat/README.md`), publishes `dev_server_event`, and
+answers `work_tools.listDevServers` and `work_tools.probePort`. Nothing opens
+by itself. Clicking opens the page in the MacBook's ADE browser through the
+tunnel.
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 

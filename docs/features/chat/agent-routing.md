@@ -815,6 +815,28 @@ version check passes and a `targetTurnId` is present. Either response feeds
 thread id; ADE's git-backed per-file restore plan runs the same way in both
 cases.
 
+The per-file restore writes a file back as it was at the turn's starting commit
+(`git restore --source=<beforeSha> --staged --worktree`). The index is restored
+too: the plan only restores a file that was clean when the turn began, so
+anything staged for it was staged by the turn, and leaving it would let the next
+commit carry the work the rewind undid. A file the turn created is deleted and
+unstaged (`git rm --cached`).
+That is only safe for a file nothing else had changed, so the plan leaves three
+kinds of file as they are and reports them in `skippedFiles`, which the
+confirmation dialog lists under **Left as they are**:
+
+- `dirty_before_turn` — the file already had uncommitted changes when the turn
+  started. Each `turn_diff_summary` records these as `dirtyAtStart`, taken from
+  the working-tree snapshot ADE captures before the turn.
+- `other_chat` — another chat in the same lane and worktree recorded a diff
+  summary touching the file after the selected message.
+- `unknown_start_state` — the summary was written before `dirtyAtStart`
+  existed (or the pre-turn snapshot failed), so safety cannot be shown.
+
+While another chat in the worktree has a turn running, its changes are not
+known yet, so the rewind refuses with the chat's name rather than guess. After
+a rewind that skipped files, the transcript gets a notice naming them.
+
 What is version-gated today is exactly this fork-before-turn rewind. `thread/rollback`
 is retained only for pre-0.156 servers (`<= 0.144`, or a turn without a usable
 id); 0.156 removed it upstream. Separately, 0.145 removes `mcpToolCall`
@@ -1378,10 +1400,64 @@ Two rules keep it honest:
 Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
 reverse, and Codex is where it matters: both axes are required for `full-auto`,
 because "never ask" with `workspace-write` is a user who still wants a sandbox.
+
 Treating that as `full-auto` would hand Claude `bypassPermissions` on a family
 switch — unsandboxed, in a family with no sandbox axis at all. OpenCode
 `config-toml` reads as `ask` for the same reason: it defers to the user's own
 file, and claiming a freedom that file may not grant is rounding up.
+
+### Permission ceiling for agents and spawned chats
+
+An agent can never give any chat more freedom than its own chat has, and a
+spawned chat (`orchestrationParentSessionId` set) is also capped at its parent
+— in any provider. `sessionPermissionLevel` reads each session's concrete
+fields onto the ladder; `permissionCeilingClamp` and `permissionFieldsForLevel`
+write a level back in the target's own vocabulary. A field the ladder cannot
+read resolves in the safe direction for its side: an unreadable parent or caller
+counts as `ask`, an unreadable child (Codex `config-toml`) as above any ceiling,
+so the child is pinned to explicit flags. Cursor's `agent` mode reads as `ask`
+on both sides because it is what the ceiling writes for `ask`.
+
+**Who is calling** is `runtimeActor` (`AgentChatRuntimeActor`), stamped by
+`adeRpcServer` (`stampChatRuntimeActor`) on every `chat.createSession`,
+`chat.updateSession`, `chat.handoffSession`, `chat.launchHeadless`,
+`chat.startLaunch` (under `chat.create`, kept in the launch record) and
+`chat.launchCli` that does not come from one of the user's own clients:
+`{ kind: "cto" }` for the CTO, `{ kind: "agent", chatSessionId }` for everyone
+else. Any value the caller sent is dropped first, and a non-user caller must
+pass one object (positional args would skip the stamp). The CTO operator tools
+stamp the same way (the RPC bridge) or pass `{ kind: "cto" }` (in process).
+A value from one of the user's own clients is not trusted for anything it
+could gain: a missing actor is already the most permissive case.
+
+- **Create** (`createSessionInternal`): the ceiling is the lower of the parent's
+  level and, for an agent, its own chat's level (`resolvePermissionCeiling`). A
+  chat above it is clamped and its transcript gets one info notice.
+  Identity-pinned sessions keep their locked mode. A fork or brief handoff
+  passes the caller through, so an agent cannot fork itself into more access.
+- **Update**: an agent's update that touches a permission field, the
+  interaction mode or `modelId` is refused when the result would sit above the
+  same ceiling. The check builds the fields the update will leave — the
+  provider the model resolves to, the generic word applied first, explicit
+  native fields on top, then the same normalization — so it cannot be fooled by
+  a field the update later rewrites. Title and other updates are never checked,
+  and identity-pinned sessions are skipped (their permissions cannot change).
+- **CLI children**: `start_cli_session`, `spawn_agent` and `chat.launchCli` clamp
+  an agent's requested `permissionMode` (full-auto when omitted, and Droid's
+  `droidPermissionMode`) to the agent's level and the parent's
+  (`clampGenericPermissionMode`).
+- The CTO and a person are not capped. A call from one of the user's own
+  clients — including an `ade` CLI with no chat identity, which the runtime
+  cannot tell apart from a person's terminal — carries no `runtimeActor` and is
+  not capped. A stamped agent with no chat of its own (an orchestrator run,
+  step or attempt) is capped only by the target's parent. The CTO counts as the
+  CTO only from its own thread, or as a CTO-role caller with no chat and no run,
+  step or attempt (`callerIsTrustedCto`); a CTO-role run agent is an agent here.
+- Claude plan mode with ask-level access behind it reads as the plan rung; with
+  more behind it, it reads at that level, because leaving plan mode restores it.
+- Trade-off: Cursor's `agent` mode reads as `ask`, so an `ask` agent may start
+  a Cursor child in `agent` mode, which can also auto-edit. `CURSOR_BY_LEVEL`
+  has no rung between the two.
 
 **The ladder is deliberately separate from the abstract permission mode below,
 and the two must not be reconciled.** `AgentChatPermissionMode`
@@ -1392,9 +1468,11 @@ translates it. In *that* vocabulary `edit` is the **cautious** editing tier
 (Droid `auto-low`) by original intent, so the two tables look inverted on the
 middle rungs. That is fine, because they answer different questions: the ladder
 reads and writes each family's concrete native mode on a model switch, the
-legacy converter maps a generic CLI word to a tier at launch, and **no code path
-converts between them**. "Fixing" the apparent inversion would shift
-`ade --permission-mode edit` and every persisted session carrying it.
+legacy converter maps a generic CLI word to a tier at launch. "Fixing" the
+apparent inversion would shift `ade --permission-mode edit` and every persisted
+session carrying it. The one place a generic word meets the ladder is the
+permission ceiling (`clampGenericPermissionMode`), which reads `edit` as
+`auto-edit` — the higher reading — so it can only clamp more, never less.
 
 ### Abstract-to-native mapping
 
@@ -1473,9 +1551,9 @@ access mode, and the `canUseTool` gate refuses any tool not on
 `isSessionInPlanMode` holds — so when the CLI defers a call to the host, a
 `bypassPermissions` session that entered plan mode mid-run cannot have it
 silently allowed. (The SDK's `canUseTool` firing is not re-measured against
-0.3.284 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
+0.3.287 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
 call that does reach it.) The allowlist is checked against the bundled CLI
-2.1.284's own plan-mode allowlist — read-only built-ins including
+2.1.287's own plan-mode allowlist — read-only built-ins including
 `NotebookRead`, `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
 `AskUserQuestion` — plus ADE's plan-flow and question tools. It is an allowlist
 rather than a mutating denylist on purpose:
@@ -1576,6 +1654,37 @@ logged. The check runs on every `done` event, ACP turns included: an ACP turn
 whose `done.servedModel` names another model is logged the same way. Claude's
 served model comes from `claudeTurnUsage.ts` (`pickClaudeLeadingModelUsage`,
 `resolveClaudeServedModel`).
+
+## Fork from an earlier turn
+
+`handoffSession({ mode: "fork", throughTurnId })` forks only the conversation
+through one finished turn ("Fork from here" on a turn's end line; `ade chat
+fork --through-turn <turn-id>`). `sliceTranscriptThroughTurn` cuts the source
+transcript after that turn's last envelope and refuses a turn that is missing or
+never got its `done`. The latest turn is an ordinary full fork. An earlier one
+forks natively only where the provider can cut at a turn — Codex to Codex on a
+server with `thread/fork beforeTurnId` (the id of the next turn) — and
+everywhere else the kept turns travel as a transcript replay, the same portable
+context a cross-provider fork uses. The new chat's copied history holds only
+the kept turns; the source chat is not changed. The desktop fork form shows the
+chosen point ("From the turn that ended at …") with a **Whole chat** escape.
+
+## Machine launch defaults
+
+The model and settings a person last launched or switched a chat to are kept by
+the brain, one record per machine, in `<ADE home>/chat-launch-defaults.json`
+(`createChatLaunchDefaultsStore` in `chatLaunchDefaults.ts`). A person's
+top-level Work chat creation writes it, and so does a person's `updateSession`
+that changes model, effort, Fast, or any permission field. Anything carrying a
+`runtimeActor` (an agent or the CTO), subagents, identity chats and automation
+runs never move it. Every client reads `chat.getLaunchDefaults` to seed a new chat
+ahead of its own local memory: the desktop draft composer (refetched when the
+target machine changes, a chat is created, or the window regains focus), the
+iOS new-chat screen (while the user has not picked anything there, chat mode,
+focused machine), and the TUI on connect (while its model is the one it opened
+on). An older brain answers nothing and each client keeps its own last choice.
+The service only writes the file when built with `machineAdeHome`; tests and
+embedders keep the record in memory.
 
 ## Model switching mid-session
 

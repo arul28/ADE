@@ -186,6 +186,12 @@ and in tests.
   post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
+- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — archives the
+  dead shells an agent started under a chat. It reads the machine-local
+  `agent_shell_cleanup` ledger (excluded from CRR: it records this machine's own
+  launches and typing), sweeps joined `terminal_sessions` rows, and archives
+  through `sessionService.archiveSession` only when the row is eligible. See
+  [Dead agent shells](#dead-agent-shells).
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
   table, which is excluded from CRR replication because PIDs are OS-local.
@@ -584,14 +590,14 @@ Shared types and IPC:
 - `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
   the optional `SessionSnoozeChip` for a chat surface header, mounted by
   `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
-  once by the compact `ChatLifecyclePill` pill floating above the composer,
-  rather than repeated in the header. Both surfaces read the same local
+  once by the `ChatLifecyclePill` chip in the composer status strip
+  (`StatusStrip` (`ui/notice/StatusChip.tsx`)), rather than repeated in the header. Both surfaces read the same local
   per-project session cache, with a root cross-machine snapshot fallback for a
   foreign chat, and the same canonical helpers as the Work sidebar; the snooze
   menu calls `wakeSessionNow`, while the banner offers Un-settle. A bounded
   render-only deadline timer repaints an open foreign/local snapshot when its
-  snooze expires. The slot above the composer also hosts lane branch drift
-  (`LaneBranchDriftStrip`).
+  snooze expires. The same strip also hosts the lane branch-drift chip
+  (`LaneBranchComposerChip`).
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — snooze duration grammar shared
   by the `ade session snooze` planner in `cli.ts` and `ade code`'s
   `/session snooze`, extracted so there is exactly one answer to "what does
@@ -1107,6 +1113,20 @@ Renderer surfaces:
   `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
+  The funnel's by-lane **Fold busy lanes** chip (`workFoldBusyLanes`) adds a
+  third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
+  after the user has left them) folds onto a collapsed **Working** shelf between
+  the inbox and the quiet zone, and unfolds when something needs the user or
+  finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
+  hand, a stale run, or an unseen finish holds the lane out with its rows
+  visible, a finished nested row never does, and pins/primaries never fold. Each
+  lane header draws one rolled-up status dot (`LaneFocusStatusDot`, Needs you >
+  Working > Waiting > Done) from the same derivation. A finished row counts as
+  seen only once the user leaves it — `useWorkSessions` stamps
+  `workSeenAtBySessionId` on selection change, bounded to `WORK_SEEN_AT_LIMIT` —
+  so opening a finished row does not fold its lane out from under the cursor, and
+  a lane returning from the shelf floats to the front of the active tier (never
+  in Manual sort).
   Renders a bulk action bar at the bottom when sessions are multi-selected
   (Stop N running / Settle N / Delete N ended / clear selection), and offers an
   eight-second undo after bulk settle. The filter panel is width-constrained by
@@ -1180,12 +1200,17 @@ Renderer surfaces:
   or Manual ordering inside those tiers. A non-primary header can be dragged
   before/after a header in the same tier; the native drag controller supplies a
   drop line plus edge autoscroll, seeds Manual from the on-screen order, and
-  never permits a cross-tier move. The funnel also has Status and Tool
-  multi-select chips (OR within a row), Has PR, and Dirty lane filters (AND
-  across rows). Their shared pure matcher files status through
+  never permits a cross-tier move. The funnel also has Status, Tool, and
+  Machine multi-select chips (OR within a row), plus Has PR and Dirty lane
+  filters (AND across rows). Machine starts with every machine selected; picking
+  any subset narrows the union to those machines and a chip for a machine that
+  has since left stays visible so the filter can be cleared. Their shared pure
+  matcher files status through
   `effectiveSessionFilingBuckets` (falling back to `sessionFilingBucket`); the Has PR result reuses the coalesced PR snapshot
   that serves lane badges, and a filtered empty state identifies and clears the
-  active chips.
+  active chips. Another machine's matching rows still count against that empty
+  state, so a Machine filter that hides every local row shows the foreign rows
+  instead of "No sessions match".
 - `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
   amber tower marker on a lane header, rendered only for lanes that are not on
   the physical Mac you are sitting at, so the common single-machine case pays
@@ -1649,8 +1674,16 @@ Renderer surfaces:
   persisted mutation.
 - `apps/desktop/src/renderer/components/terminals/workSessionFilters.ts` —
   pure Work chip-filter normalization, tool-family projection, active-label
-  formatting, and matching. Status/Tool selections OR within an axis; axes
-  AND together.
+  formatting, and matching. Status, Tool, and Machine selections OR within an
+  axis; axes AND together. Machine matching reads the session's owning
+  `machineId` from the caller's context, so the same predicate serves both the
+  tab's own roster and each foreign machine's rows.
+- `apps/desktop/src/renderer/components/terminals/WorkFilterPanel.tsx` —
+  the Work funnel's panel: Group/Sort segmented controls above a rule, then the
+  Status, Tool, and Machine chip rows (Machine renders only when more than one
+  machine reports this repo), the Lane combobox, Has PR, and Dirty. Filter chips
+  are multi-select with an accent on-state; the panel owns the labels and the
+  Clear control but not the filter state.
 - `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` —
   the lane→PR map shared by the list's PR badges and the Has PR filter. The
   bound machine's half is a coalesced PR read plus a `prs-updated`
@@ -2881,6 +2914,32 @@ so explicitly rather than asserting a tier ADE never set.
   and legacy `work:grid:v2:*` layouts are intentionally ignored — a new
   tree is seeded from `buildWorkSessionTilingTree` when nothing is
   persisted under the current key.
+
+## Dead agent shells
+
+A shell an agent started under a chat does not linger in the Work sidebar once
+it is dead. `agentShellCleanup` (wired by `ptyService`) tracks the shells this
+machine launched (`markAgentLaunched`), what was typed into them
+(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then archives
+the eligible ones. A shell is eligible only when an agent started it, it is
+attached to a chat, it has ended (not `running`/`detached`), and nobody typed
+into it. When it goes depends on how it ended: an App Control relaunch archives
+it at once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits
+until the chat settles, so a failure stays in view.
+
+Typing into a shell the person owns it — `terminal.write { fromUser }` from a
+user client, or a hand resume — and it is never archived. The RPC server strips
+`fromUser` from a non-user caller, so an agent cannot claim its own shell to keep
+it around. The ledger is per machine and never replicates; nothing is ever
+deleted, only hidden.
+
+Chats and shells list with archived rows hidden by default. `ade chat list` and
+`ade terminal list` take `--include-archived`, and `ade archive list` shows every
+archived item across lanes, chats, and shells. A chat's shell and subagent
+drawers start collapsed behind their full header strip — kind icon, kind label
+and count, plus failed/needs-you/running — and collapsing only hides the child
+rows; a selection that lands inside a collapsed drawer opens it once so the
+selected row is on screen.
 
 ## Cross-links
 

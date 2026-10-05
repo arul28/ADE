@@ -433,7 +433,7 @@ describe("SessionListPane", () => {
 
   it("hides an in-flight handoff when its running status is filtered out", () => {
     renderPane({
-      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
       handoffJobs: [
         {
@@ -516,7 +516,7 @@ describe("SessionListPane", () => {
   // and the canonical `stale` phase tells the story through the status label.
   // Its presentation is asserted in SessionCard.test.tsx, where the label lives.
 
-  it("collapses and expands child shell sections under a chat parent", () => {
+  it("starts a chat's shell drawer collapsed and opens it with an explicit marker", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -542,22 +542,68 @@ describe("SessionListPane", () => {
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.getByText("Child shell")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat:chat-parent");
+    expect(screen.queryByText("Child shell")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Show 1 shell/i }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat:chat-parent");
 
     view.unmount();
     renderPane({
       runningFiltered: [parent, child],
       sessionsGroupedByLane,
-      workCollapsedSectionIds: ["chat:chat-parent"],
+      workCollapsedSectionIds: ["drawer-open:chat:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.queryByText("Child shell")).toBeNull();
+    expect(screen.getByText("Child shell")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(2);
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("chat:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("drawer-open:chat:chat-parent");
+  });
+
+  it("reveals a collapsed drawer once when the selection lands inside it", () => {
+    const parent = makeSession({
+      id: "chat-parent",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      title: "Parent chat",
+    });
+    const child = makeSession({
+      id: "child-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Child shell",
+      ptyId: "pty-child",
+      chatSessionId: parent.id,
+    });
+    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    const view = renderPane({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    });
+
+    // A deeplink/notification landing on the child opens the drawer holding it.
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+      "drawer-open:chat:chat-parent",
+      { preserveDeeplink: true },
+    );
+
+    // Re-rendering the same selection must not toggle it again.
+    view.rerender(paneElement({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
   });
 
   it("nests same-lane subagent chats under the parent in a second drawer", () => {
@@ -591,6 +637,7 @@ describe("SessionListPane", () => {
       runningFiltered: [parent, child, peer],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
@@ -606,7 +653,7 @@ describe("SessionListPane", () => {
     expect(glyph.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(title.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 subagent/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat-subagents:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat-subagents:chat-parent");
   });
 
   it("keeps a settled subagent nested under an active parent instead of a quiet tail", () => {
@@ -641,7 +688,7 @@ describe("SessionListPane", () => {
       settledFiltered: [child],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      workCollapsedSectionIds: ["settled-open:lane-known"],
+      workCollapsedSectionIds: ["settled-open:lane-known", "drawer-open:chat-subagents:chat-parent"],
     });
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -729,6 +776,7 @@ describe("SessionListPane", () => {
         [parent.id, "running"],
         [child.id, "running"],
       ]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
     }));
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -1345,12 +1393,33 @@ describe("SessionListPane", () => {
       seedForeignMachine();
 
       renderPane({
-        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false },
+        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
         setWorkSessionFilters: vi.fn(),
       });
 
       expect(screen.queryByText("Elsewhere Lane")).toBeNull();
       expect(screen.queryByText("Chat on the other machine")).toBeNull();
+    });
+
+    it("keeps a foreign machine's matching rows when a machine chip hides every local row", () => {
+      seedForeignMachine();
+
+      renderPane({
+        // The hook already removed every local row for the chip; the pane's own
+        // buckets are what is left.
+        runningFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workSessionFilters: {
+          status: [], tool: [], hasPr: false, dirtyLane: false, machine: ["target-studio"],
+        },
+        setWorkSessionFilters: vi.fn(),
+      });
+
+      // The local roster is empty under the chip, but the other machine's chat
+      // still matches, so this must NOT read as a filtered-out empty list.
+      expect(screen.queryByText("No sessions match")).toBeNull();
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
     });
 
     it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
@@ -1513,6 +1582,100 @@ describe("SessionListPane", () => {
       expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 
+    it("floats a foreign lane back to the front of the inbox when it leaves the Working shelf", () => {
+      const foldLane = makeLane({
+        id: "lane-fold",
+        name: "Fold Lane",
+        branchRef: "feature/fold",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      });
+      const activeLane = makeLane({
+        id: "lane-active",
+        name: "Active Lane",
+        branchRef: "feature/active",
+        // Created newer, so this is the natural order while both are in the inbox.
+        createdAt: "2026-04-03T00:00:00.000Z",
+      });
+      const foldRunning = makeSession({
+        id: "fold-run-1",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work one",
+      });
+      const foldRunningTwo = makeSession({
+        id: "fold-run-2",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work two",
+      });
+      const activeNeeds = makeSession({
+        id: "active-needs",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active asks",
+        pendingInputItemId: "ask-active",
+      });
+      const activeRunning = makeSession({
+        id: "active-run",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active work",
+      });
+      const seed = (foldSessions: TerminalSessionSummary[]) => {
+        seedStudioMachine(
+          [foldLane, activeLane],
+          [...foldSessions, activeNeeds, activeRunning],
+        );
+      };
+      seed([foldRunning, foldRunningTwo]);
+
+      const props: Partial<ComponentProps<typeof SessionListPane>> = {
+        lanes: [],
+        runningFiltered: [],
+        awaitingInputFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workFoldBusyLanes: true,
+        workCollapsedSectionIds: ["shelf-open:lane-shelf:working"],
+      };
+      const { rerender } = render(paneElement(props));
+
+      const foreignOrder = () => Array.from(
+        document.querySelectorAll<HTMLElement>('[data-section-id^="target-studio:"]'),
+      ).map((element) => element.getAttribute("data-section-id"));
+      const inWorkingShelf = (compositeId: string) => Boolean(
+        document.querySelector(
+          `[data-testid="shelf-body-working"] [data-section-id="${compositeId}"]`,
+        ),
+      );
+
+      // Fold Lane is all-busy, so it starts on the Working shelf while Active
+      // Lane (holding a raised hand) stays in the inbox.
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(true);
+
+      // A raised hand returns Fold Lane from the shelf.
+      act(() => {
+        seed([{ ...foldRunning, pendingInputItemId: "ask-fold" }, foldRunningTwo]);
+      });
+      rerender(paneElement(props));
+
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(false);
+      // It leads the active foreign rows despite sorting older, because it just
+      // came back out of the Working shelf.
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-fold",
+        "target-studio:lane-active",
+      ]);
+
+      // Manual sort is the user's own order: the returned lane does not float,
+      // or every drag of it would be undone.
+      rerender(paneElement({ ...props, workLaneSortMode: "manual" }));
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-active",
+        "target-studio:lane-fold",
+      ]);
+    });
+
     it("nests a foreign parent and child shell as one headerless unit", () => {
       const parent = makeSession({
         id: "foreign-chat-parent",
@@ -1531,7 +1694,7 @@ describe("SessionListPane", () => {
       });
       seedForeignMachine({ sessions: [parent, child] });
 
-      const { container } = renderPane();
+      const { container } = renderPane({ workCollapsedSectionIds: ["drawer-open:chat:foreign-chat-parent"] });
 
       expect(container.querySelector('[data-section-id="target-studio:lane-elsewhere"]')).toBeNull();
       expect(screen.getByText("Foreign parent chat")).toBeTruthy();
@@ -1568,7 +1731,10 @@ describe("SessionListPane", () => {
       renderPane({
         runningFiltered: [],
         sessionsGroupedByLane: new Map(),
-        workCollapsedSectionIds: ["settled-open:target-studio:lane-elsewhere"],
+        workCollapsedSectionIds: [
+          "settled-open:target-studio:lane-elsewhere",
+          "drawer-open:chat-subagents:foreign-chat-parent",
+        ],
         onSelectSession,
       });
 
@@ -2154,7 +2320,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
       settledFiltered: [],
       allSessionsUnfiltered: [],
       sessionsGroupedByLane: new Map(),
-      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters,
     });
 
@@ -2166,7 +2332,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
 
   it("marks the funnel as active when only chips are set", () => {
     renderTwoLanes({
-      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
     });
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
@@ -2625,7 +2791,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       settledFiltered: [parent],
       allSessionsUnfiltered: [parent, child],
       sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+      workCollapsedSectionIds: [...OPEN_QUIET_SHELVES, "drawer-open:chat:settled-parent-chat"],
     });
 
     const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');

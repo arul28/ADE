@@ -10,11 +10,13 @@ import type {
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatModelCatalog,
+  AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSession,
@@ -28,6 +30,13 @@ import type {
   PromptStashEntry,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
@@ -251,6 +260,25 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
       },
     },
+    threadComments: {
+      list: async (args: ChatThreadCommentListArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.list", pin);
+        const result = await call<unknown>("chat.listThreadComments", args, []);
+        return Array.isArray(result) ? result as ChatThreadComment[] : [];
+      },
+      create: async (args: ChatThreadCommentCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.create", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.createThreadComment", args);
+      },
+      update: async (args: ChatThreadCommentUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.update", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.updateThreadComment", args);
+      },
+      delete: async (args: ChatThreadCommentDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.delete", pin);
+        return await callRequiredMutation<{ deleted: boolean }>("chat.deleteThreadComment", args);
+      },
+    },
     handoff: async (args, pin) => {
       guardPin("handoff", pin);
       return await callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args);
@@ -309,6 +337,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     editSteer: async (args: unknown) => {
       await callRequiredMutation("chat.editSteer", args);
     },
+    moveSteer: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("moveSteer", pin);
+      await callRequiredMutation("chat.moveSteer", args);
+    },
     dispatchSteer: async (args, pin) => {
       guardPin("dispatchSteer", pin);
       return await callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args);
@@ -328,6 +360,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         { mode: "stop_and_clear", cancelledQueuedCount: 0 },
         false,
       );
+    },
+    restartSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restartSession", pin);
+      // A host without the action must fail loudly, not report "not restarted".
+      return await callRequiredMutation("chat.restartSession", args);
     },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);
@@ -358,6 +395,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("dismissPendingInput", pin);
       await call("chat.dismissPendingInput", args, undefined, false);
+    },
+    launchDefaults: async (pin?: RuntimePinArg) => {
+      guardPin("launchDefaults", pin);
+      return await call<AgentChatLaunchDefaults | null>("chat.getLaunchDefaults", {}, null);
     },
     models: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("models", pin);
@@ -423,6 +464,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("continueUsageLimitOnAlternate", pin);
       return await callRequired<AgentChatContinueUsageLimitOnAlternateResult>(
         "chat.continueUsageLimitOnAlternate", args, "Usage limit", false,
+      );
+    },
+    switchAccount: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("switchAccount", pin);
+      return await callRequired<AgentChatSwitchAccountResult>(
+        "chat.switchAccount", args, "Chat", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {

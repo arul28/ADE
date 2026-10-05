@@ -230,6 +230,32 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
       example: "ade usage stats --preset 30d --scope account --text",
     },
+    getCostBreakdown: {
+      description:
+        "Rank ADE chat spend by chat, lane, or account from the per-turn ledger: API-equivalent value, dollars billed to API keys, and plan value covered by subscriptions. Chats and lanes are the open project's; accounts are the machine's. The ledger keeps three months.",
+      input:
+        "object { by: \"chat\" | \"lane\" | \"account\", preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, laneId?: string (with by: chat, one lane's chats), limit?: number (max 200) }",
+      example: "ade usage stats --by lane --preset 30d --text",
+    },
+    getModelDetail: {
+      description:
+        "One model's cost, tokens, cost per million tokens, cache hit rate, daily trend, cost split by token type and speed, and the price ADE bills it at (custom, list, or fallback).",
+      input:
+        "object { provider: string, model: string (as the stats name it), preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\" }",
+      example: "ade usage stats --model claude-opus-5-5 --text",
+    },
+    getModelPriceOverrides: {
+      description: "The token prices and \"Map to\" model mappings set on this machine.",
+      input: "object {}",
+      example: "ade usage prices --text",
+    },
+    setModelPriceOverride: {
+      description:
+        "Set or clear this machine's price for a model (USD per million tokens), or map a model id onto another model so its usage counts and prices as that model. Re-prices history in the background.",
+      input:
+        "object { model: string, price?: { input: number, output: number, cacheRead?: number, cacheWrite?: number } | null (null = automatic), mapTo?: string | null (null = no mapping) }",
+      example: "ade usage prices set my-preview-model --map-to claude-opus-5-5",
+    },
     getTurnUsageSummary: {
       description:
         "Read this machine's per-turn usage ledger: tokens, cache hit ratio, provider cost, and API-list-price cost by provider, account, and model, plus what one percent of each subscription window has cost in ADE turns.",
@@ -247,7 +273,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",
       input:
-        "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"unknown\" }",
+        "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"lead\" | \"unknown\" }",
       example: "ade router pick \"summarize how sync works\" --provider claude --model opus --text",
     },
     getRouterShadowSummary: {
@@ -255,6 +281,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "Summarize the shadow router: for each subagent that started, the route it would have picked instead, the estimated saving, and why it kept the original.",
       input: "object { days?: number (1-90, default 7) }",
       example: "ade router shadow --days 7 --text",
+    },
+    getRouterEfficiency: {
+      description:
+        "Report what the router would have saved: it replays every chat thread from the turn ledger at its free switch points and prices the router's pick against what really ran, then summarizes the shadow-logged subagents. Dollars are list prices and the saving is an estimate.",
+      input: "object { days?: number (1-90, default 7) }",
+      example: "ade router efficiency --days 7 --text",
     },
     refreshModelRegistry: {
       description: "Fetch the newest model registry from the ADE account directory (signed-in accounts only).",
@@ -376,9 +408,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    switchAccount: {
+      description: "Move a Claude or Codex chat to another signed-in account of the same provider. Same chat and thread; the next turn runs on that account. Refused while a turn runs. Account ids come from `ade providers accounts list`.",
+      input: "object { sessionId: string, instanceId: string }",
+      example: "ade actions run chat.switchAccount --input-json '{\"sessionId\":\"chat-123\",\"instanceId\":\"claude-2\"}' --text",
+    },
     listCliChildSessions: {
       description: "List tracked CLI sessions spawned with a parent chat (`ade new chat --mode cli --parent …`), with status, exit code, lane, and parent. `chat.getTurnStatus` and `chat.readTranscript` also answer for these ids.",
-      input: "object { laneId?: string, parentSessionId?: string }",
+      input: "object { laneId?: string, parentSessionId?: string, includeArchived?: boolean }  (archived hidden by default)",
       example: "ade actions run chat.listCliChildSessions --input-json '{\"parentSessionId\":\"chat-123\"}' --json",
     },
     readTranscript: {
@@ -405,6 +442,26 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
+    },
+    listThreadComments: {
+      description: "List a chat's pending thread comments (the user's unsent notes on parts of agent replies). User clients only.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.listThreadComments --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    createThreadComment: {
+      description: "Pin a pending comment to part of an agent reply. It goes with the user's next send. User clients only.",
+      input: "object { sessionId: string, messageKey: string, messageExcerpt: string, anchor: { kind: \"text\", quote, prefix, suffix } | { kind: \"table_row\", tableIndex, rowIndex, headers, cells }, body: string }",
+      example: "ade actions run chat.createThreadComment --input-json '{\"sessionId\":\"chat-123\",\"messageKey\":\"message:m1\",\"messageExcerpt\":\"Here is the plan\",\"anchor\":{\"kind\":\"text\",\"quote\":\"step two\",\"prefix\":\"\",\"suffix\":\"\"},\"body\":\"skip this\"}'",
+    },
+    updateThreadComment: {
+      description: "Edit a pending thread comment, or hold it back from the next send. User clients only.",
+      input: "object { sessionId: string, commentId: string, body?: string, includeInNextSend?: boolean }",
+      example: "ade actions run chat.updateThreadComment --input-json '{\"sessionId\":\"chat-123\",\"commentId\":\"c-1\",\"includeInNextSend\":false}'",
+    },
+    deleteThreadComment: {
+      description: "Delete a pending thread comment. User clients only.",
+      input: "object { sessionId: string, commentId: string }",
+      example: "ade actions run chat.deleteThreadComment --input-json '{\"sessionId\":\"chat-123\",\"commentId\":\"c-1\"}'",
     },
     messageSession: {
       description: "Deliver a message to a chat using ADE-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
@@ -740,6 +797,33 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
+    },
+  },
+  archive: {
+    list: {
+      description:
+        "List archived lanes, chats, and shells, newest first. Archived items are hidden from every other list "
+        + "unless it is asked to include them.",
+      input: "object { kinds?: Array<\"lane\" | \"chat\" | \"shell\">, olderThanDays?: number }",
+      example: "ade actions run archive.list --input-json '{\"kinds\":[\"chat\"]}' --text",
+    },
+    summary: {
+      description: "Count archived items per kind, and how many (and how many bytes) were archived at least N days ago.",
+      input: "object { olderThanDays?: number }  (default 14)",
+      example: "ade actions run archive.summary --input-json '{\"olderThanDays\":30}' --text",
+    },
+    restore: {
+      description: "Unarchive lanes, chats, or shells (CTO only for agents). Each item reports done or failed on its own.",
+      input: "object { items: Array<{ kind: \"lane\" | \"chat\" | \"shell\", id: string }> }",
+      example: "ade actions run archive.restore --input-json '{\"items\":[{\"kind\":\"chat\",\"id\":\"session-id\"}]}' --text",
+    },
+    delete: {
+      description:
+        "Permanently delete archived items. The user's action only: agents and automations are refused. Refuses "
+        + "anything not archived. A lane delete removes the lane and its worktree but keeps its git branch; `force` "
+        + "also removes a worktree with uncommitted changes.",
+      input: "object { items: Array<{ kind, id }>, force?: boolean }",
+      example: "ade actions run archive.delete --input-json '{\"items\":[{\"kind\":\"shell\",\"id\":\"session-id\"}]}' --text",
     },
   },
   provider_instances: {

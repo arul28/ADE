@@ -984,6 +984,89 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
+    it("expands an ADE skill queued as a steer during an active Claude turn", async () => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-skill-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-skill-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      const result = await service.sendMessage({
+        sessionId: session.id,
+        text: "/ship resume for lane x",
+      }, { routeActiveToSteer: true });
+      expect(result).toMatchObject({ queued: true });
+
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        const delivered = send.mock.calls
+          .map((call) => String(call[0]))
+          .find((prompt) => prompt.includes("Ship the lane."));
+        expect(delivered, "the queued steer is delivered as the ADE expansion").toBeTruthy();
+        expect(delivered).toContain("Task: resume for lane x");
+        expect(delivered?.trimStart().startsWith("/ship")).toBe(false);
+      });
+    });
+
     it("does not steer /compact during an active Claude turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
@@ -1410,6 +1493,105 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    it("moveSteer delivers queued Claude messages in the order the user set", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-move-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-move-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+      const first = await service.sendMessage({ sessionId: session.id, text: "QUEUED-FIRST" }, { routeActiveToSteer: true }) as { steerId?: string };
+      const second = await service.sendMessage({ sessionId: session.id, text: "QUEUED-SECOND" }, { routeActiveToSteer: true }) as { steerId?: string };
+      expect(first.steerId && second.steerId).toBeTruthy();
+
+      await service.moveSteer({ sessionId: session.id, steerId: second.steerId!, toIndex: 0 });
+
+      expect(events.some((event) =>
+        event.event.type === "queue_reordered"
+        && JSON.stringify(event.event.steerIds) === JSON.stringify([second.steerId, first.steerId]),
+      )).toBe(true);
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        const delivered = send.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(delivered).toContain("QUEUED-FIRST");
+        expect(delivered).toContain("QUEUED-SECOND");
+        expect(delivered.indexOf("QUEUED-SECOND")).toBeLessThan(delivered.indexOf("QUEUED-FIRST"));
+      });
+    });
+
+    it("moveSteer reorders a torn-down chat's persisted queue and refuses provider-owned queues", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        pendingSteers: [
+          { steerId: "steer-a", text: "A" },
+          { steerId: "steer-b", text: "B" },
+          { steerId: "steer-c", text: "C" },
+        ],
+      });
+
+      await service.moveSteer({ sessionId: session.id, steerId: "steer-c", toIndex: 0 });
+      expect(readPersistedChatState(session.id).pendingSteers?.map((steer: { steerId: string }) => steer.steerId))
+        .toEqual(["steer-c", "steer-a", "steer-b"]);
+      expect(events.some((event) =>
+        event.event.type === "queue_reordered"
+        && JSON.stringify(event.event.steerIds) === JSON.stringify(["steer-c", "steer-a", "steer-b"]),
+      )).toBe(true);
+
+      // A later cancel rewrites the file from the persisted queue; the new order survives it.
+      await service.cancelSteer({ sessionId: session.id, steerId: "steer-a", requireQueued: true });
+      expect(readPersistedChatState(session.id).pendingSteers?.map((steer: { steerId: string }) => steer.steerId))
+        .toEqual(["steer-c", "steer-b"]);
+      await expect(service.moveSteer({ sessionId: session.id, steerId: "steer-a", toIndex: 0 }))
+        .rejects.toThrow(/no longer queued/i);
+
+      const codex = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      await expect(service.moveSteer({ sessionId: codex.id, steerId: "steer-x", toIndex: 0 }))
+        .rejects.toThrow(/keeps its own queue/i);
     });
 
     it("throws when steering an unknown session", async () => {
@@ -1942,7 +2124,12 @@ describe("createAgentChatService", () => {
         && event.event.status === "completed");
     });
 
-    it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {
+    // Claude Code keeps a slow WebFetch running, and moves a running Bash
+    // command to the background, only for a person's "now".
+    it.each([
+      { sender: "a person", sentByUser: true, origin: { kind: "human" } },
+      { sender: "an agent", sentByUser: undefined, origin: undefined },
+    ])("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query ($sender)", async ({ sentByUser, origin }) => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -1989,7 +2176,7 @@ describe("createAgentChatService", () => {
 
       // Queue two steers — the second one will be the dispatch target
       await service.steer({ sessionId: session.id, text: "first queued" });
-      await service.steer({ sessionId: session.id, text: "interrupt with me" });
+      await service.steer({ sessionId: session.id, text: "interrupt with me", ...(sentByUser ? { sentByUser } : {}) });
 
       const target = events.find((e) =>
         e.event.type === "user_message"
@@ -2009,6 +2196,7 @@ describe("createAgentChatService", () => {
         .map((call: any[]) => call[0])
         .find((arg: any) => arg?.priority === "now" && arg?.shouldQuery === true);
       expect(interruptPayload).toBeDefined();
+      expect(interruptPayload.origin).toEqual(origin);
       expect(queryInterrupt).not.toHaveBeenCalled();
 
       await service.interrupt({ sessionId: session.id });

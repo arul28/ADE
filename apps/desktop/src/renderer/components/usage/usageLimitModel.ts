@@ -38,6 +38,8 @@ export type UsageAccountView = {
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
   /** Why this account has no fresh numbers, when the host knows. */
   notice?: NonNullable<UsageAccount["notice"]>;
+  /** This machine's login state for the account; local like `notice`. */
+  login?: UsageAccount["login"];
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
@@ -95,6 +97,7 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         ...(account.url ? { url: account.url } : {}),
         ...(account.resetCredits ? { resetCredits: account.resetCredits } : {}),
         ...(account.notice ? { notice: account.notice } : {}),
+        ...(account.login ? { login: account.login } : {}),
         initials: emailInitials(account.email, account.machines[0]?.label),
       });
       continue;
@@ -113,6 +116,7 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
     // A notice only ever rides a local account (peers drop it), so the first
     // one seen is this machine's latest word on that login.
     if (!existing.notice && account.notice) existing.notice = account.notice;
+    if (!existing.login && account.login) existing.login = account.login;
   }
   for (const account of byKey.values()) {
     account.machines.sort((a, b) => machineFreshness(b) - machineFreshness(a));

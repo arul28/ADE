@@ -39,8 +39,7 @@ import { PrAgentAvatar } from "./PrAgentAvatar";
 import { PrMarkdownEditor } from "./PrMarkdownEditor";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
 import { PrShippedSummary } from "./PrShippedSummary";
-import { readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
-import { prSolidButton } from "./prSection";
+import { MERGE_METHODS, mergeMethodShortLabel, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
 
@@ -271,21 +270,17 @@ export function PrMergeCard({
 
   if (pr.stack) {
     return (
-      <div data-testid="pr-merge-card" data-kind="stack">
-        <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
-        <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
-          <Stack size={16} weight="fill" />
-          <span className="text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
-            GitHub Stack {pr.stack.position} of {pr.stack.size}
-          </span>
-        </div>
-        <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-          GitHub manages this stack&apos;s rebases, reviews, and merge order. Finish the merge on GitHub.
-        </p>
-        <button type="button" onClick={() => void window.ade.app.openExternal(pr.githubUrl)} style={prSolidButton({ height: 32, width: "100%" })}>
-          <ArrowSquareOut size={13} /> Review and merge on GitHub
-        </button>
-      </div>
+      <PrStackMergeCard
+        pr={pr}
+        stack={pr.stack}
+        status={status}
+        mergeMethod={mergeMethod}
+        actionBusy={actionBusy}
+        mergeBlockedReason={mergeBlockedReason}
+        notice={notice ?? null}
+        onMerge={onMerge}
+        onClose={onClose}
+      />
     );
   }
 
@@ -403,21 +398,13 @@ export function PrMergeCard({
         </div>
       ) : null}
 
-      {mergeBlockedReason ? (
-        <div className="text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} data-testid="pr-merge-offline-reason">
-          {mergeBlockedReason}
-        </div>
-      ) : null}
-
       {anyway.visible && anyway.blocked && anyway.blockedReason ? (
         <div className="text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} data-testid="pr-merge-blocked-reason">
           {anyway.blockedReason}
         </div>
       ) : null}
 
-      {notice ? (
-        <div className="text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
-      ) : null}
+      <PrMergeCardFooter mergeBlockedReason={mergeBlockedReason} notice={notice} />
 
       <PrMergeDialog
         open={dialog.open}
@@ -437,6 +424,181 @@ export function PrMergeCard({
         }}
       />
     </div>
+  );
+}
+
+/** The card's text line for a stacked PR. `count` is how many open PRs one merge covers. */
+function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number): string {
+  if (pr.state === "merged") return `Merged as part of GitHub Stack #${stackNumber}.`;
+  if (pr.state === "draft") return "This PR is a draft. Mark it ready for review before you merge the stack.";
+  if (pr.state !== "open") return "GitHub manages this stack's rebases, reviews, and merge order.";
+  if (count > 1) {
+    return `GitHub merges the ${count} open PRs up to #${pr.githubPrNumber} together, or none of them. It checks the branch rules during the merge.`;
+  }
+  return "This is the bottom open PR of the stack. GitHub checks the branch rules during the merge.";
+}
+
+function stackMergeButtonLabel(args: { armed: boolean; count: number; prNumber: number; bypassing: boolean }): string {
+  if (args.armed) {
+    return args.count > 1 ? `Confirm: merge the ${args.count} open PRs up to #${args.prNumber}` : "Confirm: merge this PR";
+  }
+  if (args.count > 1) return `Merge ${args.count} PRs`;
+  return args.bypassing ? "Bypass & merge" : "Merge";
+}
+
+/**
+ * Merge card for a PR in a GitHub Stack. GitHub merges a stack as one unit:
+ * every open PR from the stack base up to this one, all or none. The first
+ * click arms the button and the second one merges, because one click merges
+ * more than this PR.
+ */
+function PrStackMergeCard({
+  pr,
+  stack,
+  status,
+  mergeMethod,
+  actionBusy,
+  mergeBlockedReason,
+  notice,
+  onMerge,
+  onClose,
+}: {
+  pr: PrWithConflicts;
+  stack: NonNullable<PrWithConflicts["stack"]>;
+  status: PrStatus | null;
+  mergeMethod: MergeMethod;
+  actionBusy: boolean;
+  mergeBlockedReason: string | null;
+  notice: PrMergeCardNotice | null;
+  onMerge: (result: PrMergeDialogResult) => void;
+  onClose: () => void;
+}) {
+  const [method, setMethod] = React.useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
+  const [armed, setArmed] = React.useState(false);
+  const [bypass, setBypass] = React.useState(false);
+  React.useEffect(() => {
+    setArmed(false);
+    setBypass(false);
+  }, [pr.id]);
+  // A new head disarms the confirm. The first status load (no head yet, then
+  // a head) is not a new head.
+  const lastHeadRef = React.useRef<string | null>(status?.headSha ?? null);
+  React.useEffect(() => {
+    const head = status?.headSha ?? null;
+    if (head && lastHeadRef.current && head !== lastHeadRef.current) setArmed(false);
+    if (head) lastHeadRef.current = head;
+  }, [status?.headSha]);
+  const canMerge = pr.state === "open";
+  // Older hosts do not send `openThroughHere`; the position is the upper bound.
+  const count = stack.openThroughHere || stack.position;
+  // GitHub bypasses rules only for a merge of the bottom open PR.
+  const canBypass = count === 1;
+  const bypassing = canBypass && bypass;
+
+  const merge = () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    writeLastMergeMethod(method);
+    onMerge({ method, bypassRules: bypassing, expectedHeadSha: status?.headSha ?? undefined });
+  };
+
+  return (
+    <div data-testid="pr-merge-card" data-kind="stack">
+      <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
+      <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
+        <Stack size={16} weight="fill" />
+        <span className="min-w-0 flex-1 text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
+          GitHub Stack {stack.position} of {stack.size}
+        </span>
+        <button
+          type="button"
+          onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] hover:bg-white/[0.07]"
+          style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+        >
+          GitHub <ArrowSquareOut size={12} />
+        </button>
+      </div>
+      <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+        {stackCardText(pr, stack.number, count)}
+      </p>
+      {pr.state === "merged" ? <div className="mb-3"><PrShippedSummary pr={pr} /></div> : null}
+      {canMerge ? (
+        <>
+          <div className="mb-2 flex gap-1" role="radiogroup" aria-label="Merge method">
+            {MERGE_METHODS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={method === option}
+                onClick={() => { setMethod(option); setArmed(false); }}
+                className="h-7 flex-1 rounded-md text-[11.5px]"
+                style={{
+                  color: method === option ? COLORS.textPrimary : COLORS.textMuted,
+                  background: method === option ? "color-mix(in srgb, var(--color-fg) 10%, transparent)" : "transparent",
+                  border: `1px solid ${COLORS.border}`,
+                  cursor: "pointer",
+                  fontFamily: SANS_FONT,
+                }}
+              >
+                {mergeMethodShortLabel(option)}
+              </button>
+            ))}
+          </div>
+          {canBypass ? (
+            <label className="mb-2 flex items-center gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={bypass}
+                onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
+                data-testid="pr-stack-merge-bypass"
+              />
+              Bypass branch rules (needs bypass permission)
+            </label>
+          ) : null}
+          {/* Pinned to the card's bottom edge, so a short pane that scrolls
+              the card still shows the merge button. */}
+          <div className="ade-pr-dock-card-actions">
+            <button
+              type="button"
+              onClick={merge}
+              disabled={actionBusy || Boolean(mergeBlockedReason)}
+              title={mergeBlockedReason ?? undefined}
+              data-testid="pr-stack-merge"
+              data-armed={armed || undefined}
+              className="mb-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-60"
+              style={{ color: "#fff", background: bypassing ? COLORS.danger : MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+            >
+              {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
+              {stackMergeButtonLabel({ armed, count, prNumber: pr.githubPrNumber, bypassing })}
+            </button>
+          </div>
+        </>
+      ) : null}
+      <PrMergeCardFooter mergeBlockedReason={mergeBlockedReason} notice={notice} />
+    </div>
+  );
+}
+
+type PrMergeCardNotice = { tone: "success" | "error"; text: string };
+
+/** The offline reason and the update-branch notice, shared by both merge cards. */
+function PrMergeCardFooter({ mergeBlockedReason, notice }: { mergeBlockedReason: string | null; notice: PrMergeCardNotice | null | undefined }) {
+  return (
+    <>
+      {mergeBlockedReason ? (
+        <div className="text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} data-testid="pr-merge-offline-reason">
+          {mergeBlockedReason}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
+      ) : null}
+    </>
   );
 }
 

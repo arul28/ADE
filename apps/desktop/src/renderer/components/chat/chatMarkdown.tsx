@@ -5,7 +5,9 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { parseProofCitationUrl } from "../../../shared/proofCitation";
+import { parseDeeplink } from "../../../shared/deeplinks";
 import { cn } from "../ui/cn";
 import {
   isWindowsAbsolutePath,
@@ -88,6 +90,9 @@ export function chatMarkdownUrlTransform(value: string): string {
   // A proof citation names an artifact id, not a location. Only the answer
   // renderer's image override reads it; nothing opens it as a URL.
   if (parseProofCitationUrl(value)) return value;
+  // An `ade://` link is a typed pointer the renderers draw as a chip; the
+  // default transform blanks the unknown scheme. Only a link that parses passes.
+  if (/^ade:\/\//i.test(value) && parseDeeplink(value).ok) return value;
   return defaultUrlTransform(value);
 }
 
@@ -152,6 +157,8 @@ function ChatMarkdownAnchor({
 }): ReactNode {
   const openWorkspacePath = useChatWorkspacePathOpener();
   const workspacePath = resolveWorkspacePathFromHref(href);
+  // A `localhost` link means the chat's machine, not necessarily this one.
+  const runtimePin = useChatRuntimeScope().pin;
 
   // Allowing `file:` and drive schemes past the sanitizer (above) means an href
   // that is NEITHER a resolvable workspace path NOR a real URL — `file:///tmp`,
@@ -188,7 +195,7 @@ function ChatMarkdownAnchor({
       className={className}
       onClick={(event) => {
         event.preventDefault();
-        openLinkFromUi(href, event);
+        openLinkFromUi(href, event, { runtimePin });
       }}
     >
       {children}

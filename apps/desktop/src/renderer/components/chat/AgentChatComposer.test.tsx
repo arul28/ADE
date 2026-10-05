@@ -397,7 +397,7 @@ describe("AgentChatComposer", () => {
     expect(icon.textContent ?? "").not.toContain("GH");
   });
 
-  it("hydrates highlighted assistant output as an inline Chat context chip", async () => {
+  it("hydrates highlighted assistant output as an inline quote chip", async () => {
     const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     (window as any).ade = { app: { writeClipboardText } };
     const block = formatChatOutputContextBlock("retry the lane checkout")!;
@@ -411,7 +411,8 @@ describe("AgentChatComposer", () => {
       if (!el) throw new Error("chat context chip not rendered");
       return el;
     });
-    expect(chip.textContent).toContain("Chat context");
+    expect(chip.textContent).toContain("retry the lane checkout");
+    expect(chip.getAttribute("aria-label")).toContain("Quote");
     fireEvent.click(chip);
     fireEvent.click(screen.getByRole("menuitem", { name: /Copy/ }));
     expect(writeClipboardText).toHaveBeenCalledWith("retry the lane checkout");
@@ -684,7 +685,7 @@ describe("AgentChatComposer", () => {
     const menu = screen.getByRole("menu", { name: "Send options" });
     expect(menu.textContent).toContain("After the current tool step.");
     expect(menu.textContent).toContain("When this turn finishes.");
-    expect(menu.textContent).toContain("Stop and redirect Claude now.");
+    expect(menu.textContent).toContain("Redirect Claude now.");
   });
 
   const CURSOR_STEER_OVERRIDES = {
@@ -2470,7 +2471,9 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
-    expect(screen.getByLabelText(/stop/i)).toBeTruthy();
+    // Every provider now has a Stop menu beside the button; the button itself
+    // keeps its own name.
+    expect(screen.getByRole("button", { name: "Stop active turn" })).toBeTruthy();
   });
 
   it("locks the prompt box while a pending question is waiting", () => {

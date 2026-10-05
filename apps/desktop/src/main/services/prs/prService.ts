@@ -112,6 +112,12 @@ import type {
   GitHubWebhookIngestResult,
   ListGitHubPrStacksArgs,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  UnlinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -158,6 +164,7 @@ import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/t
 import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
 import { describeAutoMergeFailure } from "../../../shared/prAutoMerge";
 import { classifyPrAuthor } from "../../../shared/prBotIdentity";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
@@ -171,7 +178,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
-import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -182,15 +189,33 @@ import {
   rowMergedBy,
 } from "./prRowMetadata";
 import { createGithubStackStore } from "./githubStackStore";
+import { createGithubStackMerge } from "./githubStackMerge";
+import { createPrChatLinkStore } from "./prChatLinkStore";
+import { createPrChatWatchStore, prChatWatchSummary, type PrChatWatchRecord } from "./prChatWatchStore";
+import {
+  adeReviewRemarkKey,
+  parsePrWatchMode,
+  type GetPrChatWatchArgs,
+  type PrChatWatchSummary,
+  type SetPrChatWatchArgs,
+} from "../../../shared/prWatch";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { selectStackSiblings } from "../../../shared/prChatScope";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import {
+  buildLaneBranchHistoryIndex,
+  pickLaneBranchHistoryPr,
+  prOpenedDuringLane,
+  resolveLaneBranchHistoryOwner,
+  type LaneBranchHistoryIndex,
+} from "./laneBranchHistoryOwnership";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
   buildLinearPrTitle,
@@ -974,14 +999,6 @@ function toPrState(args: { state: string; draft: boolean; mergedAt: string | nul
   return "closed";
 }
 
-function toChecksStatus(state: string | null | undefined): PrChecksStatus {
-  const value = (state ?? "").toLowerCase();
-  if (value === "success") return "passing";
-  if (value === "failure" || value === "error") return "failing";
-  if (value === "pending") return "pending";
-  return "none";
-}
-
 /** Row storage for `checksMissingRequired` is JSON; tolerate anything else. */
 function parseMissingRequired(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -1593,141 +1610,26 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
-  type PullRequestChatSessionRow = { pr_id: string; session_id: string };
-
-  const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
-    const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
-    const result = new Map<string, string[]>();
-    if (ids.length === 0) return result;
-    try {
-      const placeholders = ids.map(() => "?").join(", ");
-      const rows = db.all<PullRequestChatSessionRow>(
-        `
-          select pr_id, session_id
-            from pull_request_chat_sessions
-           where project_id = ?
-             and pr_id in (${placeholders})
-           order by created_at asc, id asc
-        `,
-        [projectId, ...ids],
-      );
-      for (const row of rows) {
-        const sessionId = String(row.session_id ?? "").trim();
-        if (!sessionId) continue;
-        const current = result.get(row.pr_id) ?? [];
-        if (!current.includes(sessionId)) current.push(sessionId);
-        result.set(row.pr_id, current);
+  const chatLinks = createPrChatLinkStore({
+    db,
+    projectId,
+    logger,
+    knownStackNumberForPr: (repo, prNumber) => {
+      try {
+        return githubStackStore.knownStackNumberForPr(repo, prNumber);
+      } catch {
+        return null;
       }
-    } catch (error) {
-      logger.warn("prs.chat_session_links_read_failed", { error: getErrorMessage(error) });
-    }
-    return result;
-  };
-
-  const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
-    const links = chatSessionIdsByPrId(summaries.map((summary) => summary.id));
-    return summaries.map((summary) => {
-      const sessionIds = links.get(summary.id);
-      return sessionIds?.length ? { ...summary, chatSessionIds: sessionIds } : summary;
-    });
-  };
-
-  const removeChatSessionLinksFromOtherLanes = (prId: string, laneId: string): void => {
-    try {
-      db.run(
-        `delete from pull_request_chat_sessions
-          where project_id = ? and pr_id = ? and lane_id <> ?`,
-        [projectId, prId, laneId],
-      );
-    } catch {
-      // Older test/embedded databases may predate the optional edge table.
-    }
-  };
-
-  const linkPrToChatSession = (args: {
-    prId: string;
-    laneId: string;
-    sessionId?: string | null;
-  }): void => {
-    const sessionId = String(args.sessionId ?? "").trim();
-    if (!sessionId) return;
-
-    try {
-      // The row only has to EXIST in this project. It deliberately does not
-      // have to belong to `args.laneId`: a chat may reference a pull request
-      // another lane opened ("Link a PR by number or URL"), and `linkToLane`
-      // leaves that row's ownership with the opening lane on purpose. Requiring
-      // equality here made every cross-lane link a silent no-op — the call
-      // reported success, no edge was written, and the PR vanished from the
-      // chat on the next read (`selectPrsForChatInLane` finds a foreign PR only
-      // through this edge). The real protection is the session lookup below,
-      // which still refuses any session that does not belong to `args.laneId`.
-      const pr = db.get<{ id: string }>(
-        "select id from pull_requests where id = ? and project_id = ? limit 1",
-        [args.prId, projectId],
-      );
-      if (!pr) return;
-
-      // Chat surfaces use the terminal-session id. The Claude pointer fallback
-      // keeps imported/older chats addressable when only their provider session
-      // id was persisted.
-      const session = db.get<{ id: string }>(
-        `
-          select id
-            from terminal_sessions
-           where id = ? and lane_id = ?
-          union all
-          select chat_session_id as id
-            from claude_sessions
-           where session_id = ? and lane_id = ? and chat_session_id is not null
-           limit 1
-        `,
-        [sessionId, args.laneId, sessionId, args.laneId],
-      );
-      if (!session) {
-        logger.warn("prs.chat_session_link_session_missing", {
-          prId: args.prId,
-          laneId: args.laneId,
-          sessionId,
-        });
-        return;
-      }
-      const canonicalSessionId = String(session.id ?? "").trim();
-      if (!canonicalSessionId) return;
-      const now = nowIso();
-      const existing = db.get<{ id: string }>(
-        `
-          select id
-            from pull_request_chat_sessions
-           where project_id = ? and pr_id = ? and session_id = ?
-           limit 1
-        `,
-        [projectId, args.prId, canonicalSessionId],
-      );
-      if (existing) {
-        db.run(
-          "update pull_request_chat_sessions set lane_id = ?, updated_at = ? where id = ? and project_id = ?",
-          [args.laneId, now, existing.id, projectId],
-        );
-      } else {
-        db.run(
-          `
-            insert into pull_request_chat_sessions(
-              id, project_id, pr_id, lane_id, session_id, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?)
-          `,
-          [randomUUID(), projectId, args.prId, args.laneId, canonicalSessionId, now, now],
-        );
-      }
-    } catch (error) {
-      logger.warn("prs.chat_session_link_write_failed", {
-        prId: args.prId,
-        laneId: args.laneId,
-        sessionId,
-        error: getErrorMessage(error),
-      });
-    }
-  };
+    },
+  });
+  const withChatSessionLinks = chatLinks.withChatSessionLinks;
+  const chatWatchStore = createPrChatWatchStore({ db, projectId, logger });
+  const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
+  const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
+  const linkPrToChatSession = chatLinks.linkPrToChatSession;
+  const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
+  const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
+  const pendingAgentStackAttaches = chatLinks.pendingAgentStackAttaches;
   const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
     github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
     head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
@@ -2093,6 +1995,21 @@ export function createPrService({
 
   const getRow = (prIdOrLocator: string): PullRequestRow | null =>
     getRowById(prIdOrLocator) ?? getRowByLocator(prIdOrLocator);
+
+  /**
+   * Remember a comment ADE posted so PR Watch never wakes a chat over it. Keyed
+   * by the canonical row id the watch reads; a PR ADE has no row for has no
+   * watch, so there is nothing to record.
+   */
+  const recordAdeCommentForPr = (prIdOrLocator: string, commentId: string | null | undefined): void => {
+    let row: PullRequestRow | null = null;
+    try {
+      row = getRow(prIdOrLocator);
+    } catch {
+      return;
+    }
+    if (row) chatWatchStore.recordAdeComment(row.id, commentId);
+  };
 
   const requireRow = (prId: string): PullRequestRow => {
     const row = getRow(prId);
@@ -3245,13 +3162,21 @@ export function createPrService({
     headBranch: string;
     title: string;
     githubUrl: string;
+    createdAt: string | null;
+    isOpen: boolean;
   };
 
-  const autoMapCandidateFromRawPull = (rawPr: any, repo: GitHubRepoRef): AutoMapPrCandidate | null => {
-    // Guard #1: only open/draft PRs (never merged/closed).
-    if (rawPr?.merged_at) return null;
+  const autoMapCandidateFromRawPull = (
+    rawPr: any,
+    repo: GitHubRepoRef,
+    options: { includeClosed?: boolean } = {},
+  ): AutoMapPrCandidate | null => {
+    // Guard #1: only open/draft PRs (never merged/closed). The branch-history
+    // lookup opts out: it exists to recover PRs that merged before any poll
+    // saw them open.
     const state = asString(rawPr?.state).toLowerCase();
-    if (state && state !== "open") return null;
+    const isOpen = !rawPr?.merged_at && (!state || state === "open");
+    if (!isOpen && options.includeClosed !== true) return null;
 
     // Guard #2: same-repo head only (never a fork).
     if (!rawPullHasSameRepoHead(rawPr, repo)) return null;
@@ -3267,7 +3192,125 @@ export function createPrService({
       title: asString(rawPr?.title) || `PR #${prNumber}`,
       githubUrl: asString(rawPr?.html_url)
         || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+      createdAt: asString(rawPr?.created_at) || null,
+      isOpen,
     };
+  };
+
+  const loadLaneBranchHistoryIndex = (): LaneBranchHistoryIndex => {
+    try {
+      return buildLaneBranchHistoryIndex(laneService.listBranchHistory());
+    } catch (error) {
+      logger.warn("prs.lane_branch_history_read_failed", { error: getErrorMessage(error) });
+      return new Map();
+    }
+  };
+
+  /**
+   * Link a PR's row to the chats that were open in the lane when it was
+   * created. A history PR does not match the lane's recorded branch, so lane
+   * surfaces show it only through this edge. Plain shells (`shell`, `other`)
+   * are not agents, and a session that ended before the PR existed did not
+   * open it.
+   */
+  const attributeLanePrToChats = (args: { prId: string; laneId: string; createdAt: string | null }): void => {
+    const createdMs = args.createdAt ? Date.parse(args.createdAt) : Number.NaN;
+    if (!Number.isFinite(createdMs)) return;
+    // Session times are stored as `toISOString()`. GitHub's `…:11Z` sorts after
+    // `…:11.500Z` as text, so compare in the stored format.
+    const createdAt = new Date(createdMs).toISOString();
+    let sessions: Array<{ id: string }> = [];
+    try {
+      sessions = db.all<{ id: string }>(
+        `
+          select id
+            from terminal_sessions
+           where lane_id = ?
+             and tool_type is not null
+             and tool_type not in ('shell', 'other')
+             and started_at <= ?
+             and (ended_at is null or ended_at >= ?)
+           order by started_at desc
+           limit 3
+        `,
+        [args.laneId, createdAt, createdAt],
+      );
+    } catch (error) {
+      logger.warn("prs.lane_history_chat_attribution_failed", {
+        prId: args.prId,
+        laneId: args.laneId,
+        error: getErrorMessage(error),
+      });
+      return;
+    }
+    for (const session of sessions) {
+      linkPrToChatSession({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
+    }
+  };
+
+  /**
+   * Link a PR whose head is a branch from a lane's branch history. Same
+   * suppression and one-PR-per-branch guards as the strict match. `linkToLane`
+   * leaves the PR body and Linear alone here, because the head is not the
+   * lane's recorded branch.
+   */
+  const autoMapPrToHistoryLane = async (
+    candidate: AutoMapPrCandidate,
+    repo: GitHubRepoRef,
+    lanes: LaneSummary[],
+    history: LaneBranchHistoryIndex,
+  ): Promise<LaneSummary | null> => {
+    if (getLiveRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
+    const lane = resolveLaneBranchHistoryOwner(candidate.headBranch, lanes, history);
+    if (!lane) return null;
+    if (!prOpenedDuringLane(candidate.createdAt, lane)) return null;
+    if (getRowForLaneBranch(lane.id, candidate.headBranch)) return null;
+    const ignored = listAutoLinkIgnores(repo);
+    if (ignored.has(autoLinkIgnoreKey({
+      owner: repo.owner,
+      repo: repo.name,
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+    }))) {
+      return null;
+    }
+
+    const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+    attributeLanePrToChats({ prId: linked.id, laneId: lane.id, createdAt: linked.createdAt || candidate.createdAt });
+
+    // A merged backfill is history being filled in, not news; only an open PR
+    // gets the Undo-able toast.
+    if (candidate.isOpen) {
+      try {
+        emitPrEvent?.({
+          type: "pr-auto-linked",
+          timestamp: nowIso(),
+          prId: linked.id,
+          laneId: lane.id,
+          laneName: lane.name,
+          prNumber: candidate.prNumber,
+          prTitle: candidate.title,
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          headBranch: candidate.headBranch,
+          githubUrl: candidate.githubUrl,
+        });
+      } catch (error) {
+        logger.warn("prs.auto_map_event_emit_failed", {
+          prNumber: candidate.prNumber,
+          laneId: lane.id,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+
+    logger.info("prs.auto_mapped_by_lane_branch_history", {
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+      headBranch: candidate.headBranch,
+      state: candidate.isOpen ? "open" : "closed",
+    });
+    return lane;
   };
 
   /**
@@ -3281,6 +3324,7 @@ export function createPrService({
     candidate: AutoMapPrCandidate,
     repo: GitHubRepoRef,
     lanes: LaneSummary[],
+    history: LaneBranchHistoryIndex | null = null,
   ): Promise<LaneSummary | null> => {
     if (!autoMapByBranchEnabled()) return null;
 
@@ -3288,11 +3332,15 @@ export function createPrService({
     if (getLiveRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
 
     // Guard #3: exactly one non-archived worktree lane whose head branch
-    // matches the PR head branch. Zero or >1 → do nothing.
+    // matches the PR head branch. >1 → do nothing. Zero → the branch may be
+    // one a lane's worktree moved to without recording it.
     const matches = lanes.filter((lane) =>
       !lane.archivedAt
       && normalizeBranchName(branchNameFromRef(lane.branchRef)) === candidate.headBranch,
     );
+    if (matches.length === 0 && history) {
+      return await autoMapPrToHistoryLane(candidate, repo, lanes, history);
+    }
     if (matches.length !== 1) return null;
     const lane = matches[0];
 
@@ -3367,11 +3415,13 @@ export function createPrService({
   ): Promise<number> => {
     if (!autoMapByBranchEnabled()) return 0;
     let mapped = 0;
+    let history: LaneBranchHistoryIndex | null = null;
     for (const rawPr of rawPulls) {
       const candidate = autoMapCandidateFromRawPull(rawPr, repo);
       if (!candidate) continue;
       try {
-        const lane = await autoMapPrToLane(candidate, repo, lanes);
+        history ??= loadLaneBranchHistoryIndex();
+        const lane = await autoMapPrToLane(candidate, repo, lanes, history);
         if (lane) mapped += 1;
       } catch (error) {
         logger.warn("prs.auto_map_by_branch_failed", {
@@ -3416,6 +3466,99 @@ export function createPrService({
         error: getErrorMessage(error),
       });
     }
+  };
+
+  // One GitHub lookup per history branch per window. A branch that has no PR
+  // yet is asked again only after HEAD moves or the window passes, so a lane
+  // full of scratch branches costs a bounded number of calls.
+  const LANE_BRANCH_HISTORY_LOOKUP_INTERVAL_MS = 10 * 60_000;
+  const LANE_BRANCH_HISTORY_MAX_LOOKUPS = 6;
+  const laneBranchHistoryLookedUpAtMs = new Map<string, number>();
+
+  /**
+   * Trigger #3 (lane branch history): the lane service saw a lane's worktree
+   * use branches it does not record — an agent cutting follow-up PR branches
+   * inside its lane. Look each one up on GitHub, merged and closed included,
+   * and link the PR to the lane. This is what recovers a PR that was opened and
+   * merged between two polls, which the open-PR snapshot never sees.
+   */
+  const autoLinkLaneBranchHistory = async (args: { laneId: string; branchRefs: string[] }): Promise<number> => {
+    if (!autoMapByBranchEnabled()) return 0;
+    const branches = [...new Set(
+      args.branchRefs.map((ref) => normalizeBranchName(branchNameFromRef(ref))).filter(Boolean),
+    )];
+    if (branches.length === 0) return 0;
+    let linked = 0;
+    try {
+      const repo = await githubService.getRepoOrThrow();
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const history = loadLaneBranchHistoryIndex();
+      let lookups = 0;
+      for (const branch of branches) {
+        if (lookups >= LANE_BRANCH_HISTORY_MAX_LOOKUPS) break;
+        const lane = resolveLaneBranchHistoryOwner(branch, lanes, history);
+        if (!lane || lane.id !== args.laneId) continue;
+        if (getRowForLaneBranch(lane.id, branch)) continue;
+        const lookupKey = laneBranchLookupKey(repo, branch);
+        if (githubReadBackoff.isBackedOff(lookupKey)) continue;
+        const nowMs = Date.now();
+        const lastLookupMs = laneBranchHistoryLookedUpAtMs.get(lookupKey) ?? 0;
+        if (nowMs - lastLookupMs < LANE_BRANCH_HISTORY_LOOKUP_INTERVAL_MS) continue;
+        laneBranchHistoryLookedUpAtMs.set(lookupKey, nowMs);
+        lookups += 1;
+
+        let rawPulls: any[];
+        try {
+          rawPulls = await fetchAllPages<any>({
+            path: `/repos/${repo.owner}/${repo.name}/pulls`,
+            query: {
+              state: "all",
+              head: `${repo.owner}:${branch}`,
+              sort: "created",
+              direction: "desc",
+            },
+            maxPages: 1,
+          });
+          githubReadBackoff.clear(lookupKey);
+        } catch (error) {
+          githubReadBackoff.record(lookupKey, error, GITHUB_SNAPSHOT_TTL_MS);
+          logger.warn("prs.lane_branch_history_lookup_failed", {
+            laneId: lane.id,
+            branch,
+            error: getErrorMessage(error),
+          });
+          continue;
+        }
+
+        const best = pickLaneBranchHistoryPr(
+          rawPulls
+            .map((rawPr) => autoMapCandidateFromRawPull(rawPr, repo, { includeClosed: true }))
+            .filter((candidate): candidate is AutoMapPrCandidate => (
+              candidate !== null
+              && candidate.headBranch === branch
+              && prOpenedDuringLane(candidate.createdAt, lane)
+            )),
+        );
+        if (!best) continue;
+        try {
+          if (await autoMapPrToHistoryLane(best, repo, lanes, history)) linked += 1;
+        } catch (error) {
+          logger.warn("prs.lane_branch_history_link_failed", {
+            laneId: lane.id,
+            branch,
+            prNumber: best.prNumber,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+    } catch (error) {
+      logger.warn("prs.lane_branch_history_failed", {
+        laneId: args.laneId,
+        error: getErrorMessage(error),
+      });
+    }
+    if (linked > 0) emitPrsUpdated();
+    return linked;
   };
 
   const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
@@ -7572,8 +7715,15 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    // A PR created from a lane links its own lane's chat by default; the
+    // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
+    // internal parent-chat stack attach, not an arbitrary agent-supplied
+    // session id on create.
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    if (args.source === "agent") {
+      chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
 
     await publishLinearPrCardsForLane({
       lane,
@@ -7607,7 +7757,11 @@ export function createPrService({
     });
 
     const refreshed = await refreshOne(prId);
-    return withGithubStackMembership(refreshed) ?? refreshed;
+    const withStack = withGithubStackMembership(refreshed) ?? refreshed;
+    if (args.source === "agent") {
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
+    return withStack;
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -7718,9 +7872,9 @@ export function createPrService({
     });
     markHotRefresh([prId]);
     // Edges from other lanes survive: one PR can legitimately be referenced by
-    // several chats. Pruning only makes sense when this lane owns the PR.
-    if (!linksToAnotherLane) removeChatSessionLinksFromOtherLanes(prId, lane.id);
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    // several chats. Cross-lane links are allowed for GitHub stack members or
+    // an explicit pick.
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     if (headMatchesLane) {
       await publishLinearPrCardsForLane({
@@ -8141,28 +8295,14 @@ export function createPrService({
     return { success: true, mergeCommitSha: null };
   };
 
-  /**
-   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
-   * how the PR shipped, then run the local bookkeeping.
-   *
-   * An unmapped PR has no row to record against and nothing local to clean up,
-   * so it only drops the read memos and invalidates the snapshot cache — that is
-   * what makes the next list read show it as merged.
-   */
-  /**
-   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
-   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
-   * someone else's repository, and deleting it here would delete an unrelated
-   * same-named branch out of the base repo.
-   */
-  const deleteMergedHeadBranchByCoords = async (
-    repo: GitHubRepoRef,
-    prNumber: number,
-  ): Promise<boolean> => {
-    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return false;
+  /** A fetched PR's head branch when it lives in `repo` itself; null for a fork. */
+  const sameRepoHeadBranch = (pull: any, repo: GitHubRepoRef): string | null => {
+    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return null;
     const headBranch = branchNameFromRef(asString(pull?.head?.ref));
-    if (!headBranch || headBranch === "HEAD") return false;
+    return headBranch && headBranch !== "HEAD" ? headBranch : null;
+  };
+
+  const deleteRemoteHeadBranch = async (repo: GitHubRepoRef, prNumber: number, headBranch: string): Promise<boolean> => {
     try {
       await githubService.apiRequest({
         method: "DELETE",
@@ -8179,6 +8319,29 @@ export function createPrService({
     }
   };
 
+  /**
+   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
+   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
+   * someone else's repository, and deleting it here would delete an unrelated
+   * same-named branch out of the base repo.
+   */
+  const deleteMergedHeadBranchByCoords = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<boolean> => {
+    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+    const headBranch = sameRepoHeadBranch(pull, repo);
+    return headBranch ? await deleteRemoteHeadBranch(repo, prNumber, headBranch) : false;
+  };
+
+  /**
+   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
+   * how the PR shipped, then run the local bookkeeping.
+   *
+   * An unmapped PR has no row to record against and nothing local to clean up,
+   * so it only drops the read memos and invalidates the snapshot cache — that is
+   * what makes the next list read show it as merged.
+   */
   const finishSuccessfulMerge = async (
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     args: LandPrArgs,
@@ -8223,6 +8386,26 @@ export function createPrService({
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
 
+  const githubStackMerge = createGithubStackMerge({
+    githubService,
+    // Declared further down; read at call time.
+    githubStackStore: { reconcile: (repo, stackNumber) => githubStackStore.reconcile(repo, stackNumber) },
+    operationService,
+    laneService,
+    logger,
+    fetchPr,
+    sameRepoHeadBranch,
+    deleteRemoteHeadBranch,
+    getRowForRepoPr,
+    recordMergeOutcome: (prId, outcome) => recordMergeOutcome(prId, outcome),
+    resolveViewerLoginForMerge: () => resolveViewerLoginForMerge(),
+    forgetActivityInputs,
+    markHotRefresh: (prIds) => markHotRefresh(prIds),
+    refreshOne,
+    invalidateGithubSnapshotCache,
+    delay,
+  });
+
   const land = async (args: LandPrArgs): Promise<LandResult> => {
     // A merge is a GitHub API call. It never needed a local row, so this
     // resolves a synthetic `gh:owner/repo#num` id too. Only the *local*
@@ -8259,30 +8442,10 @@ export function createPrService({
     };
     const githubStackNumber = githubStackStore.knownStackNumberForPr(repo, prNumber);
     if (githubStackNumber) {
-      return finishFailure(
-        "github_stack_requires_github_merge",
-        `PR #${prNumber} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
-      );
+      return await githubStackMerge.land(target, args, githubStackNumber, op.operationId);
     }
 
-    const formatMergeError = (rawMsg: string): string => {
-      if (rawMsg.includes("Resource not accessible by personal access token")) {
-        return "GitHub auth lacks permission to merge PRs. For gh auth or classic PATs, enable the repo scope. For fine-grained PATs, enable Contents: write and Pull requests: write.";
-      }
-      if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
-        return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
-      }
-      // A 409 from the merge API with an explicit `sha` we supplied means the
-      // head advanced since the merge dialog was opened (`Head branch was
-      // modified`). Distinguish it from a generic conflict.
-      if (args.expectedHeadSha && (rawMsg.includes("409") || /head branch was modified/i.test(rawMsg))) {
-        return "PR head changed since you opened the merge dialog — refresh and retry.";
-      }
-      if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
-        return "PR has merge conflicts. Rebase or resolve conflicts before merging.";
-      }
-      return rawMsg;
-    };
+    const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
 
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
@@ -10140,7 +10303,30 @@ export function createPrService({
     githubService,
     logger,
     onSnapshotChanged: invalidateGithubSnapshotCache,
-    onReconciled: () => emitPrsUpdated(),
+    onReconciled: () => {
+      emitPrsUpdated();
+      for (const pending of pendingAgentStackAttaches.values()) {
+        attachNewStackLayerToParentChats(pending);
+      }
+      for (const [prId, pending] of [...pendingAgentStackAttaches]) {
+        const row = db.get<{ github_stack_number: number }>(
+          `
+            select entry.github_stack_number as github_stack_number
+              from pull_requests pr
+              join github_pr_stack_entries entry
+                on entry.project_id = pr.project_id
+               and lower(entry.repo_owner) = lower(pr.repo_owner)
+               and lower(entry.repo_name) = lower(pr.repo_name)
+               and entry.github_pr_number = pr.github_pr_number
+             where pr.id = ?
+               and pr.project_id = ?
+             limit 1
+          `,
+          [pending.prId, projectId],
+        );
+        if (row) pendingAgentStackAttaches.delete(prId);
+      }
+    },
   });
   const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
     if (summaries.length === 0) return summaries;
@@ -10151,6 +10337,37 @@ export function createPrService({
         repoPrKey(summary.repoOwner, summary.repoName, summary.githubPrNumber),
       ) ?? null,
     }));
+  };
+
+  const getStackLinkOffer = (args: { sessionId: string; prId?: string | null }): StackLinkOffer | null => {
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return null;
+    const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
+    const focus = args.prId
+      ? summaries.find((pr) => pr.id === args.prId)
+      : summaries.find((pr) => (pr.chatSessionIds ?? []).includes(sessionId) && pr.stack);
+    if (!focus?.stack) return null;
+    const siblings = selectStackSiblings(summaries, focus).filter((pr) => (
+      pr.id !== focus.id
+      && !(pr.chatSessionIds ?? []).includes(sessionId)
+      // A sibling this chat explicitly unlinked stays unlinking: the offer must
+      // not re-propose it, and then a failed stack-link rollback (dismiss:false)
+      // could not restore the tombstone either.
+      && !(pr.dismissedChatSessionIds ?? []).includes(sessionId)
+    ));
+    if (siblings.length === 0) return null;
+    return {
+      sessionId,
+      prId: focus.id,
+      stackNumber: focus.stack.number,
+      siblings: siblings.map((pr) => ({
+        prId: pr.id,
+        githubPrNumber: pr.githubPrNumber,
+        title: pr.title,
+        laneId: pr.laneId,
+        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+      })),
+    };
   };
   const withGithubStackMembership = (summary: PrSummary | null): PrSummary | null =>
     summary ? withGithubStackMemberships([summary])[0] ?? summary : null;
@@ -12293,6 +12510,199 @@ export function createPrService({
       return stack;
     },
 
+    linkChatSession(args: LinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string; lane_id: string }>(
+        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr) return { ok: false };
+      const ok = linkPrToChatSession({
+        prId: pr.id,
+        laneId: pr.lane_id,
+        sessionId: args.sessionId,
+        allowCrossLane: args.allowCrossLane === true,
+      });
+      if (ok) emitPrsUpdated();
+      return { ok };
+    },
+
+    unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string }>(
+        "select id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      // Refuse a bogus prId up front: otherwise the unlink would still persist a
+      // dismissal tombstone for a non-existent row.
+      if (!pr) return { ok: false };
+      const ok = unlinkPrFromChatSession(args);
+      if (ok) {
+        emitPrsUpdated();
+        // The watch control lives on the linked PR; an unlinked PR's watch
+        // would keep waking the chat with nothing on screen to stop it.
+        const sessionId = resolveCanonicalChatSessionId(args.sessionId) ?? args.sessionId;
+        const watch = chatWatchStore.getForPair(args.prId, sessionId);
+        if (watch && !watch.stoppedAt) {
+          chatWatchStore.stop(watch.id, "unwatched");
+          emitPrEvent?.({ type: "pr-chat-watch-changed", sessionId, prId: args.prId, watch: null });
+        }
+      }
+      return { ok };
+    },
+
+    /**
+     * Turn PR Watch / Ship on, switch it, or (`mode: null`) turn it off for one
+     * chat. Watching links the chat to the PR when it was not linked yet,
+     * because the watch only makes sense for a chat that works on the PR.
+     */
+    setChatWatch(args: SetPrChatWatchArgs): PrChatWatchSummary | null {
+      const sessionId = String(args.sessionId ?? "").trim();
+      const canonicalSessionId = resolveCanonicalChatSessionId(sessionId) ?? sessionId;
+      const target = String(args.prId ?? "").trim();
+      const mode = parsePrWatchMode(args.mode);
+      // Agents know a PR by number or URL, not by ADE's row id; `getRow`
+      // resolves all three. A bare number that exists in two repos is
+      // ambiguous unless this chat is already linked to one of them.
+      let pr: PullRequestRow | null = null;
+      try {
+        pr = target ? getRow(target) : null;
+      } catch (error) {
+        const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
+        const candidates = Number.isInteger(number)
+          ? db.all<PullRequestRow>(
+            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and ${LIVE_PR_ROWS}`,
+            [projectId, number],
+          )
+          : [];
+        const links = chatLinks.chatSessionIdsByPrId(candidates.map((row) => row.id));
+        pr = candidates.find((row) => links.get(row.id)?.includes(canonicalSessionId)) ?? null;
+        if (!pr) throw error;
+      }
+      if (!pr || !sessionId) {
+        if (mode === null) return null;
+        throw new Error(`No pull request "${target}" is tracked in this project. Use an ADE PR id, a PR number, or a PR URL.`);
+      }
+      let record: PrChatWatchRecord | null;
+      if (mode === null) {
+        const existing = chatWatchStore.getForPair(pr.id, canonicalSessionId);
+        record = existing && !existing.stoppedAt ? chatWatchStore.stop(existing.id, "unwatched") : existing;
+      } else {
+        // The watch wakes the chat through a chat turn; a terminal (a tracked
+        // agent CLI's own session) can never take one.
+        const sessionRow = db.get<{ tool_type: string | null }>(
+          "select tool_type from terminal_sessions where id = ? limit 1",
+          [canonicalSessionId],
+        );
+        if (!isChatToolType(sessionRow?.tool_type)) {
+          throw new Error("PR Watch wakes an ADE chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
+        }
+        if (pr.state === "merged" || pr.state === "closed") {
+          throw new Error(`PR #${pr.github_pr_number} is ${pr.state}; there is nothing left to watch.`);
+        }
+        if (pr.detached_at) {
+          throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
+        }
+        // An explicit watch is an explicit link, even over an earlier unlink.
+        if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+          emitPrsUpdated();
+        }
+        record = chatWatchStore.arm({
+          prId: pr.id,
+          sessionId: canonicalSessionId,
+          mode,
+          armedBy: args.armedBy === "agent" ? "agent" : "user",
+          headSha: pr.head_sha ?? null,
+        });
+        markHotRefresh([pr.id]);
+      }
+      const summary = record ? prChatWatchSummary(record, { githubPrNumber: pr.github_pr_number }) : null;
+      emitPrEvent?.({
+        type: "pr-chat-watch-changed",
+        sessionId: canonicalSessionId,
+        prId: pr.id,
+        watch: summary && summary.status === "active" ? summary : null,
+      });
+      return summary;
+    },
+
+    /** A chat's (or a PR's) live watches. */
+    getChatWatches(args: GetPrChatWatchArgs = {}): PrChatWatchSummary[] {
+      const sessionId = args.sessionId?.trim()
+        ? resolveCanonicalChatSessionId(args.sessionId.trim()) ?? args.sessionId.trim()
+        : undefined;
+      if (!sessionId && !args.prId) return [];
+      return chatWatchStore.list({ sessionId, prId: args.prId, activeOnly: true }).map((record) => {
+        const number = db.get<{ github_pr_number: number }>(
+          "select github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
+          [record.prId, projectId],
+        )?.github_pr_number ?? null;
+        return prChatWatchSummary(record, { githubPrNumber: number });
+      });
+    },
+
+    /** The reactor's handle on the watch rows. In-process only, not an action. */
+    chatWatchStore,
+
+    linkChatStack(args: LinkPrChatStackArgs): { ok: boolean; linked: number } {
+      const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
+      if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      if (unclaimed.length === 0) return { ok: false, linked: 0 };
+      const canonicalSessionId = resolveCanonicalChatSessionId(offer.sessionId) ?? offer.sessionId;
+      const restoreDismissals = new Set(
+        unclaimed
+          .filter((sibling) => hasChatSessionDismissal(sibling.prId, canonicalSessionId))
+          .map((sibling) => sibling.prId),
+      );
+      const linkedIds: string[] = [];
+      for (const sibling of unclaimed) {
+        const ok = linkPrToChatSession({
+          prId: sibling.prId,
+          laneId: sibling.laneId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        });
+        if (!ok) {
+          for (const prId of linkedIds) {
+            unlinkPrFromChatSession({
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: restoreDismissals.has(prId),
+            });
+          }
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
+      }
+      if (linkedIds.length > 0) emitPrsUpdated();
+      return { ok: true, linked: linkedIds.length };
+    },
+
+    listChatSessionsForPr(args: ListPrChatSessionsArgs): PrChatSessionLink[] {
+      try {
+        return db.all<PrChatSessionLink>(
+          `
+            select pcs.session_id as sessionId,
+                   ts.title as title,
+                   pcs.lane_id as laneId
+              from pull_request_chat_sessions pcs
+              left join terminal_sessions ts on ts.id = pcs.session_id
+             where pcs.project_id = ?
+               and pcs.pr_id = ?
+             order by pcs.created_at asc
+          `,
+          [projectId, args.prId],
+        ).map((row) => ({
+          sessionId: String(row.sessionId ?? "").trim(),
+          title: row.title ?? null,
+          laneId: row.laneId ?? null,
+        })).filter((row) => row.sessionId);
+      } catch {
+        return [];
+      }
+    },
+
+    getStackLinkOffer,
+
     async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
       return await githubStackStore.reconcile(repo, stackNumber);
     },
@@ -12391,6 +12801,14 @@ export function createPrService({
      */
     async tryAutoMapLaneByBranch(laneId: string): Promise<void> {
       await tryAutoMapLaneByBranch(laneId);
+    },
+
+    /**
+     * Trigger #3: link PRs opened from branches a lane's worktree used without
+     * recording them (see `autoLinkLaneBranchHistory`). Never throws.
+     */
+    async autoLinkLaneBranchHistory(args: { laneId: string; branchRefs: string[] }): Promise<number> {
+      return await autoLinkLaneBranchHistory(args);
     },
 
     async refreshSnapshots(args: { prId?: string } = {}): Promise<{ refreshedCount: number }> {
@@ -12537,7 +12955,9 @@ export function createPrService({
         body: { body: args.body }
       });
       forgetActivityInputs(repo, prNumber);
-      return toPrComment("issue", data);
+      const comment = toPrComment("issue", data);
+      recordAdeCommentForPr(args.prId, comment.id);
+      return comment;
     },
 
     /**
@@ -12633,6 +13053,9 @@ export function createPrService({
         throw new Error("GitHub did not return the review-thread reply.");
       }
       forgetActivityInputsForPr(args.prId);
+      // ADE posted it for an agent: a PR watch must not wake that agent with
+      // its own reply.
+      recordAdeCommentForPr(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -12698,6 +13121,9 @@ export function createPrService({
         throw new Error("GitHub did not return the review-thread reply.");
       }
       forgetActivityInputsForPr(args.prId);
+      // ADE posted it for an agent: a PR watch must not wake that agent with
+      // its own reply.
+      recordAdeCommentForPr(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -12875,7 +13301,9 @@ export function createPrService({
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
-      return await submitReviewRequest(args);
+      const result = await submitReviewRequest(args);
+      if (result.submittedAt) recordAdeCommentForPr(args.prId, adeReviewRemarkKey(result.submittedAt));
+      return result;
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {
@@ -12922,6 +13350,10 @@ export function createPrService({
 
     async setAutoMerge(args: SetPrAutoMergeArgs): Promise<void> {
       const target = resolvePrTarget(args.prId);
+      const stackNumber = args.enabled ? githubStackStore.knownStackNumberForPr(target.repo, target.prNumber) : null;
+      if (stackNumber) {
+        throw new Error(`GitHub does not support auto-merge for stacked PRs. Merge Stack #${stackNumber} instead.`);
+      }
       const pullRequestId = await fetchPullRequestNodeId(target);
       const method = (args.method ?? "squash").toUpperCase();
       const mutation = args.enabled

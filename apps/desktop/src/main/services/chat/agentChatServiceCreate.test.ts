@@ -46,6 +46,9 @@ import {
   waitForEvent,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function settleDirectiveBookkeeping(): Promise<void> {
@@ -185,6 +188,76 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
+      service.forceDisposeAll();
+    });
+
+    const exhaustedDiskMonitor = {
+      canPerform: vi.fn(() => ({
+        allowed: false as const,
+        state: "exhausted" as const,
+        code: "disk_full" as const,
+        message: "Your computer is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+      })),
+    };
+
+    async function createPendingComment(service: ReturnType<typeof createService>["service"], sessionId: string) {
+      return service.createThreadComment({
+        sessionId,
+        messageKey: "message:1",
+        messageExcerpt: "an earlier reply",
+        anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+        body: "my note",
+      });
+    }
+
+    it("keeps pending comments when the send is a provider slash command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      // The provider must still see the leading `/`, so the comments ride the
+      // user's next real send instead of this command.
+      await service.sendMessage({ sessionId: session.id, text: "/compact", includeThreadComments: true }).catch(() => undefined);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      service.forceDisposeAll();
+    });
+
+    it("keeps pending comments when the disk gate refuses a send that has text", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: exhaustedDiskMonitor,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Keep going.", includeThreadComments: true });
+
+      // The send's own disk gate reports the refusal; the comments are not spent.
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && typeof entry.event.detail === "object"
+        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("throws rather than silently dropping a comments-only send under disk pressure", async () => {
+      const { service } = createService({ diskPressureMonitor: exhaustedDiskMonitor });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        includeThreadComments: true,
+      })).rejects.toThrow(/almost out of storage/i);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
       service.forceDisposeAll();
     });
   });
@@ -1071,6 +1144,46 @@ describe("createAgentChatService", () => {
       expect(session.provider).toBe("claude");
       expect(session.modelId).toBe("anthropic/claude-sonnet-5");
       expect(session.model).toBe("claude-sonnet-5");
+    });
+
+    it("adopts a preset's harness and model when the caller sends only a presetId", async () => {
+      // A caller that names only a preset — the CLI, an action bus, a scheduled
+      // wake — must record the harness that will actually launch. Before, the
+      // row kept the caller's default provider (codex) and an empty model while
+      // the runtime launched the preset's Claude Code, so every provider-gated
+      // surface read the wrong provider.
+      const adeHome = path.join(tmpHomeRoot, ".ade");
+      fs.mkdirSync(adeHome, { recursive: true });
+      const savedPreset: HarnessPreset = {
+        id: "hp_create_preset",
+        name: "Opus on work",
+        harness: "claude",
+        source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
+        model: "claude-opus-4-5",
+        subagentModel: "inherit",
+        agentOverrides: {},
+        agentEfforts: {},
+        accentColor: "#7c5ce0",
+        logo: { kind: "ade" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const settings = createAccountSettingsStore({
+        adeDir: adeHome,
+        relay: null,
+        getAccountUserId: () => "user_create_preset",
+      });
+      settings.set("all", "harnessPresets", [savedPreset]);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        presetId: savedPreset.id,
+      } as any);
+
+      expect(session.provider).toBe("claude");
+      expect(session.model).toBe("claude-opus-4-5");
+      service.forceDisposeAll();
     });
 
     it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {
@@ -2225,7 +2338,8 @@ describe("createAgentChatService", () => {
       expect(server?.type).toBe("sdk");
       expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
         name: "ade-cto",
-        timeout: 120_000,
+        // The transport only backstops; ADE's own per-tool deadline ends a call.
+        timeout: 65 * 60_000,
       }));
       const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
       expect(toolNames).toContain("spawnChat");
@@ -3637,6 +3751,45 @@ describe("createAgentChatService", () => {
         status: "running",
         endedAt: null,
       }));
+    });
+  });
+
+  // The account registry lives under the test's own temp home: `os.homedir()`
+  // is pinned there, and no test sets ADE_HOME.
+  describe("provider account pinning", () => {
+    it("records the account a new chat starts on, and keeps it when the default changes", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+
+      const before = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+
+      accounts.setDefault(work.id);
+      const after = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      expect((await service.getSessionSummary(after.id))?.instanceId).toBe(work.id);
+      // The chat started before the switch stays on the account it began on.
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+    });
+
+    it("moves a chat onto the new provider's default account when it switches provider", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        instanceId: work.id,
+      });
+      expect((await service.getSessionSummary(created.id))?.instanceId).toBe(work.id);
+
+      await service.updateSession({ sessionId: created.id, modelId: "gpt-5.4" as never });
+
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("codex");
+      expect(summary?.instanceId).toBe("codex");
     });
   });
 });

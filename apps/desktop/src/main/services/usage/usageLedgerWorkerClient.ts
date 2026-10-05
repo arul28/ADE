@@ -5,6 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { CostSnapshot, UsageProvider } from "../../../shared/types";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
+import { extraProviderHomesEnvName } from "./ledgers/localUsageLedgers";
 
 /**
  * A ceiling for a wedged child, not a budget for a normal scan.
@@ -107,6 +108,12 @@ type WorkerOptions = {
   spawnWorker?: typeof spawn;
   /** Test seam for the Node SEA runtime, whose executable embeds the worker. */
   embeddedRuntime?: boolean;
+  /**
+   * Config homes beyond each provider's default that hold this machine's
+   * history: the homes ADE creates for each account, preset and route.
+   * Passed to the worker as `ADE_USAGE_EXTRA_<PROVIDER>_HOMES`.
+   */
+  extraProviderHomes?: { claude?: readonly string[]; codex?: readonly string[] };
 };
 
 function abortError(): Error {
@@ -352,6 +359,10 @@ export function scanUsageLedgersInWorker(
     const spawnWorker = options.spawnWorker ?? spawn;
     const env = { ...process.env };
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
+    for (const provider of ["claude", "codex"] as const) {
+      const homes = options.extraProviderHomes?.[provider];
+      if (homes?.length) env[extraProviderHomesEnvName(provider)] = homes.join(path.delimiter);
+    }
     let child: ChildProcessWithoutNullStreams;
     try {
       const workerArgs = embeddedRuntime

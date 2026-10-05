@@ -251,7 +251,11 @@ export function WorkToolPicker({
                       ) : detail ? (
                         <span
                           id={availability.available ? undefined : reasonId}
-                          className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
+                          className={cn(
+                            "mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg transition-opacity duration-150",
+                            status?.stale && detail === status.line && "opacity-50",
+                          )}
+                          data-stale={(status?.stale && detail === status.line) || undefined}
                         >
                           {detail}
                         </span>

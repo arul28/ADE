@@ -40,7 +40,7 @@ function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
 }
 
 describe("selectLanePrs branch drift", () => {
-  it("shows an owned PR on the checked-out branch when the lane record is stale", () => {
+  it("shows both the drifted checkout's PR and the recorded branch's owned PR", () => {
     const lane = makeLane({
       id: "lane-1",
       branchRef: "t3code/6fcd8d4a",
@@ -52,7 +52,9 @@ describe("selectLanePrs branch drift", () => {
     const live = makePr({ id: "pr-live", laneId: "lane-1", headBranch: "t3code/web-render-local-dev" });
     const recorded = makePr({ id: "pr-recorded", laneId: "lane-1", headBranch: "t3code/6fcd8d4a" });
 
-    expect(selectLanePrs(lane, [live, recorded]).map((pr) => pr.id)).toEqual(["pr-live"]);
+    // Drift means the checkout moved; the lane still records its branch, so the
+    // recorded branch's own PR stays the lane's work instead of disappearing.
+    expect(selectLanePrs(lane, [live, recorded]).map((pr) => pr.id)).toEqual(["pr-live", "pr-recorded"]);
   });
 
   it("shows a primary lane's checked-out pull request after it drifts off its base", () => {

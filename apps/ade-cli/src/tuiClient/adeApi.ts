@@ -23,6 +23,7 @@ import type {
   AgentChatResolveUnprocessedMessageResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -35,6 +36,7 @@ import type {
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatInterruptResult,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatStopMode,
   AgentChatKillDroidWorkerArgs,
@@ -43,6 +45,7 @@ import type {
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelInfo,
+  AgentChatLaunchDefaults,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
@@ -69,8 +72,10 @@ import type {
 } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { ArchiveSummary, ArchiveSummaryArgs } from "../../../desktop/src/shared/types/archive";
 import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
+import type { PrChatWatchSummary, PrWatchMode } from "../../../desktop/src/shared/prWatch";
 import {
   buildPtyContinuationLaunchFields,
   type PtyContinuationLaunchFields,
@@ -428,6 +433,13 @@ export async function getScheduledWorkState(
   });
 }
 
+export async function getArchiveSummary(
+  connection: AdeCodeConnection,
+  args: ArchiveSummaryArgs = {},
+): Promise<ArchiveSummary> {
+  return await connection.action<ArchiveSummary>("archive", "summary", args);
+}
+
 export async function archiveChatSession(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -533,7 +545,8 @@ export async function writeTerminal(
   terminalId: string,
   data: string,
 ): Promise<void> {
-  await connection.action("terminal", "write", { terminalId, data });
+  // Only ADE Code's own keystrokes come through here, so they are the user's.
+  await connection.action("terminal", "write", { terminalId, data, fromUser: true });
 }
 
 export async function resizeTerminal(
@@ -787,6 +800,22 @@ export async function setClaudeOutputStyle(
 
 export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
   return discoverAllProjectSlashCommands(workspaceRoot);
+}
+
+/** The machine's last-used chat model and settings; null when none or an older brain. */
+export async function getLaunchDefaults(connection: AdeCodeConnection): Promise<AgentChatLaunchDefaults | null> {
+  try {
+    const value = await connection.action<unknown>("chat", "getLaunchDefaults", {});
+    // Only a well-formed record counts; anything else (an older brain, a
+    // proxy's default reply) leaves the TUI on its own last choice.
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<AgentChatLaunchDefaults>;
+    return typeof record.modelId === "string" && record.modelId.trim() && typeof record.provider === "string"
+      ? record as AgentChatLaunchDefaults
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getAvailableModels(
@@ -1076,6 +1105,46 @@ export async function interruptChat(
   };
 }
 
+/**
+ * Restart the chat's agent session: a fresh provider process, same
+ * conversation. The host refuses while a turn runs ("A turn is running…")
+ * unless `stopFirst` is set.
+ */
+export async function restartChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  stopFirst = false,
+): Promise<AgentChatRestartSessionResult> {
+  return await connection.action<AgentChatRestartSessionResult>(
+    "chat",
+    "restartSession",
+    { sessionId, ...(stopFirst ? { stopFirst: true } : {}) },
+  );
+}
+
+/** Off / Watch / Ship for one of the chat's pull requests (`mode: null` stops). */
+export async function setChatPrWatch(
+  connection: AdeCodeConnection,
+  args: { prId: string; sessionId: string; mode: PrWatchMode | null },
+): Promise<PrChatWatchSummary | null> {
+  const result = await connection.action<PrChatWatchSummary | null>("pr", "setChatWatch", {
+    prId: args.prId,
+    sessionId: args.sessionId,
+    mode: args.mode,
+    armedBy: "user",
+  });
+  return result && typeof result === "object" ? result : null;
+}
+
+/** The chat's live PR watches. An older host without the action reads as none. */
+export async function getChatPrWatches(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<PrChatWatchSummary[]> {
+  const result = await connection.action<PrChatWatchSummary[] | null>("pr", "getChatWatches", { sessionId });
+  return Array.isArray(result) ? result : [];
+}
+
 export async function restoreCancelledQueue(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -1250,6 +1319,22 @@ export async function continueUsageLimitOnAlternate(
     "chat",
     "continueUsageLimitOnAlternate",
     { sessionId },
+  );
+}
+
+/**
+ * Move a Claude or Codex chat to another signed-in account of its provider.
+ * Same chat and thread; the host refuses while a turn runs.
+ */
+export async function switchChatAccount(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  instanceId: string,
+): Promise<AgentChatSwitchAccountResult> {
+  return await connection.action<AgentChatSwitchAccountResult>(
+    "chat",
+    "switchAccount",
+    { sessionId, instanceId },
   );
 }
 

@@ -85,6 +85,8 @@ export type LocalRuntimeStatus = {
      * brain from here, so recurring installs cannot keep it "starting" forever.
      */
     attemptStartedAt?: string | null;
+    /** The installer's typed failure stage, when the last install failed. */
+    failureStep?: string | null;
   };
   serviceHealth: {
     state: LocalRuntimeServiceHealthState;
@@ -93,8 +95,29 @@ export type LocalRuntimeStatus = {
     path: string | null;
     message: string | null;
     checkedAt: string | null;
+    /**
+     * macOS Background Items verdict for the launch agent, read only while it
+     * is installed but not running. `requires_approval` means "Allow in the
+     * Background" is off for ADE and launchd will never start the brain.
+     */
+    backgroundItem?: "enabled" | "requires_approval" | "not_registered" | "not_found" | "unknown" | null;
   };
 };
+
+/**
+ * Whether macOS's "Allow in the Background" switch is what stops the brain.
+ * The live Background Items reading wins over the last install's failure:
+ * that failure stays recorded until the next install, and a person who has
+ * since turned the switch on must not keep reading "blocked".
+ */
+export function isBackgroundItemBlocked(
+  status: Pick<LocalRuntimeStatus, "serviceInstall" | "serviceHealth">,
+): boolean {
+  const live = status.serviceHealth.backgroundItem;
+  if (live === "requires_approval") return true;
+  if (live === "enabled") return false;
+  return status.serviceInstall.failureStep === "background_item_blocked";
+}
 
 export type AppInfo = {
   appVersion: string;
@@ -203,6 +226,22 @@ export type RecentlyInstalledUpdate = {
   installedAt: string;
   releaseNotesUrl: string | null;
   githubReleaseUrl: string | null;
+  /**
+   * Chats ADE armed a "continue" row for before this install. Absent when the
+   * user declined the resume, when nothing was running, or on any update that
+   * predates the field.
+   */
+  resumedChats?: UpdateInterruptedChat[];
+};
+
+/**
+ * One chat an update will interrupt: it has a live turn right now, so the
+ * restart stops it mid-flight. `title` is the chat's own name.
+ */
+export type UpdateInterruptedChat = {
+  sessionId: string;
+  title: string;
+  projectName: string;
 };
 
 /**
@@ -332,6 +371,11 @@ export type UpdateInstallImpactPhone = {
  */
 export type UpdateInstallImpact = {
   connectedPhones: UpdateInstallImpactPhone[];
+  /**
+   * Chats with a live turn right now, on this machine only. A chat on another
+   * machine is not interrupted by this update, so it never appears here.
+   */
+  interruptedChats: UpdateInterruptedChat[];
 };
 
 export type ProjectInfo = {
@@ -395,6 +439,20 @@ export type OpenProjectBinding =
       iconDataUrl?: string | null;
     };
 
+/**
+ * Sent to a window when a project tab dragged out of another window is
+ * released over its tab strip. `screenOffsetX` is the release point measured
+ * from the target window's left edge in screen points, so the tab lands where
+ * the user dropped it.
+ */
+export type ProjectTabAdoptRequest = {
+  binding: OpenProjectBinding;
+  screenOffsetX: number;
+};
+
+/** A project binding on another machine. */
+export type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
+
 export type AppNavigationTarget =
   | {
       kind: "work" | "chat";
@@ -415,6 +473,8 @@ export type AppNavigationTarget =
       kind: "commit";
       sha: string;
       laneId?: string | null;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }
   | {
@@ -425,6 +485,8 @@ export type AppNavigationTarget =
   | {
       kind: "lane";
       laneId: string;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       sessionId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }

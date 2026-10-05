@@ -65,8 +65,8 @@ import { useCallback, useMemo, useState } from "react";
 import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   deriveTranscriptToolActivity,
   deriveTurnModelState,
   estimateTranscriptRowHeight,
@@ -99,7 +99,7 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 import { setPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
-import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { CHAT_TIMELINE_ROW_GAP_PX, computeRowStartOffsets } from "./chatUserMinimap.logic";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -640,12 +640,12 @@ describe("AgentChatMessageList transcript rendering", () => {
   // Proof used to be appended after every row as a permanently open thread
   // footer. With no transcript rows it is now a compact chronological capture
   // row that starts collapsed.
-  it("renders proof attached to an empty chat as a collapsed capture row", () => {
+  it("renders proof attached to an empty chat as one open capture row", () => {
     const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
 
     expect(screen.queryByText("Proof collected in this chat")).toBeNull();
     expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("chips proof onto the turn rule of the turn that captured it", () => {
@@ -713,7 +713,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps idle proof before a later turn and never attributes it to that turn", () => {
@@ -1214,11 +1214,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     const view = renderMessageList(events, { showStreamingIndicator: true });
     for (const text of ["I'll pull the description.", "ADE is a workspace."]) {
       const footer = footerOf(text);
-      // In flow, not pinned over the text.
-      expect(footer.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+      // Under the prose, never pinned over the end of the text.
       expect(footer.parentElement!.className).not.toContain("pr-7");
       expect(within(footer).getByRole("button", { name: "Copy message" })).toBeTruthy();
     }
+    // The turn's latest reply keeps its strip in flow; an earlier narration
+    // line floats its strip so short progress lines are not spread apart.
+    expect(footerOf("ADE is a workspace.").className).not.toMatch(/(^|\s)absolute(\s|$)/);
+    expect(footerOf("I'll pull the description.").className).toMatch(/(^|\s)absolute(\s|$)/);
 
     // The folded turn's answer keeps the same footer, now with Copy turn.
     view.rerender(
@@ -1257,10 +1260,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(add);
     expect(onInsertDraft).toHaveBeenCalledTimes(1);
     expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("Retry the lane checkout.");
-    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("added it as context");
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("quoted this from your earlier output");
   });
 
-  it("renders sent chat-context tags as Chat context chips", () => {
+  it("renders sent chat-context tags as quote cards", () => {
     renderMessageList([{
       sessionId: "session-1",
       timestamp: "2026-03-17T10:00:00.000Z",
@@ -1270,7 +1273,9 @@ describe("AgentChatMessageList transcript rendering", () => {
         deliveryState: "delivered",
       },
     }]);
-    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Chat context");
+    // The legacy "added it as context" preamble still parses; the card shows
+    // the quote itself, not a generic label.
+    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Retry the lane checkout.");
     expect(screen.getByText(/please/)).toBeTruthy();
     expect(screen.getByText(/thanks/)).toBeTruthy();
   });
@@ -1367,7 +1372,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/THE_END/)).toBeNull();
   });
 
-  it("keeps compact display text while exposing the full user prompt", async () => {
+  it("shows what the user typed, not the expanded prompt the provider received", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1382,10 +1387,11 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Pearl UI audit handoff")).toBeTruthy();
-      expect(screen.getByText("Full prompt")).toBeTruthy();
     });
-    fireEvent.click(screen.getByText("Full prompt"));
-    expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
+    // The expanded provider prompt (mention blocks, handoff detail) is not part
+    // of the user's bubble.
+    expect(screen.queryByText("Full handoff prompt with all implementation details.")).toBeNull();
+    expect(document.body.textContent).not.toContain("implementation details");
   });
 
   it("hides the full handoff prompt when handoff metadata marks it internal", async () => {
@@ -1407,9 +1413,12 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
     expect(screen.queryByText("Full prompt")).toBeNull();
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+    // The hidden brief is marked in the thread above the bubble, not inside it.
+    const divider = screen.getByTestId("handoff-brief-divider");
+    expect(divider.textContent).toContain("Started from a brief of the previous chat");
   });
 
-  it("renders a brief chip for hidden cross-machine handoff messages", async () => {
+  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1424,13 +1433,13 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-chip")).toBeTruthy();
+      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
     });
-    expect(screen.getByText(/Previous chat summarized into this chat/i)).toBeTruthy();
+    expect(screen.getByText("Continued from another computer")).toBeTruthy();
     expect(screen.getByText("Continue the handoff")).toBeTruthy();
   });
 
-  it("does not render a brief chip for hidden messages that are not handoffs", async () => {
+  it("does not render a brief divider for hidden messages that are not handoffs", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1447,7 +1456,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByText("Visible summary")).toBeTruthy();
     });
-    expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
+    expect(screen.queryByTestId("handoff-brief-divider")).toBeNull();
   });
 
   it("renders a provider handoff divider with direction and provider marks", () => {
@@ -3372,18 +3381,14 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("recomputes virtualization windows when measured heights change", () => {
-    const baseline = calculateVirtualWindow({
-      rowCount: 100,
+    const windowFor = (rowHeight: (index: number) => number) => calculateVirtualWindowFromOffsets({
+      offsets: computeRowStartOffsets(100, rowHeight),
       scrollTop: 2000,
       containerHeight: 240,
-      rowHeight: () => 80,
+      rowHeight,
     });
-    const updated = calculateVirtualWindow({
-      rowCount: 100,
-      scrollTop: 2000,
-      containerHeight: 240,
-      rowHeight: (index) => (index === 0 ? 180 : 80),
-    });
+    const baseline = windowFor(() => 80);
+    const updated = windowFor((index) => (index === 0 ? 180 : 80));
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
@@ -5668,6 +5673,19 @@ describe("turn-level file-change de-clutter", () => {
     ).toBe("Editing laneService.ts");
   });
 
+  it.each([
+    ["a running command", "running_command", [{ entryKind: "command", status: "running", command: "pnpm   test\n  --run" }], "Running pnpm test --run"],
+    ["a running shell tool", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Bash", args: { command: "git status" } }], "Running git status"],
+    ["a running read", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/src/foo.ts" } }], "Read foo.ts"],
+    ["the newest running entry", "tool_calling", [
+      { entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/old.ts" } },
+      { entryKind: "command", status: "running", command: "ls" },
+    ], "Running ls"],
+    ["only finished entries", "tool_calling", [{ entryKind: "command", status: "completed", command: "ls" }], "Calling tool"],
+  ])("names the wait behind a tool or command activity: %s", (_case, activity, entries, expected) => {
+    expect(resolveWorkingIndicatorLabel(activity, [], entries as never)).toBe(expected);
+  });
+
   it("labels every activity the runtimes emit", () => {
     // An unmapped activity falls through to the raw identifier, so a gap here
     // puts `web_searching` on screen. Both were emitted and unmapped.
@@ -7610,5 +7628,105 @@ describe("AgentChatMessageList — the chat's one task list", () => {
     expect(keys.at(-1)).toBe("task-list:task-session");
     // The running item reads in its present-continuous form.
     expect(screen.getByTestId("chat-task-list-card").textContent).toBe("Tasks·0/1·Deploying to staging");
+  });
+});
+
+describe("AgentChatMessageList self-paced wake loops", () => {
+  it("opens both the closed chain and the check's own fold when a jump lands inside them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        nextRunAt: at(dueMinute),
+        turnId,
+      });
+    const events = [
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      // Check B: its interim line is inside B's fold, and B is inside the chain.
+      envelope(6, { type: "text", text: "Reading the run log.", itemId: "b-interim", turnId: "B" }),
+      envelope(6, { type: "command", command: "gh run view", cwd: "/repo", output: "", itemId: "b-cmd", status: "completed", turnId: "B" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", itemId: "b-answer", turnId: "B" }),
+      wake(6, "B", "w2", 10),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: deploy finished.", turnId: "C" }),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Reading the run log.");
+    const interimKey = buildTranscriptEventRowKeys(events)[4]!;
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(view.container.textContent).toContain("Reading the run log.");
+    expect(screen.getByRole("button", { name: "Hide 1 more check" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("draws each wake-up on its turn-end line and folds earlier checks under the line that started them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, status: "scheduled" | "completed", dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status,
+        origin: "schedule_wakeup",
+        reason: `deploy-watch ${id}`,
+        ...(status === "scheduled" ? { nextRunAt: at(dueMinute) } : { firedAt: at(dueMinute) }),
+        turnId,
+      });
+    const rendered = renderMessageList([
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", "scheduled", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", turnId: "B" }),
+      wake(6, "B", "w2", "scheduled", 10),
+      wake(6, "B", "w1", "completed", 5),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: still queued.", turnId: "C" }),
+      wake(11, "C", "w3", "scheduled", 15),
+      wake(11, "C", "w2", "completed", 10),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+      envelope(16, { type: "text", text: "Check 4: deploy finished.", turnId: "D" }),
+      wake(16, "D", "w3", "completed", 15),
+      envelope(17, { type: "done", turnId: "D", status: "completed" }),
+    ]);
+
+    let text = rendered.container.textContent ?? "";
+    expect(text).toContain("Watching the deploy.");
+    expect(text).toContain("Check 4: deploy finished.");
+    expect(text).not.toContain("Check 2: still queued.");
+    expect(text).not.toContain("Check 3: still queued.");
+    // The wake-up rides the turn-end line that scheduled it; no row of its own.
+    expect(rendered.container.querySelectorAll('[data-scheduled-work="w1"]')).toHaveLength(1);
+    expect(text).toMatch(/woke at/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more checks" }));
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("Check 2: still queued.");
+    expect(text).toContain("Check 3: still queued.");
+    expect(text.indexOf("Watching the deploy.")).toBeLessThan(text.indexOf("Check 2: still queued."));
   });
 });

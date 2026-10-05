@@ -12,6 +12,7 @@ import {
 } from "../../../desktop/src/shared/modelRegistry";
 import { CURSOR_AVAILABLE_MODE_IDS, CURSOR_MODE_LABELS } from "../../../desktop/src/shared/cursorModes";
 import type {
+  AgentChatLaunchDefaults,
   AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
   AgentChatPermissionMode,
@@ -134,6 +135,36 @@ export function modelStatePatchFromMemory(memory: AdeCodeModelMemory): Partial<A
           displayName: memory.displayName || memory.model,
         }
       : fallbackModelStatePatch(provider)),
+  };
+}
+
+/**
+ * The machine's launch defaults (`chat.getLaunchDefaults`) as model memory,
+ * filling any setting the host did not record from `base`.
+ */
+export function modelMemoryFromLaunchDefaults(
+  defaults: AgentChatLaunchDefaults,
+  base: AdeCodeModelState,
+  displayName: string,
+): AdeCodeModelMemory {
+  const fallback = modelMemoryFromState(base);
+  return {
+    ...fallback,
+    provider: defaults.provider,
+    modelId: defaults.modelId,
+    model: defaults.modelId,
+    displayName,
+    reasoningEffort: defaults.reasoningEffort ?? null,
+    fastMode: defaults.fastMode === true,
+    permissionMode: defaults.permissionMode ?? fallback.permissionMode,
+    interactionMode: defaults.interactionMode ?? fallback.interactionMode,
+    claudePermissionMode: defaults.claudePermissionMode ?? fallback.claudePermissionMode,
+    codexApprovalPolicy: defaults.codexApprovalPolicy ?? fallback.codexApprovalPolicy,
+    codexSandbox: defaults.codexSandbox ?? fallback.codexSandbox,
+    codexConfigSource: defaults.codexConfigSource ?? fallback.codexConfigSource,
+    opencodePermissionMode: defaults.opencodePermissionMode ?? fallback.opencodePermissionMode,
+    droidPermissionMode: defaults.droidPermissionMode ?? fallback.droidPermissionMode,
+    cursorModeId: defaults.cursorModeId ?? fallback.cursorModeId,
   };
 }
 

@@ -16,7 +16,11 @@ import type {
   MachineInventoryDetail,
 } from "../../../shared/types";
 import { normalizeHarnessPresetList } from "../../../shared/harnessPresets";
-import { buildMachineInventoryDetail } from "../../../shared/types/machineInventory";
+import {
+  buildMachineInventoryDetail,
+  normalizeMachineInventoryAccent,
+  normalizeMachineInventoryPresetLogo,
+} from "../../../shared/types/machineInventory";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
@@ -71,6 +75,8 @@ export async function readLocalMachineInventoryDetail(args: {
     name: preset.name,
     harness: preset.harness,
     model: preset.model,
+    logo: preset.logo,
+    accentColor: preset.accentColor,
   }));
   const boundPresetIds = new Set(args.providerInstanceStore.getPresetBindings?.() ?? []);
   for (const preset of normalizedPresets) {
@@ -161,7 +167,19 @@ function sanitizeDetail(value: unknown, machineKey: string): MachineInventoryDet
       const harness = boundedText(raw.harness);
       const model = boundedText(raw.model);
       if (!id || !name || !harness || !model) return [];
-      return [{ id, name, harness, model, bound: raw.bound === true }];
+      // The mark crosses as an identity (kind + provider id), never artwork.
+      // One shared validator, so a detail that crossed the wire and one read
+      // locally cannot disagree about what a mark is.
+      const accentColor = normalizeMachineInventoryAccent(raw.accentColor);
+      return [{
+        id,
+        name,
+        harness,
+        model,
+        logo: normalizeMachineInventoryPresetLogo(raw.logo),
+        ...(accentColor ? { accentColor } : {}),
+        bound: raw.bound === true,
+      }];
     })
     : [];
   return { machineKey, providers, presets };

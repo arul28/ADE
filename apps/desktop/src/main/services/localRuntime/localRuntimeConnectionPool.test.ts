@@ -1184,6 +1184,7 @@ describe("local runtime connection pool", () => {
       message: "launchctl failed",
       starting: false,
       restarted: false,
+      failureStep: null,
     });
     expect(parseRuntimeServiceManagerOutput(JSON.stringify({
       ok: true,

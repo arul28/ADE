@@ -290,8 +290,8 @@ export function ModelRowLogo({
   }
 
   // OpenCode-routed models: route the row logo by their underlying sub-provider
-  // (Anthropic, OpenAI, etc.) rather than the generic OpenCode mark so each row
-  // is visually distinguishable inside the OpenCode rail.
+  // (Anthropic, OpenAI, DeepSeek, Kimi, …) rather than the generic OpenCode mark
+  // so each row is visually distinguishable inside the OpenCode rail.
   if (fam === "opencode" && openCodeProviderId) {
     const sub = openCodeProviderId.trim().toLowerCase();
     if (sub === "anthropic") return <Claude.Avatar size={size} className={c} />;
@@ -302,7 +302,10 @@ export function ModelRowLogo({
     if (sub === "openrouter") return <OpenRouter.Avatar size={size} className={c} />;
     if (sub === "ollama") return <Ollama.Avatar size={size} className={c} />;
     if (sub === "lmstudio") return <LmStudio.Avatar size={size} className={c} />;
-    return <OpenCode.Avatar size={size} className={c} />;
+    // Any other routed maker (deepseek, kimi, qwen, mistral, …) keeps its own
+    // mark via the shared provider icon table instead of collapsing to the
+    // OpenCode logo, which hid which company actually made the model.
+    return <ProviderLogo family={sub} size={size} className={className} />;
   }
 
   if (fam === "cursor" || cli === "cursor") {

@@ -1,11 +1,12 @@
 import React from "react";
 import {
-  CheckCircle, XCircle,
+  XCircle,
   CircleNotch,
   X,
   CaretDown, CaretRight,
   TreeStructure,
 } from "@phosphor-icons/react";
+import { Banner, type BannerModel } from "../../ui/notice";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
@@ -23,6 +24,7 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import type { PrSwitcher } from "../shared/PrSwitcher";
 import {
   usePrChatHandoff,
   linkedPrChats,
@@ -394,6 +396,8 @@ type PrDetailPaneProps = {
    * GitHub-only actions (comment, labels, reviewers, review) stay available.
    */
   mergeBlockedReason?: string | null;
+  /** The chat's other pull requests; the header shows a switcher when set. */
+  prSwitcher?: PrSwitcher | null;
 };
 
 export type PrDetailRuntime = {
@@ -429,6 +433,7 @@ export function PrDetailPane({
   runtime = null,
   laneMachineChip = null,
   mergeBlockedReason = null,
+  prSwitcher = null,
 }: PrDetailPaneProps) {
   // The machine every call below targets: `[]` is the tab machine's unpinned
   // call; `[pin]` sends it to the lane's owner.
@@ -639,6 +644,16 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  // A stack merge that answered "still merging" finishes in the background.
+  // When the PR shows as merged, the banner says so instead of spinning on.
+  React.useEffect(() => {
+    if (pr.state !== "merged") return;
+    setActionResult((current) => (
+      current && !current.success && (current.mergeStatus === "pending" || current.mergeStatus === "enqueued")
+        ? { ...current, success: true, mergeStatus: "merged", error: null }
+        : current
+    ));
+  }, [pr.state]);
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
@@ -1201,7 +1216,13 @@ export function PrDetailPane({
       setActionResult(res);
       // GitHub has accepted the merge. Move the row to Merged now rather than
       // leaving it in Open until the snapshot refetch agrees.
-      if (res.success) markPrTerminalLocally(pr, "merged");
+      if (res.success) {
+        markPrTerminalLocally(pr, "merged");
+        // A stack merge also merged every open PR below this one.
+        for (const githubPrNumber of res.stackPrNumbers ?? []) {
+          markPrTerminalLocally({ repoOwner: pr.repoOwner, repoName: pr.repoName, githubPrNumber }, "merged");
+        }
+      }
       await onRefresh();
     });
   };
@@ -1479,6 +1500,7 @@ export function PrDetailPane({
         onCancelTitleEdit={handleCancelTitleEdit}
         onSubmitTitle={handleUpdateTitle}
         unmappedAffordance={unmappedAffordance}
+        switcher={prSwitcher}
       />
 
       {/* ===== ERROR BAR ===== */}
@@ -1491,22 +1513,13 @@ export function PrDetailPane({
           <button type="button" onClick={() => setActionError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, padding: 4 }}><X size={14} /></button>
         </div>
       )}
-      {actionResult && (
-        <div style={{
-          padding: "10px 20px",
-          background: actionResult.success ? "color-mix(in srgb, var(--color-success) 5%, transparent)" : "color-mix(in srgb, var(--color-error) 5%, transparent)",
-          borderBottom: `1px solid ${actionResult.success ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-error) 20%, transparent)"}`,
-          fontFamily: SANS_FONT, fontSize: 12,
-          color: actionResult.success ? COLORS.success : COLORS.danger,
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {actionResult.success ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-            <span>{actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}</span>
-          </div>
-          <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color: actionResult.success ? COLORS.success : COLORS.danger, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
-        </div>
-      )}
+      {actionResult ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 20px 0", flexShrink: 0 }}
+          model={mergeResultBannerModel(actionResult, () => setActionResult(null))}
+        />
+      ) : null}
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
@@ -1791,4 +1804,27 @@ function FilesTab({
       )}
     </div>
   );
+}
+
+/** The banner for a merge result. A stack merge GitHub queued or still runs is not a failure. */
+function mergeResultBannerModel(result: LandResult, onDismiss: () => void): BannerModel {
+  const inFlight = !result.success && (result.mergeStatus === "pending" || result.mergeStatus === "enqueued");
+  const stack = result.stackPrNumbers ?? [];
+  let title: string;
+  if (result.success) {
+    title = stack.length > 1
+      ? `Merged ${stack.length} stacked PRs (${stack.map((n) => `#${n}`).join(", ")})`
+      : `Merged PR #${result.prNumber}`;
+  } else if (inFlight) {
+    title = result.error ?? "GitHub is merging the stack.";
+  } else {
+    title = `Failed: ${result.error ?? "unknown"}`;
+  }
+  return {
+    id: "pr-merge-result",
+    tone: result.success ? "success" : inFlight ? "accent" : "error",
+    busy: inFlight,
+    title,
+    dismiss: { onDismiss, label: "Dismiss merge result" },
+  };
 }

@@ -242,13 +242,17 @@ function deriveActiveProviderRetryActivity(
 }
 
 function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
+  // Collected over every event first: a finished turn can still receive an
+  // event after its `done` (a detached WebFetch's late result settles its row
+  // under the turn that called it), and that must not make it active again.
   const completedTurnIds = new Set<string>();
+  for (const envelope of events) {
+    const evt = envelope.event;
+    if (evt.type === "done" && evt.turnId?.trim()) completedTurnIds.add(evt.turnId.trim());
+  }
   for (let i = events.length - 1; i >= 0; i--) {
     const evt = events[i]!.event;
-    if (evt.type === "done" && evt.turnId?.trim()) {
-      completedTurnIds.add(evt.turnId.trim());
-      continue;
-    }
+    if (evt.type === "done") continue;
     const turnId = getEventTurnId(evt);
     if (!turnId || completedTurnIds.has(turnId)) continue;
     return turnId;

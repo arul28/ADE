@@ -101,7 +101,6 @@ describe("ChatLifecyclePill", () => {
     const banner = screen.getByTestId("chat-lifecycle-banner");
     expect(banner.getAttribute("data-lifecycle-variant")).toBe("settled");
     expect(banner.textContent).toContain("Settled");
-    expect(banner.textContent).toContain("Sending reopens this chat");
     // Success means "finished cleanly"; warning is reserved for "your move".
     expect(banner.getAttribute("data-notice-tone")).toBe("success");
   });

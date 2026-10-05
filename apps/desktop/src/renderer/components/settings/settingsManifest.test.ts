@@ -74,6 +74,14 @@ describe("settings manifest", () => {
     "activity.hide-details": "notifications",
     "activity.dock-badge": "notifications",
     "activity.machines": "notifications",
+    // The Apple device rows follow the account, so they moved off Appearance to
+    // their own Apple devices tab. Their ids and anchors keep the old namespace
+    // because telemetry and deeplinks hold on to them.
+    "appearance.apple-realistic-body": "apple",
+    "appearance.apple-tap-rings": "apple",
+    "appearance.apple-typed-badges": "apple",
+    "appearance.apple-remote-bitrate": "apple",
+    "appearance.apple-recordings-warn": "apple",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -208,7 +216,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
-  it("registers the five Apple device keys on Appearance, account-scoped like Browser", () => {
+  it("registers the five Apple device keys on the account-scoped Apple devices tab", () => {
     const ids = [
       "appearance.apple-realistic-body",
       "appearance.apple-tap-rings",
@@ -219,7 +227,7 @@ describe("settings manifest", () => {
     for (const id of ids) {
       const entry = SETTINGS_ENTRIES.find((candidate) => candidate.id === id);
       expect(entry, id).toBeDefined();
-      expect(entry!.tab).toBe("appearance");
+      expect(entry!.tab).toBe("apple");
       expect(entry!.scope).toBe("account");
       expect(entry!.web).toBe("browser");
       expect(entry!.group).toBe("Apple Development");
@@ -449,8 +457,10 @@ describe("web machine-scoped availability", () => {
     SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
   );
 
-  it("keeps every setting on the desktop, bound or not", () => {
-    expect(availableSettingsEntries()).toHaveLength(SETTINGS_ENTRIES.length);
+  it("keeps every setting on the desktop, bound or not, except the web-only cards", () => {
+    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+    expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
+    for (const entry of SETTINGS_ENTRIES) expect(available.has(entry.id)).toBe(entry.webOnly !== true);
   });
 
   it("drops machine-scoped settings on web while no project tab is bound", () => {

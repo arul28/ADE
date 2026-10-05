@@ -82,6 +82,12 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       return result;
     },
     previewBranchSwitch: (args: unknown) => call("lanes.previewBranchSwitch", args, null),
+    // No remote command switches a lane's branch. Without this the proxy's
+    // null fallback reads as success, and the "Switch back" chip would claim a
+    // switch that never happened.
+    switchBranch: async () => {
+      throw new Error("Switching a lane's branch is not available from the web client yet. Use the desktop app on that machine.");
+    },
     getBranchDrift: (args: unknown) => call("lanes.getBranchDrift", args, null),
     // The drift strip treats a resolved promise as "drift handled": it disarms
     // the warning and refreshes. A host that cannot run this must therefore

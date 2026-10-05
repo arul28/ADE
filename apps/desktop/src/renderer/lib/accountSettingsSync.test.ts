@@ -138,16 +138,12 @@ beforeEach(() => {
 
 describe("accountSettingsSync (renderer)", () => {
   it("registers exactly the account-scoped persisted preferences", () => {
-    // `theme` (the painted base mode) is deliberately absent: a machine that
-    // follows its OS derives it, so syncing it would let one machine's OS event
-    // become another machine's choice. `themeId` + `themeFollowsSystem` carry
-    // the real choices and reconstruct `theme` locally.
+    // Appearance is per computer, so no theme, custom-theme list, follow-system
+    // flag, interface or terminal preference is synced: a laptop, a desktop and
+    // a browser each keep their own look. The `theme` painted base mode was
+    // never synced either. The `apple.*` keys stay on the account because the
+    // host reads the remote streaming cap from the account store.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).toEqual([
-      "themeId",
-      "customThemes",
-      "themeFollowsSystem",
-      "interfacePreferences",
-      "terminalPreferences",
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
       "launchPromptClipboardNoticeEnabled",

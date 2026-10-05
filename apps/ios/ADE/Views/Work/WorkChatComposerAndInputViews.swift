@@ -389,6 +389,14 @@ let workComposerControlsCollapseThreshold: CGFloat = 360
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
+  /// The upstream maker's key for the model mark. Nil falls back to `provider`,
+  /// which is the right answer for every direct (non-gateway) harness.
+  var modelBrandKey: String? = nil
+  /// When the composer runs on a saved Custom harness, its own mark and accent
+  /// replace the provider mark — the desktop composer shows the preset, not
+  /// the harness, for the same selection. One optional value so "a preset is
+  /// selected" cannot disagree with "the preset has a mark".
+  var preset: SyncMachineInventoryPreset? = nil
   let reasoningEffort: String
   let currentMode: String
   let modeOptions: [WorkRuntimeModeOption]
@@ -555,12 +563,16 @@ struct WorkComposerControlsRow: View {
       onOpenModelPicker?()
     } label: {
       HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: provider,
-          fallbackSymbol: providerIcon(provider),
-          tint: providerTint(provider),
-          size: 16
-        )
+        if let preset {
+          WorkHarnessPresetMark(logo: preset.logo, accentColor: preset.accentColor, size: 16)
+        } else {
+          WorkProviderLogo(
+            provider: modelBrandKey ?? provider,
+            fallbackSymbol: providerIcon(modelBrandKey ?? provider),
+            tint: providerTint(modelBrandKey ?? provider),
+            size: 16
+          )
+        }
         Text(modelDisplayName)
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -630,6 +642,7 @@ struct WorkComposerChipStrip: View {
           WorkComposerControlsRow(
             provider: chatSummary.provider,
             modelDisplayName: chatSummary.modelLabel,
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
             reasoningEffort: chatSummary.reasoningEffort,
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
@@ -657,40 +670,6 @@ struct WorkComposerChipStrip: View {
     )
   }
 
-  private func prettyModelName(_ model: String) -> String {
-    // Match the desktop composer's model label: "Claude Sonnet 5" /
-    // "GPT-5.4" instead of a bare short id. Host-reported
-    // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
-    // Claude and the full long form for Codex, so we special-case the
-    // Claude short ids and otherwise beautify the raw string.
-    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Model" }
-    if let known = workKnownModelDisplayName(trimmed) {
-      return known
-    }
-    let lower = trimmed.lowercased()
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      return "Claude " + beautifyModelSegment(String(tail))
-    }
-    return beautifyModelSegment(trimmed)
-  }
-
-  private func beautifyModelSegment(_ raw: String) -> String {
-    raw
-      .split(separator: "-")
-      .map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil {
-          return s
-        }
-        if s.lowercased() == "gpt" { return "GPT" }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }
-      .joined(separator: " ")
-      .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
-  }
-
 }
 
 /// The strip only ever renders messages the user explicitly queued — an
@@ -712,6 +691,9 @@ struct WorkQueuedSteerStrip: View {
   let onSaveEdit: @MainActor (String, String) async -> Void
   let onDispatchInline: (@MainActor (String) async -> Void)?
   let onDispatchInterrupt: (@MainActor (String) async -> Void)?
+  /// Moves a staged message to a position; nil when the queue cannot be
+  /// reordered. Offered as a long-press menu and as VoiceOver actions.
+  var onMove: (@MainActor (String, Int) async -> Void)? = nil
 
   // Cancel haptic token: bumped each time a row's cancel lands so the
   // whole strip can drive a single sensoryFeedback modifier.
@@ -721,7 +703,31 @@ struct WorkQueuedSteerStrip: View {
     VStack(alignment: .leading, spacing: 6) {
       if steers.count > 1 { header }
 
-      ForEach(steers) { steer in
+      ForEach(Array(steers.enumerated()), id: \.element.id) { index, steer in
+        queuedRow(steer)
+          .modifier(WorkQueuedSteerReorderModifier(
+            index: index,
+            count: steers.count,
+            // Hidden while the host is offline or another row action runs,
+            // like the row's own buttons.
+            move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
+          ))
+      }
+    }
+    .padding(6)
+    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    // Floats over the thread (no band behind the composer stack), so it
+    // carries its own glass to stay legible over prose.
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
+    )
+    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
+    .accessibilityElement(children: .contain)
+  }
+
+  private func queuedRow(_ steer: WorkPendingSteerModel) -> some View {
         WorkQueuedSteerRow(
           steer: steer,
           capability: capability,
@@ -751,19 +757,6 @@ struct WorkQueuedSteerStrip: View {
             { await dispatch(steer.id) }
           }
         )
-      }
-    }
-    .padding(6)
-    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    // Floats over the thread (no band behind the composer stack), so it
-    // carries its own glass to stay legible over prose.
-    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
-    )
-    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
-    .accessibilityElement(children: .contain)
   }
 
   /// Static label, not a disclosure control — the rows below it are always
@@ -776,6 +769,42 @@ struct WorkQueuedSteerStrip: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel("\(steers.count) queued messages")
       .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
+  }
+}
+
+/// Reorder for one staged row: a long-press menu (Send first / Move up / Move
+/// down / Send last) and the same moves as VoiceOver actions. Desktop drags a
+/// handle; on a phone the row's tap already opens its detail sheet, so the
+/// moves live behind a long press instead of a second gesture on the card.
+private struct WorkQueuedSteerReorderModifier: ViewModifier {
+  let index: Int
+  let count: Int
+  let move: (@MainActor (Int) async -> Void)?
+
+  func body(content: Content) -> some View {
+    if let move, count > 1 {
+      content
+        .contextMenu {
+          if index > 0 {
+            Button { Task { await move(0) } } label: { Label("Send first", systemImage: "arrow.up.to.line") }
+            Button { Task { await move(index - 1) } } label: { Label("Move up", systemImage: "arrow.up") }
+          }
+          if index < count - 1 {
+            Button { Task { await move(index + 1) } } label: { Label("Move down", systemImage: "arrow.down") }
+            Button { Task { await move(count - 1) } } label: { Label("Send last", systemImage: "arrow.down.to.line") }
+          }
+        }
+        .accessibilityAction(named: "Move up") {
+          guard index > 0 else { return }
+          Task { await move(index - 1) }
+        }
+        .accessibilityAction(named: "Move down") {
+          guard index < count - 1 else { return }
+          Task { await move(index + 1) }
+        }
+    } else {
+      content
+    }
   }
 }
 

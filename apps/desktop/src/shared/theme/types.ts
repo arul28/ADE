@@ -103,6 +103,60 @@ export type AdeTerminalPalette = Partial<Record<AdeTerminalAnsiKey, string>> & {
   selectionBackground?: string;
 };
 
+/**
+ * The syntax colours a code surface paints with: the file editor and the code
+ * blocks in chat. A theme may state any of them; the ones it omits are derived
+ * from its terminal palette, so a theme that pins ANSI colours already gets a
+ * matching editor.
+ */
+export const ADE_SYNTAX_KEYS = [
+  "comment",
+  "keyword",
+  "string",
+  "number",
+  "function",
+  "type",
+  "constant",
+  "variable",
+  "property",
+  "operator",
+] as const;
+
+export type AdeSyntaxKey = (typeof ADE_SYNTAX_KEYS)[number];
+export type AdeSyntaxPalette = Partial<Record<AdeSyntaxKey, string>>;
+export type ResolvedAdeSyntaxPalette = Record<AdeSyntaxKey, string>;
+
+/**
+ * The non-colour half of a theme: shape, depth, type and a backdrop.
+ *
+ * Every field is a closed list of names, never a free CSS string. A theme file
+ * can come from a stranger, and a name the engine maps to a vetted value cannot
+ * smuggle anything into a stylesheet. A theme that states none of them keeps
+ * ADE's own geometry.
+ */
+export const ADE_FLAIR_RADII = ["sharp", "default", "soft", "round"] as const;
+export const ADE_FLAIR_SHADOWS = ["soft", "flat", "hard", "glow"] as const;
+export const ADE_FLAIR_FONTS = ["default", "mono", "serif", "rounded"] as const;
+export const ADE_FLAIR_BACKDROPS = ["none", "grid", "dots", "scanlines", "noise", "aurora"] as const;
+
+export type AdeFlairRadius = (typeof ADE_FLAIR_RADII)[number];
+export type AdeFlairShadow = (typeof ADE_FLAIR_SHADOWS)[number];
+export type AdeFlairFont = (typeof ADE_FLAIR_FONTS)[number];
+export type AdeFlairBackdrop = (typeof ADE_FLAIR_BACKDROPS)[number];
+
+export type AdeThemeFlair = {
+  /** How round corners are, across panes, cards, menus and chat. */
+  radius?: AdeFlairRadius;
+  /** How depth is drawn: soft blur, none, a hard offset block, or an accent glow. */
+  shadow?: AdeFlairShadow;
+  /** Colour of the `hard` offset shadow. Defaults to the text colour. */
+  shadowColor?: string;
+  /** The interface face. The user's own interface-font choice still wins. */
+  sansFont?: AdeFlairFont;
+  /** A faint layer drawn over the whole window. */
+  backdrop?: AdeFlairBackdrop;
+};
+
 export type AdeTheme = {
   formatVersion: 1;
   /** Stable slug, unique across shipped and custom themes. */
@@ -116,6 +170,9 @@ export type AdeTheme = {
   basedOn?: string;
   palette: AdeThemePalette;
   terminal?: AdeTerminalPalette;
+  /** Editor and chat code colours. Derived from the terminal palette when omitted. */
+  syntax?: AdeSyntaxPalette;
+  flair?: AdeThemeFlair;
 };
 
 /** Practical bounds, enforced on load so a hostile file cannot redefine a layout. */
@@ -139,6 +196,7 @@ export type ResolvedAdeTheme = {
   theme: AdeTheme;
   palette: ResolvedAdeThemePalette;
   terminal: AdeTerminalPalette;
+  syntax: ResolvedAdeSyntaxPalette;
   cssVars: Record<string, string>;
   contrastIssues: ThemeContrastIssue[];
 };

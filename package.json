@@ -11,6 +11,7 @@
     "dev:desktop:attach": "node scripts/dev-desktop.mjs --attach",
     "dev:desktop:auto": "node scripts/dev-desktop.mjs --auto",
     "dev:desktop:clean": "node scripts/dev-desktop.mjs --auto --clean",
+    "dev:clean-data": "node scripts/dev-clean-data.mjs",
     "dev:runtime": "node scripts/dev-runtime.mjs",
     "dev:stop": "node scripts/dev-runtime-stop.mjs",
     "dev:runtime:stop": "node scripts/dev-runtime-stop.mjs",

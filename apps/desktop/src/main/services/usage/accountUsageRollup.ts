@@ -42,6 +42,7 @@ import type {
 import { poolLiveQuota } from "../../../shared/usageLiveQuota";
 import { localDayKey, localDayOrdinal } from "./localDay";
 import { isSameTranscriptSource } from "./accountUsageSource";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 
 // The pooling rule is shared with the renderer's environment filter, so the
 // account-scope merge and the filtered view can never disagree about one number.
@@ -140,6 +141,7 @@ export function buildRollupRows(
           const totalTokens = inputTokens + outputTokens + cachedTokens;
           const costUsd = toNonNegativeNumber(tokens.costUsd);
           if (totalTokens === 0 && costUsd === 0) continue;
+          const costSplit = finalizeCostSplit(parseCostSplit(tokens.costSplit));
           rows.push({
             date,
             provider,
@@ -150,6 +152,7 @@ export function buildRollupRows(
             totalTokens,
             costUsd,
             calls: 0,
+            ...(costSplit ? { costSplit } : {}),
           });
         }
       }
@@ -358,6 +361,9 @@ export function foldRollupsIntoStats(
   let addedCached = 0;
   let addedTotal = 0;
   let addedRangeCost = 0;
+  // A summary is shown split only when every dollar in it came with one.
+  const unsplitProviders = new Set<string>();
+  const unsplitModels = new Set<string>();
 
   for (const entry of accepted) {
     if (entry.isLocal) continue;
@@ -441,6 +447,14 @@ export function foldRollupsIntoStats(
       modelSummary.cachedTokens += row.cachedTokens;
       modelSummary.totalTokens += row.totalTokens;
       modelSummary.costUsd += inRangeCost;
+      const rowSplit = parseCostSplit(row.costSplit);
+      if (rowSplit) {
+        addCostSplit(providerSummary.costSplit ??= emptyCostSplit(), rowSplit);
+        addCostSplit(modelSummary.costSplit ??= emptyCostSplit(), rowSplit);
+      } else if (inRangeCost > 0) {
+        unsplitProviders.add(provider);
+        unsplitModels.add(modelKey);
+      }
 
       addedInput += row.inputTokens;
       addedOutput += row.outputTokens;
@@ -460,9 +474,21 @@ export function foldRollupsIntoStats(
     summary.rangeCostUsd = roundCents(summary.rangeCostUsd);
     summary.todayCostUsd = roundCents(summary.todayCostUsd);
     summary.last30dCostUsd = roundCents(summary.last30dCostUsd);
+    const split = unsplitProviders.has(summary.provider) ? undefined : finalizeCostSplit(summary.costSplit);
+    if (split) summary.costSplit = split;
+    else delete summary.costSplit;
   }
   for (const summary of stats.models) {
     summary.costUsd = roundCents(summary.costUsd);
+    const split = unsplitModels.has(`${summary.provider}\x00${summary.model}`) ? undefined : finalizeCostSplit(summary.costSplit);
+    if (split) summary.costSplit = split;
+    else delete summary.costSplit;
+  }
+  if (unsplitProviders.size) {
+    stats.sourceNotes = [
+      ...(stats.sourceNotes ?? []),
+      "The cost split by token type and speed covers only machines that answered live; it is left off a provider that other machines' saved history also feeds.",
+    ];
   }
   // The per-day provider buckets feed the stacked daily chart and its tooltip.
   // They accumulate raw above like every other total, so they need the same

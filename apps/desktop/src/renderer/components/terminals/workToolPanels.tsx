@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play } from "@phosphor-icons/react";
@@ -69,9 +70,9 @@ export type WorkToolPanelProps = {
   shouldPersistPanelAttachment: boolean;
   resumingSession: boolean;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | null;
+  selectedMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
-  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   onClearDiffSelection: () => void;
   onAddAttachment: ((attachment: AgentChatFileRef) => void) | undefined;

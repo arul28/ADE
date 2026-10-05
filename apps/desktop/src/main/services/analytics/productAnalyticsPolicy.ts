@@ -202,7 +202,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "start",
   "stop",
   "reset_credit_consumed",
+  // A model price set or cleared, a "Map to" added or removed. Never the
+  // model id or the rates.
+  "model_price_changed",
+  "model_mapping_changed",
   "pending_input_dismissed",
+  // A user moved a chat to another Claude/Codex account. Never the accounts.
+  "account_switched",
   "new_lane_launch",
   // One event after Codex realtime answers a chat's voice offer. It is scoped
   // to a chat session locally; no audio, transcript, or voice preferences.
@@ -249,7 +255,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_update_install_did_not_land: new Set(["attempt"]),
   ade_update_auto_applied: new Set(),
   ade_update_auto_apply_cancelled: new Set(),
-  ade_update_prompted: new Set(["from_version", "to_version", "user_action"]),
+  ade_update_prompted: new Set(["from_version", "to_version", "user_action", "resume_chats"]),
   ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
   // `reason` is Electron's own closed enum (crashed/oom/killed/launch-failed/…);
   // `recovered` says whether the retry budget still allowed a reload. No URL, no

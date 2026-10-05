@@ -10,11 +10,15 @@
   right: 26px;
   bottom: 14px;
   z-index: 30;
+  /* Span the pane's height so the card's max-height has a box to resolve
+     against. With only a max-height here, the card grew past the top of the
+     pane and the pane clipped its header. */
+  top: 14px;
   display: flex;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: 10px;
   pointer-events: none;
-  max-height: calc(100% - 28px);
 }
 
 .ade-pr-dock > * {
@@ -121,6 +125,14 @@
   box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.85), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
   backdrop-filter: blur(14px);
   animation: ade-pr-dock-card-in 140ms ease-out;
+}
+
+.ade-pr-dock-card-actions {
+  position: sticky;
+  bottom: -14px;
+  margin: 0 -14px;
+  padding: 6px 14px 0;
+  background: var(--color-popup-bg, var(--color-card, #16141c));
 }
 
 /* Fade only: a card that moves as it opens is a target moving under the

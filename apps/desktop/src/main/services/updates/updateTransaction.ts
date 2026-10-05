@@ -19,9 +19,9 @@ export type {
  */
 export const UPDATE_TRANSACTION_FAILURE_COPY: Record<UpdateTransactionStepId, string> = {
   swap: "The update didn't finish installing — ADE is still on the old version.",
-  service: "Updated the app, but the background service couldn't be set up — click Repair.",
-  restart: "Updated the app, but the background service didn't restart — click Repair.",
-  health: "Updated the app, but the background service isn't answering — click Repair.",
+  service: "ADE updated, but it couldn't start afterwards. Choose Repair.",
+  restart: "ADE updated, but it didn't start again. Choose Repair.",
+  health: "ADE updated, but it isn't responding. Choose Repair.",
 };
 
 export type UpdateTransactionStepOutcome = {

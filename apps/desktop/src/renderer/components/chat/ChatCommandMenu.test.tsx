@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatCommandMenu } from "./ChatCommandMenu";
@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("ChatCommandMenu @ ranking", () => {
-  it("lists a matching chat above a vaguely matching file and skips kind section headers", async () => {
+  it("groups rows under kind sections with the best match leading", async () => {
     render(
       <ChatCommandMenu
         trigger={{ type: "at", query: "chat", start: 0 }}
@@ -31,13 +31,38 @@ describe("ChatCommandMenu @ ranking", () => {
     await screen.findByText("chat");
     await screen.findByText("chatMentions.ts");
 
+    // The better-matching chat is still first, and each kind is now a section.
     const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-menu-index]"));
     expect(rows[0]?.textContent).toContain("chat");
     expect(rows[0]?.textContent).not.toContain("chatMentions.ts");
-    expect(rows[1]?.textContent).toContain("chatMentions.ts");
-    expect(screen.queryByText("Files")).toBeNull();
-    expect(screen.queryByText("Chats")).toBeNull();
-    expect(screen.queryByText("Lanes")).toBeNull();
+    expect(screen.getByText("Chats")).toBeTruthy();
+    expect(screen.getByText("Files")).toBeTruthy();
+  });
+
+  it("expands a + N more section row in place instead of closing", async () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <ChatCommandMenu
+        trigger={{ type: "at", query: "fix", start: 0 }}
+        slashCommands={[]}
+        onFileSearch={async () => ["fix1.ts", "fix2.ts", "fix3.ts", "fix4.ts"].map((path) => ({ path }))}
+        onMentionSearch={async () => [{ kind: "chat", id: "c1", title: "fix", lastActivityAt: 1 }]}
+        anchor={{ top: 200, left: 20, bottom: 220 }}
+        onSelect={onSelect}
+        onClose={onClose}
+      />,
+    );
+
+    const more = await screen.findByText(/\+ 1 more files/);
+    fireEvent.click(more);
+    await waitFor(() => {
+      expect(screen.queryByText(/\+ 1 more files/)).toBeNull();
+    });
+    // Expanding is an in-place action, not a selection: the menu stays open.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(await screen.findByText("fix4.ts")).toBeTruthy();
   });
 
   it("keeps a kind icon on every mixed row", async () => {
@@ -80,4 +105,67 @@ describe("ChatCommandMenu @ ranking", () => {
     expect(await screen.findByText("chatMentions.ts")).toBeTruthy();
     expect(screen.getByText("apps\\desktop\\src\\shared\\")).toBeTruthy();
   });
+
+  it("labels the same model with the route each row would bill", async () => {
+    render(
+      <ChatCommandMenu
+        trigger={{ type: "at", query: "deepseek", start: 0 }}
+        slashCommands={[]}
+        modelOptions={[
+          {
+            modelId: "opencode/opencode-zen/deepseek-v4.1-flash",
+            title: "DeepSeek V4.1 Flash",
+            subtitle: "OpenCode · OpenCode Zen",
+            reasoningTiers: [],
+            defaultEffort: null,
+            routeLabel: "OpenCode Zen",
+          },
+          {
+            modelId: "opencode/opencode-go/deepseek-v4.1-flash",
+            title: "DeepSeek V4.1 Flash",
+            subtitle: "OpenCode · OpenCode Go",
+            reasoningTiers: [],
+            defaultEffort: null,
+            routeLabel: "OpenCode Go",
+          },
+        ]}
+        anchor={{ top: 200, left: 20, bottom: 220 }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-menu-index]").length).toBeGreaterThanOrEqual(2);
+    });
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-menu-index]"))
+      .map((row) => row.textContent ?? "");
+    expect(rows.filter((text) => text.includes("DeepSeek V4.1 Flash"))).toHaveLength(2);
+    expect(rows.some((text) => text.includes("via OpenCode Zen"))).toBe(true);
+    expect(rows.some((text) => text.includes("via OpenCode Go"))).toBe(true);
+  });
 });
+
+describe("ChatCommandMenu / ranking", () => {
+  it("ranks /test above longer names that only contain its letters", async () => {
+    render(
+      <ChatCommandMenu
+        trigger={{ type: "slash", query: "test", start: 0 }}
+        slashCommands={[
+          { name: "asc-testflight-orchestration", description: "Orchestrate TestFlight", source: "sdk" },
+          { name: "clerk-testing", description: "E2E testing for Clerk", source: "sdk" },
+          { name: "test", description: "Prove the new code works", source: "sdk" },
+        ]}
+        anchor={{ top: 200, left: 20, bottom: 220 }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("/test");
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-menu-index]"));
+    expect(rows[0]?.textContent).toContain("/test");
+    expect(rows[0]?.textContent).not.toContain("testflight");
+  });
+});
+

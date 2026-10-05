@@ -31,12 +31,14 @@ export const SETTINGS_TAB_IDS = [
   "general",
   "appearance",
   "chat",
+  "apple",
   "agents",
   "lanes-git",
   "integrations",
   "notifications",
   "secrets",
   "storage",
+  "archive",
   "stats",
 ] as const;
 
@@ -97,18 +99,33 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine. */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "agents", "lanes-git", "integrations", "storage"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "agents", "lanes-git", "integrations", "storage", "archive"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
+}
+
+/**
+ * Machines pages that describe the screen in front of you, not the machine's
+ * runtime. Appearance is painted by the window you are looking at and kept in
+ * its own storage, so it has one page, under This computer. A remote machine
+ * has no copy of it to show or edit from here.
+ */
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance"];
+
+export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
+  return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
   // ── Account: applies everywhere ─────────────────────────────────────────
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
-  { id: "appearance", label: "Appearance", description: "Theme, interface, terminal, and Apple Development.", group: "account" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
+  // Apple device options follow the account on purpose: the host reads the
+  // remote streaming cap from the account store, so this page cannot be
+  // per computer without moving that read.
+  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming.", group: "account" },
   { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
@@ -120,12 +137,17 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
 
   // ── Machines: one set of these pages per machine ───────────────────────
   { id: "general", label: "General", description: "ADE on this machine: runtime, project health, links, privacy, and power.", group: "machines" },
+  // Appearance is per computer: each screen has its own theme, fonts and
+  // terminal, and none of it follows the account.
+  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts, terminal, and Apple Development.", group: "machines" },
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
   { id: "agents", label: "Providers", group: "machines" },
   { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
   { id: "integrations", label: "Integrations", description: "GitHub and Linear, as connected on this machine.", group: "machines" },
   { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
+  // No description: the page's own header says what the archive is.
+  { id: "archive", label: "Archive", group: "machines" },
 ] as const;
 
 /**
@@ -175,6 +197,12 @@ export type SettingEntry = {
   web: SettingWebScope;
   /** Group heading the card sits under, within its tab. */
   group: string;
+  /**
+   * Only the hosted web client renders this card. The desktop reaches the same
+   * controls another way (provider accounts live on each provider's page), so
+   * its nav, search and palette must not offer an anchor it never draws.
+   */
+  webOnly?: true;
 };
 
 /**
@@ -318,15 +346,25 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "About",
   },
+  {
+    id: "general.reset",
+    label: "Reset ADE",
+    keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
+    tab: "general",
+    anchor: "about.reset",
+    scope: "machine",
+    web: "hidden",
+    group: "About",
+  },
 
   // ── Appearance ───────────────────────────────────────────────────────────
   {
     id: "appearance.theme",
     label: "Theme",
-    keywords: ["dark", "light", "color", "accent"],
+    keywords: ["dark", "light", "color", "accent", "import", "export", "vscode", "palette", "corners", "shadow", "backdrop", "scanlines", "serif", "monospace"],
     tab: "appearance",
     anchor: "theme",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Theme",
   },
@@ -426,7 +464,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["font", "typeface", "geist", "system", "sans", "typography"],
     tab: "appearance",
     anchor: "interface-font",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Interface",
   },
@@ -436,7 +474,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["font", "monospace", "mono", "code", "jetbrains", "geist mono"],
     tab: "appearance",
     anchor: "code-font",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Interface",
   },
@@ -446,7 +484,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["animation", "motion", "transitions", "accessibility"],
     tab: "appearance",
     anchor: "reduce-motion",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Interface",
   },
@@ -456,7 +494,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["terminal", "font", "monospace", "size", "line height", "scrollback", "shell"],
     tab: "appearance",
     anchor: "terminal-text",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Terminal",
   },
@@ -464,7 +502,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "appearance.apple-realistic-body",
     label: "Realistic body",
     keywords: ["apple", "simulator", "ios", "3d", "body", "mesh", "apple.realisticBody"],
-    tab: "appearance",
+    tab: "apple",
     anchor: "apple-realistic-body",
     scope: "account",
     web: "browser",
@@ -474,7 +512,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "appearance.apple-tap-rings",
     label: "Tap rings in recordings",
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "tap", "apple.recordingOverlays.tapRings"],
-    tab: "appearance",
+    tab: "apple",
     anchor: "apple-tap-rings",
     scope: "account",
     web: "browser",
@@ -484,7 +522,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "appearance.apple-typed-badges",
     label: "Typed text in recordings",
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "badge", "keyboard", "apple.recordingOverlays.keyBadges"],
-    tab: "appearance",
+    tab: "apple",
     anchor: "apple-typed-badges",
     scope: "account",
     web: "browser",
@@ -494,7 +532,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "appearance.apple-remote-bitrate",
     label: "Remote viewer bitrate cap",
     keywords: ["apple", "simulator", "ios", "stream", "bitrate", "kbit", "remote", "apple.remoteBitrateKbpsCap"],
-    tab: "appearance",
+    tab: "apple",
     anchor: "apple-remote-bitrate",
     scope: "account",
     web: "browser",
@@ -504,7 +542,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "appearance.apple-recordings-warn",
     label: "Recordings storage warning",
     keywords: ["apple", "simulator", "ios", "recording", "storage", "disk", "warn", "apple.recordingsWarnBytes"],
-    tab: "appearance",
+    tab: "apple",
     anchor: "apple-recordings-warn",
     scope: "account",
     web: "browser",
@@ -532,6 +570,23 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "hidden",
     group: "Connections",
+  },
+  // The web client hides every provider page (sign-in, keys and permissions
+  // run on the machine itself), but the machine's Claude and Codex logins are
+  // managed over sync, so the browser gets them as one card of its own.
+  {
+    id: "agents.accounts",
+    label: "AI accounts",
+    keywords: [
+      "account", "accounts", "claude", "codex", "sign in", "login", "second account",
+      "default account", "switch account", "smart balance",
+    ],
+    tab: "agents",
+    anchor: "ai-accounts",
+    scope: "machine",
+    web: "machine",
+    group: "Connections",
+    webOnly: true,
   },
   // One entry per provider, so ⌘K, settings search, and deeplinks land on the
   // provider's own page rather than the top of the list. The keywords carry the
@@ -1002,6 +1057,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Diagnostics",
   },
 
+  // ── Archive ──────────────────────────────────────────────────────────────
+  {
+    id: "archive.items",
+    label: "Archived lanes, chats, and shells",
+    keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
+    tab: "archive",
+    anchor: "archive",
+    scope: "machine-repo",
+    web: "machine",
+    group: "Archive",
+  },
+
   // ── Stats ────────────────────────────────────────────────────────────────
   {
     id: "stats.usage",
@@ -1030,6 +1097,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "ade-usage": "stats",
   usage: "stats",
   disk: "storage",
+  archived: "archive",
   secret: "secrets",
   // Swept into General before this rewrite; now have real homes again.
   workspace: "general",
@@ -1091,8 +1159,8 @@ export function settingsEntryById(id: string): SettingEntry | null {
 
 /**
  * Whether a setting is reachable from the renderer we are running in. Every
- * setting is reachable on the desktop; the web client drops the ones whose
- * writes have nowhere to land. Nav, search, and the palette all read this, so
+ * setting but a web-only one is reachable on the desktop; the web client drops
+ * the ones whose writes have nowhere to land. Nav, search, and the palette all read this, so
  * a hidden setting is hidden everywhere at once rather than only in the nav.
  *
  * `resolveSettingsTab` and `resolveSettingsHash` deliberately do not: a URL
@@ -1100,7 +1168,7 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
-  if (!isWebClientMode()) return true;
+  if (!isWebClientMode()) return entry.webOnly !== true;
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
   // bound to. With no tab open there is no such machine, so the control would

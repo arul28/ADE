@@ -28,8 +28,13 @@ export type ServiceManagerResult = {
   // very brain it tried to mutate. Consumers must branch on this typed flag,
   // never on the human-readable `message` text.
   selfMutationBlocked?: boolean;
-  /** Typed install verification stage for callers that need repair diagnostics. */
-  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive";
+  /**
+   * Typed install verification stage for callers that need repair diagnostics.
+   * `background_item_blocked` is macOS refusing to start the agent because
+   * ADE is switched off under Login Items → "Allow in the Background"; no
+   * restart can fix that, only the person at the keyboard can.
+   */
+  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked";
   /**
    * The service is registered and its brain process is alive, but it had not
    * answered on the socket when the install's wait budget ran out. That is a
@@ -102,7 +107,29 @@ export type ServiceManagerStatusResult = {
   running: boolean | null;
   path: string | null;
   message: string;
+  /**
+   * macOS Background Items verdict for the launch agent, read only when the
+   * agent is installed but not running (the one case where it explains
+   * anything). Absent on other platforms and when it was not read.
+   */
+  backgroundItem?: BackgroundItemStatus;
 };
+
+/**
+ * What macOS's Background Task Management says about a launch agent
+ * (`SMAppService.statusForLegacyPlist(at:)`). `requires_approval` is the
+ * user-visible "Allow in the Background" switch being off: launchd keeps the
+ * job loaded and never starts it.
+ */
+export type BackgroundItemStatus =
+  | "enabled"
+  | "requires_approval"
+  | "not_registered"
+  | "not_found"
+  | "unknown";
+
+export const BACKGROUND_ITEM_BLOCKED_MESSAGE =
+  "macOS is blocking ADE's background service. Turn on ADE in System Settings → General → Login Items & Extensions → Allow in the Background.";
 
 export type AdeServiceCommand = {
   command: string;

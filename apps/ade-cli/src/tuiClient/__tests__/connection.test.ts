@@ -1387,6 +1387,7 @@ describe("ade-code TUI state", () => {
       draftKindByProject: {},
       lastModelByProject: {},
       providerSettingsByProject: {},
+      archiveReminderNextAtByProject: {},
     });
   });
 
@@ -1403,6 +1404,7 @@ describe("ade-code TUI state", () => {
       draftKindByProject: {},
       lastModelByProject: {},
       providerSettingsByProject: {},
+      archiveReminderNextAtByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
@@ -1414,6 +1416,7 @@ describe("ade-code TUI state", () => {
       draftKindByProject: {},
       lastModelByProject: {},
       providerSettingsByProject: {},
+      archiveReminderNextAtByProject: {},
     });
   });
 });

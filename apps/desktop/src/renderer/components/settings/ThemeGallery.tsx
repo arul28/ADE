@@ -1,8 +1,9 @@
-import React, { useMemo } from "react";
-import { Desktop, Moon, Sun } from "@phosphor-icons/react";
+import React, { useMemo, useState } from "react";
+import { Desktop, MagnifyingGlass, Moon, Sun } from "@phosphor-icons/react";
 import { selectEffectiveThemeId, useAppStore, type ThemeId } from "../../state/appStore";
 import {
   ADE_THEME_FAMILIES,
+  THEME_COLLECTIONS,
   resolveTheme,
   resolveThemeById,
   themeFamilyForId,
@@ -39,6 +40,23 @@ function useThemeSelection() {
   const setThemeFollowsSystem = useAppStore((s) => s.setThemeFollowsSystem);
   const family = themeFamilyForId(themeId);
   return { themeId, effectiveId, followsSystem, mode, customThemes, setTheme, setThemeFollowsSystem, family };
+}
+
+const RADIUS_TAG = { sharp: "Square corners", soft: "Soft corners", round: "Round corners" } as const;
+const SHADOW_TAG = { flat: "Flat depth", hard: "Hard shadows", glow: "Glow" } as const;
+const FONT_TAG = { mono: "Monospace type", serif: "Serif type", rounded: "Rounded type" } as const;
+const BACKDROP_TAG = { grid: "Grid", dots: "Dot grid", scanlines: "Scanlines", noise: "Paper grain", aurora: "Aurora light" } as const;
+
+/** The parts of a theme that are not colour, as short labels for the stage. */
+function flairTags(theme: AdeTheme): string[] {
+  const flair = theme.flair;
+  if (!flair) return [];
+  const tags: string[] = [];
+  if (flair.radius && flair.radius !== "default") tags.push(RADIUS_TAG[flair.radius]);
+  if (flair.shadow && flair.shadow !== "soft") tags.push(SHADOW_TAG[flair.shadow]);
+  if (flair.sansFont && flair.sansFont !== "default") tags.push(FONT_TAG[flair.sansFont]);
+  if (flair.backdrop && flair.backdrop !== "none") tags.push(BACKDROP_TAG[flair.backdrop]);
+  return tags;
 }
 
 const MODE_OPTIONS: { mode: Mode; label: string; Icon: typeof Sun }[] = [
@@ -120,6 +138,13 @@ export function ThemeStage() {
               {painted.description}
             </p>
           ) : null}
+          {flairTags(painted).length > 0 ? (
+            <div aria-label="Shape and feel" style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
+              {flairTags(painted).map((tag) => (
+                <span key={tag} className="ade-theme-tag">{tag}</span>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div aria-label="Palette" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -170,6 +195,7 @@ function SwatchHalf({
 }) {
   const p = useMemo(() => resolveTheme(theme).palette, [theme]);
   const isLight = side === "light";
+  const hint = flairHint(theme, p.accent, p.fg);
   return (
     <button
       type="button"
@@ -185,8 +211,8 @@ function SwatchHalf({
         className="ade-swatch-hint"
         style={isLight ? { top: 11, left: 11 } : { bottom: 11, right: 11, flexDirection: "row-reverse" }}
       >
-        <span style={{ width: 9, height: 9, borderRadius: 999, background: p.accent, flexShrink: 0 }} />
-        <span style={{ width: 26, height: 4, borderRadius: 999, background: p.fg, opacity: 0.35 }} />
+        <span style={{ width: 9, height: 9, borderRadius: hint.radius, background: p.accent, boxShadow: hint.shadow, flexShrink: 0 }} />
+        <span style={{ width: 26, height: 4, borderRadius: hint.radius, background: p.fg, opacity: 0.35 }} />
       </span>
       {active ? (
         <span
@@ -199,6 +225,23 @@ function SwatchHalf({
       ) : null}
     </button>
   );
+}
+
+/**
+ * How a theme's shape shows in its swatch: the accent dot takes the theme's
+ * corner and its depth, so a square, hard-shadowed theme looks it before it is
+ * picked.
+ */
+function flairHint(theme: AdeTheme, accent: string, fg: string): { radius: number; shadow: string } {
+  const flair = theme.flair;
+  const radius = flair?.radius === "sharp" ? 1 : flair?.radius === "round" ? 999 : flair?.radius === "soft" ? 4 : 999;
+  const shadow =
+    flair?.shadow === "hard"
+      ? `2px 2px 0 0 ${flair.shadowColor ?? fg}`
+      : flair?.shadow === "glow"
+        ? `0 0 7px 1px ${accent}`
+        : "none";
+  return { radius, shadow };
 }
 
 function FamilyTile({
@@ -267,37 +310,117 @@ function CustomTile({ theme, active, onSelect }: { theme: AdeTheme; active: bool
   );
 }
 
+/** Everything the search matches on, as one lower-case string per family. */
+function familySearchText(entry: AdeThemeFamily): string {
+  const collection = THEME_COLLECTIONS.find((item) => item.id === entry.collection)?.label ?? "";
+  return [
+    entry.name,
+    entry.dark.name,
+    entry.light.name,
+    entry.dark.description,
+    entry.light.description,
+    collection,
+    ...entry.tags,
+  ].join(" ").toLowerCase();
+}
+
+/** Every word in the query must appear in the entry, so "warm serif" narrows. */
+function matchesSearch(text: string, needle: string): boolean {
+  return !needle || needle.split(/\s+/).every((word) => text.includes(word));
+}
+
 export function ThemeGallery() {
   const { themeId, effectiveId, mode, customThemes, family, setTheme, setThemeFollowsSystem } = useThemeSelection();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+
+  const searchable = useMemo(() => ADE_THEME_FAMILIES.map((entry) => ({ entry, text: familySearchText(entry) })), []);
+  const visible = useMemo(
+    () => searchable.filter(({ text }) => matchesSearch(text, needle)),
+    [searchable, needle],
+  );
+  const visibleCustom = customThemes.filter((theme) => matchesSearch(theme.name.toLowerCase(), needle));
+  const nothing = visible.length === 0 && visibleCustom.length === 0;
+
+  const shelfLabel: React.CSSProperties = {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    margin: "0 0 10px",
+    fontFamily: SANS_FONT,
+  };
 
   return (
-    <div role="group" aria-label="Themes" className="ade-swatch-grid">
-      {ADE_THEME_FAMILIES.map((entry) => (
-        <FamilyTile
-          key={entry.id}
-          family={entry}
-          active={family?.id === entry.id}
-          effectiveId={effectiveId}
-          // The name keeps the mode; a swatch half picks its variant and pins it.
-          onSelect={() => setTheme(entry[mode].id)}
-          onPickVariant={(variant) => {
-            setThemeFollowsSystem(false);
-            setTheme(variant.id);
-          }}
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <label className="ade-theme-search">
+        <MagnifyingGlass size={13} aria-hidden />
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={`Search ${ADE_THEME_FAMILIES.length} themes: neon, serif, light, nord…`}
+          aria-label="Search themes"
+          spellCheck={false}
         />
-      ))}
-      {customThemes.map((theme) => (
-        <CustomTile
-          key={theme.id}
-          theme={theme}
-          active={themeId === theme.id}
-          // A custom theme has one mode, so "follow the system" does not apply.
-          onSelect={() => {
-            setThemeFollowsSystem(false);
-            setTheme(theme.id);
-          }}
-        />
-      ))}
+      </label>
+
+      {THEME_COLLECTIONS.map((collection) => {
+        const entries = visible.filter(({ entry }) => entry.collection === collection.id);
+        if (entries.length === 0) return null;
+        return (
+          <section key={collection.id} aria-label={collection.label}>
+            <h3 style={shelfLabel}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>{collection.label}</span>
+              <span style={{ fontSize: 11.5, color: COLORS.textDim }}>{collection.blurb}</span>
+            </h3>
+            <div role="group" aria-label={`${collection.label} themes`} className="ade-swatch-grid">
+              {entries.map(({ entry }) => (
+                <FamilyTile
+                  key={entry.id}
+                  family={entry}
+                  active={family?.id === entry.id}
+                  effectiveId={effectiveId}
+                  // The name keeps the mode; a swatch half picks its variant and pins it.
+                  onSelect={() => setTheme(entry[mode].id)}
+                  onPickVariant={(variant) => {
+                    setThemeFollowsSystem(false);
+                    setTheme(variant.id);
+                  }}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+
+      {visibleCustom.length > 0 ? (
+        <section aria-label="Your themes">
+          <h3 style={shelfLabel}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>Yours</span>
+            <span style={{ fontSize: 11.5, color: COLORS.textDim }}>Imported and customized, kept on this computer.</span>
+          </h3>
+          <div role="group" aria-label="Your themes" className="ade-swatch-grid">
+            {visibleCustom.map((theme) => (
+              <CustomTile
+                key={theme.id}
+                theme={theme}
+                active={themeId === theme.id}
+                // A custom theme has one mode, so "follow the system" does not apply.
+                onSelect={() => {
+                  setThemeFollowsSystem(false);
+                  setTheme(theme.id);
+                }}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {nothing ? (
+        <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12.5, color: COLORS.textMuted }}>
+          No theme matches “{query.trim()}”. Try a mood (neon, warm, calm), a feature (serif, monospace, glow) or a name.
+        </p>
+      ) : null}
     </div>
   );
 }

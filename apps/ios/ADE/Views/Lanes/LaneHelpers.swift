@@ -542,6 +542,14 @@ private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
     .filter { !$0.isEmpty }
 }
 
+/// Non-empty unlink tombstones for a PR, trimmed. A dismissed chat must not
+/// revive the PR through the branch fallback.
+private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  (pr.dismissedChatSessionIds ?? [])
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+}
+
 /// Every PR this LANE owns, mirroring desktop `selectLanePrs`.
 ///
 /// Lane ownership is not negotiable: callers pass the project-wide list, and
@@ -589,16 +597,21 @@ func selectChatPrs(
   return (owned + linkedElsewhere).sorted(by: lanePrTagPrecedes)
 }
 
-/// Scope a set of PRs to one chat. A row with no link at all is legacy data and
-/// may use the lane fallback; that fallback is decided PER PR, so one linked row
-/// does not hide every older row in the same lane. Mirrors `selectPrsForChat`.
-func selectPrsForChat(
+/// Scope a set of lane-owned PRs to one chat, lane-first. A row with no link at
+/// all is legacy data and may use the lane fallback; that fallback is decided
+/// PER PR, so one linked row does not hide every older row in the same lane.
+/// Unlike the desktop `selectPrsForChat` (edges-first), iOS scopes the lane list
+/// first via `selectChatPrs`, then drops rows another chat claimed or this chat
+/// unlinked. Named for its real semantics so it is not mistaken for the shared
+/// desktop function.
+func scopeLaneChatPrsByLinks(
   _ pullRequests: [PullRequestListItem],
   sessionId: String?
 ) -> [PullRequestListItem] {
   let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   guard !trimmed.isEmpty else { return pullRequests }
   return pullRequests.filter { pr in
+    if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
     let linked = lanePrChatSessionIds(pr)
     return linked.isEmpty || linked.contains(trimmed)
   }
@@ -640,7 +653,7 @@ func workChatPullRequests(
   sessionId: String?
 ) -> [PullRequestListItem] {
   guard let lane else { return [] }
-  let visible = selectPrsForChat(
+  let visible = scopeLaneChatPrsByLinks(
     selectChatPrs(lane: lane, pullRequests: pullRequests, sessionId: sessionId),
     sessionId: sessionId
   )

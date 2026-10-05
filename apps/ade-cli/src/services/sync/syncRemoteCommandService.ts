@@ -1,4 +1,6 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
+import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -80,6 +82,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
@@ -129,6 +132,7 @@ import type {
   GitCheckoutBranchArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitPullArgs,
   GitPullMode,
   GitPushArgs,
@@ -190,6 +194,10 @@ import type {
   StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
@@ -237,7 +245,8 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -285,6 +294,7 @@ import {
   type AppleDeviceRemoteService,
   type AppleStreamTicketIssuer,
 } from "./appleRemoteCommands";
+import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -331,6 +341,7 @@ import {
   buildLaneEnvTeardown,
   restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import { createArchiveService } from "../../../../desktop/src/main/services/archive/archiveService";
 import { resolveChatCreateModel } from "../../../../desktop/src/main/services/chat/chatCreateModelResolution";
 import {
   parseAgentChatCreateFields,
@@ -350,7 +361,7 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
+import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -377,6 +388,7 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -1438,6 +1450,7 @@ function parseTerminalListArgs(value: Record<string, unknown>): ChatTerminalList
     chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
     laneId: optionalTerminalString(record, "laneId", 512),
     limit: optionalTerminalNumber(record, "limit", 1, 500),
+    ...(record.includeArchived === true ? { includeArchived: true } : {}),
   };
 }
 
@@ -2782,11 +2795,20 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
   if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
     throw new Error("chat.steer dispatchMode must be 'inline' or 'interrupt'.");
   }
+  // A steer that carries the chat's pending thread comments may have no text
+  // of its own: the host builds the message from the comments.
+  const includeThreadComments = value.includeThreadComments === true;
   return {
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
-    text: requireString(value.text, "chat.steer requires text."),
+    text: includeThreadComments
+      ? asTrimmedString(value.text) ?? ""
+      : requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
     ...(dispatchMode ? { dispatchMode } : {}),
+    // A paired controller (the phone, a remote desktop) sends what its user
+    // typed in the composer.
+    sentByUser: true,
+    ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }
 
@@ -2806,6 +2828,18 @@ function parseAgentChatEditSteerArgs(value: Record<string, unknown>): AgentChatE
     sessionId: requireString(value.sessionId, "chat.editSteer requires sessionId."),
     steerId: requireString(value.steerId, "chat.editSteer requires steerId."),
     text: requireString(value.text, "chat.editSteer requires text."),
+  };
+}
+
+function parseAgentChatMoveSteerArgs(value: Record<string, unknown>): AgentChatMoveSteerArgs {
+  const toIndex = value.toIndex;
+  if (typeof toIndex !== "number" || !Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error("chat.moveSteer toIndex must be a non-negative integer.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.moveSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.moveSteer requires steerId."),
+    toIndex,
   };
 }
 
@@ -3177,10 +3211,14 @@ function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitG
   };
 }
 
-function parseGitListRecentCommitsArgs(value: Record<string, unknown>): { laneId: string; limit?: number } {
+function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListRecentCommitsArgs {
+  const skip = asOptionalNumber(value.skip);
+  const scope = value.scope === "lanes" || value.scope === "lane" ? value.scope : undefined;
   return {
     laneId: requireString(value.laneId, "git.listRecentCommits requires laneId."),
     limit: asOptionalNumber(value.limit),
+    ...(skip != null ? { skip } : {}),
+    ...(scope ? { scope } : {}),
   };
 }
 
@@ -3505,6 +3543,57 @@ function parseUnstackGithubStackArgs(
   };
 }
 
+function parseLinkPrChatSessionArgs(value: Record<string, unknown>): LinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.linkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.linkChatSession requires sessionId."),
+    ...(value.allowCrossLane === true ? { allowCrossLane: true } : {}),
+  };
+}
+
+function parseLinkPrChatStackArgs(value: Record<string, unknown>): LinkPrChatStackArgs {
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "prs.linkChatStack requires sessionId."),
+    stackNumber,
+    ...(asTrimmedString(value.prId) ? { prId: asTrimmedString(value.prId) } : {}),
+  };
+}
+
+function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrChatSessionArgs {
+  return {
+    prId: requireString(value.prId, "prs.unlinkChatSession requires prId."),
+    sessionId: requireString(value.sessionId, "prs.unlinkChatSession requires sessionId."),
+    ...(value.dismiss === false ? { dismiss: false } : {}),
+  };
+}
+
+function parseSetPrChatWatchArgs(value: Record<string, unknown>): SetPrChatWatchArgs {
+  return {
+    prId: requireString(value.prId, "prs.setChatWatch requires prId."),
+    sessionId: requireString(value.sessionId, "prs.setChatWatch requires sessionId."),
+    mode: parsePrWatchMode(value.mode),
+  };
+}
+
+function parseGetPrChatWatchArgs(value: Record<string, unknown>): GetPrChatWatchArgs {
+  const sessionId = asTrimmedString(value.sessionId);
+  const prId = asTrimmedString(value.prId);
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(prId ? { prId } : {}),
+  };
+}
+
+function parseListPrChatSessionsArgs(value: Record<string, unknown>): ListPrChatSessionsArgs {
+  return {
+    prId: requireString(value.prId, "prs.listChatSessionsForPr requires prId."),
+  };
+}
+
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
   const laneId = asTrimmedString(value.laneId);
   const title = asTrimmedString(value.title);
@@ -3525,6 +3614,7 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
     ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
     ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
     ...(strategy ? { strategy } : {}),
+    ...(value.source === "agent" || value.source === "human" ? { source: value.source } : {}),
   };
 }
 
@@ -4926,6 +5016,35 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (!id) throw new Error("Missing prompt stash id.");
     return deletePromptStash(requireService(args.db, "Database not available."), id);
   });
+  // Thread comments: the user's pending notes on parts of an agent reply. The
+  // host's chat service validates every field; these only route.
+  register("chat.listThreadComments", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
+      sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
+    }));
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) => {
+    const anchor = normalizeThreadCommentAnchor(payload.anchor);
+    if (!anchor) throw new Error("chat.createThreadComment requires the text or table row the comment is about.");
+    return requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.createThreadComment requires sessionId."),
+      messageKey: requireString(payload.messageKey, "chat.createThreadComment requires messageKey."),
+      messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
+      anchor,
+      body: typeof payload.body === "string" ? payload.body : "",
+    });
+  });
+  register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.updateThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.updateThreadComment requires commentId."),
+      ...(typeof payload.body === "string" ? { body: payload.body } : {}),
+      ...(typeof payload.includeInNextSend === "boolean" ? { includeInNextSend: payload.includeInNextSend } : {}),
+    }));
+  register("chat.deleteThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").deleteThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.deleteThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.deleteThreadComment requires commentId."),
+    }));
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -5034,6 +5153,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.continueUsageLimitOnAlternate", { viewerAllowed: false, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").continueUsageLimitOnAlternate({
       sessionId: requireString(payload.sessionId, "chat.continueUsageLimitOnAlternate requires sessionId."),
+    }));
+  // Owner-only: it changes which login pays for the chat's next turn.
+  register("chat.switchAccount", { viewerAllowed: false, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").switchAccount({
+      sessionId: requireString(payload.sessionId, "chat.switchAccount requires sessionId."),
+      instanceId: requireString(payload.instanceId, "chat.switchAccount requires instanceId."),
     }));
   register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
@@ -5179,8 +5304,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sendArgs = parseAgentChatSendArgs(payload);
+    // A phone or web message: no desktop is the one being talked from now.
+    noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
-      parseAgentChatSendArgs(payload),
+      sendArgs,
       { awaitDispatch: false, routeActiveToSteer: true },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
@@ -5191,6 +5319,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ...result, ok: true };
+  });
+  register("chat.restartSession", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .restartSession({
+        sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
+        ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+      });
     return { ...result, ok: true };
   });
   register("chat.stopTask", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5223,6 +5359,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.editSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").editSteer(parseAgentChatEditSteerArgs(payload));
+    return { ok: true };
+  });
+  register("chat.moveSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").moveSteer(parseAgentChatMoveSteerArgs(payload));
     return { ok: true };
   });
   register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5290,6 +5430,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     return { ok: true };
   });
+  register("chat.getLaunchDefaults", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").getLaunchDefaults());
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
@@ -5955,6 +6097,22 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /**
+ * Provider accounts are machine-wide: they name config homes on the host, so
+ * they run at runtime scope and never need a project open. The caller's client
+ * (phone or browser) is not known at this layer, so analytics files them under
+ * the generic `api` surface, like the CLI action they share.
+ */
+function registerProviderAccountRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const domain = buildProviderInstancesDomainService({
+    productAnalyticsService: args.productAnalyticsService,
+    usageTrackingService: args.usageTrackingService,
+  });
+  for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
+    register(entry.action, entry.policy, entry.handler, "runtime");
+  }
+}
+
+/**
  * Apple device environment for remote surfaces.
  *
  * Project-scoped like `workTools.*` — a lane only exists inside a project — and
@@ -6287,6 +6445,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
 function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
+  // Advertising this is how a client learns the host understands `mode:
+  // "branch"`: an older host reads an unknown mode as "unstaged" without
+  // complaint, so clients send it only after this command exists.
+  register("git.getBranchChanges", { viewerAllowed: true }, async (payload) =>
+    requireService(args.diffService, "Diff service not available.").getBranchChanges(parseGetDiffChangesArgs(payload).laneId));
   register("git.getFile", { viewerAllowed: true }, async (payload) => {
     const diffService = requireService(args.diffService, "Diff service not available.");
     const parsed = parseGetFileDiffArgs(payload);
@@ -6407,6 +6570,32 @@ function registerTerminalRemoteCommands({ args, register }: RemoteCommandRegistr
     args.ptyService.listTerminals(parseTerminalListArgs(payload)));
   register("terminal.activeForChat", { viewerAllowed: true }, async (payload) =>
     args.ptyService.activeForChat(parseTerminalActiveForChatArgs(payload)));
+}
+
+/**
+ * One archive across lanes, chats, and shells, for the web client and phone.
+ * Same service the action registry and Electron IPC build; it needs the
+ * project DB, so a host without one simply does not serve `archive.*`.
+ */
+function registerArchiveRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const db = args.db;
+  if (!db) return;
+  const archive = () => createArchiveService({
+    db,
+    laneService: args.laneService,
+    sessionService: args.sessionService,
+    ptyService: args.ptyService,
+    agentChatService: args.agentChatService ?? null,
+    projectConfigService: args.projectConfigService ?? null,
+    laneEnvironmentService: args.laneEnvironmentService ?? null,
+    portAllocationService: args.portAllocationService ?? null,
+    logger: args.logger,
+  });
+  // The archive service parses its own input, the same for every transport.
+  register("archive.list", { viewerAllowed: true }, async (payload) => archive().list(payload));
+  register("archive.summary", { viewerAllowed: true }, async (payload) => archive().summary(payload));
+  register("archive.restore", { viewerAllowed: true, queueable: true }, async (payload) => archive().restore(payload));
+  register("archive.delete", { viewerAllowed: true, queueable: false }, async (payload) => archive().delete(payload));
 }
 
 function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -7015,6 +7204,25 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.addGithubStackPullRequests(parseAddGithubStackPullRequestsArgs(payload)));
   register("prs.unstackGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.unstackGithubStack(parseUnstackGithubStackArgs(payload)));
+  register("prs.linkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatSession(parseLinkPrChatSessionArgs(payload)));
+  register("prs.unlinkChatSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.unlinkChatSession(parseUnlinkPrChatSessionArgs(payload)));
+  register("prs.linkChatStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.linkChatStack(parseLinkPrChatStackArgs(payload)));
+  // Same reach as `chat.send`: arming a watch is how a client asks the agent
+  // to keep working on its PR.
+  register("prs.setChatWatch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.setChatWatch(parseSetPrChatWatchArgs(payload)));
+  register("prs.getChatWatches", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getChatWatches(parseGetPrChatWatchArgs(payload)));
+  register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
+  register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getStackLinkOffer({
+      sessionId: requireString(payload.sessionId, "prs.getStackLinkOffer requires sessionId."),
+      prId: asTrimmedString(payload.prId) || null,
+    }));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
@@ -7271,6 +7479,87 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   }, "runtime");
 
+  // A bound the caller sent and the host cannot read is an error, never a
+  // quietly different period.
+  const rejectInvalidUsageBounds = (action: string, since: string | null | undefined, until: string | null | undefined) => {
+    if (since && Number.isNaN(Date.parse(since))) throw new Error(`${action} since must be an ISO timestamp.`);
+    if (until && Number.isNaN(Date.parse(until))) throw new Error(`${action} until must be an ISO timestamp.`);
+  };
+
+  // Spend by chat / lane / account comes from this machine's per-turn ledger;
+  // chat titles and lane names come from the project, so it is project-scoped
+  // like `usage.getAdeStats`.
+  register("usage.getCostBreakdown", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const by = asTrimmedString(payload.by);
+    if (!isAdeUsageCostBreakdownBy(by)) {
+      throw new Error("usage.getCostBreakdown by must be chat, lane, or account.");
+    }
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getCostBreakdown preset must be today, 7d, 30d, year, or all.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getCostBreakdown", since, until);
+    const laneId = asTrimmedString(payload.laneId);
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    return await args.usageTrackingService.getCostBreakdown({
+      by: by as AdeUsageCostBreakdownBy,
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(limit != null ? { limit } : {}),
+      ...(payload.rankBy === "tokens" ? { rankBy: "tokens" as const } : {}),
+    });
+  });
+
+  register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getModelDetail preset must be today, 7d, 30d, year, or all.");
+    }
+    const scope = asTrimmedString(payload.scope);
+    if (scope && !isAdeUsageScope(scope)) {
+      throw new Error("usage.getModelDetail scope must be account, machine, or project.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getModelDetail", since, until);
+    return args.usageTrackingService.getModelDetail({
+      provider: requireString(payload.provider, "usage.getModelDetail requires provider."),
+      model: requireString(payload.model, "usage.getModelDetail requires model."),
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(isAdeUsageScope(scope) ? { scope } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+    });
+  });
+
+  register("usage.getModelPriceOverrides", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    return args.usageTrackingService.getModelPriceOverrides();
+  }, "runtime");
+
+  // Writes this machine's price list, so it is a controller action like
+  // spending a reset credit, never a viewer's.
+  register("usage.setModelPriceOverride", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
+    const service = args.usageTrackingService;
+    if (!service) throw new Error("Model prices are not available in this runtime.");
+    const price = payload.price == null ? payload.price as null | undefined : normalizePriceOverride(payload.price);
+    if (payload.price != null && !price) throw new Error("usage.setModelPriceOverride price needs input and output rates.");
+    const mapTo = payload.mapTo === null ? null : asTrimmedString(payload.mapTo);
+    const models = Array.isArray(payload.models) ? payload.models.filter((model): model is string => typeof model === "string") : [];
+    return service.setModelPriceOverride({
+      model: requireString(payload.model, "usage.setModelPriceOverride requires model."),
+      ...(models.length ? { models } : {}),
+      ...(price !== undefined ? { price } : {}),
+      ...(payload.mapTo !== undefined ? { mapTo: mapTo || null } : {}),
+    });
+  }, "runtime");
+
   registerProxyRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
@@ -7281,11 +7570,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
   registerTerminalRemoteCommands({ args, register });
+  registerArchiveRemoteCommands({ args, register });
   registerConflictRemoteCommands({ args, register });
   registerMiscRemoteCommands({ args, register });
   registerPrAndDeeplinkRemoteCommands({ args, register });

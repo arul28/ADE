@@ -16,7 +16,8 @@ import {
   ChatCardTitle,
   firstMeaningfulSummary,
 } from "./chatCardPrimitives";
-import { deriveSubagentCardName, subagentSummaryPlainText } from "../../../shared/chatSubagents";
+import { deriveSubagentCardName, formatSubagentModelLabel, subagentSummaryPlainText } from "../../../shared/chatSubagents";
+import { modelMentionEffortLabel } from "../../../shared/modelMentions";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import {
   subagentCardGridSpan,
@@ -253,6 +254,8 @@ function subagentQuietMetadata(
     spawnKind?: "subagent" | "peer" | null;
     provider?: string | null;
     agentType?: string | null;
+    model?: string | null;
+    reasoningEffort?: string | null;
     background?: boolean;
   },
   provider?: string | null,
@@ -265,6 +268,11 @@ function subagentQuietMetadata(
   if (agentType && !agentType.includes("/") && agentType.toLowerCase() !== resolvedProvider.toLowerCase()) {
     metadata.push(agentType.replace(/[-_]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase()));
   }
+  // Only what the agent reported: a parent's model or effort is not shown as the child's.
+  const model = formatSubagentModelLabel(event.model);
+  if (model) metadata.push(model);
+  const effort = event.reasoningEffort?.trim();
+  if (effort) metadata.push(modelMentionEffortLabel(effort));
   if (event.background) metadata.push("background");
   return metadata;
 }

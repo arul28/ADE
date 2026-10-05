@@ -2393,17 +2393,54 @@ export type CtoClearLinearTokenArgs = Record<string, never>;
 
 export type CtoClearLinearTokenResult = LinearConnectionStatus;
 
+/**
+ * The host's provider accounts (Claude and Codex logins), for the phone and the
+ * hosted web client. Each forwards to the `provider_instances` action domain.
+ * A viewer may read; anything that changes a login, or reads a running
+ * sign-in (its link and device code), needs control of the host.
+ */
+export const PROVIDER_ACCOUNT_REMOTE_COMMANDS = {
+  list: "viewer",
+  getSettings: "viewer",
+  refresh: "viewer",
+  loginStatus: "controller",
+  create: "controller",
+  remove: "controller",
+  rename: "controller",
+  setDefault: "controller",
+  dismissReplaced: "controller",
+  setSettings: "controller",
+  loginStart: "controller",
+  loginSubmitCode: "controller",
+  loginCancel: "controller",
+} as const satisfies Record<string, "viewer" | "controller">;
+
+export type ProviderAccountRemoteCommandMethod = keyof typeof PROVIDER_ACCOUNT_REMOTE_COMMANDS;
+export type ProviderAccountRemoteCommandAction = `providerAccounts.${ProviderAccountRemoteCommandMethod}`;
+
+export const PROVIDER_ACCOUNT_REMOTE_COMMAND_METHODS = Object.keys(
+  PROVIDER_ACCOUNT_REMOTE_COMMANDS,
+) as ProviderAccountRemoteCommandMethod[];
+
+export const PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS: readonly ProviderAccountRemoteCommandAction[] =
+  PROVIDER_ACCOUNT_REMOTE_COMMAND_METHODS.map((method) => `providerAccounts.${method}` as const);
+
 export type SyncRemoteCommandAction =
   | "analytics.capture"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
   | "account.getMachineInventory"
+  | ProviderAccountRemoteCommandAction
   | "usage.getAdeStats"
   | "usage.getQuotaSnapshot"
   | "usage.getUsageRollup"
   | "usage.refreshQuota"
   | "usage.consumeResetCredit"
+  | "usage.getCostBreakdown"
+  | "usage.getModelDetail"
+  | "usage.getModelPriceOverrides"
+  | "usage.setModelPriceOverride"
   | "proxy.status"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
@@ -2428,6 +2465,10 @@ export type SyncRemoteCommandAction =
   | "lanes.updateAppearance"
   | "lanes.archive"
   | "lanes.unarchive"
+  | "archive.list"
+  | "archive.summary"
+  | "archive.restore"
+  | "archive.delete"
   | "lanes.delete"
   | "lanes.deleteLeftoverWorktree"
   | "lanes.getStackChain"
@@ -2508,6 +2549,10 @@ export type SyncRemoteCommandAction =
   | "chat.listPromptStashes"
   | "chat.createPromptStash"
   | "chat.deletePromptStash"
+  | "chat.listThreadComments"
+  | "chat.createThreadComment"
+  | "chat.updateThreadComment"
+  | "chat.deleteThreadComment"
   | "chat.warmupModel"
   | "chat.launch"
   | "chat.startLaunch"
@@ -2528,6 +2573,7 @@ export type SyncRemoteCommandAction =
   | "chat.cancelScheduledWork"
   | "chat.resumeUsageLimitNow"
   | "chat.continueUsageLimitOnAlternate"
+  | "chat.switchAccount"
   | "chat.setScheduledWorkPaused"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
@@ -2538,12 +2584,15 @@ export type SyncRemoteCommandAction =
   | "chat.send"
   | "chat.interrupt"
   | "chat.stopTask"
+  | "chat.restartSession"
   | "chat.recoverCodexTurn"
   | "chat.recoverTurn"
   | "chat.resolveUnprocessedMessage"
   | "chat.steer"
   | "chat.cancelSteer"
   | "chat.editSteer"
+  | "chat.moveSteer"
+  | "chat.getLaunchDefaults"
   | "chat.dispatchSteer"
   | "chat.cancelDispatchedSteer"
   | "chat.interruptWithQueueMode"
@@ -2588,6 +2637,7 @@ export type SyncRemoteCommandAction =
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
   | "git.getChanges"
+  | "git.getBranchChanges"
   | "git.getFile"
   | "git.getFilePatch"
   | "git.getUserIdentity"
@@ -2727,6 +2777,13 @@ export type SyncRemoteCommandAction =
   | "prs.createGithubStack"
   | "prs.addGithubStackPullRequests"
   | "prs.unstackGithubStack"
+  | "prs.linkChatSession"
+  | "prs.unlinkChatSession"
+  | "prs.linkChatStack"
+  | "prs.listChatSessionsForPr"
+  | "prs.getStackLinkOffer"
+  | "prs.setChatWatch"
+  | "prs.getChatWatches"
   | "prs.linkToLane"
   | "prs.preflightCreateLaneFromPrBranch"
   | "prs.createLaneFromPrBranch"

@@ -294,13 +294,18 @@ func workChatInputCanSend(
   text: String,
   attachments: [WorkChatInputAttachment],
   baseEnabled: Bool,
-  canUploadAttachments: Bool
+  canUploadAttachments: Bool,
+  hasSendableThreadComments: Bool = false
 ) -> Bool {
   let readyAttachments = workChatInputReadyAttachments(attachments)
   return baseEnabled
     && !workChatInputHasLoadingAttachments(attachments)
     && !workChatInputHasFailedAttachments(attachments)
-    && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !readyAttachments.isEmpty)
+    && (
+      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !readyAttachments.isEmpty
+        || hasSendableThreadComments
+    )
     && (readyAttachments.isEmpty || canUploadAttachments)
 }
 

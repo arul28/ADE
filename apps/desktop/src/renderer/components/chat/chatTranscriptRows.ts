@@ -186,6 +186,9 @@ export type SubagentSpawnAnchorRenderEvent = {
   agentType: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   /**
    * Explicit display name from the lifecycle events (Claude Task `name`, Codex
    * nickname, Cursor label). The card title comes from
@@ -234,6 +237,9 @@ export type SubagentResultCardRenderEvent = {
   agentType?: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider?: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   background?: boolean;
   label?: string | null;
   status: SubagentCardTerminalStatus;
@@ -414,6 +420,8 @@ export type SpawnWakeDividerRenderEvent = {
   spawnKind: AgentChatSpawnKind;
   status: "completed" | "failed" | "stopped";
   summary: string | null;
+  /** Set when the child ran on another machine than this chat. */
+  childMachineName?: string;
   turnId?: string;
 };
 
@@ -462,6 +470,25 @@ export type TurnFoldRenderEvent = {
   /** Background jobs in the span, and how many failed (`· 5 jobs (1 failed)`). */
   jobCount?: number;
   failedJobCount?: number;
+};
+
+/**
+ * The one row a run of self-paced wake-up checks folds into (every check but
+ * the latest). Presentation only, produced after the turn fold by
+ * `applyWakeChains`. Row key: `wake-chain:${firstTurnId}`.
+ */
+export type WakeChainRenderEvent = {
+  type: "wake_chain";
+  chainId: string;
+  checkCount: number;
+  firstAt: string;
+  lastAt: string;
+};
+
+/** Presentation only: marks where rows that arrived while the reader was away begin. */
+export type NewSinceDividerRenderEvent = {
+  type: "new_since_divider";
+  sinceMs: number;
 };
 
 export type TurnDiagnosticsEvent = Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
@@ -556,6 +583,12 @@ export type ChatTranscriptRenderEnvelope = {
    */
   repeatCount?: number;
   /**
+   * Later `codex_image_view` events folded into this one by adjacency, oldest
+   * first. A run of screenshots the agent looked at reads as one strip, not one
+   * row per file. Render-side only, like `repeatCount`.
+   */
+  imageViewSiblings?: CodexImageViewRenderEvent[];
+  /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
    * row still sorts on it but must not show it as a clock (subagent drill-in).
@@ -589,15 +622,20 @@ export type ChatTranscriptGroupedEnvelope = {
     | SubagentStoppedGroupEvent
     | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | TurnFoldRenderEvent;
+    | TurnFoldRenderEvent
+    | WakeChainRenderEvent
+    | NewSinceDividerRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
+  imageViewSiblings?: CodexImageViewRenderEvent[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
   sceneScopeKey?: string;
 };
 
+export type CodexImageViewRenderEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
 type TaskListSourceEvent = PlanTranscriptEvent | TodoUpdateTranscriptEvent;
@@ -652,6 +690,9 @@ type SubagentAnchorState = {
   label: string | null;
   agentType: string | null;
   provider: string | null;
+  /** The model and effort the agent reported; null until it does. */
+  model: string | null;
+  reasoningEffort: string | null;
   taskType: string | null;
   command: string | null;
   background: boolean;
@@ -1283,6 +1324,20 @@ function readToolTitle(value: unknown): string | null {
   if (!record) return null;
   const title = typeof record.title === "string" ? record.title.trim() : "";
   return title.length ? title : null;
+}
+
+/**
+ * The error sentence of a failed tool result, when it carries one. A failed
+ * call's result is `{ error, errorType }` (or `{ error: { message } }`); the
+ * sentence is what a reader needs, not its JSON wrapper.
+ */
+export function readToolFailureText(result: unknown): string | null {
+  if (typeof result === "string") return result.trim() || null;
+  const record = readRecord(result);
+  const error = record?.error;
+  if (typeof error === "string") return error.trim() || null;
+  const nested = readRecord(error);
+  return typeof nested?.message === "string" ? nested.message.trim() || null : null;
 }
 
 export function formatStructuredValue(value: unknown): string {
@@ -2113,6 +2168,8 @@ function spawnAnchorEvent(
     description: subagentTitleDescription(state) ?? "Subagent task",
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     label: state.label,
     background: state.background,
     status: "running",
@@ -2154,6 +2211,9 @@ function enrichSubagentStateFromEvent(
   if (!state.label) state.label = subagentText(event.label);
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
   state.provider = subagentText(record.provider) ?? state.provider;
+  const model = subagentText((event as { model?: unknown }).model);
+  if (model && model !== "inherit") state.model = model;
+  state.reasoningEffort = subagentText((event as { reasoningEffort?: unknown }).reasoningEffort) ?? state.reasoningEffort;
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
@@ -2252,6 +2312,8 @@ function handleSubagentLifecycleEvent(
       label: null,
       agentType: null,
       provider: null,
+      model: null,
+      reasoningEffort: null,
       taskType: null,
       command: null,
       background: false,
@@ -2439,6 +2501,8 @@ function handleSubagentLifecycleEvent(
     description: subagentTitleDescription(state),
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     background: state.background,
     label: state.label,
     status: terminalStatus,
@@ -2591,6 +2655,7 @@ export function appendCollapsedChatTranscriptEvent(
             spawnKind,
             status,
             summary: completion.summary?.trim() || null,
+            ...(completion.childMachineName?.trim() ? { childMachineName: completion.childMachineName.trim() } : {}),
             ...(event.turnId ? { turnId: event.turnId } : {}),
           },
         });
@@ -3006,6 +3071,26 @@ export function appendCollapsedChatTranscriptEvent(
   // for background shell commands). Normalize canonical dotted events first, then
   // fold every lifecycle event into the anchor state (handled BEFORE the generic
   // passthrough so no raw subagent_* row ever reaches the activity bundler).
+  if (event.type === "codex_image_view") {
+    // An update to an image already folded into a strip: merge it in place.
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const siblings = rows[index]!.imageViewSiblings;
+      const siblingIndex = siblings?.findIndex((sibling) =>
+        sibling.itemId === event.itemId && (sibling.turnId ?? null) === (event.turnId ?? null)) ?? -1;
+      if (!siblings || siblingIndex < 0) continue;
+      const previous = siblings[siblingIndex]!;
+      const nextSiblings = [...siblings];
+      nextSiblings[siblingIndex] = {
+        ...previous,
+        ...event,
+        path: event.path ?? previous.path,
+        url: event.url ?? previous.url,
+        title: event.title ?? previous.title,
+      };
+      rows[index] = { ...rows[index]!, imageViewSiblings: nextSiblings };
+      return;
+    }
+  }
   if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
     const matchIndex = [...rows]
       .reverse()
@@ -3045,6 +3130,26 @@ export function appendCollapsedChatTranscriptEvent(
           },
         };
         return;
+      }
+    }
+    // A NEW image joins the strip of the previous image in the same turn when
+    // only folded work sits between them: tool calls, commands and narration,
+    // the rows a finished turn hides under "Worked for". An agent screenshotting
+    // a UI runs a command and says a line before every look, so strict
+    // adjacency never fired. A row the reader keeps seeing (a CI card, a
+    // question) starts a new strip.
+    if (event.type === "codex_image_view") {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const candidate = rows[index]!;
+        if (candidate.event.type === "codex_image_view") {
+          if ((candidate.event.turnId ?? null) !== (event.turnId ?? null)) break;
+          rows[index] = {
+            ...candidate,
+            imageViewSiblings: [...(candidate.imageViewSiblings ?? []), event],
+          };
+          return;
+        }
+        if (candidate.event.type !== "text" && classifyTurnFoldEvent(candidate.event) !== "history") break;
       }
     }
   }

@@ -1,4 +1,12 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
 import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
@@ -112,6 +120,11 @@ import type {
   ProviderInstanceRemoveResult,
   ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
+  ProviderInstanceDismissReplacedArgs,
+  ProviderLoginRefArgs,
+  ProviderLoginStartArgs,
+  ProviderLoginStatus,
+  ProviderLoginSubmitCodeArgs,
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
@@ -241,6 +254,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -278,6 +293,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -314,6 +331,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -458,6 +477,7 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -579,6 +599,12 @@ import type {
   PrSummary,
   PrWithConflicts,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDeployment,
   PrAiSummary,
   PostPrReviewCommentArgs,
@@ -628,6 +654,7 @@ import type {
   ProjectConfigValidationResult,
   ProjectInfo,
   OpenProjectBinding,
+  ProjectTabAdoptRequest,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -883,6 +910,7 @@ import type {
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
+  DevServerEvent,
   DevServersArgs,
   DevServersResult,
   BuiltInBrowserFindInPageResult,
@@ -971,6 +999,14 @@ import type {
 } from "../shared/types/chat";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  ArchiveActionArgs,
+  ArchiveActionResult,
+  ArchiveListArgs,
+  ArchiveListResult,
+  ArchiveSummary,
+  ArchiveSummaryArgs,
+} from "../shared/types/archive";
+import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
@@ -980,6 +1016,7 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
   WorkToolsLaneState,
@@ -1020,6 +1057,8 @@ declare global {
          * and first-render decisions.
          */
         runtimeTarget: { platform: string; arch: string };
+        /** This desktop install's id; absent on the web client. See `shared/sessionInputOrigin.ts`. */
+        desktopClientId?: string;
         /**
          * Release channel of this build, captured in preload from the argv the
          * main process injects. Synchronous for the same reason as
@@ -1071,8 +1110,24 @@ declare global {
         ) => Promise<{ openProjectBindings: OpenProjectBinding[] }>;
         newWindow: () => Promise<{ windowId: number | null }>;
         openProjectInNewWindow: (
-          rootPath: string,
+          binding: OpenProjectBinding,
         ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
+        projectTabDragStart: (args: {
+          binding: OpenProjectBinding;
+          grab: { x: number; y: number };
+          moveSource: boolean;
+          /** The pointer, in screen coordinates. */
+          point: { x: number; y: number };
+        }) => Promise<{ windowId: number | null }>;
+        projectTabDragMove: (point: { x: number; y: number }) => void;
+        /**
+         * Ends the drag at `point`; null cancels it without a drop.
+         * `intoSender` is true when the tab was dropped back on its own window.
+         */
+        projectTabDragEnd: (
+          point: { x: number; y: number } | null,
+        ) => Promise<{ merged: boolean; intoSender: boolean }>;
+        onAdoptProjectTab: (cb: (request: ProjectTabAdoptRequest) => void) => () => void;
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
         requestWindowClose: () => Promise<{ requested: boolean }>;
         onMenuCommand: (cb: (command: AppMenuCommand) => void) => () => void;
@@ -1134,6 +1189,17 @@ declare global {
           opts: { preview: StorageCleanupPreview },
           pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
+      };
+      /**
+       * One archive across lanes, chats, and shells. Every call takes an
+       * optional machine pin, like `storage`, so Settings → Archive reaches
+       * the machine it is showing.
+       */
+      archive: {
+        list: (args?: ArchiveListArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveListResult>;
+        summary: (args?: ArchiveSummaryArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveSummary>;
+        restore: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
+        delete: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
       };
       project: {
         openRepo: (args?: { rootPath?: string; trustGitOwnership?: boolean }) => Promise<ProjectInfo | null>;
@@ -1220,6 +1286,8 @@ declare global {
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
+        /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
+        openBackgroundSettings?: () => Promise<{ opened: boolean }>;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have
@@ -1228,6 +1296,12 @@ declare global {
         onRepairStep?: (
           cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
         ) => () => void;
+      };
+      /** The hard reset. Optional: older preloads do not have it. */
+      machineReset?: {
+        plan: () => Promise<MachineResetPlan>;
+        start: (options: MachineResetOptions) => Promise<{ started: boolean; cancelled?: boolean; error?: string }>;
+        chooseRescueDir: () => Promise<string | null>;
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
@@ -1283,6 +1357,21 @@ declare global {
           id: string,
           rootPath: string,
         ) => Promise<ProjectDetail>;
+        /**
+         * Pick an image on this machine and store it as the icon of a project
+         * on the remote host (every device then sees it). Resolves null when
+         * the user cancels; rejects with "Update ADE on <machine> to change its
+         * icon." when the host is too old.
+         */
+        chooseProjectIcon: (
+          id: string,
+          rootPath: string,
+        ) => Promise<ProjectIcon | null>;
+        /** Clear the host project's custom icon; resolves the fallback icon, if any. */
+        removeProjectIcon: (
+          id: string,
+          rootPath: string,
+        ) => Promise<ProjectIcon | null>;
         getDefaultParentDir: (id: string) => Promise<string>;
         getHandoffStoragePreflight: (
           id: string,
@@ -1766,6 +1855,21 @@ declare global {
         consumeResetCredit?: (args: {
           accountId: string;
         }) => Promise<import("../shared/types").UsageResetCreditResult>;
+        /**
+         * Spend by chat, lane, or account, and one model's detail and price.
+         * Optional on the bridge: an older preload or web host may not expose
+         * them, and the Usage page hides what it cannot read.
+         */
+        getCostBreakdown?: (
+          args: import("../shared/types").GetAdeUsageCostBreakdownArgs,
+        ) => Promise<import("../shared/types").AdeUsageCostBreakdown | null>;
+        getModelDetail?: (
+          args: import("../shared/types").GetAdeUsageModelDetailArgs,
+        ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        setModelPriceOverride?: (
+          args: import("../shared/types").SetAdeUsageModelPriceArgs,
+        ) => Promise<import("../shared/types").AdeUsagePriceOverrides>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
@@ -2113,6 +2217,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
+        moveSteer: (
+          args: AgentChatMoveSteerArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         dispatchSteer: (
           args: AgentChatDispatchSteerArgs,
           pin?: OpenProjectBinding | null,
@@ -2129,6 +2237,11 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Stop the provider process, keep the conversation; the next message starts fresh. */
+        restartSession: (
+          args: AgentChatRestartSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatRestartSessionResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
           pin?: OpenProjectBinding | null,
@@ -2166,6 +2279,7 @@ declare global {
           args: AgentChatDismissPendingInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        launchDefaults: (pin?: OpenProjectBinding | null) => Promise<AgentChatLaunchDefaults | null>;
         models: (
           args: AgentChatModelsArgs,
           pin?: OpenProjectBinding | null,
@@ -2211,6 +2325,10 @@ declare global {
           args: AgentChatContinueUsageLimitOnAlternateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
+        switchAccount: (
+          args: AgentChatSwitchAccountArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatSwitchAccountResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
           pin?: OpenProjectBinding | null,
@@ -2294,6 +2412,12 @@ declare global {
             args: PromptStashDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<boolean>;
+        };
+        threadComments: {
+          list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
+          create: (args: ChatThreadCommentCreateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
+          update: (args: ChatThreadCommentUpdateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
+          delete: (args: ChatThreadCommentDeleteArgs, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
         };
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
@@ -3236,8 +3360,8 @@ declare global {
           args?: BuiltInBrowserSetZoomArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserZoomResult>;
-        /** Dev servers sniffed from terminal output; feature-detect before use. */
-        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
+        /** The lane machine's running dev servers (see `workTools.listDevServers`); feature-detect before use. */
+        getDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
         findInPage: (
           args: BuiltInBrowserFindInPageArgs,
           pin?: OpenProjectBinding | null,
@@ -3335,7 +3459,7 @@ declare global {
         ) => Promise<ChatTerminalReattachResult>;
       };
       localhost: {
-        probePort: (port: number) => Promise<boolean>;
+        probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;
@@ -3402,6 +3526,14 @@ declare global {
           args: ProviderInstanceSetAccentArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        dismissReplaced: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginCancel: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         getSettings: (
           args: ProviderInstanceGetSettingsArgs,
           pin?: OpenProjectBinding | null,
@@ -3460,6 +3592,15 @@ declare global {
           args: GetDiffChangesArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<DiffChanges>;
+        /**
+         * Every file the lane changed since its base (commits, uncommitted and
+         * untracked). Rejects when the base cannot be resolved; null, or a
+         * rejection naming an unknown action, from a host that predates it.
+         */
+        getBranchChanges?: (
+          args: GetDiffChangesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").BranchDiffChanges | null>;
         getFile: (
           args: GetFileDiffArgs,
           pin?: OpenProjectBinding | null,
@@ -3584,7 +3725,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
-          args: { laneId: string; limit?: number },
+          args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitCommitSummary[]>;
         listCommitFiles: (
@@ -4038,6 +4179,20 @@ declare global {
         unstackGitHubStack: (
           args: UnstackGitHubPrStackArgs,
         ) => Promise<GitHubPrStack | null>;
+        linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        /** PR Watch / Ship for one chat; `mode: null` stops it. */
+        setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary | null>;
+        getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary[]>;
+        linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
+        listChatSessionsForPr: (
+          args: ListPrChatSessionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrChatSessionLink[]>;
+        getStackLinkOffer: (args: {
+          sessionId: string;
+          prId?: string | null;
+        }, pin?: OpenProjectBinding | null) => Promise<StackLinkOffer | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
           pin?: OpenProjectBinding | null,
@@ -4159,6 +4314,13 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** Dev servers on the lane's machine, for the Browser on any machine. */
+        listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
+        /** A dev server started or stopped on the lane's machine. */
+        onDevServer: (
+          cb: (event: DevServerEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
         onShowRequest: (
           cb: (request: WorkToolShowRequest) => void,
@@ -4280,7 +4442,7 @@ declare global {
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;
       updateSetPreferences: (preferences: AutoUpdatePreferences) => Promise<AutoUpdatePreferences>;
       updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
-      updateQuitAndInstall: () => Promise<boolean>;
+      updateQuitAndInstall: (options?: { resumeChats?: boolean }) => Promise<boolean>;
       updateCancelAutoApply: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;

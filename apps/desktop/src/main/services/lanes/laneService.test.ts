@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
+import type { LaneLifecycleEvent } from "../../../shared/types";
 import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
 vi.mock("../git/git", () => ({
@@ -78,7 +79,7 @@ function makeLinearIssue() {
   };
 }
 
-async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string }) {
+async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string; parentBaseRef?: string }) {
   const now = "2026-03-11T12:00:00.000Z";
   db.run(
     "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
@@ -100,7 +101,7 @@ async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot:
         attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    ["lane-parent", args.projectId, "Parent", null, "worktree", "main", "feature/parent", path.join(args.repoRoot, "parent"), null, 0, "lane-main", null, null, null, "active", now, null],
+    ["lane-parent", args.projectId, "Parent", null, "worktree", args.parentBaseRef ?? "main", "feature/parent", path.join(args.repoRoot, "parent"), null, 0, "lane-main", null, null, null, "active", now, null],
   );
   db.run(
     `
@@ -243,6 +244,48 @@ describe("laneService createFromUnstaged", () => {
           trackedFileCount: 3,
         },
       });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["a normal branch name", "main"],
+    ["a branch name that looks like a commit id", "deadbeef"],
+  ])("counts ahead/behind against origin/<base> when the base exists only remotely (%s)", async (_label, baseName) => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-remote-only-base-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-remote-only-base", repoRoot, parentBaseRef: baseName });
+      // Git as it behaves in a clone that never checked out the base: the short
+      // name does not resolve (git's lookup skips refs/remotes/origin/<name>),
+      // the remote-tracking ref does.
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/parent\n", stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          const range = args[3] ?? "";
+          if (range === `refs/remotes/origin/${baseName}...feature/parent`) return { exitCode: 0, stdout: "5\t2\n", stderr: "" } as any;
+          return { exitCode: 128, stdout: "", stderr: `fatal: ambiguous argument '${range}': unknown revision` } as any;
+        }
+        return { exitCode: 1, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-remote-only-base",
+        defaultBaseRef: baseName,
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const summary = await service.getSummary("lane-parent", { includeStatus: true });
+
+      expect(summary?.status).toMatchObject({ ahead: 2, behind: 5 });
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -2525,6 +2568,8 @@ describe("laneService delete outside .ade/worktrees", () => {
     /** Where the lane's worktree lives; defaults to an external directory. */
     makeWorktreePath?: (repoRoot: string) => string;
     createDirectory?: boolean;
+    /** Captures the service's operational lines; the rename-aside sweep only reports through them. */
+    logger?: ReturnType<typeof createLogger>;
   }) {
     const repoRoot = makeTempRepoRoot(opts.prefix);
     const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
@@ -2549,6 +2594,7 @@ describe("laneService delete outside .ade/worktrees", () => {
       projectId: opts.projectId,
       defaultBaseRef: "main",
       worktreesDir,
+      logger: opts.logger ?? createLogger(),
       onDeleteEvent: (event) => events.push(event),
     });
     return { db, service, repoRoot, worktreesDir, worktreePath, events };
@@ -2774,6 +2820,247 @@ describe("laneService delete outside .ade/worktrees", () => {
     } finally {
       db.close();
       fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  /** A single registered checkout, in `git worktree list --porcelain` spelling. */
+  function registeredWorktree(worktreePath: string): string {
+    return [
+      `worktree ${worktreePath}`,
+      "HEAD 1111111",
+      "branch refs/heads/feature/external",
+      "",
+    ].join("\n");
+  }
+
+  /**
+   * `git worktree list` reports the checkout while it is on disk and drops it
+   * the moment it is renamed aside — the probe that decides whether a rename
+   * really unregistered the worktree, and whether a prune really landed.
+   */
+  function stubWorktreeListWhilePresent(worktreePath: string): void {
+    vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+      if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+        return (fs.existsSync(worktreePath) ? registeredWorktree(worktreePath) : "") as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+  }
+
+  /**
+   * A worktree in its own temp parent, so the delete's sweep of that parent
+   * cannot walk the shared temp directory. Returns the parent for assertions.
+   */
+  async function setupInOwnParent(opts: {
+    projectId: string;
+    prefix: string;
+    logger?: ReturnType<typeof createLogger>;
+  }) {
+    const parentDir = makeTempRepoRoot(`${opts.prefix}parent-`);
+    const worktreePath = path.join(parentDir, "external");
+    const rest = await setup({
+      projectId: opts.projectId,
+      prefix: `${opts.prefix}repo-`,
+      makeWorktreePath: () => worktreePath,
+      logger: opts.logger,
+    });
+    return { ...rest, parentDir, worktreePath };
+  }
+
+  it("renames a Windows worktree aside and lets git prune it, instead of git removing it file by file", async () => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-aside",
+      prefix: "ade-lane-rename-aside-",
+    });
+    // Forged only once the fixture exists: a throw while building it must not
+    // leave `process.platform` rewritten for every test after this one.
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      stubGitForDelete({ worktreePath });
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "));
+      expect(gitCalls).toContain("worktree prune");
+      expect(gitCalls).not.toContain("worktree remove");
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("puts the folder back when git still lists the worktree after the rename", async () => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-rollback",
+      prefix: "ade-lane-rename-rollback-",
+    });
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({
+        worktreePath,
+        removeExitCode: 1,
+        removeStderr: "error: failed to delete 'external': Invalid argument",
+      });
+      // A locked worktree, or a prune that did not take: git keeps listing it,
+      // so the rename must not stand — the folder is not ADE's to rename away.
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+          return registeredWorktree(worktreePath) as any;
+        }
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /failed to delete/i,
+      );
+
+      // The rename really happened first: the prune only runs on that path.
+      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "))).toContain(
+        "worktree prune",
+      );
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(fs.readdirSync(parentDir).filter((name) => name.includes(".ade-deleting-"))).toEqual([]);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a renamed-aside folder alone while git still has its admin directory", async () => {
+    const originalPlatform = process.platform;
+    const lines: Array<{ event: string; meta?: Record<string, unknown> }> = [];
+    const logger = {
+      ...createLogger(),
+      info: (event: string, meta?: Record<string, unknown>) => lines.push({ event, meta }),
+      warn: (event: string, meta?: Record<string, unknown>) => lines.push({ event, meta }),
+    };
+    const { db, service, repoRoot, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-sweep-guard",
+      prefix: "ade-lane-rename-sweep-guard-",
+      logger,
+    });
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      // What an earlier ADE run left when the move back failed: git's admin
+      // directory is still on disk, so this checkout is a lane, not trash.
+      const guarded = path.join(parentDir, ".kept.ade-deleting-deadbeef");
+      const adminDir = path.join(repoRoot, ".git", "worktrees", "kept");
+      fs.mkdirSync(adminDir, { recursive: true });
+      fs.mkdirSync(guarded, { recursive: true });
+      fs.writeFileSync(path.join(guarded, ".git"), `gitdir: ${adminDir}\n`, "utf8");
+      fs.writeFileSync(path.join(guarded, "work.txt"), "still mine\n", "utf8");
+      // A real leftover from the same run: no `.git` at all, so it is swept.
+      // Deliberately slow to delete, so its removal receipt is a completion
+      // signal for the whole sweep: anything else the sweep queued, it queued
+      // long before this one finished.
+      const swept = path.join(parentDir, ".gone.ade-deleting-feedface");
+      fs.mkdirSync(swept, { recursive: true });
+      for (let i = 0; i < 500; i += 1) {
+        fs.writeFileSync(path.join(swept, `f${i}.txt`), "x", "utf8");
+      }
+
+      stubGitForDelete({ worktreePath });
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      // The sweep is done once it has acknowledged removing the unguarded leftover.
+      await vi.waitFor(
+        () =>
+          expect(
+            lines.some(
+              (line) => line.event === "lane.delete.background_remove_done" && line.meta?.path === swept,
+            ),
+          ).toBe(true),
+        { timeout: 15_000 },
+      );
+      expect(fs.existsSync(path.join(guarded, "work.txt"))).toBe(true);
+      expect(lines.some((line) => line.meta?.path === guarded)).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["darwin", "linux"] as const)("still runs git worktree remove on %s", async (platformName) => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: `proj-rename-off-${platformName}`,
+      prefix: `ade-lane-rename-off-${platformName}-`,
+    });
+    Object.defineProperty(process, "platform", { value: platformName, configurable: true });
+    try {
+      stubGitForDelete({ worktreePath });
+      // A rename-aside would make the probe after the rename come back empty —
+      // which is exactly what this platform must not do, so `git worktree
+      // remove` stays the only exit.
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(
+        vi.mocked(runGit).mock.calls.some(([gitArgs]) => gitArgs[0] === "worktree" && gitArgs[1] === "remove"),
+      ).toBe(true);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(fs.readdirSync(parentDir)).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes the delete when git unregisters an external worktree but leaves files behind", async () => {
+    const { db, service, parentDir, worktreePath, events } = await setupInOwnParent({
+      projectId: "proj-delete-partial",
+      prefix: "ade-lane-delete-partial-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      // The pre-check sees a real worktree root; git then unregisters it and
+      // deletes `.git` before failing on a file Windows holds open, so the
+      // post-check must see a folder that is no longer a worktree.
+      let removeAttempted = false;
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute" && gitArgs[2] === "--show-toplevel") {
+          return removeAttempted
+            ? { exitCode: 128, stdout: "", stderr: "not a git repository" }
+            : { exitCode: 0, stdout: `${opts?.cwd ?? worktreePath}\n`, stderr: "" };
+        }
+        if (gitArgs[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+          removeAttempted = true;
+          return { exitCode: 1, stdout: "", stderr: "error: failed to delete 'external': Invalid argument" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      vi.mocked(runGitOrThrow).mockImplementation(async () => "" as any);
+
+      const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(result.leftoverWorktree).toMatchObject({
+        path: worktreePath,
+        canDelete: true,
+        laneName: "External",
+      });
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      expect(events.at(-1).progress.overallStatus).toBe("completed");
+    } finally {
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
     }
   });
 });
@@ -7327,6 +7614,10 @@ describe("laneService branch drift", () => {
     repoRoot: string;
     headBranchByPath: Record<string, string>;
     dirtyPaths?: string[];
+    /** `git rev-list --count <old> --not HEAD --remotes`: local-only commits HEAD lacks; null = git fails. */
+    commitsOnlyOnOldBranch?: number | null;
+    /** The old branch no longer exists locally (`show-ref --verify` fails). */
+    missingBranches?: string[];
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
     vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
@@ -7354,7 +7645,14 @@ describe("laneService branch drift", () => {
       if (gitArgs[0] === "status") {
         return { exitCode: 0, stdout: dirty ? " M src/app.ts\n" : "", stderr: "" };
       }
-      if (gitArgs[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
+      if (gitArgs[0] === "show-ref") {
+        const missing = (args.missingBranches ?? []).some((branch) => gitArgs.includes(`refs/heads/${branch}`));
+        return { exitCode: missing ? 1 : 0, stdout: "", stderr: "" };
+      }
+      if (gitArgs[0] === "rev-list" && gitArgs[1] === "--count") {
+        if (args.commitsOnlyOnOldBranch === null) return { exitCode: 128, stdout: "", stderr: "fatal: bad revision" };
+        return { exitCode: 0, stdout: `${args.commitsOnlyOnOldBranch ?? 0}\n`, stderr: "" };
+      }
       return { exitCode: 1, stdout: "", stderr: "" };
     });
     return { checkouts };
@@ -7450,24 +7748,24 @@ describe("laneService branch drift", () => {
     });
   });
 
-  it("keep-head re-points branch_ref and the branch-derived lane name in one write", async () => {
+  it.each([
+    { label: "a name that restates the old branch", laneName: "feature/child" },
+    { label: "a hand-written name", laneName: "Auth work" },
+  ])("keep-head re-points branch_ref and keeps $label", async ({ laneName }) => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-keep", repoRoot });
-    // The lane name is literally advertising the branch it tracks.
-    db.run("update lanes set name = ? where id = ?", ["feature/child", "lane-child"]);
+    db.run("update lanes set name = ? where id = ?", [laneName, "lane-child"]);
     const childPath = path.join(repoRoot, "child");
-    const { checkouts } = stubDriftGit({
-      repoRoot,
-      headBranchByPath: { [childPath]: "hotfix-auth" },
-    });
-
+    const { checkouts } = stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
+    const lifecycleEvents: LaneLifecycleEvent[] = [];
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
       projectId: "proj-drift-keep",
       defaultBaseRef: "main",
       worktreesDir: path.join(repoRoot, "worktrees"),
+      onLifecycleEvent: (event) => lifecycleEvents.push(event),
     });
 
     const result = await service.resolveBranchDrift({
@@ -7480,41 +7778,116 @@ describe("laneService branch drift", () => {
       resolution: "keep-head",
       previousBranchRef: "feature/child",
       branchRef: "hotfix-auth",
-      previousLaneName: "feature/child",
-      laneName: "hotfix-auth",
+      previousLaneName: null,
+      laneName,
     });
     // keep-head never touches the worktree — HEAD is already where we want it.
     expect(checkouts).toHaveLength(0);
     expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
       branch_ref: "hotfix-auth",
-      name: "hotfix-auth",
+      name: laneName,
     });
+    expect(lifecycleEvents.filter((event) => event.type === "lane-renamed")).toHaveLength(0);
+    expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+      type: "lane-branch-updated",
+      laneId: "lane-child",
+      previousBranchRef: "feature/child",
+      branchRef: "hotfix-auth",
+    }));
   });
 
-  it("keep-head preserves a hand-written lane name", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-name-");
+  it.each([
+    {
+      label: "adopts a branch the agent switched to during its turn",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: true, previousBranchRef: "feature/child", branchRef: "hotfix-auth" },
+      branchRef: "hotfix-auth",
+    },
+    {
+      label: "asks when the old branch has commits on neither the new branch nor a remote",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: 2,
+      expected: { adopted: false, reason: "old_branch_has_unpushed_commits" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "adopts when the old branch is gone, since nothing is left to lose",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      missingBranches: ["feature/child"],
+      expected: { adopted: true, previousBranchRef: "feature/child", branchRef: "hotfix-auth" },
+      branchRef: "hotfix-auth",
+    },
+    {
+      label: "asks, naming no false reason, when git cannot answer",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      expected: { adopted: false, reason: "unavailable" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "asks when the lane was already off its branch before the turn",
+      laneId: "lane-child",
+      branchAtTurnStart: "some-other-branch",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: false, reason: "branch_moved_before_turn" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "never moves the primary checkout",
+      laneId: "lane-main",
+      branchAtTurnStart: "main",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: false, reason: "primary_lane" },
+      branchRef: "main",
+    },
+  ] as Array<{
+    label: string;
+    laneId: string;
+    branchAtTurnStart: string;
+    commitsOnlyOnOldBranch: number | null;
+    missingBranches?: string[];
+    expected: Record<string, unknown>;
+    branchRef: string;
+  }>)("adoptAgentBranchSwitch $label", async ({ laneId, branchAtTurnStart, commitsOnlyOnOldBranch, missingBranches, expected, branchRef }) => {
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-adopt-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-drift-keep-name", repoRoot });
-    // A hand-written name — it advertises no branch, so it must survive.
-    db.run("update lanes set name = ? where id = ?", ["Auth work", "lane-child"]);
-    const childPath = path.join(repoRoot, "child");
-    stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
-
+    await seedProjectAndStack(db, { projectId: "proj-drift-adopt", repoRoot });
+    const laneRow = db.get<{ name: string; worktree_path: string }>(
+      "select name, worktree_path from lanes where id = ?",
+      [laneId],
+    );
+    expect(laneRow, "seeded lane").toBeTruthy();
+    stubDriftGit({
+      repoRoot,
+      headBranchByPath: { [laneRow!.worktree_path]: "hotfix-auth" },
+      commitsOnlyOnOldBranch,
+      missingBranches,
+    });
+    const lifecycleEvents: LaneLifecycleEvent[] = [];
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
-      projectId: "proj-drift-keep-name",
+      projectId: "proj-drift-adopt",
       defaultBaseRef: "main",
       worktreesDir: path.join(repoRoot, "worktrees"),
+      onLifecycleEvent: (event) => lifecycleEvents.push(event),
     });
 
-    const result = await service.resolveBranchDrift({ laneId: "lane-child", resolution: "keep-head" });
+    const result = await service.adoptAgentBranchSwitch({ laneId, branchAtTurnStart });
 
-    expect(result.previousLaneName).toBeNull();
-    expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
-      branch_ref: "hotfix-auth",
-      name: "Auth work",
+    expect(result).toEqual(expected);
+    expect(db.get("select branch_ref, name from lanes where id = ?", [laneId])).toMatchObject({
+      branch_ref: branchRef,
+      name: laneRow!.name,
     });
+    const adoptedEvents = lifecycleEvents.filter((event) => event.adoptedByAgent === true);
+    expect(adoptedEvents).toHaveLength(expected.adopted ? 1 : 0);
   });
 
   it("rejects branch resolution when expected HEAD differs from the worktree", async () => {

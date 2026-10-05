@@ -299,6 +299,44 @@ describe("WorkLiveCornerCard", () => {
     expect(startPreviewStream).not.toHaveBeenCalled();
   });
 
+  it("floats the chat's own background tab while another chat's tab is in front", async () => {
+    // The card follows the tab THIS chat owns, not whatever tab is active. An
+    // agent opens background tabs (they never take focus), so keying on the
+    // active tab floated nothing over the chat that was working.
+    const status = makeBuiltInBrowserStatus({
+      visible: true,
+      activeTabId: "tab-person",
+      tabs: [
+        makeBuiltInBrowserTab({
+          id: "tab-person",
+          url: "https://person.test/",
+          title: "Person",
+          ownerChatSessionId: "chat-2",
+          ownerClaimedAt: "2026-09-18T19:00:00.000Z",
+        }),
+        makeBuiltInBrowserTab({
+          id: "tab-agent",
+          url: "https://agent.test/a",
+          title: "Agent",
+          ownerChatSessionId: "chat-1",
+          ownerClaimedAt: "2026-09-18T19:05:00.000Z",
+        }),
+      ],
+    });
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(status);
+    renderCard({ chatSessionId: "chat-1" });
+    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
+    emitBrowserEvent({ type: "status", status });
+
+    expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    await waitFor(() => expect(startPreviewStream).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: "tab-agent" }),
+    ));
+    expect(startPreviewStream).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: "tab-person" }),
+    );
+  });
+
   it("paints a preview frame that arrives through the provider's fan-out", async () => {
     renderCard();
     await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));

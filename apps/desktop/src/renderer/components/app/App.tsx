@@ -37,6 +37,8 @@ import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteS
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { cn } from "../ui/cn";
+import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
@@ -129,6 +131,7 @@ import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   ADE_OPEN_DEEPLINK_EVENT,
+  setWindowRuntimeBinding,
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
@@ -143,6 +146,8 @@ import {
   parseDeeplink,
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
+import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
 import type {
   AppNavigationRequest,
   AppNavigationTarget,
@@ -235,13 +240,14 @@ function isOverlayRoutePath(pathname: string): boolean {
     || pathname === "/history" || pathname.startsWith("/history/");
 }
 
-const HIDDEN_PAGE_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  zIndex: -1,
-  opacity: 0,
-  pointerEvents: "none",
-};
+/**
+ * The page an overlay holds when the app opens straight onto it, so the
+ * sidebar is never empty. History is driven by the lane list, so it holds
+ * Lanes; CTO holds Work.
+ */
+function defaultHeldRouteForOverlay(pathname: string): string {
+  return pathname === "/history" || pathname.startsWith("/history/") ? "/lanes" : "/work";
+}
 
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -371,8 +377,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const overlayOpen = isOverlayRoutePath(pathname);
   // The last page route that was not CTO or History. While one of those is
   // open, this page stays mounted (hidden) and holds the sidebar. When the app
-  // opens straight onto CTO or History there is no such page, so none is held.
-  const [heldRoute, setHeldRoute] = React.useState<string | null>(() => overlayOpen ? null : route);
+  // opens straight onto CTO or History, it holds that overlay's default page,
+  // so the sidebar shows a list instead of an empty pane.
+  const [heldRoute, setHeldRoute] = React.useState<string>(() => overlayOpen ? defaultHeldRouteForOverlay(pathname) : route);
   const pageRoute = overlayOpen ? heldRoute : route;
   const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
   const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
@@ -404,13 +411,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!overlayOpen) setHeldRoute(route);
   }, [overlayOpen, route]);
-
-  React.useEffect(() => {
-    const node = pageSurfaceRef.current;
-    if (!node) return;
-    if (overlayOpen) node.setAttribute("inert", "");
-    else node.removeAttribute("inert");
-  }, [overlayOpen, pagePath]);
 
   React.useEffect(() => {
     if (active && isWorkRoute) return;
@@ -446,19 +446,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     };
   }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
-  React.useEffect(() => {
-    const node = workSurfaceRef.current;
-    if (!node) return;
-    if (isWorkRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isWorkRoute, shouldRenderWork]);
-
-  React.useEffect(() => {
-    const node = lanesSurfaceRef.current;
-    if (!node) return;
-    if (isLanesRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [isLanesRoute, shouldRenderLanes]);
+  useParkedSurfaceFocus(workSurfaceRef, !isWorkRoute, shouldRenderWork);
+  useParkedSurfaceFocus(lanesSurfaceRef, !isLanesRoute, shouldRenderLanes);
+  useParkedSurfaceFocus(pageSurfaceRef, overlayOpen, pagePath);
 
   const workSurface = shouldRenderWork ? (
     <Routes location={visibleWorkRoute}>
@@ -466,9 +456,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={workSurfaceRef}
           className="h-full min-h-0 w-full"
-          aria-hidden={!isWorkRoute}
-          data-ade-animation-state={isWorkRoute ? "running" : "paused"}
-          style={!isWorkRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isWorkRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -488,9 +476,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <div
           ref={lanesSurfaceRef}
           className="ade-project-page h-full min-h-0 w-full"
-          aria-hidden={!isLanesRoute}
-          data-ade-animation-state={isLanesRoute ? "running" : "paused"}
-          style={!isLanesRoute ? HIDDEN_PAGE_STYLE : undefined}
+          {...parkedSurfaceProps(!isLanesRoute)}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -515,8 +501,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             <div
               ref={pageSurfaceRef}
               className="ade-project-page h-full min-h-0 w-full"
-              aria-hidden={overlayOpen || undefined}
-              style={overlayOpen ? HIDDEN_PAGE_STYLE : undefined}
+              {...parkedSurfaceProps(overlayOpen)}
             >
               <ProjectSidebarHold held={overlayOpen}>
                 <Routes location={pageRoute}>
@@ -617,37 +602,25 @@ function ProjectSurface({
     ) {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
+    // A surface seeded from the lane cache shows whatever status that cache
+    // held, from any age. Measure it on this machine before anyone reads it.
+    state.requestLaneStatusRead();
     if (!state.keybindings) {
       void state.refreshKeybindings().catch(() => {});
     }
     void state.refreshProviderMode().catch(() => {});
   }, [active, projectBinding.kind, store]);
 
-  React.useEffect(() => {
-    const node = surfaceRef.current;
-    if (!node) return;
-    if (active) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
-  }, [active]);
+  useParkedSurfaceFocus(surfaceRef, !active);
 
   return (
     <AppStoreProvider store={store}>
       <div
         ref={surfaceRef}
         className="h-full min-h-0 w-full"
-        aria-hidden={!active}
-        data-ade-animation-state={active ? "running" : "paused"}
+        {...parkedSurfaceProps(!active)}
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
-        style={!active
-          ? {
-            position: "absolute",
-            inset: 0,
-            zIndex: -1,
-            opacity: 0,
-            pointerEvents: "none",
-          }
-          : undefined}
       >
         <ProjectRouteContent active={active} route={route} />
       </div>
@@ -661,6 +634,10 @@ function ProjectTabHost() {
   const webMode = isWebClientMode();
   const activeProject = useAppStore((s) => s.project);
   const activeProjectBinding = useAppStore((s) => s.projectBinding);
+  // A `localhost` link means the bound machine's port; link routing reads this.
+  React.useEffect(() => {
+    setWindowRuntimeBinding(activeProjectBinding ?? null);
+  }, [activeProjectBinding]);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -861,7 +838,13 @@ function ProjectTabHost() {
       const activeEntry = projectEntries.find((entry) => entry.surfaceKey === activeSurfaceKey);
       if (activeEntry) warm.unshift(activeEntry);
     }
-    return warm;
+    // Recency picks WHICH surfaces stay warm; it must not set their DOM
+    // order. Rendered in recency order, every switch moved the surfaces'
+    // nodes, and a moved node is detached and re-attached: its whole tree
+    // was restyled and laid out again, and every scroll container in it came
+    // back at the top. Tab order is stable across switches.
+    const tabOrder = new Map(projectEntries.map((entry, index) => [entry.surfaceKey, index]));
+    return warm.sort((left, right) => (tabOrder.get(left.surfaceKey) ?? 0) - (tabOrder.get(right.surfaceKey) ?? 0));
   }, [activeSurfaceKey, projectEntries]);
 
   // Inside a project, the account lives in Settings. `/account` (sign-in
@@ -1024,6 +1007,15 @@ function ShellLayout() {
   );
 }
 
+/**
+ * Keeps the cross-machine lane sync running while a link waits for another
+ * machine. Mounted only during that wait, so idle surfaces read nothing.
+ */
+function CrossMachineLookupSync(): null {
+  useCrossMachineLaneSync(true);
+  return null;
+}
+
 function AppNavigationBridge() {
   const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
@@ -1037,6 +1029,18 @@ function AppNavigationBridge() {
   lanesRef.current = lanes;
   const projectRootRef = React.useRef<string | null>(project?.rootPath ?? null);
   projectRootRef.current = project?.rootPath ?? null;
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const projectBindingRef = React.useRef(projectBinding ?? null);
+  projectBindingRef.current = projectBinding ?? null;
+  const [otherMachineLookups, setOtherMachineLookups] = React.useState(0);
+
+  const readOtherMachinesNow = React.useCallback(
+    () => readOtherMachines(projectBindingRef.current, lanesRef.current),
+    [],
+  );
+  const onOtherMachineWait = React.useCallback((waiting: boolean) => {
+    setOtherMachineLookups((count) => Math.max(0, count + (waiting ? 1 : -1)));
+  }, []);
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
     const lane = lanesRef.current[0];
@@ -1097,11 +1101,30 @@ function AppNavigationBridge() {
   ): Promise<boolean> => {
     const laneById = (laneId: string | null | undefined) =>
       laneId ? lanesRef.current.find((lane) => lane.id === laneId) ?? null : null;
+    // A lane that names another machine is that machine's lane, even when this
+    // tab holds a lane with the same id: lane ids are unique per machine only.
+    const localLane = (laneId: string | null | undefined, machineId: string | null | undefined) =>
+      machineId && !readOtherMachinesNow().isActiveMachine(machineId) ? null : laneById(laneId);
+    // Lanes and chats on the other connected machines open there, not in the
+    // "cannot find" modal. A project-switch retry does not wait for them: it
+    // already retries on its own.
+    const mayWaitForOtherMachines = !options.forceLocal && !options.suppressUnresolved;
+    const onOtherMachines = <T,>(find: (other: OtherMachines) => T | null) =>
+      mayWaitForOtherMachines
+        ? findOnOtherMachines(readOtherMachinesNow, find, onOtherMachineWait)
+        : Promise.resolve(find(readOtherMachinesNow()));
+    const otherMachineIdForLane = (laneId: string | null | undefined, machineId: string | null | undefined) =>
+      laneId ? onOtherMachines((other) => other.machineIdForLane(laneId, machineId)) : Promise.resolve(null);
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
         const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
-        if (!localSession) {
+        // Work lists the chats of every connected machine, so a chat that one
+        // of them holds opens there like a local one.
+        const sessionId = target.sessionId;
+        const onOtherMachine = !localSession
+          && (await onOtherMachines((other) => (other.hasSession(sessionId) ? true : null))) === true;
+        if (!localSession && !onOtherMachine) {
           const handled = await resolvePortableFallback("chat", target, options);
           if (handled) return true;
         }
@@ -1150,7 +1173,7 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "commit") {
-      const lane = laneById(target.laneId);
+      const lane = localLane(target.laneId, target.machineId);
       if (lane) {
         const params = new URLSearchParams();
         params.set("laneId", lane.id);
@@ -1158,6 +1181,17 @@ function AppNavigationBridge() {
         // LanesPage consumes commitSha and opens the Git detail for that commit.
         params.set("commitSha", target.sha);
         navigate(`/lanes?${params.toString()}`);
+        return true;
+      }
+      const commitMachineId = await otherMachineIdForLane(target.laneId, target.machineId);
+      if (commitMachineId && target.laneId) {
+        // History reads a lane's commits from the machine that owns it.
+        const params = new URLSearchParams();
+        params.set("surface", "commits");
+        params.set("laneId", target.laneId);
+        params.set("machineId", commitMachineId);
+        params.set("commitSha", target.sha);
+        navigate(`/history?${params.toString()}`);
         return true;
       }
       if (!options.forceLocal) {
@@ -1202,7 +1236,13 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "lane") {
-      const lane = laneById(target.laneId);
+      const lane = localLane(target.laneId, target.machineId);
+      const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
+      if (laneMachineId) {
+        // Lanes selects a lane on another machine from `?laneId&machineId`.
+        navigate(`${openLaneInLanesTabPath(target.laneId, target.sessionId)}&machineId=${encodeURIComponent(laneMachineId)}`);
+        return true;
+      }
       if (!lane && !options.forceLocal) {
         const handled = await resolvePortableFallback("lane", target, options);
         if (handled) return true;
@@ -1259,7 +1299,7 @@ function AppNavigationBridge() {
     }
 
     return false;
-  }, [navigate, refreshLanes, resolvePortableFallback]);
+  }, [navigate, onOtherMachineWait, readOtherMachinesNow, refreshLanes, resolvePortableFallback]);
 
   // The modal's post-switch retry loop must always call the LATEST dispatcher
   // (fresh lanes/project), not the instance captured when the card rendered.
@@ -1309,21 +1349,25 @@ function AppNavigationBridge() {
     return () => window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigateTarget);
   }, [dispatchLatest]);
 
-  if (!inboundTarget) return null;
+  const lookupSync = otherMachineLookups > 0 ? <CrossMachineLookupSync /> : null;
+  if (!inboundTarget) return lookupSync;
   return (
-    <InboundDeeplinkModal
-      target={inboundTarget}
-      lanes={lanes}
-      onClose={() => setInboundTarget(null)}
-      onDispatchTarget={dispatchLatest}
-      projectOpen={Boolean(project?.rootPath)}
-      onLaneOpened={(laneId) => {
-        const params = new URLSearchParams({ laneId });
-        void refreshLanes({ includeStatus: false })
-          .catch(() => undefined)
-          .finally(() => navigate(`/lanes?${params.toString()}`));
-      }}
-    />
+    <>
+      {lookupSync}
+      <InboundDeeplinkModal
+        target={inboundTarget}
+        lanes={lanes}
+        onClose={() => setInboundTarget(null)}
+        onDispatchTarget={dispatchLatest}
+        projectOpen={Boolean(project?.rootPath)}
+        onLaneOpened={(laneId) => {
+          const params = new URLSearchParams({ laneId });
+          void refreshLanes({ includeStatus: false })
+            .catch(() => undefined)
+            .finally(() => navigate(`/lanes?${params.toString()}`));
+        }}
+      />
+    </>
   );
 }
 
@@ -1426,7 +1470,13 @@ export function App() {
     <LaunchGate>
       <Router>
         <div
-          className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
+          className={cn(
+            "h-full bg-bg text-fg font-sans antialiased",
+            // See `.ade-app-selection` in index.css. Browsers that serve the
+            // hosted web client may not inherit ::selection, so it keeps the
+            // descendant rule.
+            isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
+          )}
         >
           <OnboardingBootstrap />
           {/* Windows beta notice: shown on every start of every Windows install

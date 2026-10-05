@@ -8,6 +8,7 @@ import {
   createAgentChatService,
   createScheduledWorkDb,
   createService,
+  fs,
   mockState,
   deriveScheduledWorkSnapshots,
   installClaudeResponseFixture,
@@ -16,6 +17,7 @@ import {
   readPersistedChatState,
   runGit,
   storedWakeup,
+  tmpRoot,
   waitFor,
   waitForEvent,
   waitForFakeTimerCondition,
@@ -232,6 +234,36 @@ describe("createAgentChatService", () => {
         cron: "0 * * * *",
         prompt: "This must not be scheduled.",
       })).rejects.toThrow(/not found/i);
+    });
+
+    it("arms update resumes only for the sessions it is given, and never reports a paused one", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const { service } = createService({ db: scheduledWork.db });
+      const first = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+      const second = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const armed = await service.armUpdateResume({ sessionIds: [first.id] });
+      expect(armed.chats.map((chat) => chat.sessionId)).toEqual([first.id]);
+      const updateRows = (scheduledWork.readState()?.schedules ?? [])
+        .filter((row) => row.source === "update_restart");
+      expect(updateRows.map((row) => row.sessionId)).toEqual([first.id]);
+      expect(updateRows[0]?.prompt).toContain("ADE restarted");
+
+      // A chat whose scheduled work is paused still gets its row persisted, but
+      // must not be reported as resumed: it cannot fire until the user unpauses.
+      await service.setScheduledWorkPaused({ sessionId: second.id, paused: true });
+      const pausedArmed = await service.armUpdateResume({ sessionIds: [second.id] });
+      expect(pausedArmed.chats).toEqual([]);
+      expect((scheduledWork.readState()?.schedules ?? [])
+        .find((row) => row.sessionId === second.id)?.status).toBe("paused");
     });
 
     it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {
@@ -527,6 +559,75 @@ describe("createAgentChatService", () => {
         event.sessionId === session.id
         && event.event.type === "user_message"
         && event.event.metadata?.scheduledWake?.scheduleId === actionSchedule.item.id
+      )).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("expands an ADE skill when a scheduled wake delivers its prompt", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-wake-skill", slash_commands: [] };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wake-skill",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "1 * * * *",
+        prompt: "/ship resume for lane x",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await waitForFakeTimerCondition(
+        () => send.mock.calls.some((call) => String(call[0]).includes("Ship the lane.")),
+        "the scheduled wake to deliver the expanded skill",
+      );
+
+      const delivered = send.mock.calls
+        .map((call) => String(call[0]))
+        .find((prompt) => prompt.includes("Ship the lane."));
+      expect(delivered).toContain("Task: resume for lane x");
+      expect(delivered?.trimStart().startsWith("/ship")).toBe(false);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake != null
       )).toBe(true);
       service.forceDisposeAll();
     });
@@ -2092,8 +2193,15 @@ describe("createAgentChatService", () => {
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
           && event.event.kind === "wakeup");
-      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId, wakeupId]);
-      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "scheduled", "cancelled"]);
+      // The Stop snapshot repeats the wakeup the tool call already reported:
+      // no second row. The cancel patches the last event, so the reason and
+      // the provider task id a reader already saw survive into it.
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId]);
+      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "cancelled"]);
+      expect(scheduledEvents.at(-1)?.event).toMatchObject({
+        reason: "CI was still running",
+        sourceTaskId: "wakeup-provider-1",
+      });
 
       const snapshots = deriveScheduledWorkSnapshots(events);
       expect(snapshots).toHaveLength(1);
@@ -2106,7 +2214,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules", async () => {
+    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules, and settles a fired one as done", async () => {
       const sdkSessionId = "sdk-provider-snapshot-reconcile";
       const sdkHandle = {
         send: vi.fn().mockResolvedValue(undefined),
@@ -2156,6 +2264,17 @@ describe("createAgentChatService", () => {
             providerSessionId: sdkSessionId,
             providerScheduleId: "provider-loop-id",
           }),
+          // Gone from Claude's inventory after its fire time: Claude delivered
+          // it. It must settle as done, never read as cancelled.
+          storedWakeup(session.id, {
+            id: "provider-fired-wakeup",
+            prompt: "Check the deploy.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-fired-wakeup-id",
+            fireAt: Date.now() - 10_000,
+          }),
           storedWakeup(session.id, {
             id: "ade-local-wakeup",
             prompt: "Run ADE-local work.",
@@ -2199,6 +2318,7 @@ describe("createAgentChatService", () => {
       });
       expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "provider-wakeup", status: "cancelled" }),
+        expect.objectContaining({ id: "provider-fired-wakeup", status: "done", lastFiredAt: expect.any(Number) }),
         expect.objectContaining({ id: "provider-loop", status: "scheduled" }),
         expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
         expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),

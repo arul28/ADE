@@ -38,6 +38,7 @@ import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isChatToolType } from "../../lib/sessions";
+import { restartAgentSession, setChatGoal as setChatGoalFromPalette } from "../terminals/sessionLifecycleActions";
 import {
   appendWorkSearchFilter,
   parseWorkSearchQuery,
@@ -243,6 +244,27 @@ export function CommandPalette({
     const key = selectActiveProjectStateKey(s);
     return key ? (s.workViewByProject[key]?.activeItemId ?? null) : null;
   });
+  // The session in front of the user, for the commands that act on it. The
+  // Work tab's mirrored list answers at once when it has the row; otherwise it
+  // is read when the palette opens.
+  const [fetchedActiveSession, setFetchedActiveSession] = useState<Pick<TerminalSessionSummary, "id" | "toolType"> | null>(null);
+  const cachedActiveSession = activeSessionId
+    ? threadSessions.find((session) => session.id === activeSessionId) ?? null
+    : null;
+  useEffect(() => {
+    if (!open || !activeSessionId || cachedActiveSession) return;
+    let cancelled = false;
+    void window.ade.sessions.get(activeSessionId)
+      .then((detail) => {
+        if (!cancelled) setFetchedActiveSession(detail ? { id: detail.id, toolType: detail.toolType } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedActiveSession(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeSessionId, cachedActiveSession, open]);
+  const activeSessionTarget: Pick<TerminalSessionSummary, "id" | "toolType"> | null = cachedActiveSession
+    ?? (fetchedActiveSession?.id === activeSessionId ? fetchedActiveSession : null);
   // The Work sidebar is a union across every connected machine, always. The
   // palette is that sidebar's search, so it reads the same union — otherwise it
   // would report "no matches" for a thread visible one pane over. Read straight
@@ -797,6 +819,30 @@ export function CommandPalette({
       },
     ];
 
+    // The chat in front of the user can be restarted from here: a fresh
+    // provider process with the same conversation.
+    const activeChat = activeSessionTarget && isChatToolType(activeSessionTarget.toolType)
+      ? activeSessionTarget
+      : null;
+    if (activeChat) {
+      next.push({
+        id: "action-restart-agent-session",
+        title: "Restart agent session",
+        hint: "Fresh process, same conversation — picks up new skills, plugins, and MCP servers",
+        group: "Actions",
+        run: () => { void restartAgentSession(activeChat); },
+      });
+      if (activeChat.toolType === "codex-chat" || activeChat.toolType === "claude-chat") {
+        next.push({
+          id: "action-set-goal",
+          title: "Set goal…",
+          hint: "The agent keeps working across turns until the goal is met",
+          group: "Actions",
+          run: () => { void setChatGoalFromPalette(activeChat); },
+        });
+      }
+    }
+
     if (!hasActiveProject) {
       return next.filter(
         (command) =>
@@ -811,6 +857,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    activeSessionTarget,
     hasActiveProject,
     lanes,
     navigate,

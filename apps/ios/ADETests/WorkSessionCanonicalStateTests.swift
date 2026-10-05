@@ -1897,9 +1897,104 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
     XCTAssertFalse(framed.contains("lane:lane-7"), "ordinary lane group must be expanded")
     XCTAssertTrue(framed.contains("lane-open:lane-7"), "quiet lane group must be expanded")
+    XCTAssertTrue(
+      framed.contains("shelf-open:\(workWorkingSectionId)"),
+      "the Working shelf must be expanded too, or a folded lane is not on screen"
+    )
     XCTAssertTrue(framed.contains("lane:other"), "unrelated lane state must be preserved")
     XCTAssertTrue(framed.contains("status:settled"), "unrelated section state must be preserved")
     XCTAssertTrue(saved.contains("lane:lane-7"), "transient framing must not mutate the saved base")
+  }
+
+  /// The iOS mirror of desktop's `summarizeLaneFocus` fold rule: a raised hand
+  /// or a finish nobody has left holds the lane out; Waiting is still busy; and
+  /// a lane only folds when at least one live row is actually busy.
+  func testLaneFocusFoldRuleMatchesDesktop() {
+    let running = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "codex",
+      startedAt: iso(now)
+    )
+    let runningFocus = workRowFocus(
+      session: running,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(runningFocus?.status, .working)
+    XCTAssertEqual(runningFocus?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([runningFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([runningFocus]), .working)
+
+    // A PR wait parks a running row in Waiting; it is still busy and folds.
+    let waitingFocus = workRowFocus(
+      session: running,
+      summary: nil,
+      archived: false,
+      laneWaiting: true,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(waitingFocus?.status, .waiting)
+    XCTAssertEqual(waitingFocus?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([waitingFocus]))
+
+    let blocked = makeSession(
+      status: "running",
+      runtimeState: "waiting-input",
+      toolType: "codex",
+      pendingInputItemId: "ask-1"
+    )
+    let blockedFocus = workRowFocus(
+      session: blocked,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(blockedFocus?.status, .needsYou)
+    XCTAssertEqual(blockedFocus?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking([blockedFocus, runningFocus]))
+    XCTAssertEqual(workRollUpLaneFocus([blockedFocus, runningFocus]), .needsYou)
+
+    let finished = makeSession(
+      status: "ended",
+      runtimeState: "exited",
+      toolType: "codex",
+      exitCode: 0,
+      startedAt: iso(now)
+    )
+    let unseen = workRowFocus(
+      session: finished,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: false,
+      now: now
+    )
+    XCTAssertEqual(unseen?.status, .done)
+    XCTAssertEqual(unseen?.holdsOut, true)
+    XCTAssertFalse(workLaneFoldsIntoWorking([unseen, runningFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([unseen]))
+
+    // Once the user has left it since it finished, the Done row stops holding
+    // the lane out; a lane of only settled finishes is still not "working".
+    let seen = workRowFocus(
+      session: finished,
+      summary: nil,
+      archived: false,
+      laneWaiting: false,
+      seen: true,
+      now: now
+    )
+    XCTAssertEqual(seen?.status, .done)
+    XCTAssertEqual(seen?.holdsOut, false)
+    XCTAssertTrue(workLaneFoldsIntoWorking([seen, runningFocus]))
+    XCTAssertFalse(workLaneFoldsIntoWorking([seen]))
   }
 
   func testGroupsRefileASnoozedRowOnceItsDeadlineLapses() {

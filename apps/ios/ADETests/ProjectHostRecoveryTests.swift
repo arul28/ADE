@@ -254,7 +254,7 @@ final class ProjectHostRecoveryTests: XCTestCase {
   }
 
   func testFailedTurnDefaultTitleIsNotError() {
-    XCTAssertEqual(errorPresentation(for: "unknown").title, "Couldn't start this turn")
+    XCTAssertEqual(errorPresentation(for: "unknown").title, "This turn stopped")
     XCTAssertFalse(errorPresentation(for: "unknown").title.localizedCaseInsensitiveContains("error"))
   }
 

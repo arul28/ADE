@@ -604,7 +604,16 @@ struct SettingsMachinePage: View {
             retry: { controller.retry(machine) },
             rename: machine.account.map { accountMachine in { controller.renaming = accountMachine } },
             forget: { confirmForget = true },
-            removeFromAccount: machine.account == nil ? nil : { confirmRemove = true }
+            removeFromAccount: machine.account == nil ? nil : { confirmRemove = true },
+            accountsPage: settingsMachineCanManageAccounts(machine, fleet: fleet)
+              ? { provider in
+                SettingsProviderAccountsPage(
+                  syncService: syncService,
+                  provider: provider,
+                  machineKey: machine.isPrimary ? nil : machine.machineKey
+                )
+              }
+              : nil
           )
         )
         .confirmationDialog("Forget \(machine.name) on this phone?", isPresented: $confirmForget, titleVisibility: .visible) {
@@ -647,6 +656,24 @@ struct SettingsMachinePageActions {
   var rename: (() -> Void)?
   var forget: () -> Void = {}
   var removeFromAccount: (() -> Void)?
+  /// The machine's AI accounts page; set only for a live machine that can
+  /// answer account commands (see `settingsMachineCanManageAccounts`).
+  var accountsPage: ((ProviderAccountProvider) -> SettingsProviderAccountsPage)?
+}
+
+/// A live machine whose accounts the phone can manage: the primary over its
+/// main connection, any other over its roster connection.
+@MainActor
+func settingsMachineCanManageAccounts(_ machine: SettingsMachine, fleet: MachineFleet) -> Bool {
+  switch machine.link {
+  case .primary(let live, _):
+    return live
+  case .connected(.live, _):
+    guard let key = machine.machineKey else { return false }
+    return fleet.connection(for: key)?.supportsProviderAccounts == true
+  default:
+    return false
+  }
 }
 
 /// The machine page body, as a pure view of one `SettingsMachine`.
@@ -708,16 +735,13 @@ struct SettingsMachinePageContent: View {
       if let inventory = machine.account?.inventory {
         Section {
           ForEach(inventory.providers, id: \.provider) { provider in
-            HStack {
-              Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textPrimary)
-              Spacer(minLength: 8)
-              Text(provider.accounts == 1 ? "1 account" : "\(provider.accounts) accounts")
-                .font(.adeMono(11))
-                .foregroundStyle(ADEColor.textMuted)
+            if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
+              NavigationLink { page(kind) } label: { accountCountRow(provider) }
+                .adeFlatRow()
+            } else {
+              accountCountRow(provider)
+                .adeFlatRow()
             }
-            .adeFlatRow()
           }
           factRow("Presets", inventory.presets == 0 ? "Nothing custom" : "\(inventory.presets)")
         } header: {
@@ -876,6 +900,18 @@ struct SettingsMachinePageContent: View {
       return "Open ADE on that computer. Away from its network, connect both devices through Tailscale or the ADE relay."
     }
     return nil
+  }
+
+  private func accountCountRow(_ provider: AccountMachineInventoryProvider) -> some View {
+    HStack {
+      Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+      Spacer(minLength: 8)
+      Text(provider.accounts == 1 ? "1 account" : "\(provider.accounts) accounts")
+        .font(.adeMono(11))
+        .foregroundStyle(ADEColor.textMuted)
+    }
   }
 
   private func factRow(_ label: String, _ value: String) -> some View {

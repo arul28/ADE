@@ -89,6 +89,7 @@ import {
   type PrCardDataSource,
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
+import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -168,6 +169,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
   captureSessionImportAnalytics,
@@ -214,6 +216,18 @@ import {
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
+import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
+import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
+import {
+  getSessionInputOrigin,
+  RECENT_INPUT_ORIGIN_MS,
+} from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { probeLocalhostPort } from "../../desktop/src/main/services/probeLocalhostPort";
+import {
+  DEV_SERVER_EVENT,
+  type DevServerEvent,
+  type DevServerRecord,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -233,7 +247,7 @@ import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
+import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
@@ -285,6 +299,7 @@ export async function emitRuntimePrCardsForChanges(args: {
   dataSource: PrCardDataSource;
   chat: Partial<PrCardChatSink> | null;
   logger: Pick<Logger, "warn">;
+  relatedPrs?: PrSummary[];
 }): Promise<void> {
   const { chat } = args;
   if (
@@ -300,6 +315,7 @@ export async function emitRuntimePrCardsForChanges(args: {
         change,
         dataSource: args.dataSource,
         chat: chat as PrCardChatSink,
+        relatedPrs: args.relatedPrs,
       });
     } catch (error) {
       args.logger.warn("prs.chat_card_emit_failed", {
@@ -1586,7 +1602,16 @@ export async function createAdeRuntime(args: {
           // video was a colour that appears nowhere in the product.
           accentColor: () => ADE_ACCENT_COLOR,
         },
-        onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        onEvent: (event) => pushEvent("runtime", {
+          type: "ios_simulator_event",
+          // An agent revealing the device opens it where the user is talking from.
+          event: event.type === "drawer-open-requested" && event.chatSessionId
+            ? {
+              ...event,
+              targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
+            }
+            : event,
+        }),
         // Lane-device cleanup and idle power-off for this project.
         backgroundMaintenance: true,
       });
@@ -1677,6 +1702,10 @@ export async function createAdeRuntime(args: {
         resolveLaneName: async (laneId: string): Promise<string | null> => {
           const lane = await laneService.getSummary(laneId).catch(() => null);
           return lane?.name ?? null;
+        },
+        resolveLaneWorktreePath: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
+          return lane?.worktreePath ?? null;
         },
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
@@ -1812,6 +1841,7 @@ export async function createAdeRuntime(args: {
       : createRemoteBrowserForwarder({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
       });
     if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
     const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
@@ -1846,6 +1876,34 @@ export async function createAdeRuntime(args: {
       builtInBrowserBridge?.dispose();
     });
 
+    // Dev servers this project's lanes run: what terminals and agent shells
+    // printed, plus what the listener scan finds. Published on the runtime
+    // stream so a desktop on another machine lights up its Browser the same
+    // way one on this machine does.
+    const devServerWatcher = chatOnlyRuntime
+      ? null
+      : createDevServerWatcher({
+        registry: devServerRegistry,
+        projectRoot,
+        listLaneRoots: async () =>
+          (await laneService.list({ includeArchived: false, includeStatus: false }))
+            .map((lane) => ({ laneId: lane.id, root: lane.worktreePath })),
+        logger,
+      });
+    if (devServerWatcher) {
+      const publishDevServer = (kind: DevServerEvent["kind"]) => (record: DevServerRecord) => {
+        if (!devServerWatcher.ownsRecord(record)) return;
+        pushEvent("runtime", { type: DEV_SERVER_EVENT, event: { kind, server: record } satisfies DevServerEvent });
+      };
+      const stopDetected = devServerRegistry.onDetected(publishDevServer("detected"));
+      const stopRemoved = devServerRegistry.onRemoved(publishDevServer("removed"));
+      teardown.push(() => {
+        stopDetected();
+        stopRemoved();
+        devServerWatcher.dispose();
+      });
+    }
+
     // Read-only view of the Work tools pane for iOS and the hosted web client.
     // Built here because it is the first point where BOTH of its sources exist:
     // the in-process App Control service and the desktop browser bridge.
@@ -1873,7 +1931,22 @@ export async function createAdeRuntime(args: {
       showRequests: createWorkToolShowRequests({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        // Show it on the screen of whoever is talking to the chat.
+        resolveTargetClientId: (chatSessionId, kind) => getSessionInputOrigin(
+          chatSessionId,
+          kind === "auto" ? { maxAgeMs: RECENT_INPUT_ORIGIN_MS } : {},
+        )?.clientId ?? null,
       }),
+      devServers: devServerWatcher
+        ? {
+          list: async (args) => {
+            // Someone is looking at a Browser: make the answer current first.
+            await devServerWatcher.refresh();
+            return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
+          },
+          probePort: (port) => probeLocalhostPort(port),
+        }
+        : null,
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());
@@ -1902,6 +1975,11 @@ export async function createAdeRuntime(args: {
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
     prServiceRef = headlessLinearServices.prService;
+    // Follow-up PR branches an agent cuts inside its lane worktree: link their
+    // PRs to the lane (and to the chats that were open when they were made).
+    laneService.setOnBranchHistoryObserved((args) => {
+      void prServiceRef?.autoLinkLaneBranchHistory(args);
+    });
     if (macDesktopService) {
       // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
       // teardown step never has to know what host it is on.
@@ -1931,6 +2009,9 @@ export async function createAdeRuntime(args: {
     });
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+    // Built after the chat service; smart balance and the usage-limit account
+    // switch read it through this late binding.
+    let usageTrackingServiceRef: ReturnType<typeof attachSharedUsageTrackingScope> | null = null;
     // Machine-level, like the quota poller: every project scope in this brain
     // writes one ledger under `<adeHome>/usage/`.
     const turnUsageLedger = getSharedTurnUsageLedger(resolveMachineAdeLayout().adeDir, logger);
@@ -1984,6 +2065,7 @@ export async function createAdeRuntime(args: {
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
+        machineAdeHome: resolveMachineAdeLayout().adeDir,
         runtimeBudget: chatRuntimeBudget,
         browserActorCapabilityIssuer,
         projectRoot,
@@ -2004,6 +2086,8 @@ export async function createAdeRuntime(args: {
         ptyService,
         getAutomationService: () => automationServiceRef,
         getGitService: () => gitService,
+        getAccountUsage: () => usageTrackingServiceRef,
+        getUsageService: () => usageTrackingServiceRef,
         conflictService,
         computerUseArtifactBrokerService,
         // One line of system prompt and the per-turn time-lapse clip, both
@@ -2072,6 +2156,11 @@ export async function createAdeRuntime(args: {
           properties,
         }),
         onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          provider,
+        }),
+        onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
           analytics: productAnalyticsService,
           surface: "api",
           provider,
@@ -2570,6 +2659,21 @@ export async function createAdeRuntime(args: {
       getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
 
+    // PR Watch / Ship: wakes a chat on this brain when its watched PR changes.
+    const chatForPrWatch = agentChatService;
+    const prWatchService = chatForPrWatch
+      ? createPrWatchService({
+        logger,
+        prService: headlessLinearServices.prService,
+        sessionService,
+        messageSession: (args) => chatForPrWatch.messageSession(args),
+        emitPrEvent,
+        getGithubBackgroundPauseUntilMs: () =>
+          headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
+      })
+      : null;
+    if (prWatchService) teardown.push(() => prWatchService.dispose());
+
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own
     // the background polling loop that emits `prs-updated` — otherwise PR state
@@ -2585,7 +2689,7 @@ export async function createAdeRuntime(args: {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementService.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.
@@ -2599,16 +2703,19 @@ export async function createAdeRuntime(args: {
             previousReviewStatus,
           });
         }
+        prWatchService?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         await emitRuntimePrCardsForChanges({
           changes,
           dataSource: headlessLinearServices.prService,
           chat: agentChatService,
           logger,
+          relatedPrs: prs,
         });
       },
     });
     teardown.push(() => prPollingService.dispose());
     prPollingService.start();
+    prWatchService?.start();
     prPollingServiceForIngress = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {
@@ -2813,6 +2920,7 @@ export async function createAdeRuntime(args: {
         },
       },
     );
+    usageTrackingServiceRef = usageTrackingService;
     // Detaches this project. The shared poller keeps running for the scopes
     // that are still open and shuts down only with the last one.
     teardown.push(() => usageTrackingService.dispose());
@@ -3017,6 +3125,7 @@ export async function createAdeRuntime(args: {
         if (event.type === "prs-updated") {
           for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
         }
+        prWatchService?.onPrEvent(event);
       },
     ));
     externalSessionsService = createExternalSessionsService({

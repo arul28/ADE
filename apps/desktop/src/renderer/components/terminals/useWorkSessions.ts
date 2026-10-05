@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -32,6 +33,7 @@ import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalStat
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
+import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
 import {
   EMPTY_WORK_SESSION_FILTERS,
   isWorkSessionFilterEmpty,
@@ -929,6 +931,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
+  const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_WORK_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,
   // refresh cadence, and optimistic writes must never target a foreign slice.
   const localSessionsById = useMemo(() => {
@@ -1125,6 +1129,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
+
+  const setWorkFoldBusyLanes = useCallback(
+    (enabled: boolean) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState({ workFoldBusyLanes: enabled });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  // A finished row counts as seen once the user has LEFT it since it finished:
+  // leaving covers everything it showed, including output that landed while it
+  // was open. Opening alone does not stamp, so clicking a finished row in the
+  // inbox never folds its lane out from under the cursor. A layout effect, so
+  // the stamp lands before paint and the lane does not flicker for a frame. A
+  // row left by switching projects is stamped into the project it belongs to.
+  const lastSelectionRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
+    projectStateKey: null,
+    sessionId: null,
+  });
+  useLayoutEffect(() => {
+    const previous = lastSelectionRef.current;
+    lastSelectionRef.current = { projectStateKey, sessionId: selectedSessionId };
+    if (!previous.sessionId || !previous.projectStateKey) return;
+    if (previous.sessionId === selectedSessionId && previous.projectStateKey === projectStateKey) return;
+    const leftId = previous.sessionId;
+    const at = new Date().toISOString();
+    setWorkViewState(previous.projectStateKey, (prev) => ({
+      ...prev,
+      workSeenAtBySessionId: stampWorkSeenAt(prev.workSeenAtBySessionId ?? {}, [leftId], at),
+    }));
+  }, [projectStateKey, selectedSessionId, setWorkViewState]);
 
   const setWorkLaneSortMode = useCallback(
     (mode: WorkLaneSortMode) => {
@@ -1961,6 +1996,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    */
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
+    const activeMachineId = machineIdForBinding(projectBinding);
+    // A pending-launch stand-in for a chat whose lane lives on another machine
+    // is listed in this active-binding roster (that machine's slice does not
+    // have its chat yet), so the machine filter must judge it by its OWN
+    // binding — otherwise selecting the foreign machine hides it and selecting
+    // this machine wrongly shows it. Once the real row lands it appears in the
+    // pane's foreign rows, which the pane filters by the same machine id.
+    const launchMachineIdBySessionId = new Map<string, string>();
+    for (const source of chatLaunchRowSources) {
+      const sessionId = source.snapshot.sessionId;
+      if (!sessionId || !source.binding || source.bindingKey === activeChatLaunchBindingKey) continue;
+      launchMachineIdBySessionId.set(sessionId, machineIdForBinding(source.binding));
+    }
     const ctx = {
       nowMs: Date.now(),
       // Union answer on purpose: the chip asks "does this lane have a PR at
@@ -1968,10 +2016,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // use the machine-scoped lookups instead — see `lanePrsForMachine`.
       laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
+      // This roster is the tab's own machine; other machines filter in the pane.
+      machineId: activeMachineId,
       effectiveFilingBuckets,
     };
-    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
-  }, [effectiveFilingBuckets, filtered, workSessionFilters, prsByLaneId, laneStatusById]);
+    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, {
+      ...ctx,
+      machineId: launchMachineIdBySessionId.get(session.id) ?? activeMachineId,
+    }));
+  }, [
+    activeChatLaunchBindingKey,
+    chatLaunchRowSources,
+    effectiveFilingBuckets,
+    filtered,
+    workSessionFilters,
+    prsByLaneId,
+    laneStatusById,
+    projectBinding,
+  ]);
 
   const {
     runningFiltered,
@@ -2548,6 +2610,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     toggleWorkLanePinned,
     workLaneSortMode,
     setWorkLaneSortMode,
+    workFoldBusyLanes,
+    setWorkFoldBusyLanes,
+    workSeenAtBySessionId,
     workLaneOrder,
     reorderWorkLanes,
     q,

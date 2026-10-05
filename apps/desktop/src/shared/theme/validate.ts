@@ -15,7 +15,13 @@
  */
 
 import { isParsableColor, parseColor, relativeLuminance, toHex } from "./color";
+import { parseJsonc } from "./jsonc";
 import {
+  ADE_FLAIR_BACKDROPS,
+  ADE_FLAIR_FONTS,
+  ADE_FLAIR_RADII,
+  ADE_FLAIR_SHADOWS,
+  ADE_SYNTAX_KEYS,
   ADE_TERMINAL_ANSI_KEYS,
   ADE_THEME_DESCRIPTION_MAX_LENGTH,
   ADE_THEME_FILE_KIND,
@@ -24,9 +30,11 @@ import {
   ADE_THEME_ID_PATTERN,
   ADE_THEME_NAME_MAX_LENGTH,
   ADE_THEME_PALETTE_KEYS,
+  type AdeSyntaxPalette,
   type AdeTerminalPalette,
   type AdeTheme,
   type AdeThemeExport,
+  type AdeThemeFlair,
   type AdeThemePalette,
   type AdeThemePaletteKey,
   type AdeThemeSource,
@@ -105,6 +113,48 @@ function normalizeTerminal(value: unknown): AdeTerminalPalette | undefined {
   return any ? terminal : undefined;
 }
 
+function normalizeSyntax(value: unknown): AdeSyntaxPalette | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const syntax: AdeSyntaxPalette = {};
+  let any = false;
+  for (const key of ADE_SYNTAX_KEYS) {
+    const normalized = normalizePaletteEntry(source[key]);
+    if (normalized) {
+      syntax[key] = normalized;
+      any = true;
+    }
+  }
+  return any ? syntax : undefined;
+}
+
+function pickName<Name extends string>(names: readonly Name[], value: unknown): Name | undefined {
+  return typeof value === "string" && (names as readonly string[]).includes(value) ? (value as Name) : undefined;
+}
+
+/**
+ * Flair is a set of closed names, so an unknown value is dropped rather than
+ * passed on. A name that means "ADE's own geometry" is dropped too, which keeps
+ * a theme that restates the defaults identical to one that says nothing.
+ */
+function normalizeFlair(value: unknown): AdeThemeFlair | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const radius = pickName(ADE_FLAIR_RADII, source.radius);
+  const shadow = pickName(ADE_FLAIR_SHADOWS, source.shadow);
+  const sansFont = pickName(ADE_FLAIR_FONTS, source.sansFont);
+  const backdrop = pickName(ADE_FLAIR_BACKDROPS, source.backdrop);
+  const shadowColor = normalizePaletteEntry(source.shadowColor);
+  const flair: AdeThemeFlair = {
+    ...(radius && radius !== "default" ? { radius } : {}),
+    ...(shadow && shadow !== "soft" ? { shadow } : {}),
+    ...(shadow === "hard" && shadowColor ? { shadowColor } : {}),
+    ...(sansFont && sansFont !== "default" ? { sansFont } : {}),
+    ...(backdrop && backdrop !== "none" ? { backdrop } : {}),
+  };
+  return Object.keys(flair).length > 0 ? flair : undefined;
+}
+
 function inferBaseMode(palette: AdeThemePalette): ThemeBaseMode {
   const bg = parseColor(palette.bg);
   if (!bg) return "dark";
@@ -149,6 +199,8 @@ export function normalizeAdeTheme(value: unknown, options: NormalizeThemeOptions
   const authorRaw = typeof source.author === "string" ? source.author.trim() : "";
   const basedOnRaw = typeof source.basedOn === "string" ? source.basedOn.trim() : "";
   const terminal = normalizeTerminal(source.terminal);
+  const syntax = normalizeSyntax(source.syntax);
+  const flair = normalizeFlair(source.flair);
 
   return {
     formatVersion: ADE_THEME_FORMAT_VERSION,
@@ -161,6 +213,8 @@ export function normalizeAdeTheme(value: unknown, options: NormalizeThemeOptions
     ...(basedOnRaw ? { basedOn: basedOnRaw.slice(0, ADE_THEME_ID_MAX_LENGTH) } : {}),
     palette,
     ...(terminal ? { terminal } : {}),
+    ...(syntax ? { syntax } : {}),
+    ...(flair ? { flair } : {}),
   };
 }
 
@@ -206,6 +260,8 @@ export function exportAdeTheme(theme: AdeTheme, now: Date = new Date()): AdeThem
       ...(theme.basedOn ? { basedOn: theme.basedOn } : {}),
       palette: { ...theme.palette },
       ...(theme.terminal ? { terminal: { ...theme.terminal } } : {}),
+      ...(theme.syntax ? { syntax: { ...theme.syntax } } : {}),
+      ...(theme.flair ? { flair: { ...theme.flair } } : {}),
     },
   };
 }
@@ -225,7 +281,7 @@ export function parseAdeThemeFile(raw: unknown): ParseThemeFileResult {
   let parsed: unknown = raw;
   if (typeof raw === "string") {
     try {
-      parsed = JSON.parse(raw);
+      parsed = parseJsonc(raw);
     } catch {
       return { ok: false, error: "That file is not valid JSON." };
     }

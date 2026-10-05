@@ -9,6 +9,7 @@ import {
   parseWorkSearchQuery,
   scoreWorkSearchTerms,
 } from "../../../desktop/src/shared/workSearch";
+import { rankSlashCommands } from "../../../desktop/src/shared/slashCommandSections";
 
 /**
  * Providers whose backend accepts this atomic active-turn dispatch mode, read
@@ -68,7 +69,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/redo", description: "Redo the most recently undone HEAD change on the active lane", placement: "inline", category: "Lanes" },
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline", category: "Lanes" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline", category: "Chats" },
-  { name: "/stop", description: "Stop the active turn; optionally keep the queue or stop background jobs", placement: "inline", argumentHint: "[keep-queue|clear-queue|background|clear-and-background]", category: "Chats" },
+  { name: "/stop", description: "Stop the active turn; optionally keep the queue, stop background jobs, or stop child chats", placement: "inline", argumentHint: "[keep-queue|clear-queue|background|clear-and-background|children|everything]", category: "Chats" },
+  // Fresh provider process, same conversation: picks up new skills, plugins,
+  // and MCP servers. Refused mid-turn unless `stop` confirms stopping it.
+  { name: "/restart", description: "Restart the agent session to pick up new skills, plugins, and MCP servers", placement: "inline", argumentHint: "[stop]", category: "Chats" },
   { name: "/restore-queue", description: "Undo a recent Stop & clear queue", placement: "inline", argumentHint: "<recovery-id>", category: "Chats" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline", category: "Nav" },
   // The way back from an account-side machine removal — the same repair
@@ -102,6 +106,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/chat resume-now", description: "Send the usage-limit continue prompt now instead of waiting for the reset", placement: "right", category: "Chats" },
   { name: "/continue-on-account", description: "Continue a usage-limited chat on another account that still has room", placement: "right", category: "Chats" },
   { name: "/chat continue-on-account", description: "Continue a usage-limited chat on another account that still has room", placement: "right", category: "Chats" },
+  { name: "/switch-account", description: "Move this chat to another signed-in account; same thread", placement: "inline", argumentHint: "<account-id>", category: "Chats" },
   { name: "/chat auto-resume", description: "Turn this chat's usage-limit auto-resume on or off", placement: "right", argumentHint: "[on|off]", category: "Chats" },
   { name: "/chat ask", description: "Escalate a blocking question from the active session", placement: "right", argumentHint: "<question>", category: "Chats" },
   { name: "/chat note", description: "Update the active session status line", placement: "right", argumentHint: "[note]", category: "Chats" },
@@ -178,6 +183,11 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/pr land", description: "Merge the active PR (needs confirm)", placement: "right", argumentHint: "[confirm] [merge|squash|rebase] [bypass] [delete-remote-branch]", category: "PRs" },
   { name: "/pr close", description: "Close the active PR (needs confirm)", placement: "right", argumentHint: "[confirm]", category: "PRs" },
   { name: "/pr reopen", description: "Reopen the active PR after it was closed", placement: "right", category: "PRs" },
+  // PR Watch / Ship for the chat's pull request (the one the header shows).
+  // Under `/pr` so a project's own `/ship` or `/watch` skill keeps its name.
+  { name: "/pr watch", description: "Wake this chat when its pull request changes", placement: "inline", argumentHint: "[pr]", category: "PRs" },
+  { name: "/pr ship", description: "Watch the chat's PR and have the agent take it to merged", placement: "inline", argumentHint: "[pr]", category: "PRs" },
+  { name: "/pr unwatch", description: "Stop watching the chat's pull request", placement: "inline", argumentHint: "[pr]", category: "PRs" },
   { name: "/pr draft", description: "Convert the active PR back to a draft", placement: "right", category: "PRs" },
   { name: "/pr ready", description: "Mark the active draft PR ready for review", placement: "right", category: "PRs" },
   { name: "/pr auto-merge", description: "Turn GitHub auto-merge on or off for the active PR", placement: "right", argumentHint: "[on|off] [merge|squash|rebase]", category: "PRs" },
@@ -379,6 +389,13 @@ export function paletteCommands(
   const merged = [...byName.values()]
     .filter((command) => !(options.inlineSteerWithheld && slashCommandKey(command.name) === slashCommandKey("/steer send")));
   const queryTerms = parseWorkSearchQuery(queryToken).terms;
+  // A single-word `/` query uses the shared tiered ranker (exact > prefix >
+  // word-prefix > substring > scattered-only-if-nothing-better), so `/test`
+  // ranks `test` first instead of drowning in long names that merely contain
+  // those letters. Multi-word queries keep the token-AND search.
+  if (queryToken && queryTerms.length <= 1) {
+    return rankSlashCommands(merged, `/${queryToken}`).slice(0, 100);
+  }
   const filtered = queryTerms.length === 0
       ? merged
       : merged.filter((command) => {

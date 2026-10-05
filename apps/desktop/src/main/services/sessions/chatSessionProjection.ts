@@ -1,6 +1,7 @@
 import type {
   AgentChatSessionSummary,
   ListSessionsArgs,
+  SessionActiveGoal,
   TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
@@ -112,6 +113,18 @@ export function fallbackUnprojectedChatSession(
   };
 }
 
+/** A goal still in play (not reached, cleared, or cancelled), or null. */
+export function projectActiveGoal(chat: AgentChatSessionSummary): SessionActiveGoal | null {
+  const codex = chat.codexGoal;
+  const codexObjective = codex?.objective?.trim();
+  if (codexObjective && codex?.status !== "complete" && codex?.status !== "cancelled") {
+    return { provider: "codex", objective: codexObjective, status: codex?.status ?? "active" };
+  }
+  const claude = chat.claudeGoal?.condition?.trim();
+  if (claude) return { provider: "claude", objective: claude, status: "active" };
+  return null;
+}
+
 /**
  * Project chat runtime state and spawn lineage onto its terminal row.
  * All desktop surfaces use this mapping so list, detail, and lane summaries do
@@ -142,6 +155,7 @@ export function projectChatOntoSession(
     usageLimitResume: chat.usageLimitResume ?? null,
     chatActivityMode: chatIsPlanning(chat) ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
+    ...(projectActiveGoal(chat) ? { activeGoal: projectActiveGoal(chat) } : {}),
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),
     ...(chat.runtimeProcesses?.length ? { runtimeProcesses: chat.runtimeProcesses } : {}),

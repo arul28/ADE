@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
+import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
@@ -47,18 +48,20 @@ import {
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
 import {
   MODEL_MENTION_DEFAULT_PERMISSION,
-  MODEL_MENTION_PERMISSION_MODES,
   formatModelMentionToken,
   isModelMentionTokenBody,
   modelMentionEffortLabel,
   modelMentionHarnessLabel,
-  modelMentionPermissionLabel,
   modelMentionSubtitle,
   parseModelMentions,
   rankComposerModelSuggestions,
   type ComposerModelSuggestion,
   type ModelMention,
 } from "../../../desktop/src/shared/modelMentions";
+import {
+  defaultModelPermission,
+  modelPermissionOptions,
+} from "../../../desktop/src/shared/modelPermissions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -110,7 +113,9 @@ import {
 } from "../../../desktop/src/shared/usageResetCredit";
 import { launchIdentityFields, resolveLaunchIdentity, sameLaunchIdentity } from "./launchIdentity";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
-import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import { selectPrsForChat } from "../../../desktop/src/shared/prChatScope";
+import type { GitHubPrStackMembership, PrChecksStatus, PrSummary } from "../../../desktop/src/shared/types/prs";
+import type { PrChatWatchSummary, PrWatchMode } from "../../../desktop/src/shared/prWatch";
 import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
 import {
   pickPrimaryPrRecord,
@@ -120,6 +125,7 @@ import {
 import {
   approveToolUse,
   archiveChatSession,
+  getArchiveSummary,
   buildPtyContinuationLaunchFields,
   cancelSteerMessage,
   createChatSession,
@@ -131,6 +137,7 @@ import {
   enrichChatSessionsWithLifecycle,
   enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
+  getLaunchDefaults,
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
@@ -152,6 +159,9 @@ import {
   getSubagentTranscript,
   clearSessionWokeMarker,
   interruptChat,
+  getChatPrWatches,
+  restartChatSession,
+  setChatPrWatch,
   killDroidWorker,
   latestGoal,
   latestTokenStats,
@@ -184,6 +194,7 @@ import {
   respondToInput,
   resumeUsageLimitNow,
   continueUsageLimitOnAlternate,
+  switchChatAccount,
   runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
@@ -211,7 +222,7 @@ import {
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
-import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
+import { chatInfoPrFromSummaries, deriveChatInfoSnapshot, formatChatPrHeaderLabel, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
   parseWorkSearchQuery,
@@ -349,6 +360,7 @@ import {
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
   seedModelStateFromMemory,
+  modelMemoryFromLaunchDefaults,
   resolveCodexPreset,
   resolveCursorCliModelForLaunch,
   runtimeProviderForUiProvider,
@@ -371,6 +383,8 @@ import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
 import { theme } from "./theme";
+import { setTuiThreadEntityFacts } from "./threadEntityRuns";
+import { linearTeamKeyFromIdentifier } from "../../../desktop/src/shared/threadEntities";
 import { resolveTuiChatRefreshTarget } from "./project";
 import {
   RIGHT_CHAT_CLOSED_TOGGLE_ID,
@@ -404,9 +418,13 @@ import {
   splitByDisplayCells,
   terminalDisplayWidth,
 } from "./displayWidth";
+import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../desktop/src/shared/types/archive";
+import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../desktop/src/shared/archive";
 import {
+  archiveReminderNextAt,
   flushAdeCodeStateWrites,
   loadAdeCodeState,
+  saveArchiveReminderNextAt,
   saveAdeCodeModelMemory,
   saveAdeCodeProjectState,
   scopedAdeCodeModelMemory,
@@ -587,7 +605,7 @@ export type FooterControl = "drawer" | "details" | "agents";
  * `"lanes" | "chats"` MODE: the pane no longer has modes, so "am I looking at a
  * lane or a chat" is now a property of the selected row, not of the pane.
  */
-export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | null;
+export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | "drawer" | null;
 
 /**
  * Per-lane PR rollup, kept for the chat-info pane's PR block. It used to live in
@@ -1399,6 +1417,13 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
   if (cacheParts.length) parts.push(`(${cacheParts.join(" ")})`);
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
   return parts.length ? parts.join(" ") : null;
+}
+
+/** `#42 · watching` / `#42 · shipping (holding)` beside the header PR chip. */
+function formatChatPrHeaderWithWatch(label: string | null, watch: PrChatWatchSummary | null): string | null {
+  if (!label || !watch || watch.status === "stopped") return label;
+  const state = watch.mode === "ship" ? "shipping" : "watching";
+  return `${label} · ${state}${watch.holding ? " (holding)" : ""}`;
 }
 
 function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
@@ -2848,11 +2873,13 @@ export function modelMentionSuggestionsFromCatalog(
       modelId: args.id,
       title: args.displayName || descriptor?.displayName || args.id,
       subtitle: modelMentionSubtitle(modelMentionHarnessLabel(args.group), args.route),
+      provider: args.group,
       reasoningTiers: [...tiers],
       defaultEffort: selectSupportedReasoningEffort({
         tiers,
         advertisedDefault: args.defaultReasoningEffort ?? descriptor?.defaultReasoningEffort ?? null,
       }),
+      defaultPermission: defaultModelPermission(args.group),
     });
   };
   if (catalog?.groups.length) {
@@ -2901,6 +2928,8 @@ export type ModelChipEdit = {
   start: number;
   mention: ModelMention;
   title: string;
+  /** Chat runtime provider, so the permission step offers its own modes. */
+  provider: string;
   reasoningTiers: string[];
   step: ModelChipEditStep;
   index: number;
@@ -2909,9 +2938,10 @@ export type ModelChipEdit = {
 export function modelChipEditOptions(
   step: ModelChipEditStep,
   reasoningTiers: readonly string[],
+  provider: string,
 ): Array<{ value: string; label: string }> {
   return step === "perm"
-    ? MODEL_MENTION_PERMISSION_MODES.map((value) => ({ value, label: modelMentionPermissionLabel(value) }))
+    ? modelPermissionOptions(provider).map((option) => ({ value: option.value, label: option.label }))
     : reasoningTiers.map((value) => ({ value, label: modelMentionEffortLabel(value) }));
 }
 
@@ -2921,7 +2951,7 @@ function modelChipEditAtStep(
   step: ModelChipEditStep,
 ): ModelChipEdit {
   const current = step === "effort" ? edit.mention.effort : edit.mention.permission;
-  const index = modelChipEditOptions(step, edit.reasoningTiers).findIndex((option) => option.value === current);
+  const index = modelChipEditOptions(step, edit.reasoningTiers, edit.provider).findIndex((option) => option.value === current);
   return { ...edit, step, index: Math.max(0, index) };
 }
 
@@ -3704,6 +3734,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [prByLaneId, setPrByLaneId] = useState<Record<string, LanePrSummary>>({});
   const prByLaneIdRef = useRef(prByLaneId);
   prByLaneIdRef.current = prByLaneId;
+  const [chatLinkedPrs, setChatLinkedPrs] = useState<PrSummary[]>([]);
+  const allPrsForChatRef = useRef<PrSummary[]>([]);
+  const chatPrSessionIdRef = useRef<string | null>(null);
+  const chatPrBranchRef = useRef<string | null>(null);
+  // PR Watch / Ship for the chat's primary PR (the one the header names).
+  const [chatPrWatch, setChatPrWatchState] = useState<PrChatWatchSummary | null>(null);
+  const chatPrWatchKeyRef = useRef<{ sessionId: string | null; prId: string | null }>({ sessionId: null, prId: null });
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   /**
@@ -3750,6 +3787,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
+  // The transcript draws lanes and chats an agent names by their real name and
+  // lane colour. Set during render (before ChatView renders) so the first paint
+  // after a lane list change already uses it; the setter ignores no-op updates.
+  useMemo(() => {
+    const linearTeamKeys = new Set<string>();
+    for (const lane of lanes) {
+      for (const identifier of [lane.linearIssue?.identifier, ...(lane.linearIssueLinks ?? []).map((link) => link.issue?.identifier)]) {
+        const key = linearTeamKeyFromIdentifier(identifier);
+        if (key) linearTeamKeys.add(key);
+      }
+    }
+    setTuiThreadEntityFacts({
+      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name, color: theme.lane(lane) })),
+      chats: sessions.map((session) => ({ id: session.sessionId, title: session.title ?? null })),
+      linearTeamKeys: [...linearTeamKeys],
+      skillNames: slashCommands.map((command) => command.name.replace(/^\//, "")),
+    });
+  }, [lanes, sessions, slashCommands]);
   const [keybindings, setKeybindings] = useState(() => readClaudeKeybindingsFile({ create: false }).bindings);
   const [models, setModels] = useState<AgentChatModelInfo[]>([]);
   const [initialAdeCodeState] = useState(() => (
@@ -3766,6 +3821,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [modelState, setModelState] = useState<AdeCodeModelState>(
     () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
   );
+  // The model the TUI opened on; the machine's launch defaults replace it only
+  // while it is still this one (see the connect path).
+  const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
   // ── Project-scoped model memory ───────────────────────────────────────────
   // Written on every successful chat start and on every /model commit; read
   // above to seed a new chat, and per-provider on wizard step 4.
@@ -3941,6 +3999,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // cadence the app already runs.
   const [attentionSnapshot, setAttentionSnapshot] = useState<AttentionSnapshot | null>(null);
   const [workExpandedShelves, setWorkExpandedShelves] = useState<Set<WorkListShelfKind>>(() => new Set());
+  // Subagent drawers start folded (desktop parity); a parent id here is open.
+  const [workExpandedDrawers, setWorkExpandedDrawers] = useState<Set<string>>(() => new Set());
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [drawerLaneId, setDrawerLaneId] = useState<string | null>(null);
@@ -4785,6 +4845,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  chatPrSessionIdRef.current = activeSession?.sessionId ?? activeSessionId;
+  chatPrBranchRef.current = activeLane?.branchRef ?? null;
+  useEffect(() => {
+    setChatLinkedPrs(selectPrsForChat(
+      allPrsForChatRef.current,
+      activeSession?.sessionId ?? activeSessionId,
+      { currentBranch: activeLane?.branchRef ?? null },
+    ));
+  }, [activeLane?.branchRef, activeSession?.sessionId, activeSessionId]);
+  const chatPrWatchPrId = chatLinkedPrs[0]?.id ?? null;
+  const chatPrWatchSessionId = activeSession?.sessionId ?? activeSessionId ?? null;
+  chatPrWatchKeyRef.current = { sessionId: chatPrWatchSessionId, prId: chatPrWatchPrId };
+  useEffect(() => {
+    setChatPrWatchState(null);
+    if (!connection || !chatPrWatchSessionId || !chatPrWatchPrId) return;
+    let cancelled = false;
+    void getChatPrWatches(connection, chatPrWatchSessionId)
+      .then((watches) => {
+        if (cancelled) return;
+        const match = watches.find((entry) => entry.prId === chatPrWatchPrId && entry.status !== "stopped");
+        setChatPrWatchState(match ?? null);
+      })
+      // An older host has no watch actions; the header simply shows none.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [chatPrWatchPrId, chatPrWatchSessionId, connection]);
   useEffect(() => {
     const sessionId = activeSession?.sessionId;
     const agentId = activeSession?.cursorCloudAgentId?.trim();
@@ -4983,7 +5071,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       goal: currentGoal,
       streaming,
       inspectedSubagentId,
-      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      pr: chatInfoPrFromSummaries(chatLinkedPrs)
+        ?? (activeDisplaySession ? null : ((chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null)),
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
       usageLimitResumeNotice: usageLimitResumeNotice
         && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
@@ -4996,6 +5085,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeLaneId,
     activeTerminalSession,
     chatInfoEvents,
+    chatLinkedPrs,
     currentGoal,
     inspectedSubagentId,
     lanes,
@@ -5028,7 +5118,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       goal: currentGoal,
       streaming,
       inspectedSubagentId,
-      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      pr: chatInfoPrFromSummaries(chatLinkedPrs)
+        ?? (activeDisplaySession ? null : ((chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null)),
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
       usageLimitResumeNotice: usageLimitResumeNotice
         && usageLimitResumeNotice.sessionId === activeDisplaySession?.sessionId
@@ -5040,6 +5131,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeLane,
     activeLaneId,
     activeTerminalSession,
+    chatLinkedPrs,
     currentGoal,
     events,
     inspectedSubagentId,
@@ -5324,6 +5416,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeSessionId,
     draftSessionIds: workDraftSessionIds,
     expandedShelves: workExpandedShelves,
+    expandedDrawers: workExpandedDrawers,
     unavailableLaneIds,
     hideNewChat: true,
   }), [
@@ -5334,6 +5427,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     tileableDisplaySessions,
     unavailableLaneIds,
     workDraftSessionIds,
+    workExpandedDrawers,
     workExpandedShelves,
     workForeignSessions,
   ]);
@@ -5553,6 +5647,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     })();
   }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  // Opening a nested subagent (a notification, `/resume`, the grid) opens the
+  // drawer it sits in once, so the cursor has a row to land on. Folding it
+  // again sticks until another chat becomes active.
+  const drawerRevealedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId || drawerRevealedForRef.current === activeSessionId) return;
+    const parentId = workListModel.drawerParentBySessionId.get(activeSessionId);
+    if (!parentId) return;
+    drawerRevealedForRef.current = activeSessionId;
+    setWorkExpandedDrawers((prev) => (prev.has(parentId) ? prev : new Set(prev).add(parentId)));
+  }, [activeSessionId, workListModel]);
+  const toggleWorkDrawer = useCallback((parentId: string) => {
+    setWorkExpandedDrawers((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }, []);
   const toggleWorkShelf = useCallback((shelf: WorkListShelfKind) => {
     setWorkExpandedShelves((prev) => {
       const next = new Set(prev);
@@ -5611,6 +5724,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       case "shelf":
+      case "drawer":
         return;
       default: {
         const _exhaustive: never = row;
@@ -7030,6 +7144,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId },
     ]);
   }, []);
+  // The weekly archive reminder (desktop shows it as a banner). ADE deletes
+  // nothing on its own; it asks at most once a week per project when items
+  // have sat archived for two weeks, and points at `ade archive`.
+  useEffect(() => {
+    if (!connection) return;
+    const projectRoot = activeProjectRoot;
+    if (Date.now() < archiveReminderNextAt(loadAdeCodeState(), projectRoot)) return;
+    let cancelled = false;
+    void getArchiveSummary(connection, { olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS })
+      .then((summary) => {
+        if (cancelled || summary.staleTotal === 0) return;
+        addNotice(`${archiveReminderTitle(summary)} Review with \`ade archive list\` or in Settings → Archive on desktop.`);
+        void saveArchiveReminderNextAt(projectRoot, Date.now() + ARCHIVE_REMINDER_INTERVAL_MS);
+      })
+      // An older runtime has no archive domain; stay quiet.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectRoot, addNotice, connection]);
   const openLaneDetailsPane = useCallback((lane: LaneSummary) => {
     selectActiveLaneId(lane.id);
     setDrawerLaneId(lane.id);
@@ -8841,6 +8975,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setActiveProjectRoot(conn.projectRoot || project.projectRoot);
         setConnection(conn);
         setMode(conn.mode);
+        // A new chat opens on what this machine used last, from any client,
+        // unless the user already picked a model here.
+        void getLaunchDefaults(conn).then((defaults) => {
+          if (!defaults) return;
+          setModelState((prev) => {
+            if (prev.provider !== initialModelProviderRef.current.provider
+              || prev.modelId !== initialModelProviderRef.current.modelId) return prev;
+            const displayName = getModelById(defaults.modelId)?.displayName ?? defaults.modelId;
+            return seedModelStateFromMemory(prev, modelMemoryFromLaunchDefaults(defaults, prev, displayName));
+          });
+        });
         if (!analyticsAppOpenedRef.current) {
           analyticsAppOpenedRef.current = true;
           void captureTuiProductAnalytics(conn, {
@@ -9609,24 +9754,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
   }, [chatRefreshPollActive, connection, diffLaneIdsKey]);
 
+  const chatPrCatalogConnectionRef = useRef<AdeCodeConnection | null>(null);
   useEffect(() => {
     if (!connection) {
+      chatPrCatalogConnectionRef.current = null;
       setPrByLaneId({});
+      allPrsForChatRef.current = [];
+      setChatLinkedPrs([]);
       return;
+    }
+    if (chatPrCatalogConnectionRef.current !== connection) {
+      chatPrCatalogConnectionRef.current = connection;
+      allPrsForChatRef.current = [];
+      setChatLinkedPrs([]);
     }
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {
       try {
-        // ADE-135: `PrLaneSummary` now carries the service's canonical
-        // `checksStatus`, so consumers gate on that instead of inferring a pass
-        // from `checksPassed === checksTotal`.
-        // An earlier revision joined a second unscoped `pr listAll` call for the
-        // same field: redundant, an extra whole-history serialization on a 30s
-        // refresh, and strictly less correct — projection-backed and detached
-        // lanes are absent from `pull_requests`, so their status came back
-        // undefined and fell through to exactly the producer-blind green this
-        // ticket exists to remove.
+        // Chat-scoped peek needs the full PR catalog so cross-lane stack edges
+        // survive `selectPrsForChat`. Lane-header badges still use `prs` from
+        // `listPrsByLane` only — an unscoped `listAll` must not feed checksStatus.
         const prs = await listPrsByLane(connection);
         if (cancelled) return;
         const next: Record<string, LanePrSummary> = {};
@@ -9643,6 +9791,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         }
         setPrByLaneId(next);
+        try {
+          const listed = await connection.action<Array<Record<string, unknown>>>("pr", "listAll", {});
+          if (cancelled) return;
+          allPrsForChatRef.current = (Array.isArray(listed) ? listed : []) as PrSummary[];
+        } catch {
+          // Keep the previous chat-linked catalog. An empty fallback would
+          // erase peek chips until the next successful poll.
+        }
+        setChatLinkedPrs(selectPrsForChat(
+          allPrsForChatRef.current,
+          chatPrSessionIdRef.current,
+          { currentBranch: chatPrBranchRef.current },
+        ));
       } catch {
         // PR checks are rate-limit sensitive; keep the previous cache on transient failures.
       }
@@ -9664,6 +9825,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (laneEvent?.type === "lane-branch-updated") {
           void refreshState({ hydrateHistory: false }).catch(() => undefined);
         }
+        return;
+      }
+      if (type === "pr-chat-watch-changed") {
+        const key = chatPrWatchKeyRef.current;
+        if (event.payload.sessionId !== key.sessionId || event.payload.prId !== key.prId) return;
+        const watch = event.payload.watch as PrChatWatchSummary | null | undefined;
+        setChatPrWatchState(watch && watch.status !== "stopped" ? watch : null);
         return;
       }
       if (type !== "prs-updated" && type !== "pr-notification") return;
@@ -11786,7 +11954,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({ kind: "details", title: name.slice(1) || "PR", body: "No active lane is selected." });
         return;
       }
-      const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
+      const listedPrs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", {});
+      const prSessionId = activeSession?.sessionId ?? activeSessionId ?? null;
+      const scopedPrs = selectPrsForChat(
+        (Array.isArray(listedPrs) ? listedPrs : []) as unknown as PrSummary[],
+        prSessionId,
+        { currentBranch: activeLane?.branchRef ?? null },
+      );
+      const prs = scopedPrs as unknown as Array<Record<string, unknown>>;
       const activePr = pickPrimaryPrRecord(prs);
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
@@ -11798,7 +11973,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             // "linked" is gone on purpose: nothing about a PR requires a lane
             // mapping any more, and this pane is simply reporting that *this*
             // lane has no PR of its own yet.
-            body: `This lane has no pull request yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
+            body: `This chat has no pull request yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
           });
           return;
         }
@@ -11855,6 +12030,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             kind: "form",
             title: "Open PR",
             command: "pr-open",
+            sessionId: prSessionId ?? undefined,
             fields: [
               { name: "title", label: "Title", required: true, placeholder: defaultTitle, initialValue: defaultTitle },
               { name: "body", label: "Body", placeholder: "Optional" },
@@ -11867,6 +12043,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           title: args,
           body: "",
           draft: false,
+          sessionId: prSessionId,
+          source: "human",
         });
         setRightPane({ kind: "details", title: "PR open", body: formatPrSummary(created) });
         return;
@@ -11878,7 +12056,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({
           kind: "details",
           title: name.slice(1),
-          body: "This lane has no pull request yet.\nRun /pr open to create one, or use  ade prs <subcommand> <pr>  for any other PR in the repo.",
+          body: "This chat has no pull request yet.\nRun /pr open to create one, or use  ade prs <subcommand> <pr>  for any other PR in the repo.",
         });
         return;
       }
@@ -11957,11 +12135,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(bypassRules ? { bypassRules: true } : {}),
             ...(deleteRemoteBranch ? { deleteRemoteBranch: true } : {}),
           });
-          addNotice(
-            `Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}${deleteRemoteBranch ? ", branch deleted" : ""}).`,
-            "success",
-          );
-          setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          // The host answers a refused merge in the result, not as an error. A
+          // GitHub Stack merge that GitHub queued or still runs is not a failure.
+          const result = (landed ?? {}) as { success?: boolean; mergeStatus?: string | null; error?: string | null };
+          const inFlight = result.mergeStatus === "pending" || result.mergeStatus === "enqueued";
+          if (result.success === false && !inFlight) {
+            addNotice(result.error ?? `GitHub did not merge ${prRef}.`, "error");
+          } else if (inFlight) {
+            addNotice(result.error ?? `GitHub is merging ${prRef}.`, "info");
+          } else {
+            addNotice(
+              `Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}${deleteRemoteBranch ? ", branch deleted" : ""}).`,
+              "success",
+            );
+          }
+          setRightPane({ kind: "details", title: result.success === false && !inFlight ? "PR not landed" : "PR landed", body: renderObject(landed, 24) });
           await refreshState();
         } catch (err) {
           addNotice(err instanceof Error ? err.message : String(err), "error");
@@ -12470,6 +12658,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         setUsageLimitResumeNotice(null);
         addNotice("Continuing on the other account.", "success");
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
+    if (name === "/switch-account") {
+      const targetSessionId = activeSessionIdRef.current;
+      const accountId = args.trim();
+      if (!targetSessionId || !accountId) {
+        addNotice(targetSessionId ? "Usage: /switch-account <account-id> (ids: ade providers accounts list)" : "Open a chat first.", "info");
+        return;
+      }
+      try {
+        const result = await switchChatAccount(conn, targetSessionId, accountId);
+        if (!result.ok) {
+          addNotice(result.message, "info");
+          return;
+        }
+        addNotice(`Switched to account ${result.instanceId}.`, "success");
         await refreshState();
       } catch (err) {
         addNotice(err instanceof Error ? err.message : String(err), "error");
@@ -12989,13 +13197,67 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? resolveAgentChatStopModeAlias(normalizedMode)
         : "stop_and_clear";
       if (!mode) {
-        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background]", "error");
+        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background|children|everything]", "error");
         return;
       }
       setStreaming(false);
       setInterrupted(true);
       const result = await interruptChat(conn, sessionId, mode);
       addNotice(chatInterruptNotice(result), "info");
+      return;
+    }
+    if (name === "/restart") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      const confirmArg = args.trim().toLowerCase();
+      const stopFirst = confirmArg === "stop" || confirmArg === "confirm";
+      try {
+        const result = await restartChatSession(conn, sessionId, stopFirst);
+        const stopped = result.backgroundJobsStopped > 0
+          ? ` ${result.backgroundJobsStopped === 1 ? "1 background job" : `${result.backgroundJobsStopped} background jobs`} stopped.`
+          : "";
+        addNotice(`Agent session restarted. Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`, "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!stopFirst && isTurnInFlightError(error)) {
+          addNotice("The agent is mid-turn. Run /restart stop to stop the turn (and its background jobs) and restart. The conversation is kept.", "info");
+          return;
+        }
+        addNotice(`Restart agent session failed: ${message}`, "error");
+      }
+      return;
+    }
+    if (name === "/pr watch" || name === "/pr ship" || name === "/pr unwatch") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      // The PR the header shows, unless the user named one (an ADE PR id, a PR
+      // number, or a PR URL — the host resolves all three).
+      const target = args.trim().replace(/^#/, "") || chatLinkedPrs[0]?.id || "";
+      if (!target) {
+        addNotice(`This chat has no pull request. Usage: ${name} <pr-number|pr-url>`, "error");
+        return;
+      }
+      const mode: PrWatchMode | null = name === "/pr unwatch" ? null : name === "/pr ship" ? "ship" : "watch";
+      try {
+        const watch = await setChatPrWatch(conn, { prId: target, sessionId, mode });
+        const active = watch && watch.status !== "stopped" ? watch : null;
+        if (!args.trim() || active?.prId === chatLinkedPrs[0]?.id) setChatPrWatchState(active);
+        const label = active?.githubPrNumber ? `PR #${active.githubPrNumber}` : chatLinkedPrs[0]?.githubPrNumber && !args.trim() ? `PR #${chatLinkedPrs[0].githubPrNumber}` : "the PR";
+        addNotice(
+          mode === null
+            ? `Stopped watching ${label}.`
+            : mode === "ship"
+              ? `Shipping ${label}: the agent is woken on each change and takes it to merged.`
+              : `Watching ${label}: the agent is woken on each change.`,
+          "success",
+        );
+      } catch (error) {
+        addNotice(`${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
       return;
     }
     if (name === "/restore-queue") {
@@ -13144,7 +13406,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, chatLinkedPrs, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshActivityPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -13301,6 +13563,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         title,
         body,
         draft: false,
+        sessionId: form.sessionId ?? activeSession?.sessionId ?? activeSessionId,
+        source: "human",
       });
       setRightPane({ kind: "details", title: "PR open", body: renderObject(created, 24) });
       addNotice("Created PR.", "success");
@@ -14054,7 +14318,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const mention: ModelMention = {
         modelId: model.modelId,
         effort: model.defaultEffort,
-        permission: MODEL_MENTION_DEFAULT_PERMISSION,
+        permission: model.defaultPermission ?? MODEL_MENTION_DEFAULT_PERMISSION,
       };
       const token = formatModelMentionToken(mention);
       const trigger = composerTriggerForSelection(detectedTrigger, suggestion.label, "mention");
@@ -14063,7 +14327,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setMentionSuggestions([]);
       setMentionIndex(0);
       setModelChipEdit(modelChipEditAtStep(
-        { token, start: trigger.start, mention, title: model.title, reasoningTiers: model.reasoningTiers },
+        { token, start: trigger.start, mention, title: model.title, provider: model.provider ?? "opencode", reasoningTiers: model.reasoningTiers },
         model.reasoningTiers.length > 0 ? "effort" : "perm",
       ));
       return;
@@ -14088,7 +14352,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * in the draft, then move from thinking to permissions, or close.
    */
   const applyModelChipEditOption = useCallback((edit: ModelChipEdit, optionIndex: number) => {
-    const option = modelChipEditOptions(edit.step, edit.reasoningTiers)[optionIndex];
+    const option = modelChipEditOptions(edit.step, edit.reasoningTiers, edit.provider)[optionIndex];
     if (!option) return;
     const mention: ModelMention = edit.step === "effort"
       ? { ...edit.mention, effort: option.value }
@@ -15124,6 +15388,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       toggleWorkShelf(row.shelf);
       return;
     }
+    if (row.kind === "drawer") {
+      toggleWorkDrawer(row.parentId);
+      return;
+    }
     if (
       row.kind === "session"
       && region === "lane-identity"
@@ -15185,6 +15453,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     openNewChatSetup,
     resumeClosedTerminalSession,
     selectWorkRow,
+    toggleWorkDrawer,
     toggleWorkShelf,
   ]);
 
@@ -15936,7 +16205,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // are open. Any other key closes them (the chip keeps its values) and then
     // does what it normally does, so the user can simply keep typing.
     if (pane === "chat" && textInputActive && modelChipEdit) {
-      const optionCount = modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers).length;
+      const optionCount = modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers, modelChipEdit.provider).length;
       if (key.upArrow && optionCount > 0) {
         setModelChipEdit({ ...modelChipEdit, index: (modelChipEdit.index - 1 + optionCount) % optionCount });
         return;
@@ -18533,6 +18802,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
           remoteLabel={activeRemoteLabel}
           accountLabel={accountLabel}
+          prLabel={formatChatPrHeaderWithWatch(formatChatPrHeaderLabel(chatLinkedPrs), chatPrWatch)}
         />
         {goalBannerText ? (
           <Box paddingX={1} flexShrink={0}>
@@ -18818,7 +19088,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             <ModelChipOptionPalette
               modelTitle={modelChipEdit.title}
               stepLabel={modelChipEdit.step === "effort" ? "Thinking" : "Permissions"}
-              options={modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers)}
+              options={modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers, modelChipEdit.provider)}
               selectedIndex={modelChipEdit.index}
               currentValue={modelChipEdit.step === "effort" ? modelChipEdit.mention.effort : modelChipEdit.mention.permission}
               width={paletteOverlayWidth}

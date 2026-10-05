@@ -5,7 +5,9 @@ import type {
   SessionSettleOverride,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { isTurnInFlightError } from "../../../shared/codedError";
 import { showToast } from "../app/toast/toastStore";
+import { confirmDialog, promptDialog } from "../ui/dialog";
 import {
   canonicalInputFromSummary,
   sessionNeedsYou,
@@ -94,6 +96,98 @@ export async function snoozeSessionForDuration(
       },
     }],
   });
+}
+
+export type BulkLifecycleTarget = {
+  session: Pick<TerminalSessionSummary, "id">;
+  pin?: OpenProjectBinding | null;
+};
+
+let bulkToastSeq = 0;
+
+/**
+ * Run one lifecycle write over a multi-selection, each row on its own machine,
+ * and report failures once. Per-row toasts would stack N copies of the same
+ * message; one row failing must not stop the rest. Returns the rows that took.
+ */
+async function runBulkLifecycle(
+  action: string,
+  targets: ReadonlyArray<BulkLifecycleTarget>,
+  write: (target: BulkLifecycleTarget) => Promise<unknown>,
+): Promise<BulkLifecycleTarget[]> {
+  const results = await Promise.allSettled(targets.map(write));
+  const failedIndex = results.findIndex((result) => result.status === "rejected");
+  if (failedIndex >= 0) {
+    const failure = results[failedIndex] as PromiseRejectedResult;
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    reportFailure(
+      targets.length > 1 ? `${action} (${failedCount} of ${targets.length})` : action,
+      targets[failedIndex]!.session.id,
+      failure.reason,
+    );
+  }
+  return targets.filter((_, index) => results[index]?.status === "fulfilled");
+}
+
+function sessionCount(count: number): string {
+  return `${count} session${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Snooze a multi-selection to one shared deadline, with one toast and one Undo
+ * for the whole batch.
+ */
+export async function snoozeSessionsForDuration(
+  targets: ReadonlyArray<BulkLifecycleTarget>,
+  key: SnoozeDurationKey,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  if (!targets.length) return;
+  const untilIso = snoozeDeadlineIso(key, nowMs);
+  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
+    : window.ade.sessions.snoozeSession(session.id, untilIso)));
+  if (!snoozed.length) return;
+  showToast({
+    // Unique per batch: two batches snoozed to the same deadline each keep
+    // their own Undo.
+    id: `session-snooze-bulk:${++bulkToastSeq}`,
+    title: `Snoozed ${sessionCount(snoozed.length)} ${snoozeConfirmationLabel(key)}`,
+    durationMs: UNDO_TOAST_MS,
+    actions: [{ label: "Undo", onClick: () => { void wakeSessions(snoozed); } }],
+  });
+}
+
+/** Wake every snoozed row in a selection. */
+export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  await runBulkLifecycle("Wake", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.wakeSession(session.id, "manual", pin)
+    : window.ade.sessions.wakeSession(session.id, "manual")));
+}
+
+/**
+ * Settle a selection of at-rest rows, with one Undo. Like the sidebar header's
+ * bulk settle, it never dismisses pending input: callers leave needs-you rows
+ * out, and none of these writes carries `dismissPendingInput`.
+ */
+export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.settle(session.id, undefined, pin)
+    : window.ade.sessions.settle(session.id)));
+  if (!settled.length) return;
+  showToast({
+    id: `session-settle-bulk:${++bulkToastSeq}`,
+    title: `Settled ${sessionCount(settled.length)}`,
+    durationMs: UNDO_TOAST_MS,
+    actions: [{ label: "Undo", onClick: () => { void unsettleSessions(settled); } }],
+  });
+}
+
+/** Lift the settle on every settled row in a selection. */
+export async function unsettleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.unsettle(session.id, pin)
+    : window.ade.sessions.unsettle(session.id)));
 }
 
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
@@ -330,5 +424,78 @@ export async function setChatSpawnKind(
       : window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }));
   } catch (error) {
     reportFailure(action, session.id, error);
+  }
+}
+
+/**
+ * "Restart agent session": stop the chat's provider process and keep the
+ * conversation, so the next message starts a fresh process that picks up new
+ * skills, plugins, and MCP servers. A running turn is not stopped silently —
+ * the user confirms first.
+ */
+export async function restartAgentSession(
+  session: Pick<TerminalSessionSummary, "id">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const call = (stopFirst: boolean) => {
+    const args = { sessionId: session.id, ...(stopFirst ? { stopFirst: true } : {}) };
+    return pin ? window.ade.agentChat.restartSession(args, pin) : window.ade.agentChat.restartSession(args);
+  };
+  try {
+    let result;
+    try {
+      result = await call(false);
+    } catch (error) {
+      if (!isTurnInFlightError(error)) throw error;
+      const confirmed = await confirmDialog({
+        title: "Stop the turn and restart?",
+        message: "The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.",
+        confirmLabel: "Stop and restart",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+      result = await call(true);
+    }
+    const stopped = result.backgroundJobsStopped > 0
+      ? ` ${result.backgroundJobsStopped === 1 ? "1 background job" : `${result.backgroundJobsStopped} background jobs`} stopped.`
+      : "";
+    showToast({
+      id: `restart-agent-session:${session.id}`,
+      title: "Agent session restarted",
+      message: `Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`,
+    });
+  } catch (error) {
+    reportFailure("Restart agent session", session.id, error);
+  }
+}
+
+/**
+ * Set a chat's goal: Codex through its goal API, Claude through its native
+ * `/goal` command (sent like a typed command). Either way the agent keeps
+ * working across turns until the goal is met.
+ */
+export async function setChatGoal(
+  session: Pick<TerminalSessionSummary, "id" | "toolType">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const objective = (await promptDialog({
+    title: "Set a goal",
+    message: "The agent keeps working across turns until this is true. Edit or clear it from the Goal section of the chat actions drawer.",
+    placeholder: "e.g. All tests pass and the PR is merged",
+    confirmLabel: "Set goal",
+  }))?.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  if (!objective) return;
+  try {
+    if (session.toolType === "codex-chat") {
+      await (pin
+        ? window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }, pin)
+        : window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }));
+    } else {
+      const args = { sessionId: session.id, text: `/goal ${objective}` };
+      await (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args));
+    }
+    showToast({ id: `chat-goal:${session.id}`, title: "Goal set", message: objective });
+  } catch (error) {
+    reportFailure("Set goal", session.id, error);
   }
 }

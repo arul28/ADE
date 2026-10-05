@@ -725,3 +725,46 @@ describe("mac-desktop proof text output", () => {
     expect(text).toContain("(no artifact rows returned)");
   });
 });
+
+describe("mac-desktop action answer lines", () => {
+  const action = (effect: Record<string, unknown>) =>
+    formatOutput(
+      {
+        ok: true,
+        action: "click",
+        mode: "accessibility",
+        resolved: { role: "AXStaticText", label: "Read more" },
+        observation: null,
+        effect,
+      },
+      { text: true } as never,
+      "mac-desktop-action",
+    );
+
+  it("prints next and drops the generic observe suffix when a next step exists", () => {
+    const text = action({
+      status: "unconfirmed",
+      reason: "nothing on screen changed",
+      next: { method: "lease", reason: "ask for the lease", command: "ade mac-desktop lease --text" },
+    });
+    expect(text).toContain("effect: unconfirmed — nothing on screen changed");
+    expect(text).not.toContain("observe again before you continue");
+    expect(text).toContain("next: ask for the lease — run: ade mac-desktop lease --text");
+  });
+
+  it("keeps the generic observe suffix when the effect has no next step", () => {
+    const text = action({ status: "unconfirmed", reason: "nothing on screen changed" });
+    expect(text).toContain("observe again before you continue");
+    expect(text).not.toContain("next:");
+  });
+
+  it("prints a next line without a run command when the step has none", () => {
+    const text = action({
+      status: "unconfirmed",
+      reason: "nothing on screen changed",
+      next: { method: "observe", reason: "wait for the label you expect" },
+    });
+    expect(text).toContain("next: wait for the label you expect");
+    expect(text).not.toContain("— run:");
+  });
+});

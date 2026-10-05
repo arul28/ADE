@@ -7250,10 +7250,16 @@ describe("per-chat runtime routing", () => {
     const foreignArgs = { sessionId: "chat-on-b", text: "hello" };
     await bridge.agentChat.send(foreignArgs, machineB);
 
+    // Every send names this desktop, so "show this" requests can come back to
+    // it; through a pin to another machine it is not that runtime's local desktop.
+    const sentFrom = (local: boolean) => ({
+      inputOrigin: { clientId: bridge.app.desktopClientId, local },
+    });
+    expect(bridge.app.desktopClientId).toEqual(expect.any(String));
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
-      request: { domain: "chat", action: "sendMessage", args: foreignArgs },
+      request: { domain: "chat", action: "sendMessage", args: { ...foreignArgs, ...sentFrom(false) } },
     });
     expect(invoke).not.toHaveBeenCalledWith(
       IPC.localRuntimeCallAction,
@@ -7262,12 +7268,13 @@ describe("per-chat runtime routing", () => {
       }),
     );
 
-    // The tab is still bound to A: the very next unpinned call goes to A.
+    // The tab is still bound to A: the very next unpinned call goes to A,
+    // which runs on this computer.
     const localArgs = { sessionId: "chat-on-a", text: "still here" };
     await bridge.agentChat.send(localArgs);
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo-a",
-      request: { domain: "chat", action: "sendMessage", args: localArgs },
+      request: { domain: "chat", action: "sendMessage", args: { ...localArgs, ...sentFrom(true) } },
     });
   });
 
@@ -8056,7 +8063,12 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
-      request: { domain: "pty", action: "write", args: { ptyId: "pty-b", data: "ls\n" } },
+      // An Enter is a message sent, so it names this desktop too.
+      request: {
+        domain: "pty",
+        action: "write",
+        args: { ptyId: "pty-b", data: "ls\n", inputOrigin: { clientId: bridge.app.desktopClientId, local: false } },
+      },
     });
     expect(invoke).not.toHaveBeenCalledWith(
       IPC.localRuntimeCallAction,

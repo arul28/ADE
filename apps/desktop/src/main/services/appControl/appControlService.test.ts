@@ -334,6 +334,70 @@ describe("appControlService", () => {
     }
   });
 
+  it("runs a launch with no cwd in the caller's lane worktree, not the project root", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-lane-root-"));
+    const laneWorktree = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-lane",
+      ptyId: "pty-lane",
+      pid: 42,
+    }));
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      resolveLaneWorktreePath: () => laneWorktree,
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev" });
+      // The project root is the primary checkout; a lane's agent must start its
+      // own worktree's app.
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: laneWorktree }));
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the project root when the lane worktree sits outside it", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-outside-root-"));
+    const outsideWorktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-outside-lane-"));
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-outside",
+      ptyId: "pty-outside",
+      pid: 42,
+    }));
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      resolveLaneWorktreePath: () => outsideWorktree,
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev" });
+      // The launch guard refuses anything outside the project root, so the
+      // service must not hand it a cwd it would then reject.
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: projectRoot }));
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideWorktree, { recursive: true, force: true });
+    }
+  });
+
   it("lets manual target switches win over an in-flight health poll", async () => {
     const targetA = target("a");
     const targetB = target("b");
@@ -434,7 +498,7 @@ describe("appControlService", () => {
     ]);
   });
 
-  it("normalizes screenshot-space input with independent screencast x/y scales", async () => {
+  it("normalizes screenshot-space input by the viewport device scale, not the downscaled screencast frame", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
 
@@ -446,6 +510,9 @@ describe("appControlService", () => {
     await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
+    // A live frame downscaled by the screencast cap, whose scale (2/4) is not the
+    // observation screenshot's. Screenshot-space input must use the app's device
+    // pixel ratio (2), not this frame.
     socket!.emitMessage({
       method: "Page.screencastFrame",
       params: {
@@ -454,6 +521,7 @@ describe("appControlService", () => {
         metadata: { deviceWidth: 0.5, deviceHeight: 0.25, pageScaleFactor: 2 },
       },
     });
+    mockState.runtimeValues.push({ devicePixelRatio: 2 });
     socket!.sent.length = 0;
 
     await service.click({ laneId: "lane-1", x: 20, y: 40 });
@@ -462,8 +530,8 @@ describe("appControlService", () => {
       .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
       .filter((message) => message.method === "Input.dispatchMouseEvent");
     expect(mouseEvents.map((event) => ({ x: event.params?.x, y: event.params?.y }))).toEqual([
-      { x: 10, y: 10 },
-      { x: 10, y: 10 },
+      { x: 10, y: 20 },
+      { x: 10, y: 20 },
     ]);
   });
 

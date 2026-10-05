@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.89] - 2026-10-04
+
+### Desktop
+
+- Cross-machine orchestration for agents and the `ade` CLI (`--machine`, `--all-machines`) (#1451).
+- The ADE browser follows a remote machine's localhost and dev servers (#1452).
+- Accurate cost tracking with spend breakdowns, branch diff scope, and mermaid in chat (#1450).
+- Lane status and Fold for busy lanes; Manual sort fix (#1448, #1449).
+- Per-turn Claude cost, subagent model and effort on cards, and trustworthy router data (#1453).
+
+### iOS
+
+- Manage each connected machine's AI accounts from the phone (#1447).
+- Clearer quiet shelves in Work (#1448).
+
+## [1.2.88] - 2026-10-03
+
+### Desktop
+
+- Running and forked chats stay on their provider account (#1444).
+
+### iOS
+
+- Manage provider accounts from iOS and the web client (#1444).
+
+## [1.2.87] - 2026-10-03
+
+### Desktop
+
+- In-app sign-in and smart load balancing for Claude Code and Codex accounts (#1435).
+- Fork a chat from any turn, subagent permission ceiling, machine launch defaults, batched wakes, and queue reorder (#1441).
+- Smoother long chat threads with background history loading (#1442).
+- Lane-aware Commits view with graph and history links (#1430, #1434, #1437).
+- Bulk right-click menu for multi-selected Work chats (#1439).
+- Fixes for slash-command expansion, the handoff dialog, lane ahead/behind, App Control, and Mac Desktop (#1431-#1433, #1436, #1440).
+
+### iOS
+
+- Work rows follow live turn state; compact Codex diagnostics, new-chat width fix, and Custom harnesses (#1438, #1443).
+
+## [1.2.86] - 2026-10-02
+
+### Desktop
+
+- Merge GitHub Stacks from ADE with the async merge API, and link a stack to one Work card (#1428, #1419).
+- Thread comments on agent replies and a better Add to chat (#1422).
+- Resume interrupted agents after an update install (#1418); stalled-turn banner (#1420).
+- Claude Agent SDK 0.3.287 with human-origin interrupts (#1423); OpenCode fixes (#1416, #1421).
+- Theme overhaul with VS Code import and per-computer appearance (#1414).
+- Fixes for lane setup, Windows lane deletes, thread chips, subagent rows, and stale viewer drafts (#1413, #1417, #1424-#1427).
+
+## [1.2.85] - 2026-10-01
+
+### Desktop
+
+- ADE entities in agent replies (lanes, chats, models, PRs, commits, Linear issues, skills, and more) render as live chips on desktop, in the TUI, and on iOS (#1411).
+- Chat drawers fold into one status mark, dead App Control shells archive themselves, and Settings → Archive manages archived items (#1408).
+- The Work filter panel is redesigned and filters by machine (#1409); the import hint stays readable at narrow widths (#1407).
+- Account lists show only working logins, one row per login, and a click picks the account for new chats (#1406).
+- Login Items detection, plain-language recovery, and a Hard reset for a background service that never starts (#1410).
+
+## [1.2.84] - 2026-09-30
+
+### Desktop
+
+- Project right-click menus on project tabs and the start page, including Clone locally (#1403).
+- Chrome-style project tab drag: reorder, tear off into a new window, and drop onto another ADE window (#1403).
+- Host-side project icons that follow a project to every machine; an icon replaced by a new upload is deleted (#1403).
+- The post-update dialog parses changelog pages that begin at a heading instead of flattening them into one paragraph.
+- The composer model chip shows the maker's real logo, a thinking level coloured like the footer reasoning control, and each provider's own permission modes (#1400). OpenCode chips keep their reasoning tiers without opening the model picker (#1402), and a Claude chip no longer draws the harness mark twice (#1401).
+- The `@` menu groups Models, Chats, Lanes, Files, and Terminals with the best match first and an in-place "+ N more" row; the `/` menu shares the same ranking across Commands, Skills, and MCP prompts (#1400).
+- Smart balance runs in the brain, skips signed-out logins, and scores new chats by the room an account must burn before it resets; ADE no longer refreshes a Claude OAuth token itself, and a usage-limited chat moves to the other account in place (#1404).
+- A PR pill in a chat header, session card, or lane divider opens that PR in the chat's own PR tool, with a compact switcher in the PR pane; a merged PR on a lane's branch history links back to the chat that was open when it was created (#1405).
+- The efficiency report replays every chat thread, with subagent weighting (ADE-159) (#1398).
+
+### SDK 0.5.1
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` move to 0.5.1 so `main` and npm agree. The delta is comments plus one autocomplete union member: the buffered-event category list no longer names `cto_voice`. No runtime behavior changed (#1397).
+
+### Runtime 1.2.84
+
+- The TUI uses the same `/` ranking and per-provider chip permission steps as the desktop (#1400), and the CLI resolves and serves host-side project icons (#1403).
+
 ## [1.2.83] - 2026-09-30
 
 ### SDK 0.5
@@ -2224,7 +2307,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.89...HEAD
+[1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89
+[1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88
+[1.2.87]: https://github.com/arul28/ADE/compare/v1.2.86...v1.2.87
+[1.2.86]: https://github.com/arul28/ADE/compare/v1.2.85...v1.2.86
+[1.2.85]: https://github.com/arul28/ADE/compare/v1.2.84...v1.2.85
+[1.2.84]: https://github.com/arul28/ADE/compare/v1.2.83...v1.2.84
 [1.2.83]: https://github.com/arul28/ADE/compare/v1.2.82...v1.2.83
 [1.2.82]: https://github.com/arul28/ADE/compare/v1.2.81...v1.2.82
 [1.2.81]: https://github.com/arul28/ADE/compare/v1.2.80...v1.2.81

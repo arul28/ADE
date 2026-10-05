@@ -242,6 +242,34 @@ ade --socket app-control launch --force \
   --text
 ```
 
+App Control runs a launch with no `--cwd` in the caller's lane worktree, and
+`ade app-control status` shows the `cwd` it used. Before, the default was the
+primary checkout, so a lane's agent started the primary checkout's app.
+
+### Each lane's dev app has its own user-data folder
+
+Electron keeps its single-instance lock in the app's user-data folder. When
+every dev app shared `ade-desktop-dev`, a second lane's app lost the lock and
+never opened a window. `dev:desktop` started from a lane worktree now uses
+`ade-desktop-dev-<lane>` and prints it as `user data :`. The primary checkout
+keeps `ade-desktop-dev`. An explicit `ADE_DESKTOP_USER_DATA_PATH` still wins.
+
+- A new lane folder copies `ade-state.json` from `ade-desktop-dev` once. Other
+  machine-local state (window layout, the welcome screen) starts fresh.
+- If two dev apps still share a folder, the second one prints which app holds
+  it and exits.
+- Each lane folder has a `.ade-dev-lane.json` marker with its worktree.
+  `dev:desktop` removes marked folders whose worktree is gone, or that went
+  unused for 30 days, each time it starts.
+- To see every folder with its size, run `npm run dev:clean-data`. Add `--yes`
+  to remove the stale ones. Folders made by hand before this change have no
+  marker. Nothing removes them by itself; add `--include-unmarked` to remove
+  the ones no app is using.
+
+A brain that `dev:desktop` starts exits when the launcher exits, even when the
+terminal closes without Ctrl+C. A brain from `npm run dev:runtime` is not tied
+to anything and still stops after 20 idle minutes.
+
 ### Test Mac Desktop in the dev app instead of an Alpha build
 
 Mac Desktop needs the native helper and two macOS grants, and both are usable

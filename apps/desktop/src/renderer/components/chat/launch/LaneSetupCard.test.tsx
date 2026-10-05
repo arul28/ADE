@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatLaunchSnapshot, ChatLaunchStage, OpenProjectBinding } from "../../../../shared/types";
 import {
+  CHAT_LAUNCH_HYDRATE_RETRY_MS,
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
   getChatLaunchEntry,
@@ -262,6 +263,69 @@ describe("LaneSetupTranscriptCard", () => {
     const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
     render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
     expect(screen.getByText("Lane setup failed")).toBeTruthy();
+  });
+
+  it("asks the chat's machine for a failed launch it does not hold", async () => {
+    const get = vi.fn(async () => null);
+    chatLaunchApi.get = get;
+    const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
+    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
+    // Without a provider the scope is the bound machine (no pin), so the
+    // request carries no binding — it still must go out.
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ launchId: "launch-1" }, undefined));
+  });
+
+  it("does not ask for a completed launch that only carries a warning", async () => {
+    const get = vi.fn(async () => null);
+    chatLaunchApi.get = get;
+    const warned = snapshot({
+      phase: "completed",
+      agentStarted: true,
+      sessionCreated: true,
+      stages: [stage("fetch", "warning", { detail: "used last-known origin/main" }), stage("checkout", "done"), stage("agent", "done")],
+    });
+    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(warned)} />);
+    await act(async () => { await Promise.resolve(); });
+    // A warning is not a failure; a completed launch has no Retry to offer, so
+    // it must not spend a cross-machine read.
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("renders a hydrated failed launch as the actionable card even after the agent line started", () => {
+    const failedLaunch = snapshot({
+      phase: "failed",
+      agentStarted: true,
+      sessionCreated: true,
+      stages: [stage("fetch", "done"), stage("checkout", "done"), stage("agent", "failed", { error: "auth failed" })],
+    });
+    applyChatLaunchSnapshot(BINDING, failedLaunch);
+    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
+    expect(screen.getByTestId("lane-setup-retry")).toBeTruthy();
+    expect(screen.getByTestId("lane-setup-delete")).toBeTruthy();
+  });
+
+  it("re-asks a failed launch after the cooldown when the host was offline", async () => {
+    vi.useFakeTimers();
+    try {
+      const get = vi.fn(async () => null);
+      chatLaunchApi.get = get;
+      const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
+      render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
+      expect(get).toHaveBeenCalledTimes(1);
+      // Let the first ask settle so its in-flight guard clears before the retry.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(CHAT_LAUNCH_HYDRATE_RETRY_MS + 1);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reads payload rows by stage key, with warnings and the template from the Template metric", () => {

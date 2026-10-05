@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runGit } from "../git/git";
+import { parseNameStatusRecords, runGit } from "../git/git";
 
 /**
  * What a turn changed, for the "Files changed" row at the end of it.
@@ -86,24 +86,7 @@ export function parseNumstatZ(stdout: string): TurnDiffFile[] {
  * the one the map is keyed by.
  */
 export function parseNameStatusZ(stdout: string): Map<string, string> {
-  const tokens = stdout.split("\0");
-  const statuses = new Map<string, string>();
-  for (let index = 0; index < tokens.length; index += 1) {
-    const code = tokens[index];
-    if (!code) continue;
-    const letter = code.trim().charAt(0);
-    if (!letter) continue;
-    const first = tokens[index + 1] ?? "";
-    index += 1;
-    if (letter === "R" || letter === "C") {
-      const destination = tokens[index + 1] ?? "";
-      index += 1;
-      if (destination) statuses.set(destination, letter);
-      continue;
-    }
-    if (first) statuses.set(first, letter);
-  }
-  return statuses;
+  return new Map(parseNameStatusRecords(stdout).map((record) => [record.path, record.letter]));
 }
 
 /**

@@ -226,6 +226,10 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
   it("scrubs action lane params while preserving unrelated query params", () => {
     expect(buildLaneActionClearedSearch("?action=batch&laneId=lane-a&laneIds=lane-a,lane-b&inspectorTab=work"))
       .toBe("?inspectorTab=work");
+    // The Work bulk menu's batch link also carries the dialog's opening tab; it
+    // must clear with the action so a back-navigation cannot reopen the dialog.
+    expect(buildLaneActionClearedSearch("?action=batch&laneIds=lane-a,lane-b&manageTab=delete&inspectorTab=work"))
+      .toBe("?inspectorTab=work");
   });
 });
 

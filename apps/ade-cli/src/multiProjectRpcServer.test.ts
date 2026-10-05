@@ -3443,3 +3443,286 @@ describe("providers.status cache TTL", () => {
     });
   });
 });
+
+describe("projects.setIcon / projects.removeIcon", () => {
+  const PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+  async function makeHandler() {
+    const context = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: context.registry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.add",
+      params: { rootPath: context.projectRoot, registrationSource: "test" },
+    });
+    return { ...context, handler };
+  }
+
+  it.each([
+    {
+      name: "an unregistered project root",
+      params: { rootPath: "/definitely/not/registered", fileName: "icon.png", dataBase64: PNG_BASE64 },
+      message: "no project is registered",
+    },
+    {
+      name: "an unsupported file extension",
+      params: { fileName: "icon.gif", dataBase64: PNG_BASE64 },
+      message: "ico, jpg, png, svg, or webp",
+    },
+    {
+      name: "a MIME type that disagrees with the extension",
+      params: { fileName: "icon.png", mimeType: "image/jpeg", dataBase64: PNG_BASE64 },
+      message: "does not match",
+    },
+    {
+      name: "payload that is not base64",
+      params: { fileName: "icon.png", dataBase64: "!!!not-base64!!!" },
+      message: "not valid base64",
+    },
+    {
+      name: "a missing payload",
+      params: { fileName: "icon.png" },
+      message: "requires dataBase64",
+    },
+    {
+      name: "a missing file name",
+      params: { dataBase64: PNG_BASE64 },
+      message: "requires fileName",
+    },
+    {
+      name: "an oversized payload",
+      params: {
+        fileName: "icon.png",
+        dataBase64: "A".repeat(Math.ceil((2 * 1024 * 1024) / 3) * 4 + 8),
+      },
+      message: "2 MB or smaller",
+    },
+  ])("rejects $name", async ({ params, message }) => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await expect(
+      handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "projects.setIcon",
+        params: { rootPath: projectRoot, ...params },
+      }),
+    ).rejects.toThrow(message);
+
+    handler.dispose();
+  });
+
+  it("imports a picked icon under the project and clears it again", async () => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.setIcon",
+      params: {
+        rootPath: projectRoot,
+        // A traversal-shaped name is reduced to its last segment.
+        fileName: "..\\..\\brand.png",
+        mimeType: "image/png",
+        dataBase64: PNG_BASE64,
+      },
+    });
+
+    // The host stores the upload under the project's imported-icon folder and
+    // points the project's local config at it. (`resolveIconBeforeDeadline`
+    // returns the empty fallback when the out-of-process resolver is
+    // unavailable on the test host, so assert the durable write, not the reply.)
+    const importedDir = path.join(projectRoot, ".ade", "project-icons");
+    const importedFiles = fs.readdirSync(importedDir);
+    expect(importedFiles).toHaveLength(1);
+    expect(importedFiles[0]).toMatch(/^brand-[a-f0-9]{12}\.png$/);
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8"))
+      .toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.removeIcon",
+      params: { rootPath: projectRoot },
+    });
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8")).toContain(
+      "iconPath: null",
+    );
+    expect(fs.existsSync(path.join(importedDir, importedFiles[0]!))).toBe(false);
+
+    handler.dispose();
+  });
+});
+
+describe("calls from another machine's agents", () => {
+  const AGENT_REMOTE_INIT = {
+    clientName: "ade-agent-remote",
+    clientInfo: { name: "ade-agent-remote", version: "test" },
+    identity: { role: "agent" },
+  };
+
+  function makeTarget(options: { peerDeviceId: string | null; initialize?: Record<string, unknown> }) {
+    const { projectRoot, registry } = createRegistry();
+    const project = registry.add(projectRoot);
+    const runtime = makeRuntime("target") as ReturnType<typeof makeRuntime> & {
+      agentChatService: Record<string, ReturnType<typeof vi.fn>>;
+    };
+    runtime.agentChatService = {
+      getSessionSummary: vi.fn(async () => null),
+      getChatTranscript: vi.fn(async (args: Record<string, unknown>) => ({
+        sessionId: args.sessionId,
+        entries: [],
+        totalEntries: 0,
+        truncated: false,
+      })),
+    };
+    const scopeRegistry = {
+      get: vi.fn(async () => ({ registryProjectId: project.projectId, record: project, runtime, dispose: vi.fn() })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      peerDeviceId: options.peerDeviceId,
+      agentMachineBridge: { call: vi.fn(), listMachines: vi.fn() },
+    });
+    const init = handler({
+      jsonrpc: "2.0",
+      id: 0,
+      method: "ade/initialize",
+      params: options.initialize ?? AGENT_REMOTE_INIT,
+    });
+    const readTranscript = (chatSessionId: string | null, id: number) => handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: project.projectId,
+        remoteCaller: { chatSessionId },
+        name: "run_ade_action",
+        arguments: { domain: "chat", action: "readTranscript", args: { sessionId: "target-chat" } },
+      },
+    });
+    return { handler, init, runtime, readTranscript, project };
+  }
+
+  it("attributes each call to its own chat on the paired machine, and ignores the claim from anyone else", async () => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    await remote.readTranscript("chat-1", 1);
+    await remote.readTranscript("chat-2", 2);
+    const callers = remote.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(callers).toEqual(expect.arrayContaining(["remote:device-a:chat-1", "remote:device-a:chat-2"]));
+    expect(remote.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "target-chat" }),
+    );
+    remote.handler.dispose();
+
+    // A desktop over the same paired channel cannot borrow the claim to pass
+    // as another machine's chat.
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await desktop.readTranscript("chat-1", 1);
+    const desktopCallers = desktop.runtime.agentChatService.getSessionSummary.mock.calls.map((call) => call[0]);
+    expect(desktopCallers.some((caller) => String(caller).startsWith("remote:"))).toBe(false);
+    desktop.handler.dispose();
+  });
+
+  it("makes a remote caller the parent of the child it starts here, keeps its token, and refuses any other parent", async () => {
+    const { childWakeToken, configureExternalChatStore, externalChatContext } = await import(
+      "../../desktop/src/main/services/chat/externalChats"
+    );
+    configureExternalChatStore(null);
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    const createSession = vi.fn(async (args: Record<string, unknown>) => ({ id: "child-1", ...args }));
+    remote.runtime.agentChatService.createSession = createSession;
+    await remote.init;
+    const create = (parent: string, id: number) => remote.handler({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: {
+        projectId: remote.project.projectId,
+        remoteCaller: {
+          chatSessionId: "chat-1",
+          machineKey: "machine-a",
+          machineName: "MacBook Pro",
+          permissionLevel: "auto-edit",
+          wakeToken: "token-for-child-1",
+        },
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "createSession",
+          args: { provider: "claude", model: "anthropic/claude-opus-5", orchestrationParentSessionId: parent, spawnKind: "subagent" },
+        },
+      },
+    });
+
+    await create("chat-1", 1);
+    // A chat here (or another machine's) can't be made the one a remote
+    // caller's child reports to.
+    await expect(create("someone-else", 2)).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+
+    expect(createSession.mock.calls.map((call) => call[0]?.orchestrationParentSessionId)).toEqual([
+      "remote:device-a:chat-1",
+    ]);
+    expect(externalChatContext("remote:device-a:chat-1")).toMatchObject({
+      machineKey: "machine-a",
+      machineName: "MacBook Pro",
+      permissionLevel: "auto-edit",
+    });
+    expect(childWakeToken("child-1")).toBe("token-for-child-1");
+    remote.handler.dispose();
+  });
+
+  it("refuses another machine's agents without a paired peer to attribute them to", async () => {
+    const local = makeTarget({ peerDeviceId: null });
+    await local.init;
+    await expect(local.readTranscript("chat-1", 1)).rejects.toThrow(/must arrive over a paired connection/);
+    expect(local.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+    local.handler.dispose();
+  });
+
+  it.each([
+    ["sync.getStatus", false],
+    ["account.call", false],
+    ["projects.add", false],
+    ["machine.updateAndRestart", false],
+    ["machines.call", false],
+    ["projects.list", true],
+  ])("lets another machine's agents call machine method %s: %s", async (method, allowed) => {
+    const remote = makeTarget({ peerDeviceId: "device-a" });
+    await remote.init;
+    const call = remote.handler({ jsonrpc: "2.0", id: 1, method, params: { action: "status" } });
+    if (allowed) await expect(call).resolves.toBeDefined();
+    else await expect(call).rejects.toThrow(/isn't available to agents on another machine/);
+    remote.handler.dispose();
+  });
+
+  it("does not relay a request that came from another machine on to a third", async () => {
+    const desktop = makeTarget({
+      peerDeviceId: "device-a",
+      initialize: { clientName: "ade-desktop-remote", identity: { role: "cto" } },
+    });
+    await desktop.init;
+    await expect(desktop.handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "machines.call",
+      params: { machine: "Mac mini", scope: { kind: "machine" }, request: { method: "projects.list" } },
+    })).rejects.toThrow(/can't be relayed to a third one/);
+    desktop.handler.dispose();
+  });
+});

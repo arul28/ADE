@@ -11,6 +11,7 @@ import {
   type AutoUpdatePreferences,
   type AutoUpdateSnapshot,
   type RecentlyInstalledUpdate,
+  type UpdateInterruptedChat,
   type UpdateTransactionResult,
   type UpdateTransactionStepId,
 } from "../../../shared/types";
@@ -119,7 +120,13 @@ type CreateAutoUpdateServiceArgs = {
   currentVersion: string;
   globalStatePath: string;
   updater?: AutoUpdaterLike;
-  beforeQuitAndInstall?: () => void | Promise<void>;
+  /**
+   * Runs immediately before the native install handoff. `resumeChats` is the
+   * user's install-dialog choice. Returning the chats it armed for post-restart
+   * resume lets the service persist them alongside the pending install, so the
+   * launch that lands the update can name what came back.
+   */
+  beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
@@ -350,6 +357,9 @@ function reconcilePersistedUpdateState(args: {
         releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
           ?? pendingInstall.releaseNotesUrl,
         githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion, args.releaseRepository),
+        ...(pendingInstall.resumedChats && pendingInstall.resumedChats.length > 0
+          ? { resumedChats: pendingInstall.resumedChats }
+          : {}),
       };
       cacheCleanupReason = "installed";
       nextState.failedInstallAttempts = undefined;
@@ -1747,7 +1757,7 @@ export function createAutoUpdateService({
     });
   }
 
-  async function quitAndInstall(): Promise<boolean> {
+  async function quitAndInstall(resumeChats = false): Promise<boolean> {
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -1796,15 +1806,17 @@ export function createAutoUpdateService({
       if (!preflightSpace("install", installTargetPath)) {
         return await abortInstall("install_preflight_failed", installReadySnapshot);
       }
+      let resumedChats: UpdateInterruptedChat[] = [];
       try {
         const prepareResult = await waitForInstallStep(
-          Promise.resolve(beforeQuitAndInstall?.()),
+          Promise.resolve(beforeQuitAndInstall?.(resumeChats)),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);
         }
+        resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
       } catch (error) {
         const message = formatErrorMessage(error);
         logger.warn("autoUpdate.prepare_quit_and_install_failed", {
@@ -1820,6 +1832,7 @@ export function createAutoUpdateService({
           targetVersion: snapshot.version ?? installVersion,
           releaseNotesUrl: snapshot.releaseNotesUrl,
           requestedAt: now(),
+          ...(resumedChats.length > 0 ? { resumedChats } : {}),
         },
         recentlyInstalledUpdate: undefined,
         restoreUpdateWorkspaceOnLaunch: true,

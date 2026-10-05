@@ -1,6 +1,6 @@
 import { app } from "electron";
 import net from "node:net";
-import type { Client } from "ssh2";
+import type { Client, ClientChannel } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -46,6 +46,7 @@ import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
+import { buildForwardFailureResponse, looksLikeHttpRequest, loopbackDialFailureReason } from "./forwardFailurePage";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
 import {
   resolveRemoteAttachmentUploadRoute,
@@ -156,6 +157,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
+  ["pr.land", 120_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
   // The remote daemon answers Refresh by running the same isolated ledger
@@ -212,6 +215,8 @@ const MACHINE_PROJECT_METHOD_CAPABILITY = new Map<string, RemoteRuntimeMachinePr
   ["projects.create", "create"],
   ["projects.clone", "clone"],
   ["projects.listMyGitHubRepos", "listMyGitHubRepos"],
+  ["projects.setIcon", "setIcon"],
+  ["projects.removeIcon", "setIcon"],
 ]);
 
 const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapability, string> = {
@@ -223,6 +228,7 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
   create: "creating remote projects",
   clone: "cloning remote projects",
   listMyGitHubRepos: "listing GitHub repositories on the remote machine",
+  setIcon: "changing project icons",
 };
 
 function shouldRetryRemoteRuntimeAction(
@@ -246,6 +252,14 @@ function remoteRuntimeActionCallOptions(
 function normalizeForwardRemoteHost(value: string | null | undefined): string {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || "127.0.0.1";
+}
+
+/** How long a refused SSH forward waits for the browser's first bytes. */
+const SSH_FAILURE_PAGE_WAIT_MS = 2_000;
+
+function isIpv4LoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost";
 }
 
 function normalizeForwardPort(value: unknown): number {
@@ -751,14 +765,49 @@ export class RemoteConnectionPool {
           destroyAcceptedSocket(socket, new Error("The active SSH transport is unavailable."));
           return;
         }
-        activeEntry.ssh.forwardOut(
-          LOCAL_FORWARD_HOST,
-          0,
-          remoteHost,
-          remotePort,
-          (error, stream) => {
+        const ssh = activeEntry.ssh;
+        // A dev server bound only to `[::1]` (Node resolves `localhost` to
+        // IPv6 first on macOS) refuses the IPv4 dial. Try the other loopback
+        // before giving up, the same way the paired transport does.
+        const hosts = isIpv4LoopbackHost(remoteHost) ? [remoteHost, "::1"] : [remoteHost];
+        const dial = (index: number): void => {
+          ssh.forwardOut(LOCAL_FORWARD_HOST, 0, hosts[index]!, remotePort, (error, stream: ClientChannel) => {
+            if (error && index + 1 < hosts.length) {
+              dial(index + 1);
+              return;
+            }
             if (error) {
-              destroyAcceptedSocket(socket, error);
+              // The browser's request is buffered on this paused socket, or
+              // about to be; when it is HTTP, answer with a readable page
+              // rather than an empty response.
+              const answer = (firstBytes: Buffer | null): void => {
+                if (looksLikeHttpRequest(firstBytes)) {
+                  socket.end(buildForwardFailureResponse({
+                    remotePort,
+                    machineLabel: activeEntry.result.target.name?.trim() || null,
+                    reason: loopbackDialFailureReason(error, remotePort),
+                  }));
+                  return;
+                }
+                destroyAcceptedSocket(socket, error);
+              };
+              const buffered = socket.read() as Buffer | null;
+              if (buffered || socket.destroyed) {
+                answer(buffered);
+                return;
+              }
+              // A client that has not spoken yet gets as long as the paired
+              // transport gives it, then a plain close.
+              const timer = setTimeout(() => {
+                socket.off("readable", onReadable);
+                answer(null);
+              }, SSH_FAILURE_PAGE_WAIT_MS);
+              timer.unref?.();
+              const onReadable = (): void => {
+                clearTimeout(timer);
+                answer(socket.read() as Buffer | null);
+              };
+              socket.once("readable", onReadable);
               return;
             }
             const closeBoth = () => {
@@ -774,8 +823,9 @@ export class RemoteConnectionPool {
             socket.once("close", closeBoth);
             stream.once("close", closeBoth);
             socket.pipe(stream).pipe(socket);
-          },
-        );
+          });
+        };
+        dial(0);
       });
 
       return await new Promise<LocalPortForwardEntry>((resolve, reject) => {

@@ -38,7 +38,8 @@ import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
-import type { AdapterInfra, AdeNamespace } from "./types";
+import { createProviderAccountsNamespace } from "./providerAccounts";
+import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
@@ -69,6 +70,7 @@ export type MiscNamespaces = {
   iosSimulator: AdeNamespace<"iosSimulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
+  providerInstances: AdeNamespace<"providerInstances">;
   automations: AdeNamespace<"automations">;
 };
 
@@ -81,6 +83,7 @@ import type {
   CursorSdkAuthEvent,
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
+  AdeUsagePriceOverrides,
 } from "../../../shared/types";
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
@@ -816,6 +819,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
+    providerInstances: createProviderAccountsNamespace(call),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
 }
@@ -840,6 +844,9 @@ function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
     // show`; a desktop that has the chat open does.
     onShowRequest: () => () => {},
     acknowledgeShow: async () => ({ ok: false }),
+    // The web client has no browser to light up.
+    listDevServers: async () => ({ servers: [] }),
+    onDevServer: () => () => {},
   } as AdeNamespace<"workTools">;
 }
 
@@ -876,14 +883,6 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
   };
 }
 
-// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
-// value or a lazy resolver that may throw for calls with no offline shape.
-type MiscCall = <T>(
-  action: string,
-  args: unknown,
-  fallback: T | (() => T | Promise<T>),
-  idempotent?: boolean,
-) => Promise<T>;
 
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing
@@ -1136,6 +1135,13 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // reaches the host instead of replaying a cached read, and so a failure
     // surfaces rather than resolving to a fake null snapshot.
     refresh: () => call("usage.refreshQuota", {}, null, false),
+    getCostBreakdown: (args) => call("usage.getCostBreakdown", args, null),
+    getModelDetail: (args) => call("usage.getModelDetail", args, null),
+    getModelPriceOverrides: () => call("usage.getModelPriceOverrides", {}, null),
+    // A save writes the host's price list: never replayed from a cached read.
+    setModelPriceOverride: (args) => call<AdeUsagePriceOverrides>("usage.setModelPriceOverride", args, () => {
+      throw new Error("This host cannot save model prices yet.");
+    }, false),
     // refreshHistory is deliberately NOT mapped onto usage.refreshQuota: the
     // host keeps the cost-log rescan decoupled from quota polling, so aliasing
     // them would do unrelated work and still leave the stats stale. It needs

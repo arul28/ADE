@@ -54,6 +54,7 @@ import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
+import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
@@ -263,6 +264,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     isWorkAdjacentRoute,
     lanes,
     navigate,
+  });
+  const openArchiveSettings = useCallback(() => navigate(ARCHIVE_SETTINGS_ROUTE), [navigate]);
+  useArchiveReminderBanner({
+    projectRoot: project?.rootPath ?? null,
+    enabled: !showWelcome,
+    onReview: openArchiveSettings,
   });
   const isLanesRouteRef = useRef(isLanesRoute);
 
@@ -687,7 +694,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
       if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
-      refreshAiStatus({ force: true });
+      refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
     return () => {

@@ -143,6 +143,8 @@ func laneIconSystemName(_ icon: LaneIcon) -> String {
   case .bolt: return "bolt.fill"
   case .shield: return "shield.fill"
   case .tag: return "tag.fill"
+  // An icon a newer host added: the plain lane mark, not a blank glyph.
+  case .unknown: return "arrow.branch"
   }
 }
 

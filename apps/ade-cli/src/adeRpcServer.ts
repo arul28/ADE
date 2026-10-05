@@ -1,8 +1,20 @@
+import {
+  clampGenericPermissionMode,
+  permissionFieldsForLevel,
+  permissionLevelForDroid,
+  permissionLevelRank,
+  type PermissionLevel,
+} from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import {
+  createRemoteCallerCaptures,
+  type RemoteCallerCaptures,
+} from "./services/proof/remoteCallerCaptures";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
@@ -92,7 +104,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -111,7 +123,8 @@ import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/
 import {
   ctoCallerInitializeParams,
   DESKTOP_CLIENT_NAMES,
-  isCtoRemoteClientName,
+  isRemoteBrainCallerClientName,
+  parseForeignCallerSessionId,
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -236,6 +249,20 @@ type SessionState = {
 };
 
 /**
+ * Thread comments are the user's unsent review of an agent's reply. Only a
+ * user client may read or change them, or send them (`includeThreadComments`);
+ * an agent that could would be editing what the user is about to tell it.
+ */
+const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
+const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
+
+function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
+  if (!("includeThreadComments" in args)) return args;
+  const { includeThreadComments: _notTheUser, ...rest } = args;
+  return rest;
+}
+
+/**
  * Whether the caller is a person's client rather than an agent.
  *
  * A CTO acting through its action caller (`CTO_REMOTE_CLIENT_NAME`, from
@@ -245,7 +272,7 @@ type SessionState = {
  * request, or pass any other user-client gate.
  */
 function isUserClientSession(session: SessionState): boolean {
-  return !callerIdentityIsAgent(session.identity) && !isCtoRemoteClientName(session.clientName);
+  return !callerIdentityIsAgent(session.identity) && !isRemoteBrainCallerClientName(session.clientName);
 }
 
 /**
@@ -1151,6 +1178,7 @@ const TOOL_SPECS: ToolSpec[] = [
         body: { type: "string" },
         draft: { type: "boolean", default: false },
         closeLinearIssueOnMerge: { type: "boolean", default: true },
+        sessionId: { type: "string", minLength: 1 },
       }
     }
   },
@@ -1491,6 +1519,7 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 ];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "read_remote_caller_capture",
   "list_ade_actions",
   "get_ade_action_status",
   "stream_events",
@@ -1870,14 +1899,15 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
 }
 
 /**
- * The brain's environment identity, unless the client disclaimed an identity
- * with a synthetic `<client>:<pid>` caller id. A dev brain started from an
- * agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it to an
- * unbound caller filed that caller's proof in the wrong chat and disabled its
- * lane inference.
+ * The brain's environment identity, unless the caller is not one of this
+ * brain's chats: a synthetic `<client>:<pid>` caller id (a process), or a
+ * caller from another machine (`remote:<device>:<chat>`). A dev brain started
+ * from an agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it
+ * to such a caller filed its proof in the wrong chat, disabled its lane
+ * inference, and would attribute another machine's calls to that agent.
  */
 function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
-  return isSyntheticCallerId(callerId)
+  return isSyntheticCallerId(callerId) || parseForeignCallerSessionId(callerId) !== null
     ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
     : envContext;
 }
@@ -2685,17 +2715,33 @@ export async function resolveIngestProvenance(
   };
 }
 
+const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
+
+function remoteCallerCapturesFor(runtime: AdeRuntime): RemoteCallerCaptures {
+  let registry = remoteCallerCaptureRegistries.get(runtime);
+  if (!registry) {
+    registry = createRemoteCallerCaptures();
+    remoteCallerCaptureRegistries.set(runtime, registry);
+  }
+  return registry;
+}
+
 /** Remember the file a capture action just wrote. Never fails the action. */
 async function rememberCaptureActionResult(
   runtime: AdeRuntime,
   domain: string,
   action: string,
   result: unknown,
+  session?: SessionState,
 ): Promise<void> {
   const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
   if (!capture || !isRecord(result)) return;
   const filePath = asOptionalTrimmedString(result[capture.field]);
   if (!filePath) return;
+  const foreignOwner = asOptionalTrimmedString(session?.identity.chatSessionId);
+  if (foreignOwner && parseForeignCallerSessionId(foreignOwner)) {
+    remoteCallerCapturesFor(runtime).remember(filePath, foreignOwner);
+  }
   try {
     await captureRegistryFor(runtime).remember(filePath, capture.source);
   } catch {
@@ -3203,6 +3249,8 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // Continuing on another account spends a turn on a different login. A
   // session-bound agent may only aim it at its own row.
   "continueUsageLimitOnAlternate",
+  // Switching accounts changes which login pays for a chat's next turn.
+  "switchAccount",
   "requestSessionAttention",
   "setSessionActivity",
   "setSessionStatusNote",
@@ -3215,10 +3263,49 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "stopTask",
+  // Restarting tears down the target's runtime (and stops its turn with
+  // stopFirst); holding background work arms wakes on its terminals. Both act
+  // on a chat the way `interrupt` does, so a bound agent aims them at itself.
+  "restartSession",
+  "holdBackgroundWork",
   "restoreCancelledQueue",
   "setSpawnKind",
   "dismissSubagentTakeoverPrompt",
 ]);
+
+/**
+ * Chat actions whose caller the runtime stamps as `runtimeActor`: everything
+ * an agent can use to create a chat, change its permissions, or start a CLI
+ * agent. `startLaunch` carries its create fields under `chat.create`.
+ */
+const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
+  "createSession",
+  "updateSession",
+  "handoffSession",
+  "launchHeadless",
+  "startLaunch",
+  "launchCli",
+]);
+
+/**
+ * `args` with the runtime's `actor` in place of anything the caller sent:
+ * top-level for most actions, under `chat.create` for `startLaunch`. A null
+ * actor (one of the user's own clients) removes any caller-sent value.
+ */
+function stampChatRuntimeActor(
+  action: string,
+  args: Record<string, unknown>,
+  actor: { kind: "cto" } | { kind: "agent"; chatSessionId: string | null } | null,
+): Record<string, unknown> {
+  const stamp = (target: Record<string, unknown>): Record<string, unknown> => {
+    const { runtimeActor: _callerValue, ...rest } = target;
+    return actor ? { ...rest, runtimeActor: actor } : rest;
+  };
+  if (action !== "startLaunch") return stamp(args);
+  const chat = isRecord(args.chat) ? args.chat : null;
+  const create = chat && isRecord(chat.create) ? chat.create : null;
+  return chat && create ? { ...args, chat: { ...chat, create: stamp(create) } } : args;
+}
 
 function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): boolean {
   return chatArgs.spawnKind === "subagent"
@@ -3234,6 +3321,31 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
+  if (action === "armWait") {
+    // Provenance on the prompt a send wait delivers is the host's to derive,
+    // never a caller's to assert.
+    const { sendMetadata: _callerProvenance, ...waitArgs } = chatArgs;
+    if (isUnboundAdeCliCaller(session)) return waitArgs;
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    const sendTo = asOptionalTrimmedString(waitArgs.sendToSessionId);
+    if (sendTo) {
+      // A send wait ("start B after A") wakes nobody; its prompt reaches B
+      // marked as from this agent, exactly as a direct send would be.
+      const derived = withTrustedAgentProvenance(runtime, session, { sessionId: sendTo }).metadata;
+      return {
+        ...waitArgs,
+        callerSessionId: callerChatSessionId ?? null,
+        ...(isRecord(derived) ? { sendMetadata: derived } : {}),
+      };
+    }
+    // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
+    // ask to be woken itself.
+    const requestedCaller = asOptionalTrimmedString(waitArgs.callerSessionId);
+    if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
+      chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
+    }
+    return { ...waitArgs, callerSessionId: callerChatSessionId };
+  }
   const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
   if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) {
@@ -3337,7 +3449,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   // Headless machines cannot mint an actor capability: the issuer asks the
   // desktop bridge for one, and on a box running only `ade serve` that socket
   // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // call before it ever reaches the forwarder's `route`, so the whole remote
   // forwarding path (publish `built_in_browser_remote_request`, wait for a
   // pinned desktop to ack) is unreachable. Only the three "put this URL on a
   // screen" methods are exempt — they are exactly the forwardable set. This is
@@ -3456,6 +3568,14 @@ function scopeWorkToolsAdeActionArgs(
       scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
     }
     return workToolsArgs;
+  }
+  if (action === "listDevServers") {
+    // Same rule as getLaneState: an agent sees its own lane's servers, and an
+    // agent with no resolvable lane sees none.
+    if (isUserClient) return workToolsArgs;
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    if (!sessionLaneId) scopeAccessDenied("work_tools reads need a resolvable lane for this caller", method);
+    return { ...workToolsArgs, laneId: sessionLaneId };
   }
   if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
@@ -4340,6 +4460,12 @@ async function runCtoOperatorBridgeTool(
 ): Promise<unknown> {
   const agentChatService = requireAgentChatService(runtime);
   const defaultLaneId = (resolveRequestedOrSessionLaneId(runtime, session, toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
+  // The same caller stamp `run_ade_action` puts on chat creates and updates:
+  // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
+  // only when a create or update actually runs.
+  const bridgeActor = async (): Promise<AgentChatRuntimeActor> => (await callerIsTrustedCto(runtime, session)
+    ? { kind: "cto" }
+    : { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null });
   const ctoIdentity = runtime.ctoStateService.getIdentity();
   // Null until the user picks a model the CTO can steer live; the Claude/Codex
   // fallback below already covers "nothing chosen yet".
@@ -4367,8 +4493,8 @@ async function runCtoOperatorBridgeTool(
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
-    createChat: agentChatService.createSession,
-    updateChatSession: agentChatService.updateSession,
+    createChat: async (args) => agentChatService.createSession({ ...args, runtimeActor: await bridgeActor() }),
+    updateChatSession: async (args) => agentChatService.updateSession({ ...args, runtimeActor: await bridgeActor() }),
     sendChatMessage: agentChatService.sendMessage,
     interruptChat: async (args) => {
       await agentChatService.interrupt(args);
@@ -4453,6 +4579,41 @@ function sha256Text(value: string): string {
 }
 
 type SpawnPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
+
+/**
+ * True when the caller is the CTO for the permission ceiling: the CTO role,
+ * and either no chat of its own or a chat that is the CTO thread. A run, step
+ * or attempt agent that only inherited the CTO role from its environment is
+ * an agent here.
+ */
+async function callerIsTrustedCto(runtime: AdeRuntime, session: SessionState): Promise<boolean> {
+  if (!callerHasRoleAtLeast(session.identity.role, "cto")) return false;
+  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!chatSessionId) return !session.identity.runId && !session.identity.stepId && !session.identity.attemptId;
+  try {
+    const summary = await runtime.agentChatService?.getSessionSummary?.(chatSessionId);
+    return summary?.identityKey === "cto";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The permission ceiling for a CLI child an agent starts: the agent's own chat
+ * level and, for a parented child, its parent's. Null for the user's clients
+ * and the CTO, who may start a child at any level.
+ */
+async function agentCliPermissionCeiling(
+  runtime: AdeRuntime,
+  session: SessionState,
+  parentSessionId: string | null,
+): Promise<PermissionLevel | null> {
+  if (isUserClientSession(session) || await callerIsTrustedCto(runtime, session)) return null;
+  return runtime.agentChatService?.getPermissionCeiling?.({
+    parentSessionId,
+    actor: { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null },
+  }) ?? null;
+}
 
 function parseSpawnPermissionMode(value: unknown): SpawnPermissionMode {
   const normalized = asTrimmedString(value).toLowerCase();
@@ -5157,7 +5318,7 @@ async function runTool(args: {
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
-    const ctoActionCaller = isCtoRemoteClientName(session.clientName);
+    const remoteBrainCaller = isRemoteBrainCallerClientName(session.clientName);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
@@ -5165,7 +5326,7 @@ async function runTool(args: {
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
-        .filter((action) => !ctoActionCaller || !isSecretBearingAdeAction(entry, action))
+        .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
           return {
@@ -5215,12 +5376,13 @@ async function runTool(args: {
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
-    if (isCtoRemoteClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
-      // The CTO's result lands in a model transcript. Its own tool refuses
-      // these first; this holds for a CTO on any ADE version.
+    if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
+      // A caller from another machine's brain is a model whose result lands in
+      // a transcript. The CTO's own tool refuses these first; this holds for
+      // any caller version.
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${domain}.${action} returns secrets, so the CTO can't run it. Ask the user to read it in Settings.`,
+        `${domain}.${action} returns secrets, so it can't run from another machine. Ask the user to read it in Settings.`,
       );
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
@@ -5252,11 +5414,35 @@ async function runTool(args: {
         `Action 'chat.${action}' requires object arguments; pass them with --input-json.`,
       );
     }
-    const rawObjectArgs = stampedChatAction
+    const agentCaller = !isUserClientSession(session);
+    if (domain === "chat" && agentCaller && THREAD_COMMENT_ACTIONS.has(action)) {
+      scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
+    }
+    // Stripped here, at the source, because the chat scoping below rebuilds
+    // its arguments from these raw ones.
+    const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
-      : safeObject(toolArgs.args);
+      : domain === "chat" && action === "armWait"
+        // A send wait's provenance is derived by the host (bound agents, in
+        // the chat scoping below) and never accepted from any caller.
+        ? (({ sendMetadata: _callerProvenance, ...waitArgs }) => waitArgs)(safeObject(toolArgs.args))
+        : safeObject(toolArgs.args);
+    // `inputOrigin` names the desktop a person is talking from, and show
+    // requests follow it. Only a user client may say where that person is.
+    const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs
+      ? (({ inputOrigin: _notADesktop, ...agentArgs }) => agentArgs)(providedObjectArgs)
+      : providedObjectArgs;
+    const rawObjectArgs = domain === "chat" && agentCaller && THREAD_COMMENT_SEND_ACTIONS.has(action)
+      ? withoutIncludeThreadComments(baseObjectArgs)
+      : baseObjectArgs;
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
+    // `terminal.write { fromUser }` claims an agent's shell for the person (it is
+    // then never auto-archived). Only a user client may say that.
+    if (domain === "terminal" && action === "write" && "fromUser" in scopedObjectArgs && !isUserClientSession(session)) {
+      const { fromUser: _notTheUser, ...agentWrite } = scopedObjectArgs;
+      scopedObjectArgs = agentWrite;
+    }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */
@@ -5371,17 +5557,22 @@ async function runTool(args: {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
     } else if (!callerIsCto && domain === "terminal") {
+      // Base the scope on `scopedObjectArgs`, not `rawObjectArgs`: the
+      // `terminal.write` `fromUser` strip above already removed a claim a
+      // non-user caller may not make, and re-reading the raw args would put it
+      // back.
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
       );
     } else if (
       !callerIsCto
       && domain === "chat"
       && (
         SCOPED_CHAT_ACTIONS.has(action)
+        || action === "armWait"
         || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
       )
     ) {
@@ -5651,6 +5842,39 @@ async function runTool(args: {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
     }
+    if (domain === "chat" && RUNTIME_ACTOR_CHAT_ACTIONS.has(action)) {
+      // Only the runtime says who is calling (`AgentChatRuntimeActor`): any
+      // value the caller sent is dropped. An agent's create, update or fork is
+      // capped at its own chat's permission level; the user's clients are not.
+      // Positional args would skip the stamp, so a non-user caller must send
+      // one object.
+      if (!isUserClient && (argsList || hasScalarArg)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `run_ade_action:chat.${action} takes one object argument.`,
+        );
+      }
+      const actor = isUserClient
+        ? null
+        : await callerIsTrustedCto(runtime, session)
+          ? { kind: "cto" as const }
+          : { kind: "agent" as const, chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
+      scopedObjectArgs = stampChatRuntimeActor(action, scopedObjectArgs, actor);
+      if (action === "launchCli" && actor?.kind === "agent") {
+        // A terminal agent has no chat record to clamp later, so its
+        // permission word (full-auto when omitted) is capped here.
+        const ceiling = await agentCliPermissionCeiling(runtime, session, null);
+        if (ceiling) {
+          scopedObjectArgs = {
+            ...scopedObjectArgs,
+            permissionMode: clampGenericPermissionMode(
+              asOptionalTrimmedString(scopedObjectArgs.permissionMode) ?? "full-auto",
+              ceiling,
+            ),
+          };
+        }
+      }
+    }
     if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
       // Same remote-first default as the `create_lane` tool and the sync
       // layer's `lanes.create`: a base-less `ade actions run lane.create`
@@ -5696,7 +5920,7 @@ async function runTool(args: {
     if (domain === "built_in_browser" && (action === "startRecording" || action === "stopRecording")) {
       noteBrowserRecording(session, action === "startRecording");
     }
-    await rememberCaptureActionResult(runtime, domain, action, result);
+    await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
@@ -5782,9 +6006,9 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const requestedChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
     const provider = parseCliSessionProvider(toolArgs.provider);
-    const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
-    const droidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
-    if (droidPermissionMode && provider !== "droid") {
+    const requestedPermissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    const requestedDroidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
+    if (requestedDroidPermissionMode && provider !== "droid") {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
         "droidPermissionMode is only supported for Droid CLI sessions.",
@@ -5803,6 +6027,15 @@ async function runTool(args: {
         ptyAccessDenied("start_cli_session");
       }
     }
+    // An agent's CLI child never runs above the agent, or above its parent.
+    const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
+    const permissionMode = cliCeiling
+      ? clampGenericPermissionMode(requestedPermissionMode, cliCeiling) as AgentChatPermissionMode
+      : requestedPermissionMode;
+    const droidPermissionMode = cliCeiling && requestedDroidPermissionMode
+      && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
+      ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
+      : requestedDroidPermissionMode;
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     const instanceId = toolArgs.instanceId == null
       ? null
@@ -6565,6 +6798,26 @@ async function runTool(args: {
     });
   }
 
+  if (name === "read_remote_caller_capture") {
+    // A caller on another machine reading back a still or video one of ADE's
+    // capture actions just wrote here for it, to file it in its own drawer.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const requested = asOptionalTrimmedString(toolArgs.path);
+    const chunk = requested
+      ? remoteCallerCapturesFor(runtime).readChunk(owner, requested, asNumber(toolArgs.offset, 0))
+      : null;
+    if (!chunk) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "That file is not a capture this machine made for you in the last 15 minutes.",
+      );
+    }
+    return chunk;
+  }
+
   if (name === "ingest_computer_use_artifacts") {
     const backendStyle = assertComputerUseBackendStyle(toolArgs.backendStyle, "backendStyle");
     const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
@@ -7223,11 +7476,18 @@ async function runTool(args: {
     if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
     if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
+    // The authenticated chat identity is authoritative: an agent must not be
+    // able to forge `sessionId` and link this PR to an unrelated chat. Only
+    // fall back to the tool argument when the caller has no chat identity.
+    const sessionId = asOptionalTrimmedString(session.identity.chatSessionId)
+      ?? asOptionalTrimmedString(toolArgs.sessionId);
     const pr = await prSvc.createFromLane({
       laneId,
       title,
       body,
       draft,
+      source: "agent",
+      ...(sessionId ? { sessionId } : {}),
       ...(baseBranch ? { baseBranch } : {}),
       ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
     });
@@ -7387,7 +7647,11 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
+    const permissionMode = spawnCeiling
+      ? clampGenericPermissionMode(requestedSpawnPermissionMode, spawnCeiling) as SpawnPermissionMode
+      : requestedSpawnPermissionMode;
     if (provider === "claude" && permissionMode === "config-toml") {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,

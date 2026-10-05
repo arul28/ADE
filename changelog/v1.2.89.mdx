@@ -1,0 +1,25 @@
+---
+title: "v1.2.89"
+description: "Release notes for ADE v1.2.89 - October 4, 2026"
+---
+
+ADE 1.2.89 lets agents and the `ade` CLI work across all your machines, makes the ADE browser follow a remote machine's localhost, and gives the Usage page accurate costs.
+
+## Machines
+
+- Agents and the `ade` CLI can see and act on chats, lanes, and projects on your other machines with `--machine` and `--all-machines`, and a child chat started in another project now wakes its parent (#1451).
+- The ADE browser opens a remote machine's `localhost` links on that machine, reaches dev servers that listen only on `::1`, and shows dev servers from every connected machine (#1452).
+- On iOS, manage the AI accounts of each connected machine, not only the primary one (#1447).
+
+## Usage and cost
+
+- Costs now price Codex Fast and Ultrafast and Claude fast mode at their own rates, include chats that ran on a second Claude or Codex account, and split spend by type, speed, chat, lane, and account (#1450).
+- Each Claude turn now records its own cost. Before, a turn recorded the running total of the whole session (#1453).
+- Subagent cards and a subagent's thread now show the subagent's own model and effort (#1453).
+- The model router's shadow log records each subagent's real effort and a task kind read from its brief, so the router's data can be trusted (#1453).
+
+## Work
+
+- Lane status and a Fold control for busy lanes in Work, and clearer quiet shelves on iOS (#1448).
+- A lane that comes back from the Working shelf no longer jumps to the top in Manual sort (#1449).
+- Diff views show a lane's committed work, and mermaid diagrams render in chat (#1450).

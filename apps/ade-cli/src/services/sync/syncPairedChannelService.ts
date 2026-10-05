@@ -1,4 +1,5 @@
 import net from "node:net";
+import { loopbackDialFailureReason } from "../../../../desktop/src/main/services/remoteRuntime/forwardFailurePage";
 import type {
   PairedRuntimeForwardClosePayload,
   PairedRuntimeForwardDataPayload,
@@ -46,7 +47,19 @@ export type SyncRuntimeRpcHandler = JsonRpcHandler & {
   ) => void;
 };
 
-export type SyncRuntimeRpcHandlerFactory = () => SyncRuntimeRpcHandler;
+/**
+ * What the host knows about the peer that opened a runtime channel. Only facts
+ * the host itself authenticated belong here — a field the peer could assert in
+ * its own `ade/initialize` would be no better than that claim.
+ */
+export type SyncRuntimeRpcHandlerContext = {
+  /** The device id of the paired record this peer authenticated with. */
+  peerDeviceId: string | null;
+};
+
+export type SyncRuntimeRpcHandlerFactory = (
+  context?: SyncRuntimeRpcHandlerContext,
+) => SyncRuntimeRpcHandler;
 
 type SyncRuntimeRpcHandlerMembers = Omit<SyncRuntimeRpcHandler, keyof JsonRpcHandler>;
 
@@ -207,10 +220,47 @@ function closeReason(value: unknown, fallback: string): string {
   return reason.slice(0, MAX_CLOSE_REASON_CHARS);
 }
 
-function allowedForwardHost(value: unknown): "127.0.0.1" | null {
+type LoopbackFamilyOrder = "ipv4-first" | "ipv6-first";
+
+/**
+ * Which loopback a forward may dial, as the family to try first.
+ *
+ * The request names a host, but a dev server picks its own bind: Node on macOS
+ * resolves `localhost` to `::1` first, so Vite, Next and friends often listen
+ * on `[::1]:<port>` only. Dialing just `127.0.0.1` then fails, and the desktop
+ * that already accepted the browser's socket hands Chromium an empty response —
+ * a blank page with `ERR_EMPTY_RESPONSE`. So every allowed host dials BOTH
+ * loopbacks; the host only decides which one goes first.
+ */
+function allowedForwardHost(value: unknown): LoopbackFamilyOrder | null {
   if (typeof value !== "string") return null;
   const host = value.trim().toLowerCase();
-  return host === "127.0.0.1" || host === "localhost" ? "127.0.0.1" : null;
+  if (host === "127.0.0.1" || host === "localhost") return "ipv4-first";
+  if (host === "::1" || host === "[::1]") return "ipv6-first";
+  return null;
+}
+
+/**
+ * `net.connect` options that try both loopbacks, in order, on one socket.
+ *
+ * `autoSelectFamily` walks the addresses the lookup returns and moves on when
+ * one is refused, so the forward keeps a single socket (and a single set of
+ * listeners) whichever family the server bound. The lookup is pinned rather
+ * than resolved: `localhost` must never mean anything but this machine.
+ */
+function loopbackConnectOptions(port: number, order: LoopbackFamilyOrder): net.NetConnectOpts {
+  const ipv4 = { address: "127.0.0.1", family: 4 };
+  const ipv6 = { address: "::1", family: 6 };
+  const addresses = order === "ipv6-first" ? [ipv6, ipv4] : [ipv4, ipv6];
+  return {
+    host: "localhost",
+    port,
+    autoSelectFamily: true,
+    lookup: ((_hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
+      if (options?.all) callback(null, addresses);
+      else callback(null, addresses[0]!.address, addresses[0]!.family);
+    }) as net.LookupFunction,
+  };
 }
 
 function allowedForwardPort(value: unknown): number | null {
@@ -422,7 +472,11 @@ export function createSyncPairedChannelService<TPeer extends object>(
     }
   };
 
-  const openRpc = (peer: TPeer, payload: PairedRuntimeRpcOpenPayload): void => {
+  const openRpc = (
+    peer: TPeer,
+    payload: PairedRuntimeRpcOpenPayload,
+    context: SyncRuntimeRpcHandlerContext,
+  ): void => {
     const channelId = normalizeChannelId(payload.channelId);
     if (!channelId) return;
     const existingRpc = peers.get(peer)?.rpc;
@@ -540,7 +594,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
     let handler: SyncRuntimeRpcHandler;
     try {
-      handler = trackRpcRequestLabels(factory(), pendingRequestLabels);
+      handler = trackRpcRequestLabels(factory(context), pendingRequestLabels);
     } catch (error) {
       sendRpcClose(
         peer,
@@ -591,20 +645,21 @@ export function createSyncPairedChannelService<TPeer extends object>(
       sendForwardClose(peer, forwardId, "Too many open port forwards.");
       return;
     }
-    const host = allowedForwardHost(payload.host);
+    const familyOrder = allowedForwardHost(payload.host);
     const port = allowedForwardPort(payload.port);
-    if (!host || port == null) {
+    if (!familyOrder || port == null) {
       sendForwardClose(
         peer,
         forwardId,
-        !host
-          ? "Port forwards may connect only to 127.0.0.1 or localhost."
+        !familyOrder
+          ? "Port forwards may connect only to 127.0.0.1, ::1 or localhost."
           : "Forward port must be an integer from 1 to 65535.",
       );
       return;
     }
     closeForward(peer, forwardId, "Forward replaced.", true);
-    const socket = args.connectForward?.({ host, port }) ?? net.connect({ host, port });
+    const connectOptions = loopbackConnectOptions(port, familyOrder);
+    const socket = args.connectForward?.(connectOptions) ?? net.connect(connectOptions);
     const forward: ForwardChannel = {
       socket,
       connected: false,
@@ -640,7 +695,14 @@ export function createSyncPairedChannelService<TPeer extends object>(
     });
     socket.on("data", (chunk) => handleForwardSocketData(peer, forwardId, Buffer.from(chunk)));
     socket.once("error", (error) => {
-      closeForward(peer, forwardId, error.message || "Remote TCP connection failed.", true);
+      closeForward(
+        peer,
+        forwardId,
+        forward.connected
+          ? error.message || "Remote TCP connection failed."
+          : loopbackDialFailureReason(error, port),
+        true,
+      );
     });
     socket.once("close", () => {
       closeForward(peer, forwardId, "Remote TCP connection closed.", true);
@@ -698,6 +760,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
       // clients even after successful pairing. Defaults to false so callers
       // must opt in explicitly.
       authorizedForRuntimeHost = false,
+      // What the host authenticated about this peer: the paired record's
+      // device id. Runtime handlers use it to attribute calls from another
+      // machine's brain.
+      peerIdentity: { peerDeviceId?: string | null } = {},
     ): Promise<boolean> {
       const value = payload && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -724,7 +790,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
       switch (type) {
         case "rpc_open":
-          openRpc(peer, { channelId: id });
+          openRpc(peer, { channelId: id }, { peerDeviceId: peerIdentity.peerDeviceId?.trim() || null });
           break;
         case "rpc_data": {
           const bytes = decodeStrictBase64(value.data);

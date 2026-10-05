@@ -2030,6 +2030,10 @@ struct WorkTurnDiagnosticsDisclosureView: View {
 
   private var summary: String {
     var parts: [String] = []
+    if !card.diagnosticWarnings.isEmpty {
+      let count = card.diagnosticWarnings.count
+      parts.append("\(count) warning\(count == 1 ? "" : "s")")
+    }
     if card.diagnosticModerationChecks > 0 {
       parts.append("Safety checked")
     }
@@ -2054,6 +2058,21 @@ struct WorkTurnDiagnosticsDisclosureView: View {
       )
     ) {
       VStack(alignment: .leading, spacing: 8) {
+        // The full sentence the collapsed line has to truncate. `.fixedSize`
+        // lets it wrap to as many lines as it needs; this is the one place a
+        // startup warning is readable in full.
+        ForEach(Array(card.diagnosticWarnings.enumerated()), id: \.offset) { _, warning in
+          VStack(alignment: .leading, spacing: 2) {
+            Label(warning.title, systemImage: warning.icon)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.warning)
+            Text(warning.message)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+
         if card.diagnosticModerationChecks > 0 {
           Label(
             card.diagnosticModerationChecks == 1
@@ -2082,29 +2101,23 @@ struct WorkTurnDiagnosticsDisclosureView: View {
       .padding(.top, 4)
       .padding(.leading, 2)
     } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "info.circle")
-          .foregroundStyle(ADEColor.textMuted)
-        VStack(alignment: .leading, spacing: 1) {
-          Text("Turn details")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-          Text(summary)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
+      // Deliberately not a card: one small line in the thread, the way the
+      // desktop folds receipts into its work summary. The expanded body below
+      // carries the full text; this row is only the pointer to it.
+      HStack(spacing: 6) {
+        Image(systemName: card.icon)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(card.tint == .warning ? ADEColor.warning : ADEColor.textMuted)
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
       }
-      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
       .contentShape(Rectangle())
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 4)
-    .background(ADEColor.cardBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.7)
-    )
+    .padding(.horizontal, 2)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Turn details. \(summary)")
     .accessibilityHint(isExpanded ? "Double tap to collapse details." : "Double tap to show safety and integration details.")
@@ -4716,6 +4729,43 @@ func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
 /// Tone note: failures are AMBER here, never red. The wire contract has no
 /// danger tone and `workAdeCardTone(from:)` folds red-ish values into
 /// `.warning`, so this view has no red path to take.
+/// "What the agent was told" under a PR Watch / Ship wake card: the exact
+/// message ADE sent, folded by default (desktop's `<details>` under the card).
+private struct WorkAdeCardWakeTextDisclosure: View {
+  let text: String
+  @State private var expanded = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 9, weight: .semibold))
+          Text(expanded ? "Hide what the agent was told" : "What the agent was told")
+            .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(expanded ? "Hide what the agent was told" : "Show what the agent was told")
+      if expanded {
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(8)
+          .background(ADEColor.cardBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
+  }
+}
+
 struct WorkAdeCardView: View, Equatable {
   static func == (lhs: WorkAdeCardView, rhs: WorkAdeCardView) -> Bool {
     lhs.card == rhs.card && lhs.isExpanded == rhs.isExpanded
@@ -4765,6 +4815,9 @@ struct WorkAdeCardView: View, Equatable {
           richBody
         } else {
           fallbackBody
+        }
+        if let wakeText = card.wakeText?.trimmingCharacters(in: .whitespacesAndNewlines), !wakeText.isEmpty {
+          WorkAdeCardWakeTextDisclosure(text: wakeText)
         }
       } else {
         collapsedRow

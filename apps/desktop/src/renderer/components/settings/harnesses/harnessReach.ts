@@ -188,7 +188,9 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         key,
         kind: "native",
         label: `${accountProviderLabel(harness)} · ${account.label}`,
-        detail: facts || (account.signedIn ? "Your account" : "Not signed in yet"),
+        detail: account.loginBroken
+          ? [account.email, "Signed out"].filter(Boolean).join(" · ")
+          : facts || (account.signedIn ? "Your account" : "Not signed in yet"),
         logoProvider: harness,
         source,
         models: inputs.nativeModels[harness].map((model) => nativeRow(key, model, { kind: "native" })),

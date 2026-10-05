@@ -315,6 +315,7 @@ interface BuildServiceOpts {
   projectConfigService?: any;
   aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
+  operationService?: any;
   /**
    * What `git for-each-ref refs/remotes/` reports. Branch names mean "these are
    * pushed"; `"unavailable"` makes the probe fail. Default is an empty listing,
@@ -368,7 +369,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     projectId: "proj-1",
     projectRoot: "/tmp/test-project",
     laneService,
-    operationService: makeOperationService(),
+    operationService: opts.operationService ?? makeOperationService(),
     githubService,
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
@@ -673,6 +674,8 @@ describe("prService.getForLane", () => {
       size: 2,
       position: 2,
       baseBranch: "main",
+      // #91 merges together with the open #90 below it.
+      openThroughHere: 2,
     };
     expect(service.getForLane(lane.id)?.stack).toEqual(expectedStack);
     expect(service.listAll()[0]?.stack).toEqual(expectedStack);
@@ -4501,8 +4504,9 @@ describe("prService.linkToLane", () => {
       String(sql).includes("insert into pull_request_chat_sessions")
     );
     expect(chatLinkInsert).toBeTruthy();
-    // The EDGE carries the referencing lane…
-    expect(chatLinkInsert?.[1]?.[3]).toBe(LANE_ID);
+    // The EDGE carries the PR's own lane (GitHub stack members may be linked
+    // from a chat on another lane)…
+    expect(chatLinkInsert?.[1]?.[3]).toBe("lane-owner");
     expect(chatLinkInsert?.[1]?.[4]).toBe("chat-cross");
     // …while the row stays with the lane that opened the PR.
     expect(rows.find((row) => row.id === "pr-cross-lane")?.lane_id).toBe("lane-owner");
@@ -6183,27 +6187,165 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
-  it("directs GitHub stack merges to GitHub before starting a merge request", async () => {
+  /**
+   * A stacked PR (#91, position 2 over open #90 in Stack #19) merges through
+   * the async merge API. `replies` scripts the PUT, then each poll in order.
+   */
+  const buildStackLand = (replies: Array<{ status?: number; body: unknown }>) => {
     const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
     const db = makeMockDb();
     installPullRequestRowStore(db, [row]);
     const getPullRequestRow = db.get.getMockImplementation();
     db.get.mockImplementation((sql: string, params: unknown[] = []) => {
-      if (String(sql).includes("from github_pr_stack_entries")) {
-        return { github_stack_number: 19 };
-      }
+      if (String(sql).includes("from github_pr_stack_entries")) return { github_stack_number: 19 };
       return getPullRequestRow?.(sql, params) ?? null;
     });
-    const githubService = makeGithubService();
-    const { service } = buildService({ db, githubService });
+    const stackPayload = {
+      id: 1019, number: 19, node_id: "PRS_19", base: { ref: "main" }, open: true, created_at: "2026-10-01T00:00:00Z",
+      pull_requests: [
+        { number: 89, state: "closed", draft: false, merged_at: "2026-09-30T00:00:00Z", head: { ref: "s-0", sha: "s0" } },
+        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: "s1" } },
+        { number: 91, state: "open", draft: false, merged_at: null, head: { ref: "s-2", sha: "s2" } },
+        { number: 92, state: "open", draft: false, merged_at: null, head: { ref: "s-3", sha: "s3" } },
+      ],
+    };
+    const queue = [...replies];
+    const asyncCalls: Array<{ method: string; path: string; body?: any }> = [];
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string; body?: unknown }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) return { data: stackPayload };
+        if (args.path.includes("/merge-async")) {
+          asyncCalls.push(args as any);
+          const reply = queue.length > 1 ? queue.shift()! : queue[0]!;
+          if (reply.status && reply.status >= 400) {
+            throw Object.assign(new Error((reply.body as any)?.details?.message ?? "failed"), {
+              status: reply.status,
+              responseBody: reply.body,
+            });
+          }
+          return { data: reply.body };
+        }
+        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) return { data: { state: "open", merged_at: null } };
+        return { data: {} };
+      }),
+    });
+    const operationService = makeOperationService();
+    const { service } = buildService({ db, githubService, operationService });
+    return { service, asyncCalls, operationService };
+  };
 
-    const result = await service.land({ prId: "pr-stacked", method: "squash" });
+  const pending = (uuid = "u-1") => ({ status: "pending", details: { message: "Merge request is in progress.", uuid } });
+  const merged = { status: "merged", details: { message: "Pull request was merged.", sha: "merge-sha" } };
 
-    expect(result).toEqual(expect.objectContaining({
-      success: false,
-      error: "PR #91 is in GitHub Stack #19. Review and merge the stack on GitHub.",
+  /** Run `land`, stepping the 2 s poll timer until it answers. */
+  const landWithTimers = async <T,>(run: () => Promise<T>, maxMs = 60_000): Promise<T> => {
+    let settled = false;
+    const promise = run().finally(() => { settled = true; });
+    for (let elapsed = 0; !settled && elapsed <= maxMs; elapsed += 2_000) {
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    return await promise;
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    {
+      name: "accepted, then merged",
+      replies: [{ status: 202, body: pending() }, { body: pending() }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
+      name: "already running (409) follows the running merge",
+      replies: [{ status: 409, body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running" } } }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
+      name: "a rule fails during the merge",
+      replies: [{ status: 202, body: pending() }, { body: { status: "failed", details: { message: "Required status check \"ci\" is expected." } } }],
+      expected: { success: false, mergeCommitSha: null, error: "Required status check \"ci\" is expected." },
+      puts: 1,
+    },
+    {
+      name: "the head moved since the card opened",
+      replies: [{ status: 400, body: { status: "failed", details: { message: "Pull request head branch was modified." } } }],
+      expected: { success: false, error: "PR head changed since you opened the merge dialog — refresh and retry." },
+      puts: 1,
+    },
+    {
+      name: "GitHub queued the stack",
+      replies: [{ status: 202, body: pending() }, { body: { status: "enqueued", details: { message: "Enqueued.", uuid: "u-1" } } }],
+      expected: { success: false, mergeStatus: "enqueued", error: "GitHub added Stack #19 to the merge queue." },
+      puts: 1,
+    },
+  ])("merges a stacked PR with the async merge API: $name", async ({ replies, expected, puts }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand(replies);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+    expect(result).toEqual(expect.objectContaining({ ...expected, stackPrNumbers: [90, 91] }));
+    const putCalls = asyncCalls.filter((call) => call.method === "PUT");
+    expect(putCalls).toHaveLength(puts);
+    expect(putCalls[0]).toEqual(expect.objectContaining({
+      path: `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+      body: expect.objectContaining({ merge_method: "rebase", merge_action: "default", sha: "s2" }),
     }));
-    expect(githubService.apiRequest).not.toHaveBeenCalled();
+    // A 409 polls the merge GitHub already runs, not a new one.
+    if (replies[0]!.status === 409) {
+      expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-running"))).toBe(true);
+    }
+  });
+
+  it("answers 'still merging' after the wait, then finishes the merge in the background", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Pending for about 2 minutes of polls, then merged.
+    const replies = [{ status: 202, body: pending() }, ...Array.from({ length: 60 }, () => ({ body: pending() })), { body: merged }];
+    const { service, operationService } = buildStackLand(replies);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toEqual(expect.objectContaining({ success: false, mergeStatus: "pending" }));
+    expect(result.error).toMatch(/still merging/);
+    expect(operationService.finish).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({
+      status: "succeeded",
+      metadataPatch: expect.objectContaining({ mergeStatus: "merged", mergeCommitSha: "merge-sha", stackPrNumbers: [90, 91] }),
+    }));
+  });
+
+  it("leaves the stack merge open when the background poll runs out still pending", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // The PUT is accepted, but every poll stays pending past the 15-minute
+    // background wait, and the fresh PR read still shows it unmerged.
+    const { service, operationService, asyncCalls } = buildStackLand([{ status: 202, body: pending() }]);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toEqual(expect.objectContaining({ success: false, mergeStatus: "pending" }));
+    expect(result.error).toMatch(/still merging/);
+    expect(operationService.finish).not.toHaveBeenCalled();
+
+    // The background poll keeps running after the foreground answered.
+    const foregroundPolls = asyncCalls.filter((call) => call.method === "GET").length;
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    expect(asyncCalls.filter((call) => call.method === "GET").length).toBeGreaterThan(foregroundPolls);
+
+    // GitHub can still finish the merge after ADE stops polling, so the
+    // operation must stay open rather than record a failure the merge never had.
+    expect(operationService.finish).not.toHaveBeenCalled();
+  });
+
+  it("refuses auto-merge for a stacked PR", async () => {
+    const { service } = buildStackLand([{ body: merged }]);
+    await expect(service.setAutoMerge({ prId: "pr-stacked", enabled: true, method: "squash" }))
+      .rejects.toThrow(/does not support auto-merge for stacked PRs/);
   });
 
   it("does not send a merge request for draft PRs", async () => {
@@ -8077,6 +8219,81 @@ describe("prService auto-map by branch", () => {
       expect.arrayContaining([REPO.owner, REPO.name, 777, LANE_ID, AUTO_BRANCH]),
     );
   });
+
+  // A lane's worktree can move to a follow-up branch without the lane record
+  // changing (that is what branch drift reports). A PR opened from that branch
+  // is still the lane's work, and this is the only path that recovers a PR
+  // merged between two polls — the open-PR snapshot never sees it.
+  it("links a merged PR on a lane history branch and edges the chat open at its creation", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    // terminal_sessions is the chat lookup for both the created_at attribution
+    // and the link write; keep the pull_requests store for everything else.
+    const pullRequestAll = db.all.getMockImplementation();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return [{ id: "chat-history" }];
+      return pullRequestAll?.(sql, params) ?? [];
+    });
+    const pullRequestGet = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+      return pullRequestGet?.(sql, params) ?? null;
+    });
+
+    const historyBranch = "feature/follow-up";
+    const mergedPull = makeGitHubPull({
+      number: 888,
+      node_id: "PR_merged_888",
+      html_url: "https://github.com/test-owner/test-repo/pull/888",
+      title: "Merged follow-up",
+      state: "closed",
+      merged_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-02T00:00:00Z",
+      updated_at: "2026-01-03T00:00:00Z",
+      base: { ref: "main", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+      head: {
+        ref: historyBranch,
+        user: { login: REPO.owner },
+        repo: { owner: { login: REPO.owner }, name: REPO.name },
+      },
+    });
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        const method = args.method ?? "GET";
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [mergedPull] };
+        }
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/888`) {
+          return { data: { ...mergedPull } };
+        }
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/888/reviews`) {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API request: ${method} ${args.path}`);
+      }),
+    });
+    const laneService = makeLaneService([makeFakeLane()]);
+    laneService.listBranchHistory = vi.fn(() => [{ laneId: LANE_ID, branchRef: historyBranch }]);
+    const { service } = buildService({ db, githubService, laneService });
+    const events: any[] = [];
+    autoMapService(service).setEventEmitter((e) => events.push(e));
+
+    const linked = await (service as typeof service & {
+      autoLinkLaneBranchHistory: (args: { laneId: string; branchRefs: string[] }) => Promise<number>;
+    }).autoLinkLaneBranchHistory({ laneId: LANE_ID, branchRefs: [historyBranch] });
+
+    expect(linked).toBe(1);
+    const prInsert = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("));
+    expect(prInsert?.[1]).toEqual(expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 888]));
+    const chatEdge = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_chat_sessions"));
+    expect(chatEdge?.[1]?.[3]).toBe(LANE_ID);
+    expect(chatEdge?.[1]?.[4]).toBe("chat-history");
+    // A merged backfill is history being filled in, not news: no Undo toast.
+    expect(events.filter((event) => event.type === "pr-auto-linked")).toEqual([]);
+  });
 });
 
 describe("prService hot refresh", () => {
@@ -9232,5 +9449,33 @@ describe("prService.listSnapshots", () => {
     const [call] = snapshotCalls(db);
     expect(call.sql).not.toContain("where s.pr_id");
     expect(call.params).toEqual(["proj-1"]);
+  });
+});
+
+describe("unlinkChatSession tombstones", () => {
+  it("rolls back the edge delete when the dismissal write fails", () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return { id: "pr-1", lane_id: LANE_ID };
+      if (text.includes("from terminal_sessions")) return { id: "chat-1", lane_id: LANE_ID };
+      if (text.includes("from pull_request_chat_session_dismissals")) return null;
+      return null;
+    });
+    db.run.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("insert into pull_request_chat_session_dismissals")) {
+        throw new Error("UNIQUE constraint failed");
+      }
+    });
+    const { service, logger } = buildService({ db });
+    expect(service.unlinkChatSession({ prId: "pr-1", sessionId: "chat-1" })).toEqual({ ok: false });
+    expect(db.run).toHaveBeenCalledWith("begin immediate");
+    expect(db.run).toHaveBeenCalledWith("rollback");
+    expect(db.run).not.toHaveBeenCalledWith("commit");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "prs.chat_session_unlink_failed",
+      expect.objectContaining({ prId: "pr-1", sessionId: "chat-1" }),
+    );
   });
 });

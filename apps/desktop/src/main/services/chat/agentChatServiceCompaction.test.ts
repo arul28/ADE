@@ -3091,6 +3091,40 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    // Claude Code will not detach a WebFetch/WebSearch that a post-tool hook has
+    // to see, so a hook covering them makes a person's interrupt cancel the
+    // fetch. Matchers are regular expressions; no matcher covers every tool.
+    it.each([
+      { tool: "WebFetch", covered: false },
+      { tool: "WebSearch", covered: false },
+      { tool: "Bash", covered: true },
+      { tool: "ScheduleWakeup", covered: true },
+      { tool: "mcp__docs__WebFetch", covered: true },
+    ])("post-tool hooks see $tool: $covered", async ({ tool, covered }) => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-post-tool-matchers",
+      } as any);
+      const { service } = createService();
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ matcher?: string }>>;
+      } | undefined;
+      const sees = (event: string) => (opts?.hooks?.[event] ?? []).some((entry) => (
+        entry.matcher === undefined || new RegExp(entry.matcher).test(tool)
+      ));
+      expect(sees("PostToolUse")).toBe(covered);
+      expect(sees("PostToolUseFailure")).toBe(covered);
+    });
+
     it("PostToolUse classifierContext carries only user-authored consent, never tool output", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({

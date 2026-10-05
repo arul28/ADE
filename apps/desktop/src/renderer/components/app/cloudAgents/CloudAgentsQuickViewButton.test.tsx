@@ -4,6 +4,7 @@ import React from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../state/appStore";
+import { invalidateAiDiscoveryCache } from "../../../lib/aiDiscoveryCache";
 import { CloudAgentsQuickViewButton } from "./CloudAgentsQuickViewButton";
 
 function cursorStatus(authAvailable: boolean) {
@@ -93,6 +94,41 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     await act(async () => {
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
     });
+    expect(screen.getByRole("button", { name: "Cursor Cloud fleet" })).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-checks a provider key saved in Settings, even while a check is in flight", async () => {
+    let finishStaleCheck!: (status: ReturnType<typeof cursorStatus>) => void;
+    const getStatus = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishStaleCheck = resolve; }))
+      .mockResolvedValue(cursorStatus(true));
+    (window as any).ade = {
+      ai: {
+        getStatus,
+        cursorCloudFleet: vi.fn(),
+        onCursorCloudFleetEvent: vi.fn(() => () => {}),
+      },
+    };
+
+    render(<CloudAgentsQuickViewButton provider="cursor" />);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    // Settings saves the key (an all-projects invalidation) before the first
+    // check returns its stale answer.
+    await act(async () => {
+      invalidateAiDiscoveryCache();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      finishStaleCheck(cursorStatus(false));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+
     expect(screen.getByRole("button", { name: "Cursor Cloud fleet" })).toBeTruthy();
     expect(getStatus).toHaveBeenCalledTimes(2);
   });

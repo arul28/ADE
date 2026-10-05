@@ -3,8 +3,9 @@ import type {
   AiConfig,
   AgentChatScheduledWorkItem,
 } from "../../../shared/types";
-import { Clock, PauseCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, Clock, PauseCircle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { showToast } from "../app/toast/toastStore";
 import { SettingsPanel, SettingsRow, SettingsSection, SettingsToggle } from "./primitives";
 
 /**
@@ -17,6 +18,7 @@ export function AiFeaturesSection() {
   const [saving, setSaving] = useState(false);
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
   const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
+  const [continueAfterRestart, setContinueAfterRestart] = useState(true);
   const [scheduledWork, setScheduledWork] = useState<AgentChatScheduledWorkItem[]>([]);
   const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
@@ -47,6 +49,7 @@ export function AiFeaturesSection() {
       const effectiveAiRaw = snapshotResult.snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setScheduledWorkPaused(effectiveAi?.chat?.scheduledWorkPaused === true);
+      setContinueAfterRestart(effectiveAi?.chat?.continueAfterRestart !== false);
     } finally {
       setLoading(false);
     }
@@ -56,19 +59,32 @@ export function AiFeaturesSection() {
     void loadStatus();
   }, [loadStatus]);
 
-  const handleScheduledWorkPaused = useCallback(async (paused: boolean) => {
+  /** Save one chat toggle optimistically; a failed save puts it back and says so. */
+  const saveChatToggle = useCallback(async (
+    key: "scheduledWorkPaused" | "continueAfterRestart",
+    value: boolean,
+    setLocal: (value: boolean) => void,
+  ) => {
     if (saving) return;
     setSaving(true);
-    setScheduledWorkPaused(paused);
+    setLocal(value);
     try {
-      await window.ade.ai.updateConfig({ chat: { scheduledWorkPaused: paused } });
+      await window.ade.ai.updateConfig({ chat: { [key]: value } });
     } catch (error) {
-      setScheduledWorkPaused(!paused);
-      console.error("[AiFeaturesSection] scheduled-work pause update failed:", error);
+      setLocal(!value);
+      showToast({
+        title: "Couldn't save the setting",
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     } finally {
       setSaving(false);
     }
   }, [saving]);
+  const handleScheduledWorkPaused = (paused: boolean) =>
+    saveChatToggle("scheduledWorkPaused", paused, setScheduledWorkPaused);
+  const handleContinueAfterRestart = (enabled: boolean) =>
+    saveChatToggle("continueAfterRestart", enabled, setContinueAfterRestart);
 
   const handleCancelScheduledWork = useCallback(async (item: AgentChatScheduledWorkItem) => {
     setScheduledWorkError(null);
@@ -108,6 +124,21 @@ export function AiFeaturesSection() {
               checked={scheduledWorkPaused}
               disabled={unavailable != null || saving}
               onChange={(paused) => void handleScheduledWorkPaused(paused)}
+            />
+          }
+        />
+        <SettingsRow
+          anchor="continue-after-restart"
+          icon={<ArrowClockwise size={15} weight="duotone" />}
+          tone="blue"
+          title="Continue chats after restarts"
+          description={loading ? "Loading…" : configLoadFailed ? "Unavailable until the configuration loads." : "When ADE restarts mid-response — a crash, a force quit, a reboot — the chat picks up where it stopped, and the agent is told which background jobs were stopped. Settled chats stay asleep."}
+          control={
+            <SettingsToggle
+              label="Continue chats after restarts"
+              checked={continueAfterRestart}
+              disabled={unavailable != null || saving}
+              onChange={(enabled) => void handleContinueAfterRestart(enabled)}
             />
           }
         />

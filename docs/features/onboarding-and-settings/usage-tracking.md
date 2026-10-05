@@ -47,22 +47,34 @@ brain scope is running, which is also the only time that tracker polls.
 ## Smart balance and auto-start windows
 
 Smart balance applies to Claude and Codex when it is enabled for that provider.
-New chats consider only signed-in instances. Each instance is scored as
-`five-hour headroom × (1 − w) + weekly headroom × w`, where `w` increases
-linearly from `0.35` at the start of the weekly window to `0.85` at its reset.
-When the weekly duration is unknown, `w` is `0.5`. The default instance wins a
-tie, and a snapshot with no usable quota data falls back to the default without
-guessing. An explicit account selection always wins over balancing.
+New chats consider only signed-in instances, and an account whose stored login
+is gone is skipped — old windows stay on screen after a login breaks, and they
+are not room. Weekly room left at the reset is lost, so the account whose
+weekly window resets soonest wins: it is spent first, and accounts that reset
+later keep their room for after it. An account with less than 25% of its
+five-hour window left, and more than an hour until that window resets, ranks
+after every account without that limit. An account with a weekly reading and no
+five-hour window is idle, so it counts as full five-hour room; an account with
+no weekly reading counts as a week from its reset. An account at or below its
+minimum five-hour or weekly headroom is out. A tie prefers the higher five-hour
+headroom, then the default. The usage-limit move to another account uses the
+same order. No usable readings fall back to the default, and
+`UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
+could not run. An explicit account selection always wins over balancing.
 
-A chat that is already running stays on the account it started on: the provider
-thread lives in that account's config directory and cannot be handed to another
-login. When that chat hits a usage limit and another signed-in account still
-has immediate room, smart balance starts a new chat on that account and sends
-the interrupted task there. The original chat does not also auto-resume. With
-smart balance off, the same move is only an offer on the usage-limit pill
-(Continue on that account). A chat created by that handoff does not hop
-again on its own, and a subagent never does. An account with no readable
-windows, or with a window already at 100%, is not a candidate.
+A chat that hits a usage limit with smart balance on moves to the other account
+in place: the provider thread file is copied into the other account's config
+home (`chat/providerThreadMove.ts`) and the same thread resumes there, so the
+model keeps the conversation. The chat's account changes, and the move runs
+once even when the provider reports the limit twice. An account the chat
+already left at a limit is excluded, a subagent never moves, and an account
+with no readable windows or a window already at 100% is not a candidate. If the
+thread cannot move — the chat has no provider thread yet, or the copy fails —
+ADE falls back to the usage-limit handoff: it starts a new chat on the other
+account in the same lane and sends the interrupted task there, and the original
+stops waiting to resume. With smart balance off, the same account is only an
+offer on the usage-limit pill (Continue on that account). A chat created by
+that handoff does not hop again on its own.
 
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
@@ -253,13 +265,24 @@ Mechanics:
   01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
   public holidays are not modelled. OpenCode entries carry OpenCode's own cost
   figure, which uses the off-peak price, so the peak rule does not reach them.
-- Claude Code's fast mode bills at 2× the model's standard rate (Opus 5.5,
-  Opus 5, Opus 4.8). The transcript scan reads the flag from `usage.speed`, and
-  the multiplier is `FAST_MODE_PRICE_MULTIPLIER` — models.dev carries no fast
-  rate, so it is a constant, the same number t3code reads from LiteLLM's
-  `provider_specific_entry.fast`. It composes with a long-context tier rather
-  than replacing it. `USAGE_SNAPSHOT_CACHE_VERSION` is bumped when the rule
-  changes so cached snapshots re-price once.
+- a faster service tier bills at its own published rate. models.dev lists
+  them under `experimental.modes` (`fast` with `service_tier: "priority"` or
+  Anthropic's `speed: "fast"`, `ultrafast` with `service_tier: "ultrafast"`),
+  and `parseModelsDevModes` stores them as `TokenPrice.modes`. GPT-6 Astra's
+  Ultrafast is $60/$300 per MTok against $10/$50 standard, so pricing it at the
+  standard rate under-reports by 6×. Each request carries a `speed`
+  (`standard` | `fast` | `ultrafast`): the Claude scan reads `usage.speed`; the
+  Codex scan carries `thread_settings_applied.thread_settings.service_tier`
+  forward the way it carries the model (`priority` and `fast` are Fast,
+  `ultrafast` is Ultrafast; a missing field, `default`, `standard` and `flex`
+  are standard — `codexServiceTierSpeed`). `ratesForRequest` uses the published
+  mode rate scaled by the long-context tier's ratio; a Claude model with no
+  published fast rate falls back to `FAST_MODE_PRICE_MULTIPLIER` (2×), and any
+  other tier with no published rate bills at standard, because nothing prices
+  the premium. The per-turn ledger records the turn's `speed` (Codex from the
+  tier its thread reports, Claude from fast mode on a model that offers it)
+  and prices `apiEquivalentUsd` with it. `USAGE_SNAPSHOT_CACHE_VERSION` is
+  bumped when the rule changes so cached snapshots re-price once.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.
@@ -271,6 +294,100 @@ loaded copy of the list was fetched, or null when nothing but the built-in table
 priced anything. Settings > Usage turns the two into one plain sentence under
 the cost figures. The number is the page's headline, and an unexplained headline
 cost has burned users before.
+
+## Every account home is scanned
+
+ADE runs a second Claude or Codex account under its own config home
+(`<adeHome>/provider-homes/claude/<id>`, and the `preset`, `credential` and
+`route` homes harness presets use). Each of those homes keeps its own
+transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat ADE
+ran under another account. `adeProviderUsageHomes` lists them: every directory under
+`provider-homes/` (including homes whose account was removed, because their
+usage still happened) plus each registry instance's home. A home's provider
+comes from its namespace or registry entry; a preset, credential or route home
+is identified by the CLI's own files (`.claude.json`; Codex's `config.toml` or
+`auth.json`), because Claude keeps a `sessions/` folder too. The usage service
+passes them to the ledger worker as `ADE_USAGE_EXTRA_CLAUDE_HOMES` /
+`ADE_USAGE_EXTRA_CODEX_HOMES`; the scanners add them after the default home and
+dedupe by message id as before. The scanners never discover homes themselves,
+so a test that points `CODEX_HOME` at a fixture reads only the fixture.
+
+The service also passes each CLI's own default home (`~/.claude`, `~/.codex`)
+in the same list (`machineProviderUsageHomes`). A brain or `ade` started from an
+agent's shell inherits that agent's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, which
+the scanners take as the default; without the explicit default home, the
+machine's main history dropped out of every total that process reported.
+
+## Where the dollars went
+
+Every cost figure on the page can be split two ways, and the host computes the
+split so no client needs a rate table. `AdeUsageCostSplit` holds dollars by
+token type (`input`, `cacheRead`, `cacheWrite`, `output`, and `other` for a
+provider-reported cost no list rate can split, or a per-request fee) and the
+premium each faster tier added (`fastPremium`, `ultrafastPremium`, which sit
+inside the type fields, not on top). A provider-reported cost is split in
+proportion to what the list rates would have charged each type. The split
+rides on provider and model summaries and on each breakdown row as an extra
+field, never a bucket key, so merging and dedupe are unchanged and an older
+host's rows simply have none.
+
+Account scope merges the split only where every row carried one: the live
+`usage.getUsageRollup` response has it, but the replicated
+`usage_machine_rollups` table does not store it (adding a column to a
+replicated table would break peers on an older build), so a provider fed by a
+machine's saved rollup shows no split and the page says why.
+
+## Spend by chat, lane, and account
+
+`usage.getCostBreakdown {by: chat | lane | account, range, laneId?, rankBy?}`
+ranks ADE's per-turn ledger, by cost or (`rankBy: "tokens"`, the page's Tokens
+metric) by tokens, before the tail folds into Other. Each row carries the turns' value at list prices
+(`costUsd`, `apiEquivalentUsd` where the ledger has it), `billedUsd` — what API
+keys and routed-away accounts (keyed presets, redirected endpoints, Bedrock)
+were charged, the provider's own bill when it sent one — and `planValueUsd`,
+the list-price value of turns a subscription covered. A local model's turns
+are in neither. Chats and lanes are the calling project's (titles and lane
+names come from its database); accounts are the machine's, one row per login
+(the same email reached through two provider instances is one account).
+Deleted chats and lanes leave no name, so they fold into one "Deleted lanes
+(N)" / "Deleted chats (N)" row each. The ledger keeps three months. A turn
+records its list-price value when it ends; one whose model has a user price or
+"Map to" (below) is re-priced when read (`repriceTurnForUserPrices`), so a price
+set later reaches past chats too.
+
+The Usage page's hero adds one line from it — ADE chats billed to API keys and
+plan value — under the API-equivalent total, then the type and speed bars.
+
+## Model detail, Set price, and Map to
+
+`usage.getModelDetail` returns one model's cost, tokens, cost per million
+tokens, cache hit rate (cache reads over the whole input side), daily trend,
+split, the price ADE bills it at (`custom`, `list`, or `fallback`, with
+`unpriced` when nothing prices it), its own "Map to", and `mappedFrom`: the
+model ids mapped onto it. A mapped model no longer appears on its own, so its
+target's detail is where it is unmapped (desktop, web and the phone show an
+Unmap button; `ade usage stats --model` prints "Also here").
+
+`usage.setModelPriceOverride {model, models?, price?, mapTo?}` (CTO role; a
+controller action from the phone) writes this machine's
+`<adeHome>/usage-price-overrides.json` (`usagePriceOverrides.ts`). The change
+applies to `model` and every id in `models`: the dialog sends all the raw ids
+behind one display name (a dated id, a `[1m]` variant). Each write starts from
+the file on disk, so another process's change since is kept.
+
+- a **price** (USD per million input/output tokens; cache rates optional, a
+  blank one bills at the input rate, `0` means free) wins over every list in
+  `resolveTokenPrice`;
+- a **Map to** makes a model id count as another model: its usage is bucketed
+  and priced as the target (`applyUsageModelAlias`, before bucketing). Chains
+  resolve to their end, a loop leaves the model as itself, and mapping a model
+  drops its own price.
+
+The ledger worker reads the file when it starts, so a save re-prices history
+by starting a history refresh in the background; the page updates when that
+scan lands. A scan already running read the old prices, so the re-price runs
+after it finishes rather than joining it. `ade usage prices --text` lists both; `ade usage prices set` writes
+them.
 
 ## Lifetime stats survive lane deletion
 
@@ -381,17 +498,21 @@ rollup older than the six-hour freshness horizon, with the lag stated),
 (reported nothing usable — missing from the totals, never an error that empties
 the page).
 
-## Claude credential hygiene (refresh storms)
+## Claude credential hygiene
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits
-in the macOS Keychain (the Claude CLI's default store). The default account's
-background polls must not touch the Keychain, so these rules prevent a dead
-file token from turning into an OAuth storm that gets the whole client
-rate-limited (429) by Anthropic. A scoped account (`CLAUDE_CONFIG_DIR`) often
-has no credentials file at all, so its background polls may open that
-account's namespaced Keychain item; the successful read is cached for the
-process and later polls reuse it:
+in the macOS Keychain (the Claude CLI's default store). ADE reads a login
+without ever changing it (`readClaudeLogin` returns `ok`, `expired`,
+`signed_out`, or `unreadable`). Anthropic rotates the refresh token on every
+refresh and the Claude CLI keeps the only saved copy, so ADE never spends it: a
+refresh here would leave the CLI's saved token dead and the CLI's next refresh
+would clear the login, which is how idle secondary accounts lost their
+sign-in. These rules keep a dead file token from turning into an OAuth storm
+that gets the whole client rate-limited (429) by Anthropic:
 
+- The default account's background polls must not touch the Keychain. A scoped
+  account (`CLAUDE_CONFIG_DIR`) may open that account's namespaced Keychain
+  item; the successful read is cached for the process and later polls reuse it.
 - Claude Code namespaces the Keychain item per config directory: the machine's
   default login is the bare `Claude Code-credentials`, and a
   `CLAUDE_CONFIG_DIR` login (`~/.ade/provider-homes/claude/<id>`) appends the
@@ -401,21 +522,14 @@ process and later polls reuse it:
 - Any successful Keychain read (explicit refresh, provider-status checks)
   populates the in-memory credential cache *under that account's own key*, so
   background polls reuse the live login instead of the file.
-- A refresh token the token endpoint *definitively* rejects — a non-transient
-  4xx such as `invalid_grant`, or a 200 with no `access_token` — is
-  negative-cached for 24 h and never re-tried per poll. Transient conditions
-  are cached for only 10 min so a temporary blip can't lock out an otherwise
-  valid token: 5xx, plus token-endpoint 429 (rate-limited) and 408, plus
-  network/timeout aborts. A rate-limited refresh is treated as transient, not
-  as a rejection.
-- When a token is expired and cannot be refreshed, the reader reports "no
-  usable credentials" (→ reconnect state) instead of returning the dead token,
-  which would guarantee a 401 plus another doomed refresh on every cycle.
+- An expired token is reported as `expired` rather than returned or refreshed:
+  the CLI renews it the next time a chat runs on that account, and a user
+  refresh may run the CLI fallback. A token with no refresh token at all is
+  `signed_out`, because the CLI cannot renew it either. A failed Keychain read
+  is `unreadable`, because a miss after it proves nothing about the login.
 - A 401 from the usage API drops only the cached access token
-  (`invalidateCachedClaudeCredentials`) and forces the next read to re-consult
-  its sources. It deliberately preserves the refresh-token refusal memory, so a
-  revoked-but-unexpired file token can't reopen per-poll refresh attempts
-  against a refresh token the token endpoint already rejected.
+  (`invalidateCachedClaudeCredentials`) and marks the account `expired`; the
+  next chat on the account, or an explicit refresh, lets the CLI refresh it.
 
 ## Reproducible baseline
 
@@ -671,26 +785,98 @@ and asks the Worker at most every 12 hours (30 minutes after a failure); a 304
 revalidates without reading the body, and `ADE_MODEL_REGISTRY_FILE` points the
 store at a local snapshot instead of the Worker.
 
-`routeCatalog` builds every route; `routerCore` classifies the task and picks the
-cheapest route that keeps the expected quality — within the task kind's tolerance
-of the model that would run it anyway, no more than 1.5× slower, and trusted (at
-least 30 own turns on the model, or a measured Artificial Analysis agent row).
-Plan routes are priced from the ledger's burn rates (dollars per percent of each
-live window, weighted by how fast the window is being used), and a window at 95%
-or more blocks its plan. A cross-plan pick needs medium-or-better burn confidence
+`routeCatalog` builds every route from the union of every open project's model
+list, newest project first — before, it read only the newest project's list,
+which dropped OpenCode routes whenever that project had never listed OpenCode
+models. `routerCore` classifies the task from its agent type, its short label,
+and its brief (the Agent tool's `prompt`, or an ADE child chat's first message).
+The brief decides most kinds: a brief that forbids edits ("Read-only", "Do not
+edit any files") is `review` or `read_only`, and an opening edit instruction
+("You implement", "Apply the verified fixes", "Fix …") is an edit. The label
+alone left about half the subagents `unknown`. It then picks the cheapest route that keeps
+the expected quality — within the task kind's tolerance of the model that would
+run it anyway, no more than 1.5× slower, and trusted (at least 30 own turns on the
+model, or a measured Artificial Analysis agent row). The efficiency replay
+gives a main chat thread the `lead` kind (tolerance 0.02) and a chat that another
+chat started the `unknown` kind (also 0.02), because the ledger holds no task
+description.
+Plan routes are priced from the ledger's burn rates (list dollars per percent of
+each live window), then in dollars of the plan's own price (`ROUTER_PLAN_MONTHLY_USD`,
+an assumed top-tier price per plan, divided over the window's share of a month),
+weighted by how fast the window is being used. A window at 95% or more blocks its
+plan. A cross-plan pick needs medium-or-better burn confidence
 on both plans.
 
-It is **shadow**: it changes no turn. Each subagent start writes one decision line
-to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` (the route it would have picked,
-the estimated saving, and why it kept the original) and the finish writes the
-outcome line. `routeCatalog` and `routerCore` are pure, and the service never
+It is **shadow**: it changes no turn. Each subagent writes one decision line and one
+outcome line to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` when it finishes
+(or after 6 hours with no result). The decision waits for the finish because the
+facts arrive late: Claude reports a child's effort only from inside it (the
+`effort.level` of the PostToolUse and SubagentStop hooks), and the brief can arrive
+after the start. A v2 line records what ran (`requested`: harness, model, effort,
+and whether each was `reported` by the child, `inherited` from the parent, or
+`unknown`), where the kind came from (`kindSource`), the label, the brief's length,
+and three picks: the same model at another effort (`sameModel`), the best route in
+the same harness, and the best route anywhere. An unknown effort is priced at the
+model's default effort, not guessed as `high`. A follow-up message to a finished
+Claude subagent reuses its task id; that run is logged as `<key>#<run>` with the
+first run's brief. When the follow-up starts before the first run's result
+arrives (another tool call), the first run is logged without an outcome, and a
+late result that names the replaced tool call is dropped. An hourly timer, as
+well as each event, gives up on a subagent after 6 hours, so a quiet brain still
+logs it. Briefs come from any subagent-spawning tool (`Agent`, `Task`,
+`spawn_agent`, `subagent`; `prompt`, `message`, `instructions`, or `task`). Reports skip v1 lines (from older builds): they guessed
+`high` for a Claude subagent that named a model and classified from the label only. `routeCatalog` and `routerCore` are pure, and the service never
 throws into the chat. Read it with `ade router shadow --days 7` (action
 `usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
 task with `ade router pick`, and force a fetch with `ade router refresh`.
 `ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
 
+`ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
+the router would have saved. It reads the turn ledger, so the history starts on day
+one, not the day the router shipped. Each chat thread is one series of turns. The
+router may change a thread's route only at a free switch point, where the prompt
+cache is cold and a change costs no rebuild:
+
+- the first turn of the thread;
+- the turn after a context compaction;
+- a turn that starts after the cache expired;
+- a turn where the user changed the model or effort, or the chat moved to another
+  account.
+
+The turns from one switch point to the next are a segment. Each segment gets one
+router decision, and its list-price cost scales by the picked route's cost per task
+over the reference route's. A thread's cache TTL is one hour, except a Claude
+thread that writes only the 5-minute cache: that thread gets 5 minutes. The dollars
+are public list prices scaled by the benchmark cost per task. They are an estimate,
+not a measured run. The replay ignores today's blocked plan windows: it asks which
+route was cheaper at equal quality, and a window that has since reset says nothing
+about the past.
+
+Each segment has three picks: `sameModel` (only the effort changes, the lowest-risk
+switch), `sameHarness`, and `anyHarness`. The router picks plan routes in plan
+percent, not list dollars. So a move from a metered route onto a plan can raise
+list dollars and still be the cheaper pick. The `byBilling` part has one row for
+each plan account (`claude plan · claude:beats`), because each login has its own
+window and burn rate: the list dollars, and the percent of that account's longest
+window. Over a 7-day report a weekly window can reset, so a row above 100% means
+more than one window. Read the cross-plan rows with the burn-rate limit below in
+mind.
+
+The report also summarizes the subagents in the shadow log. Claude reports no
+per-subagent price, so Claude subagents are weighted by tokens instead of dollars.
+OpenCode reports a price, so those subagents carry dollars. The report also lists
+the segments that kept their route and why, the top moves by cost, and the threads
+with the most spend. `ade router efficiency --days 7 --text` prints the readable
+form.
+
 Known limits: burn rates count ADE turns only, so a plan also used outside ADE
 looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.
+On the Mac Studio (2026-10-04) the Codex and OpenCode Go rows show more than 100% of
+a window in a week, so most of their window use happens outside ADE. The local
+history scans (`usageLedgerScanners`) see that use, but their entries carry no
+account yet; feeding them to the burn rate is the next step. Briefs are missing
+for about 9% of Claude subagents whose Agent tool call never reached the
+transcript; those classify from the label.
 
 ## Daily usage research report
 
@@ -782,7 +968,18 @@ for each provider, mainly Claude and Codex. The wire contract is in
   cached live quota without starting a ledger scan; the rest of the page owns
   the expensive history refresh explicitly.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
-  the separate history path. `ade code` `/usage` reads the runtime snapshot for
+  the separate history path. `ade usage stats --text` prints the spend
+  summary with the type and speed split and the top models;
+  `--by chat|lane|account` prints the ledger breakdown, and
+  `--provider P --model M` one model's detail.
+- Settings > Usage: the hero carries the billed / plan-value line and the type
+  and speed bars; Breakdown switches between Models (every session on the
+  machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
+  Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
+  switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
+  Breakdown view as CSV. The bars use the data-viz categorical order validated
+  for the light and dark surfaces, with grey for the remainder and every
+  segment named with its dollars. `ade code` `/usage` reads the runtime snapshot for
   every tracked quota provider and displays source metadata.
 - Remote desktop/runtime calls use the same runtime actions as a local project.
 - Paired iOS devices request `usage.getQuotaSnapshot` for the host-cached
@@ -795,7 +992,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   quota actions remain connected in limited mode and show update guidance.
 - Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
   composed in the same reading order as the desktop page: cost hero and
-  per-provider split, daily chart, Live limits, metric strip, breakdown. It
+  per-provider split (with the type and speed bars and the billed / plan-value
+  line), daily chart, Live limits, metric strip, breakdown. Breakdown offers
+  Models, Chats, Lanes and Accounts when the host advertises
+  `usage.getCostBreakdown`; a model opens its detail screen, with Set price
+  and Map to when the host advertises `usage.setModelPriceOverride`. It
   reads history through `usage.getAdeStats` and shows update guidance when the
   host does not advertise it. Type, colour, and the chart's top-N/Other rule
   come from `ADEUsageDesign.swift`, the iOS counterpart of `usageDesign.ts`, so
@@ -820,14 +1021,16 @@ for each provider, mainly Claude and Codex. The wire contract is in
 - Live limits reads as headroom, not consumption, and **the account is the
   row**. Every signed-in Claude or Codex account is a row, including one that
   has not reported a window yet: that row names the account and says `No usage
-  yet` instead of omitting it. Two local logins stay two rows even when they
-  share an email, because the row is keyed by the provider account id. Each row
+  yet` instead of omitting it. **One login is one row**: two local config homes
+  that report the same account email are collapsed to the first (the default),
+  and the later account's windows are dropped with it, so one quota is never
+  counted twice. Logins on different emails stay two rows. Each row
   names itself — provider mark, provider, `email · plan` — and
   carries that account's windows side by side underneath as meters: a short
   label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
   remainder hatched, that same headroom in words ("82% left"), and the reset
   countdown. One
-  provider with two logins is two rows, both named. Hovering, focusing, or
+  provider with two logins on different emails is two rows, both named. Hovering, focusing, or
   clicking a meter on desktop — tapping a row on iOS — opens that window's
   details: plan, the machines reporting it, headroom, absolute reset time,
   pace, the model split, what the reset restores to the pool, and the link out.
@@ -865,8 +1068,9 @@ for each provider, mainly Claude and Codex. The wire contract is in
   each account's own config home (default first, because its result decides the
   provider-level facts that stay singular — the status line's account email, the
   poll `source`, and the Codex spend-control / 7-day series). A machine with
-  three Claude logins therefore contributes three accounts to the snapshot, not
-  one. A machine with no registry entry falls back to the single ambient
+  three Claude logins therefore contributes as many accounts as it has
+  distinct logins — two config homes on one email are one account, and the
+  extra homes and their windows are dropped. A machine with no registry entry falls back to the single ambient
   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The
   account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
   (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so

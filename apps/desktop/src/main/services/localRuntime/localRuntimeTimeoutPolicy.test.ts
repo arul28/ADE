@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { localRuntimeActionTimeoutMs } from "./localRuntimeTimeoutPolicy";
+import {
+  localRuntimeActionTimeoutMs,
+  longRunningLocalRuntimeActionTimeoutMs,
+} from "./localRuntimeTimeoutPolicy";
 
 describe("localRuntimeActionTimeoutMs", () => {
   it("gives Cursor Cloud open-chat the same long budget as handoff", () => {
@@ -10,6 +13,14 @@ describe("localRuntimeActionTimeoutMs", () => {
 
   it("keeps the default 30s budget for ordinary actions", () => {
     expect(localRuntimeActionTimeoutMs("ai", "listCursorCloudAgents")).toBe(30_000);
+  });
+
+  // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+  // merged PR. At the 30s default the daemon reported failure while the merge
+  // went on, so the action gets a budget that outlives the foreground poll.
+  it("lets a stack merge outlive its foreground GitHub poll", () => {
+    expect(localRuntimeActionTimeoutMs("pr", "land")).toBe(120_000);
+    expect(longRunningLocalRuntimeActionTimeoutMs("pr.land")).toBe(120_000);
   });
 
   it("outlives a cold simulator launch and a preview build", () => {

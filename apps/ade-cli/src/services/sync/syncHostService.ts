@@ -1,4 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -5844,7 +5845,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     // A chat lifecycle event for the host project updates its roster status
     // live (other booted scopes are covered by the safety poll + live overlay).
-    markRosterDirty();
+    // A comment-list update changes nothing a roster shows.
+    if (!isThreadCommentsOnlyMetaEvent(event.event)) markRosterDirty();
   }
 
   async function pumpChanges(peer: PeerState, pollGeneration: number): Promise<void> {
@@ -8007,6 +8009,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
+        { peerDeviceId: isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null },
       );
       return;
     }

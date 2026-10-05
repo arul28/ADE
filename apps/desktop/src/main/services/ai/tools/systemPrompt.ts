@@ -21,6 +21,8 @@ export type AdeRuntimeKind =
 
 const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
 
+const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
+
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
@@ -106,6 +108,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
+        openCodeBackgroundWorkGuidance,
       ];
   }
 }

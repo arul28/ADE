@@ -1,4 +1,5 @@
 import React from "react";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
   Brain,
@@ -18,6 +19,7 @@ import {
   UsersThree,
   Warning,
   XCircle,
+  Target,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -45,6 +47,8 @@ import {
   sessionActivityInstant,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
@@ -303,6 +307,12 @@ function branchDisplayLabel(branchName: string): string {
   return branchName.startsWith("ade/") ? branchName.slice("ade/".length) : branchName;
 }
 
+/** "Goal: <objective>", with the status when it is not plain active. */
+function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
+  const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
+  return `Goal${status}: ${goal.objective}`;
+}
+
 /** `·` between the adaptive "where" line's parts. Decoration, never read out. */
 function WhereSeparator() {
   return (
@@ -444,7 +454,9 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   return <span className="min-w-0 truncate">{text ?? ""}</span>;
 }
 
-export const SessionCard = React.memo(function SessionCard({
+// The list rebuilds each card's handlers on every render (session updates,
+// timers); with them proxied a card re-renders only when what it shows changes.
+export const SessionCard = memoWithLatestHandlers(function SessionCard({
   session,
   lane,
   isSelected,
@@ -464,6 +476,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePr = null,
   lanePrs = [],
   onOpenLanePrs,
+  onOpenLanePrInChat,
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
@@ -513,6 +526,12 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrs?: PrSummary[];
   /** Opens the lane-filtered PR list from a multi-PR counter. */
   onOpenLanePrs?: () => void;
+  /**
+   * Opens the lane PR in this session's PR tool. The pill and the hover card
+   * use it; only PR lists still go to the PRs tab. Absent for a row on another
+   * machine, whose PR opens there.
+   */
+  onOpenLanePrInChat?: (pr: PrSummary) => void;
   /**
    * True when this card's lane lives on another machine. The PR itself is read
    * from that machine; only its click-through has to change, because the PRs tab
@@ -1108,7 +1127,10 @@ export const SessionCard = React.memo(function SessionCard({
           ) : null}
         </span>
       ),
-      onActivate: () => openLanePr(lanePr, { foreign: lanePrForeign, navigate }),
+      onActivate: () => {
+        if (onOpenLanePrInChat) onOpenLanePrInChat(lanePr);
+        else openLanePr(lanePr, { foreign: lanePrForeign, navigate });
+      },
       activateLabel: `Open pull request #${lanePr.githubPrNumber}`,
       testId: "session-hover-pr",
     });
@@ -1208,6 +1230,13 @@ export const SessionCard = React.memo(function SessionCard({
       mono: true,
     });
   }
+  if (session.activeGoal) {
+    hoverRows.push({
+      id: "goal",
+      icon: <Target size={13} weight="duotone" className="text-amber-300/70" />,
+      value: sessionGoalTitle(session.activeGoal),
+    });
+  }
   if (session.nextWakeAt) {
     const wakeIn = formatFutureDuration(Date.parse(session.nextWakeAt), Date.now());
     // Neutral, never amber: a scheduled wake is the agent's move, not yours.
@@ -1300,8 +1329,25 @@ export const SessionCard = React.memo(function SessionCard({
      and machine marks: identity-adjacent state that never spends a status hue
      and never competes with the status slot for the eye. Glyph-only, with the
      sentence in the title and the hover card — the existing vocabulary. */
-  const indicatorGlyph = rowIndicators.length > 0 ? (
+  // A chat working toward a goal says so, in the same quiet glyph cluster.
+  const activeGoal = session.activeGoal ?? null;
+  const goalTitle = activeGoal ? sessionGoalTitle(activeGoal) : null;
+  const indicatorGlyph = rowIndicators.length > 0 || activeGoal ? (
     <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
+      {activeGoal && goalTitle ? (
+        <span
+          data-testid="session-goal-indicator"
+          role="img"
+          title={goalTitle}
+          aria-label={goalTitle}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            activeGoal.status === "active" ? "text-amber-300/80" : "text-muted-fg/55",
+          )}
+        >
+          <Target size={11} weight="duotone" />
+        </span>
+      ) : null}
       {rowIndicators.map((indicator) => (
         <span
           key={indicator.kind}
@@ -1326,6 +1372,7 @@ export const SessionCard = React.memo(function SessionCard({
       pr={lanePr}
       prs={lanePrList}
       onOpen={(target) => openLanePr(target, { foreign: lanePrForeign, navigate })}
+      onOpenPill={onOpenLanePrInChat}
       onOpenList={onOpenLanePrs}
     />
   ) : null;
@@ -1652,6 +1699,12 @@ export const SessionCard = React.memo(function SessionCard({
         // Source for the Cursor-style work grid: drop onto a session / the work
         // area to add this chat or CLI session to a grid.
         event.dataTransfer.setData(GRID_SESSION_DND_MIME, session.id);
+        // Dropped on a composer, the row becomes an @-mention of itself.
+        event.dataTransfer.setData(CHAT_MENTION_DND_MIME, JSON.stringify({
+          kind: isChatToolType(session.toolType) ? "chat" : "terminal",
+          id: session.id,
+          title: session.title?.trim() || session.id,
+        }));
         event.dataTransfer.effectAllowed = "copyMove";
       }}
     >

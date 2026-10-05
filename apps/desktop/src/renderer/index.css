@@ -30,7 +30,10 @@
   /* Both Apple fallbacks are unresolvable off macOS, so a Windows box with no
      Geist landed on Arial. `system-ui` and "Segoe UI" keep it on the platform
      UI face instead — same stack webclient.html already ships. */
-  --font-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* A theme may set its own interface face through `--theme-font-sans`. The
+     Interface font preference writes `--font-sans` inline on <html>, which still
+     wins, so a user's explicit choice is never overridden by a theme. */
+  --font-sans: var(--theme-font-sans, "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
   --animate-pulse: ade-duty-pulse 2s infinite;
   --animate-ping: ade-duty-ping 2s infinite;
@@ -422,6 +425,47 @@ body {
   height: 100%;
 }
 
+/* Sharp corners reach past the radius variables. Most corners are the
+   `--radius-*` variables, which a theme's flair already sets, but a few hundred
+   surfaces state a radius of their own, inline or as an arbitrary utility. A
+   stylesheet `!important` outranks an inline value, so one rule squares them.
+   Circles (999px, 50%, rounded-full) keep their shape, and nothing here runs
+   unless the active theme asked for sharp corners. */
+html[data-theme-radius="sharp"] :is([style*="border-radius"], [class*="rounded-["]):not([style*="999"], [style*="50%"], [class*="rounded-full"]) {
+  border-radius: var(--radius-sm) !important;
+}
+
+/* A theme with its own depth (hard, flat or glow) applies it to the main
+   surfaces that draw their own shadow. The shadow values are the engine's
+   `--shadow-*` variables, so the theme's colours and offsets come through. */
+html[data-theme-shadow] :is(.ade-settings-panel, .ade-theme-stage, .ade-theme-search, .ade-settings-toolbar) {
+  box-shadow: var(--shadow-card) !important;
+}
+
+html[data-theme-shadow] :is([role="dialog"], [role="alertdialog"]) {
+  box-shadow: var(--shadow-modal) !important;
+}
+
+html[data-theme-shadow] :is([role="menu"], [role="listbox"]) {
+  box-shadow: var(--shadow-popup) !important;
+}
+
+/* A theme's backdrop: one static layer over the whole window (grid, dots,
+   scanlines, grain or aurora light). The engine writes the image, size and
+   opacity as `--ade-flair-backdrop*` on <html> and `applyTheme` sets the
+   attribute only while a theme has one. It never takes a click, and it paints
+   no filter or blend mode, so it costs one composited layer. */
+html[data-theme-backdrop]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  background-image: var(--ade-flair-backdrop);
+  background-size: var(--ade-flair-backdrop-size, auto);
+  opacity: var(--ade-flair-backdrop-opacity, 1);
+}
+
 body {
   margin: 0;
   color: var(--color-fg);
@@ -445,6 +489,29 @@ pre,
 kbd,
 samp {
   font-family: var(--font-mono);
+}
+
+/* lib/xtermCursorBlink.ts drives a focused cursor's blink: xterm's own
+   `step-end` keyframes stay, held paused at 25% (on) or 75% (off) and flipped
+   every 500 ms, so the cursor looks the same without a running animation
+   re-styling it every display frame. */
+.ade-xterm-blink-clock .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-play-state: paused !important;
+  animation-delay: -250ms !important;
+}
+.ade-xterm-blink-clock.ade-xterm-blink-off .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-delay: -750ms !important;
+}
+
+/* The app's text selection color. Chromium inherits ::selection from the
+   parent's ::selection, so one rule on the app root colors every descendant,
+   and a nested `selection:` class still wins for its own subtree. Tailwind's
+   `selection:bg-accent/30` compiles to `.x *::selection`, a descendant rule
+   matched against every element on every restyle, so do not use the variant
+   on a large container. The accent resolves on the root; nothing below it
+   overrides --color-accent. */
+.ade-app-selection::selection {
+  background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
 }
 
 /* Keep xterm glyph metrics isolated from global typography rules. */
@@ -597,7 +664,7 @@ h6 {
   color: var(--shell-project-tab-fg);
   background: var(--shell-project-tab-bg);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   outline: none;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -644,7 +711,7 @@ h6 {
   color: var(--shell-control-fg);
   background: var(--shell-control-bg);
   border: 1px solid var(--shell-control-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline: none;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
@@ -967,7 +1034,7 @@ h6 {
   align-items: center;
   justify-content: center;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--shell-sidebar-item-fg);
   background: transparent;
   outline: none;
@@ -1439,7 +1506,7 @@ body.ade-project-sidebar-resizing {
   height: 24px;
   margin-right: -4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-muted-fg);
   cursor: pointer;
@@ -1482,7 +1549,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 400;
   color: var(--color-fg);
@@ -1595,7 +1662,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   gap: 1px;
   padding: 2px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--work-pane-border);
 }
@@ -1605,7 +1672,7 @@ body.ade-project-sidebar-resizing {
   align-items: center;
   justify-content: center;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   font-size: 10px;
@@ -1936,7 +2003,7 @@ body.ade-project-sidebar-resizing {
 
 /* Smaller radii + thinner borders for density */
 .ade-lane-column .ade-floating-pane {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* Narrower pane gutters in dense mode */
@@ -2133,7 +2200,7 @@ button, [role="button"] {
   background: transparent;
   color: inherit;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   text-align: left;
   font: inherit;
   cursor: pointer;
@@ -2151,7 +2218,7 @@ button, [role="button"] {
   max-width: min(280px, calc(100vw - 24px));
   background: var(--color-popup-bg, #151325);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 7px 10px 8px;
   box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(24px);
@@ -2294,15 +2361,54 @@ button, [role="button"] {
 /* The Work sidebar's "Working" status label breathes — the one row state that
    is actively changing under you gets the only ambient motion in the list.
    Amplitude is deliberately small: this is a sign of life, not an alert, and
-   `motion-safe:` gates it away entirely for reduced-motion users. */
+   `motion-safe:` gates it away entirely for reduced-motion users.
+
+   The breathe is an `ease-in-out` 1 -> 0.62 -> 1 opacity cycle held at
+   0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
+   the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
+   changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
+   smooth opacity animation makes the compositor draw every display frame. To
+   change the range, re-derive the stops from the same curve. */
 @keyframes ade-session-working-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.62;
-  }
+  0% { opacity: 1.00; }
+  5.76% { opacity: 0.98; }
+  9.84% { opacity: 0.96; }
+  12.61% { opacity: 0.94; }
+  14.87% { opacity: 0.92; }
+  16.85% { opacity: 0.90; }
+  18.64% { opacity: 0.88; }
+  20.32% { opacity: 0.86; }
+  21.92% { opacity: 0.84; }
+  23.47% { opacity: 0.82; }
+  25% { opacity: 0.80; }
+  26.53% { opacity: 0.78; }
+  28.08% { opacity: 0.76; }
+  29.68% { opacity: 0.74; }
+  31.36% { opacity: 0.72; }
+  33.15% { opacity: 0.70; }
+  35.13% { opacity: 0.68; }
+  37.39% { opacity: 0.66; }
+  40.16% { opacity: 0.64; }
+  44.24% { opacity: 0.62; }
+  55.76% { opacity: 0.64; }
+  59.84% { opacity: 0.66; }
+  62.61% { opacity: 0.68; }
+  64.87% { opacity: 0.70; }
+  66.85% { opacity: 0.72; }
+  68.64% { opacity: 0.74; }
+  70.32% { opacity: 0.76; }
+  71.92% { opacity: 0.78; }
+  73.47% { opacity: 0.80; }
+  75% { opacity: 0.82; }
+  76.53% { opacity: 0.84; }
+  78.08% { opacity: 0.86; }
+  79.68% { opacity: 0.88; }
+  81.36% { opacity: 0.90; }
+  83.15% { opacity: 0.92; }
+  85.13% { opacity: 0.94; }
+  87.39% { opacity: 0.96; }
+  90.16% { opacity: 0.98; }
+  94.24% { opacity: 1.00; }
 }
 
 /* Session row detail tooltips render a key/value list, one pair per line.
@@ -2564,7 +2670,7 @@ button, [role="button"] {
    just never animates. */
 .ade-tool-card {
   position: relative;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-card) 82%, transparent);
   box-shadow:
@@ -3325,8 +3431,54 @@ button, [role="button"] {
   }
 }
 
+/* Send, merged with the pending-comments pill (ComposerThreadCommentsButton).
+   Every Send variant marks its round wrapper `data-send-control` and its
+   buttons `data-send-part`, so one rule set covers all of them: square the
+   left edge where the comments half meets Send, and take the accent fill. */
+.ade-send-cluster[data-carrying-comments="true"] [data-send-control],
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part] {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled) {
+  background-color: var(--chat-accent, #8b5cf6);
+  border-color: rgb(0 0 0 / 0.15);
+  color: #fff;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+/* Thread comments: painted by the CSS Custom Highlight API (ThreadCommentLayer),
+   so the reply's DOM is never changed. Pending = goes with the next send;
+   held = kept but not sent; active = the one being read or edited. */
+::highlight(ade-thread-comment) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 22%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 75%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-held) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 9%, transparent);
+  text-decoration: underline dashed;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-active) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 38%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--chat-accent, #8b5cf6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
 .ade-liquid-glass-menu {
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));
   background: linear-gradient(
     180deg,
@@ -3595,7 +3747,7 @@ button, [role="button"] {
   min-width: calc(var(--ade-work-header-side-h, 28px) * 2);
   height: var(--ade-work-header-side-h, 28px);
   min-height: var(--ade-work-header-side-h, 28px);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, white 8%, transparent);
   background: transparent;
   box-shadow: 0 1px 2px -1px rgba(0, 0, 0, 0.14);
@@ -4015,7 +4167,7 @@ button, [role="button"] {
   min-width: 0;
   max-width: 180px;
   padding: 0 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: none;
   background: color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 18%, transparent);
@@ -4129,7 +4281,7 @@ button, [role="button"] {
   font-size: 11px;
   line-height: 1;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   box-shadow: none;
   padding-inline: 6px;
@@ -4179,7 +4331,7 @@ button, [role="button"] {
   font-size: 9px;
   line-height: 1;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   box-shadow: none;
 }
@@ -4352,7 +4504,7 @@ button, [role="button"] {
   height: var(--ade-work-header-side-h, 36px);
   margin-left: 4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-muted-fg);
   cursor: pointer;
@@ -4449,6 +4601,42 @@ button, [role="button"] {
   z-index: 1;
 }
 
+/*
+ * Opaque variant for chat menus that float over the transcript (the model chip's
+ * option list, the `@` / `/` command menu). The glass background is 88–92% alpha
+ * and its backdrop blur does not take effect in these portaled menus, so
+ * transcript text showed through. Flatten `--work-popover-bg` over `--color-bg`
+ * for an opaque plate that works in both themes; do not change the glass itself,
+ * other surfaces rely on it.
+ */
+.ade-chat-drawer-solid {
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Work filter panel: the lane dropdown shares the chips' edge in both themes. */
+.ade-work-filter-panel .ade-lane-trigger {
+  border-color: var(--work-pane-border);
+}
+
+.ade-work-filter-panel .ade-lane-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+/* A chosen lane reads "on", like a chip. */
+.ade-work-filter-panel [data-on="true"] > .ade-lane-trigger {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+/* The lane popover takes focus only to route arrow keys; its highlighted row is the focus cue. */
+.ade-lane-popover:focus {
+  outline: none;
+}
+
 /* Row in a chat drawer — glass-on-glass avoidance: flat rows, accent on hover */
 .ade-chat-drawer-row {
   transition: background 140ms ease, color 140ms ease;
@@ -4495,7 +4683,7 @@ button, [role="button"] {
 /* Task row — flat base, accent fill only when in-progress */
 .ade-chat-task-row {
   position: relative;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   transition: background 140ms ease, color 140ms ease;
 }
 
@@ -4655,7 +4843,7 @@ button, [role="button"] {
   content: "";
   position: absolute;
   inset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 0 8px 2px rgba(59, 130, 246, 0.22);
   pointer-events: none;
 }
@@ -4795,6 +4983,13 @@ button, [role="button"] {
 .ade-prose-themed.ade-thought-text,
 .ade-prose-themed.ade-thought-text :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
   color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+/* A markdown brief inside the user's message bubble (MarkdownBlock
+   tone="bubble"). The bubble is the accent colour, so text stays white. */
+.ade-prose-themed.ade-bubble-prose,
+.ade-prose-themed.ade-bubble-prose :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: rgba(255, 255, 255, 0.95);
 }
 
 /* The live block's viewport. Its font size and line height match the thought
@@ -5211,17 +5406,6 @@ button, [role="button"] {
   animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
 }
 
-/* Project and route surfaces stay mounted for fast switching. Pause their CSS
-   animations while parked so hidden keep-alive trees cannot keep rendering. */
-[data-ade-animation-state="paused"],
-[data-ade-animation-state="paused"] *,
-[data-ade-animation-state="paused"]::before,
-[data-ade-animation-state="paused"]::after,
-[data-ade-animation-state="paused"] *::before,
-[data-ade-animation-state="paused"] *::after {
-  animation-play-state: paused !important;
-}
-
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
   transition: none;
@@ -5270,7 +5454,7 @@ button, [role="button"] {
 .ade-settings-panel {
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
   overflow: hidden;
@@ -5287,7 +5471,7 @@ button, [role="button"] {
 .ade-settings-toolbar {
   display: inline-flex;
   align-items: stretch;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   background: color-mix(in srgb, var(--color-fg) 3%, transparent);
 }
@@ -5344,7 +5528,7 @@ button, [role="button"] {
 .ade-theme-stage {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
   overflow: hidden;
@@ -5419,6 +5603,50 @@ button, [role="button"] {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
 }
 
+/* A short label for one non-colour part of a theme (corners, depth, type). */
+.ade-theme-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--color-muted-fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+/* The theme search field above the gallery. */
+.ade-theme-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-recessed);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-border) 70%, transparent);
+  color: var(--color-muted-fg);
+}
+
+.ade-theme-search:focus-within {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.ade-theme-search input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg);
+}
+
+.ade-theme-search input::placeholder {
+  color: var(--color-muted-fg);
+}
+
 /* The family grid: a swatch split on the diagonal, light over dark. */
 .ade-swatch-grid {
   display: grid;
@@ -5442,7 +5670,7 @@ button, [role="button"] {
 .ade-swatch {
   position: relative;
   height: 76px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
   transition: box-shadow 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -5704,7 +5932,7 @@ html[data-motion="reduced"] *::after {
 .ade-chat-preview-stage {
   position: relative;
   padding: 22px 22px 0;
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background:
     radial-gradient(90% 70% at 50% 0%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 70%),
@@ -5802,6 +6030,11 @@ html[data-motion="reduced"] *::after {
     align-items: start;
     gap: 24px;
   }
+  /* The gallery is long, so the stage stays in view while you browse it. */
+  .ade-theme-stage {
+    position: sticky;
+    top: 8px;
+  }
   /* Beside the stage the preview gets the height the page has. */
   .ade-chat-preview-frame {
     max-height: calc(100vh - 230px);
@@ -5825,7 +6058,7 @@ html[data-motion="reduced"] *::after {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   background: color-mix(in srgb, var(--color-fg) 3%, transparent);
   color: var(--color-fg);
@@ -5877,7 +6110,7 @@ html[data-motion="reduced"] *::after {
 .ade-settings-time {
   height: 30px;
   padding: 0 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   background: color-mix(in srgb, var(--color-fg) 3%, transparent);
   color: var(--color-fg);
@@ -5898,7 +6131,7 @@ html[data-motion="reduced"] *::after {
   flex-direction: column;
   gap: 6px;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
   min-width: 0;
@@ -5910,7 +6143,7 @@ html[data-motion="reduced"] *::after {
   grid-template-columns: minmax(0, 1fr);
   gap: 24px;
   padding: 22px;
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
 }
@@ -5925,7 +6158,7 @@ html[data-motion="reduced"] *::after {
 .ade-usage-totals {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
   overflow: hidden;
@@ -6042,7 +6275,7 @@ html[data-motion="reduced"] *::after {
   gap: 10px;
   min-width: 0;
   padding: 14px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-fg) 2%, transparent);
   text-align: left;
@@ -6083,7 +6316,7 @@ html[data-motion="reduced"] *::after {
   gap: 6px;
   height: 30px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-fg) 4%, transparent);
   color: var(--color-fg);
@@ -6182,7 +6415,7 @@ html[data-motion="reduced"] *::after {
 .ade-settings-input {
   height: 32px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-bg) 60%, transparent);
   color: var(--color-fg);
@@ -6227,4 +6460,39 @@ html[data-motion="reduced"] *::after {
   border-color: transparent;
   background: transparent;
   color: var(--color-muted-fg);
+}
+/* The Work import hint keeps its full label and sheds provider marks as the
+   window narrows. */
+.import-chat-pill {
+  width: max-content;
+  max-width: 100%;
+}
+
+.import-chat-pill__action {
+  flex-wrap: nowrap;
+}
+
+.import-chat-pill__label {
+  white-space: nowrap;
+}
+
+.import-chat-pill__container {
+  container-name: import-chat-pill;
+  container-type: inline-size;
+}
+
+@container import-chat-pill (max-width: 620px) {
+  .import-chat-pill__provider:nth-child(n + 8) { display: none; }
+}
+
+@container import-chat-pill (max-width: 520px) {
+  .import-chat-pill__provider:nth-child(n + 6) { display: none; }
+}
+
+@container import-chat-pill (max-width: 440px) {
+  .import-chat-pill__provider:nth-child(n + 4) { display: none; }
+}
+
+@container import-chat-pill (max-width: 360px) {
+  .import-chat-pill__provider { display: none; }
 }

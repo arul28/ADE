@@ -12,6 +12,7 @@
 import React from "react";
 import { ArrowClockwise } from "@phosphor-icons/react";
 import type {
+  AdeUsageCostBreakdownTotals,
   AdeUsageDailyPoint,
   AdeUsageMachineContribution,
   AdeUsageModelSummary,
@@ -20,7 +21,7 @@ import type {
   AdeUsageScope,
   AdeUsageStats,
 } from "../../../shared/types";
-import { formatCost, formatTokens, relativeTimeCompact } from "../../lib/format";
+import { formatSpend, formatTokens, relativeTimeCompact } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
@@ -33,11 +34,14 @@ import {
   selectTopSeries,
 } from "../usage/UsageDailyChart";
 import { UsagePooledLimits } from "../usage/UsagePooledLimits";
+import { CostSplitBars } from "../usage/UsageCostSplit";
+import { sumCostSplitsOrNull } from "../../../shared/usageCostSplit";
+import { UsageBreakdown } from "./UsageBreakdown";
+import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import {
   USAGE_BUTTON_CLASS,
   USAGE_DIVIDER_COLOR_CLASS,
   USAGE_EYEBROW_CLASS,
-  USAGE_HAIRLINE_CLASS,
   USAGE_HOVER_ROW_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
@@ -118,10 +122,6 @@ function persistPreset(preset: AdeUsageRangePreset): void {
 
 function formatWhole(value: number): string {
   return Math.max(0, Math.floor(value || 0)).toLocaleString();
-}
-
-function formatUsd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
 }
 
 function humanizeProvider(provider: string): string {
@@ -357,13 +357,21 @@ function CostHero({
   providers,
   loading,
   pricingUpdatedAt,
+  billing,
+  theme,
 }: {
   costUsd: number;
   providers: AdeUsageProviderSummary[];
   loading: boolean;
   /** When the public rate list was last fetched; null = built-in rates only. */
   pricingUpdatedAt?: string | null;
+  /** ADE chats' billed dollars and plan value, from the per-turn ledger. */
+  billing: AdeUsageCostBreakdownTotals | null;
+  theme: "dark" | "light";
 }) {
+  // The page total's split is the providers' splits added up, shown only when
+  // every provider with a cost sent one: a partial split would mislead.
+  const split = sumCostSplitsOrNull(providers.filter((provider) => provider.rangeCostUsd > 0).map((provider) => provider.costSplit));
   const estimated = providers
     .map((provider) => {
       const note = estimationNote(provider.estimation);
@@ -382,7 +390,7 @@ function CostHero({
     <div className="flex flex-col gap-2">
       <span className={USAGE_EYEBROW_CLASS}>Estimated cost</span>
       <span className={cn(USAGE_TEXT.hero, USAGE_NUMERIC_CLASS, "font-semibold text-fg")}>
-        {loading ? "—" : `${formatUsd(costUsd)}*`}
+        {loading ? "—" : `${formatSpend(costUsd)}*`}
       </span>
       <span
         className={cn(USAGE_TEXT.micro, "cursor-help text-muted-fg")}
@@ -395,6 +403,18 @@ function CostHero({
       >
         * {footnote}
       </span>
+      {billing && billing.turns > 0 && !loading ? (
+        <span
+          className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-muted-fg")}
+          title="From ADE's per-turn ledger: chats ADE ran on this machine. Billed is what API keys and routed accounts were charged; plan value is what subscription turns would have cost at list prices."
+        >
+          {"ADE chats · billed to API keys "}
+          <span className="text-fg">{formatSpend(billing.billedUsd)}</span>
+          {" · plan value "}
+          <span className="text-fg">{formatSpend(billing.planValueUsd)}</span>
+        </span>
+      ) : null}
+      {!loading ? <CostSplitBars split={split} theme={theme} /> : null}
     </div>
   );
 }
@@ -466,7 +486,7 @@ function ProviderCostSplit({
                 {humanizeProvider(provider.provider)}
               </span>
               <span className={cn(USAGE_TEXT.body, USAGE_NUMERIC_CLASS, "text-fg")}>
-                {formatUsd(provider.rangeCostUsd)}
+                {formatSpend(provider.rangeCostUsd)}
               </span>
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -482,69 +502,6 @@ function ProviderCostSplit({
         );
       })}
     </div>
-  );
-}
-
-/** Top models by cost. */
-function ModelBreakdown({ models }: { models: AdeUsageModelSummary[] }) {
-  const top = models.slice(0, 10);
-  const total = models.reduce((sum, model) => sum + Math.max(0, model.costUsd), 0);
-
-  return (
-    <>
-      {top.length === 0 ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>
-          No model activity in this range.
-        </p>
-      ) : (
-        <table className={cn(USAGE_TEXT.detail, "w-full")}>
-          <thead>
-            <tr
-              className={cn(
-                USAGE_TEXT.micro,
-                "border-b text-left text-muted-fg",
-                USAGE_HAIRLINE_CLASS,
-              )}
-            >
-              <th className="py-2 font-normal">Model</th>
-              <th className="py-2 text-right font-normal">Cost</th>
-              <th className="py-2 text-right font-normal">Share</th>
-              <th className="py-2 text-right font-normal">Tokens</th>
-            </tr>
-          </thead>
-          <tbody>
-            {top.map((model) => {
-              const cost = model.costUsd;
-              const share = total > 0 ? cost / total : 0;
-              return (
-                <tr
-                  key={`${model.provider}:${model.model}`}
-                  className={cn(
-                    "border-b last:border-b-0 hover:bg-muted",
-                    USAGE_DIVIDER_COLOR_CLASS,
-                    USAGE_HOVER_ROW_CLASS,
-                  )}
-                >
-                  <td className="py-2 pl-2 text-fg">
-                    <span className="flex items-center gap-2">
-                      <ProviderLogo family={model.provider} size={14} />
-                      {model.model}
-                    </span>
-                  </td>
-                  <td className={cn("py-2 text-right text-fg", USAGE_NUMERIC_CLASS)}>{formatUsd(cost)}</td>
-                  <td className={cn("py-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
-                    {`${Math.round(share * 100)}%`}
-                  </td>
-                  <td className={cn("py-2 pr-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
-                    {formatTokens(model.totalTokens)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </>
   );
 }
 
@@ -665,6 +622,8 @@ export function AdeUsageSection() {
   const [error, setError] = React.useState<string | null>(null);
   const [metric, setMetric] = React.useState<"cost" | "tokens">("cost");
   const [highlighted, setHighlighted] = React.useState<string | null>(null);
+  const [detailModel, setDetailModel] = React.useState<AdeUsageModelSummary | null>(null);
+  const [billing, setBilling] = React.useState<AdeUsageCostBreakdownTotals | null>(null);
   const loadSeqRef = React.useRef(0);
 
   const loadStats = React.useCallback(
@@ -780,6 +739,48 @@ export function AdeUsageSection() {
     return () => unsubscribe?.();
   }, [cacheScope, loadStats, preset, scope]);
 
+  // Billed vs plan value for ADE's own chats rides the per-turn ledger, read
+  // per range whenever the stats reload. A host without the action shows none.
+  React.useEffect(() => {
+    if (!stats || typeof window.ade?.usage?.getCostBreakdown !== "function") {
+      setBilling(null);
+      return;
+    }
+    let cancelled = false;
+    // "This project" reads its own chats (grouped by lane); the machine and
+    // account views read every ADE chat on the machine (grouped by account).
+    void window.ade.usage.getCostBreakdown({ by: scope === "project" ? "lane" : "account", preset, limit: 1 })
+      .then((result) => {
+        if (!cancelled) setBilling(result?.available ? result.totals : null);
+      })
+      .catch(() => {
+        if (!cancelled) setBilling(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preset, scope, stats]);
+
+  // C and T switch the metric, the way the segmented control does, unless a
+  // field or a dialog has the keyboard.
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || detailModel) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], [role='dialog']")) return;
+      const key = event.key.toLowerCase();
+      if (key === "c") setMetric("cost");
+      else if (key === "t") setMetric("tokens");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailModel]);
+
+  const knownModels = React.useMemo(
+    () => Array.from(new Set((stats?.models ?? []).map((model) => model.model))).sort(),
+    [stats?.models],
+  );
+
   const changeScope = React.useCallback((next: AdeUsageScope) => {
     setScope(next);
     persistScope(next);
@@ -868,7 +869,7 @@ export function AdeUsageSection() {
       const undated = rangeCost - chartedCost;
       if (undated > 0.01 && undated / rangeCost > 0.01) {
         notes.push(
-          `${formatUsd(undated)} of this total comes from records with no date and isn't on the daily chart.`,
+          `${formatSpend(undated)} of this total comes from records with no date and isn't on the daily chart.`,
         );
       }
     }
@@ -909,9 +910,16 @@ export function AdeUsageSection() {
   );
 
   const breakdown = (
-    <SettingsSection title="Breakdown" description="Top models in this range.">
-      <div className="ade-settings-panel" style={{ padding: "4px 14px" }}>
-        <ModelBreakdown models={stats?.models ?? []} />
+    <SettingsSection title="Breakdown" description="What the range's spend went to. Select a model for its detail and price.">
+      <div className="ade-settings-panel" style={{ padding: "8px 14px" }}>
+        <UsageBreakdown
+          models={stats?.models ?? []}
+          preset={preset}
+          scope={scope}
+          metric={effectiveMetric}
+          reloadKey={stats}
+          onOpenModel={setDetailModel}
+        />
       </div>
     </SettingsSection>
   );
@@ -982,6 +990,8 @@ export function AdeUsageSection() {
                     // not zero.
                     loading={loading || !stats}
                     pricingUpdatedAt={stats?.pricingUpdatedAt}
+                    billing={billing}
+                    theme={theme}
                   />
                   <ProviderCostSplit
                     providers={stats?.providers ?? []}
@@ -1032,7 +1042,7 @@ export function AdeUsageSection() {
                   label="Output"
                   source="Providers"
                   value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
-                  detail={summary ? `${formatUsd(summary.observedProviderCostTodayUsd)} today` : ""}
+                  detail={summary ? `${formatSpend(summary.observedProviderCostTodayUsd)} today` : ""}
                 />
                 <Metric label="Lines changed" {...codeMovement} />
                 <Metric
@@ -1077,6 +1087,15 @@ export function AdeUsageSection() {
             ) : null}
           </>
         )}
+
+        <UsageModelDetailDialog
+          model={detailModel}
+          preset={preset}
+          scope={scope}
+          theme={theme}
+          knownModels={knownModels}
+          onClose={() => setDetailModel(null)}
+        />
 
         {/* Pooled live limits belong to the account scope only: "This machine"
             and "This project" are single-environment views, and the top-bar

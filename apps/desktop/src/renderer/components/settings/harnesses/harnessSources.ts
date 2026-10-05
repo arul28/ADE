@@ -34,7 +34,8 @@ export type HarnessAccountSource = {
   email?: string;
   plan?: string;
   signedIn: boolean;
-  accentColor?: string;
+  /** The account is known but its saved login stopped working. */
+  loginBroken?: boolean;
 };
 
 /** One stored-key row. `credentialId` is the reference a preset saves. */
@@ -60,7 +61,7 @@ function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
     ...(instance.account?.email ? { email: instance.account.email } : {}),
     ...(instance.account?.plan ? { plan: instance.account.plan } : {}),
     signedIn: instance.signedIn === true,
-    ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
+    ...(instance.loginBroken ? { loginBroken: true } : {}),
   };
 }
 

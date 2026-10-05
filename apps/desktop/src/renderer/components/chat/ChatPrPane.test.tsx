@@ -446,10 +446,10 @@ describe("ChatPrPane", () => {
     expect(screen.queryByRole("button", { name: /#12/ })).toBeNull();
   });
 
-  // Checks, reviews and merge status belong to ONE pull request. The chips
-  // switch the selection synchronously, so without a clear the previous PR's
-  // enriched detail stayed on screen under the new PR's title — and drove the
-  // pane's red/green accent — until three GitHub reads came back.
+  // Checks, reviews and merge status belong to ONE pull request. The
+  // pr-switcher steps the selection synchronously, so without a clear the
+  // previous PR's enriched detail stayed on screen under the new PR's title —
+  // and drove the pane's red/green accent — until three GitHub reads came back.
   it("clears the previous PR's checks when another linked PR is selected", async () => {
     const primary = makePr({
       id: "pr-primary",
@@ -489,7 +489,7 @@ describe("ChatPrPane", () => {
 
     expect(await screen.findByText("1/2 checks failing")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /#12/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Next pull request" }));
 
     await waitFor(() => {
       expect(screen.getByText("PR #12")).toBeTruthy();

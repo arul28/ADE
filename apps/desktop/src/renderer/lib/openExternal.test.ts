@@ -1,7 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openLinkFromUi, openUrlInAdeBrowser, setLinkOpenMode } from "./openExternal";
+import {
+  ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  openLinkFromUi,
+  openUrlInAdeBrowser,
+  setLinkOpenMode,
+  setWindowRuntimeBinding,
+  type OpenBuiltInBrowserDetail,
+} from "./openExternal";
 import { resolveLinkOpenTarget } from "./linkOpenTarget";
 
 describe("openUrlInAdeBrowser", () => {
@@ -74,7 +81,37 @@ describe("openLinkFromUi", () => {
     return { navigate, openExternal };
   }
 
-  afterEach(() => setLinkOpenMode("in-app"));
+  afterEach(() => {
+    setLinkOpenMode("in-app");
+    setWindowRuntimeBinding(null);
+    vi.useRealTimers();
+  });
+
+  const studio = { kind: "remote", key: "remote:studio:project-1", targetId: "studio" } as never;
+
+  it.each([
+    ["from a chat pinned to it", studio, null],
+    ["from a window bound to it", undefined, studio],
+  ])("opens another machine's localhost in the ADE browser even when links go to the system browser (%s)", async (_label, chatPin, windowBinding) => {
+    vi.useFakeTimers();
+    const { navigate, openExternal } = installAde();
+    setLinkOpenMode("external");
+    setWindowRuntimeBinding(windowBinding as never);
+    const announced: Array<OpenBuiltInBrowserDetail> = [];
+    const listen = (event: Event) => announced.push((event as CustomEvent<OpenBuiltInBrowserDetail>).detail);
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, listen);
+
+    // The system browser would load THIS computer's port 4180, which is nothing.
+    openLinkFromUi("http://localhost:4180/", null, chatPin === undefined ? null : { runtimePin: chatPin });
+    // The Browser pane is revealed and may take the link itself...
+    expect(announced).toHaveLength(1);
+    // ...and when no pane does, the link still opens through the tunnel.
+    await vi.advanceTimersByTimeAsync(3_000);
+    window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, listen);
+
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith({ url: "http://localhost:4180/", newTab: true }, studio);
+  });
 
   it("completes a scheme-less terminal link before handing it to the OS opener", async () => {
     // `new URL("127.0.0.1:8080")` throws in main and the renderer swallows it,

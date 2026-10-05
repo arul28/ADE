@@ -3,10 +3,12 @@ import {
   claudeInputText,
   claudeNoticeMessages,
   claudeSdkCreateSessionCompat,
+  claudeSdkResumeSessionCompat,
   createAgentChatService,
   createClaudeStreamFixture,
   createMemoryTurnUsageLedger,
   createService,
+  getSessionMessages,
   makeDefaultClaudeSession,
   path,
   query,
@@ -932,13 +934,14 @@ describe("createAgentChatService", () => {
             usage: { input_tokens: 220, output_tokens: 8 },
             session_id: "sdk-idle-ledger",
           };
-          // Background turn two: one request of its own.
+          // Background turn two: one request of its own. Claude reports the
+          // query's running total, so this turn's own cost is 0.03 - 0.02.
           yield requestStart("idle-2a", 140);
           yield {
             type: "result",
             subtype: "success",
             is_error: false,
-            total_cost_usd: 0.01,
+            total_cost_usd: 0.03,
             usage: { input_tokens: 140, output_tokens: 4 },
             session_id: "sdk-idle-ledger",
           };
@@ -971,11 +974,50 @@ describe("createAgentChatService", () => {
       });
       expect(idleDone[1]).toMatchObject({
         usage: { inputTokens: 140, requestCount: 1, contextTokens: 140 },
-        costUsd: 0.01,
         costSource: "list_price",
       });
+      expect(idleDone[1]?.costUsd).toBeCloseTo(0.01, 6);
       expect(rows.filter((row) => row.turnId.startsWith("claude-idle-")).map((row) => row.requestCount)).toEqual([2, 1]);
       service.forceDisposeAll();
+    });
+
+    it("prices a resumed Claude session's first turn from the running total it saved", async () => {
+      // A resumed session continues the total its transcript saved, so after a
+      // brain restart the first result already carries the earlier turns.
+      let total = 0.5;
+      const sdkSession = () => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-resume-cost", slash_commands: [] };
+          yield { type: "result", subtype: "success", is_error: false, total_cost_usd: total, usage: { input_tokens: 1, output_tokens: 1 }, session_id: "sdk-resume-cost" };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-resume-cost",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      }) as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(sdkSession);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(sdkSession);
+      const doneCosts = (events: AgentChatEventEnvelope[]) => events
+        .map((entry) => entry.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done")
+        .map((event) => event.costUsd);
+
+      const firstEvents: AgentChatEventEnvelope[] = [];
+      const first = createService({ onEvent: (event: AgentChatEventEnvelope) => firstEvents.push(event) });
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await first.service.runSessionTurn({ sessionId: session.id, text: "First turn." });
+      expect(doneCosts(firstEvents)).toEqual([0.5]);
+      expect(readPersistedChatState(session.id)).toMatchObject({ claudeResultCostTotalUsd: 0.5 });
+      first.service.forceDisposeAll();
+
+      total = 0.6;
+      const resumedEvents: AgentChatEventEnvelope[] = [];
+      const resumed = createService({ onEvent: (event: AgentChatEventEnvelope) => resumedEvents.push(event) });
+      await resumed.service.runSessionTurn({ sessionId: session.id, text: "Second turn after a restart." });
+      const resumedCosts = doneCosts(resumedEvents);
+      expect(resumedCosts).toHaveLength(1);
+      expect(resumedCosts[0]).toBeCloseTo(0.1, 6);
+      resumed.service.forceDisposeAll();
     });
 
     it("stamps user_message_uuid from the first assistant frame onto done", async () => {
@@ -2344,6 +2386,109 @@ describe("createAgentChatService", () => {
         synthetic: true,
         source: "claude_turn_finalization",
         finalTurnStatus: "completed",
+      });
+    });
+
+    describe("a WebFetch that steps aside for a person's interrupt", () => {
+      const lateResult = "Origin is 203.0.113.7.";
+      const notificationRow = {
+        type: "user",
+        uuid: "notification-1",
+        session_id: "sdk-session-detached",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            "<task-notification>",
+            "<tool-use-id>fetch-1</tool-use-id>",
+            "<task-type>tool_call</task-type>",
+            "<status>completed</status>",
+            "<summary>The WebFetch call finished; its result follows.</summary>",
+            `<result>\n${lateResult}\n</result>`,
+            "</task-notification>",
+          ].join("\n"),
+        },
+      };
+
+      // Turn 1 calls WebFetch and gets Claude Code's placeholder in place of its
+      // result; turn 2 ("Anything else?") only reports a result.
+      const startDetachedFetch = async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        let releaseSecondTurn: () => void = () => {};
+        const secondTurnSent = new Promise<void>((resolve) => { releaseSecondTurn = resolve; });
+        const send = vi.fn(async (message: unknown) => {
+          if (claudeInputText(message).includes("Anything else?")) releaseSecondTurn();
+        });
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-detached", slash_commands: [] };
+            return;
+          }
+          yield {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", id: "fetch-1", name: "WebFetch", input: { url: "https://example.com/slow" } },
+            },
+          };
+          yield {
+            type: "user",
+            parent_tool_use_id: null,
+            message: { role: "user", content: [{ type: "tool_result", tool_use_id: "fetch-1", content: "[Still running.]" }] },
+            tool_use_result: { detachedToolCall: true },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          await secondTurnSent;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-detached",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        } as any);
+        const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await service.runSessionTurn({ sessionId: session.id, text: "Fetch the slow page." });
+        const fetchCall = events.find((event) => event.event.type === "tool_call" && event.event.itemId === "fetch-1");
+        const fetchTurnId = fetchCall?.event.type === "tool_call" ? fetchCall.event.turnId : undefined;
+        expect(fetchTurnId).toBeTruthy();
+        const fetchResults = () => events.flatMap((event) => (
+          event.event.type === "tool_result" && event.event.itemId === "fetch-1" ? [event.event] : []
+        ));
+        return { service, session, fetchTurnId, fetchResults };
+      };
+
+      it("keeps the row running past its turn and settles it with the late result under the turn that called it", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+        expect(fetchResults()).toEqual([]);
+
+        vi.mocked(getSessionMessages).mockResolvedValue([notificationRow] as any);
+        await service.runSessionTurn({ sessionId: session.id, text: "Anything else?" });
+
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", result: lateResult, turnId: fetchTurnId, status: "completed" }),
+        ]);
+      });
+
+      // Claude Code drops a detached call on any interrupt, so nothing else
+      // would ever settle the row.
+      it("closes the row as interrupted on Stop", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+
+        await service.interrupt({ sessionId: session.id });
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", turnId: fetchTurnId, status: "interrupted" }),
+        ]);
       });
     });
 

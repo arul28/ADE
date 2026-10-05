@@ -706,7 +706,27 @@ export function assertDevAdeHome() {
   );
 }
 
-export async function ensureRuntime(socketPath, projectRoot = null) {
+/** Whether a process exists. EPERM means it exists but belongs to someone else. */
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Start (or reuse) the dev brain on `socketPath`.
+ *
+ * `exitWithLauncher` ties a brain this call starts to the calling process: the
+ * brain exits when it is gone. `dev:desktop` passes it — its launcher lives for
+ * the whole session, Electron restarts included — so an app stopped without a
+ * clean signal (App Control closing its terminal) no longer leaves a brain on
+ * the shared home. `dev:runtime` does not: that brain is meant to outlive it.
+ */
+export async function ensureRuntime(socketPath, projectRoot = null, { exitWithLauncher = false } = {}) {
   try {
     const info = await getRuntimeInfo(socketPath);
     const mismatch = runtimeMismatchReason(info, { projectRoot });
@@ -736,7 +756,10 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   const syncArgs = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? [] : ["--no-sync"];
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath, ...syncArgs], {
     cwd: repoRoot,
-    env: detachedDevRuntimeEnv(socketPath, projectRoot),
+    env: {
+      ...detachedDevRuntimeEnv(socketPath, projectRoot),
+      ...(exitWithLauncher ? { ADE_RUNTIME_PARENT_PID: String(process.pid) } : {}),
+    },
     detached: true,
     // Detached means nobody is reading this process's output — without a log
     // file a dev daemon that dies at startup leaves no trace at all.
@@ -783,14 +806,7 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
 async function terminateSpawnedRuntime(child) {
   const pid = child?.pid;
   if (!pid) return;
-  const alive = () => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return error?.code === "EPERM";
-    }
-  };
+  const alive = () => isPidAlive(pid);
   try {
     process.kill(pid, "SIGTERM");
   } catch {

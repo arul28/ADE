@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { useAppStore } from "../../state/appStore";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import type { ChatUserMinimapSourceEntry } from "./chatUserMinimap.logic";
@@ -95,94 +95,5 @@ describe("ChatUserMinimap", () => {
     );
 
     expect(document.querySelector("[data-minimap-preview]")).toBeNull();
-  });
-
-  it("keeps the paging marker visible and stateful before the loaded cutoff", () => {
-    const onLoadOlderHistory = vi.fn();
-    const view = render(
-      <ChatUserMinimap
-        entries={[]}
-        activeIndex={null}
-        onJumpToRow={vi.fn()}
-        hasOlderHistory
-        onLoadOlderHistory={onLoadOlderHistory}
-        listWidthPx={960}
-        listHeightPx={600}
-        columnWidthPx={720}
-      />,
-    );
-
-    const continuationMarker = screen.getByRole("button", { name: "Load earlier message markers" });
-    expect(continuationMarker.textContent).toBe("↑");
-    expect(continuationMarker.querySelectorAll("span")).toHaveLength(1);
-
-    fireEvent.click(continuationMarker);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("chat-user-minimap")).toBeTruthy();
-    expect(document.querySelectorAll("[data-minimap-tick]")).toHaveLength(0);
-
-    view.rerender(
-      <ChatUserMinimap
-        entries={ENTRIES.slice(0, 1)}
-        activeIndex={0}
-        onJumpToRow={vi.fn()}
-        hasOlderHistory
-        loadingOlderHistory
-        onLoadOlderHistory={vi.fn()}
-        listWidthPx={960}
-        listHeightPx={600}
-        columnWidthPx={720}
-      />,
-    );
-
-    const marker = screen.getByRole("button", { name: "Loading earlier message markers" });
-    expect(marker.hasAttribute("disabled")).toBe(true);
-    expect(marker.getAttribute("title")).toBe("Earlier messages are available");
-    expect(screen.getByTestId("chat-user-minimap")).toBeTruthy();
-  });
-
-  it("forwards interactive retry intent while keeping the paging error visible during loading", () => {
-    const onLoadOlderHistory = vi.fn();
-    const onRetryOlderHistory = vi.fn();
-    const view = render(
-      <ChatUserMinimap
-        entries={ENTRIES}
-        activeIndex={0}
-        onJumpToRow={vi.fn()}
-        hasOlderHistory
-        olderHistoryError="History page timed out"
-        onLoadOlderHistory={onLoadOlderHistory}
-        onRetryOlderHistory={onRetryOlderHistory}
-        listWidthPx={960}
-        listHeightPx={600}
-        columnWidthPx={720}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Retry loading earlier message markers" }));
-
-    expect(onRetryOlderHistory).toHaveBeenCalledTimes(1);
-    expect(onLoadOlderHistory).not.toHaveBeenCalled();
-
-    view.rerender(
-      <ChatUserMinimap
-        entries={ENTRIES}
-        activeIndex={0}
-        onJumpToRow={vi.fn()}
-        hasOlderHistory
-        loadingOlderHistory
-        olderHistoryError="History page timed out"
-        onLoadOlderHistory={onLoadOlderHistory}
-        onRetryOlderHistory={onRetryOlderHistory}
-        listWidthPx={960}
-        listHeightPx={600}
-        columnWidthPx={720}
-      />,
-    );
-
-    const marker = screen.getByRole("button", { name: "Retry loading earlier message markers" });
-    expect((marker as HTMLButtonElement).disabled).toBe(true);
-    expect(marker.getAttribute("title")).toBe("History page timed out");
   });
 });

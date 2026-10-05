@@ -1,0 +1,41 @@
+---
+title: "v1.2.84"
+description: "Release notes for ADE v1.2.84 - September 30, 2026"
+---
+
+ADE 1.2.84 ships project right-click menus and Chrome-style tab drag, real model logos with each provider's own permission modes on the composer chip, and account balancing that keeps provider logins alive.
+
+## Desktop
+
+- Projects get a right-click menu on their tabs and on the start page, including **Clone locally** (#1403).
+- Project tabs drag like Chrome: reorder, tear a tab off into its own window, and drop it onto another ADE window (#1403).
+- Project icons are stored host-side, so a chosen icon follows the project to every machine; an icon replaced by a new upload is deleted (#1403).
+- The post-update dialog parses changelog pages that begin at a heading instead of flattening them into one paragraph.
+
+## Chat
+
+- The composer model chip shows the maker's real logo, a thinking level coloured like the footer reasoning control, and the provider's own permission modes; old tokens still parse (#1400).
+- The `@` menu groups Models, Chats, Lanes, Files, and Terminals, ranks the best match first, and expands a "+ N more" row in place. The `/` menu uses the same shared ranking and groups Commands, Skills, and MCP prompts (#1400).
+- OpenCode model chips keep their reasoning tiers without opening the model picker first (#1402).
+- A Claude model chip draws the maker mark once, not the harness mark a second time (#1401).
+- A PR pill in a chat header, session card, or lane divider opens that PR in the chat's own PR tool, with a compact switcher in the PR pane. A merged PR on a lane's branch history links back to the chat that was open when it was created, and the old `+N` chip is now a caret (#1405).
+
+## Accounts
+
+- Smart balance runs in the brain and can no longer be left unwired; it skips signed-out logins and scores new chats by the room an account must burn before it resets (#1404).
+- ADE no longer refreshes a Claude OAuth token itself, so the CLI's saved login is not rotated away (#1404).
+- A usage-limited chat moves to the other account in place and resumes the same thread instead of handing off to a new one (#1404).
+- Balance problems show as an amber top-bar pill, and a signed-out account is tagged **Signed out** in the Usage panel (#1404).
+
+## Router
+
+- The efficiency report replays every chat thread, with subagent weighting and a unioned model list (ADE-159) (#1398).
+
+## SDK 0.5.1
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` move to **0.5.1** so `main` and npm agree. The only delta is comments plus one autocomplete union member: the buffered-event category list no longer names `cto_voice`, which an `agent`-role sidecar never receives. Runtime behavior is unchanged (#1397).
+
+## Runtime 1.2.84
+
+- The TUI uses the same `/` ranking and per-provider chip permission steps as the desktop (#1400).
+- The CLI resolves and serves host-side project icons (#1403).

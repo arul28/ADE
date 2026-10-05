@@ -125,18 +125,50 @@ const PREVIEW_FPS = 12;
 const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 /**
- * What "the browser did something" means, as a string.
+ * The tab the card pictures: this chat's own tab when it has one, else the
+ * browser's active tab.
+ *
+ * It used to be the active tab only, so an agent working in a background tab
+ * (`--tab <id>`, or a tab it opened without activating) floated nothing over
+ * its chat while a person's tab sat in front. Among several tabs the chat
+ * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
+ */
+function browserTabForChat(
+  status: BuiltInBrowserStatus | null,
+  chatSessionId: string | null,
+): BuiltInBrowserStatus["tabs"][number] | null {
+  if (!status || !Array.isArray(status.tabs)) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
+  let owned: BuiltInBrowserStatus["tabs"][number] | null = null;
+  let ownedAt = -1;
+  for (const tab of status.tabs) {
+    if (tab.ownerChatSessionId !== chatSessionId) continue;
+    const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
+    if (claimedAt > ownedAt) {
+      owned = tab;
+      ownedAt = claimedAt;
+    }
+  }
+  return owned ?? active;
+}
+
+/**
+ * What "the browser did something" means for this chat, as a string.
  *
  * Status events are bookkeeping as much as activity — closing the card stops
  * its preview stream, which itself emits one. Diffing the parts a human would
- * call activity is what keeps the most-recent-tool clock honest.
+ * call activity is what keeps the most-recent-tool clock honest. The parts come
+ * from the tab the card pictures: reading the active tab only meant an agent
+ * navigating its own background tab (agent opens never take focus) never
+ * counted.
  */
-function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
+function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessionId: string | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
-  const tab = status.tabs.find((entry) => entry.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  const tab = browserTabForChat(status, chatSessionId);
   if (!tab) return `${status.tabs.length}`;
   return [
-    status.activeTabId ?? "",
+    tab.id,
     status.tabs.length,
     tab.url ?? "",
     tab.title ?? "",
@@ -290,6 +322,9 @@ export function WorkLiveCornerCard({
   const activityCommitRef = useRef<number | null>(null);
   /** Resize gesture state: where the pointer started and how wide the card was. */
   const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  /** The chat on screen, for the feed handlers, which outlive a chat switch. */
+  const chatSessionIdRef = useRef(chatSessionId);
+  chatSessionIdRef.current = chatSessionId;
 
   /**
    * Records that a tool did something.
@@ -334,7 +369,7 @@ export function WorkLiveCornerCard({
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
-      const signature = browserActivitySignature(event.status);
+      const signature = browserActivitySignature(event.status, chatSessionIdRef.current);
       // An "open-request" is somebody asking for the browser, so it always
       // counts; a plain status only counts when something actually changed.
       if (event.type === "open-request" || signature !== browserSignatureRef.current) {
@@ -372,7 +407,7 @@ export function WorkLiveCornerCard({
    */
   const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
     if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
-    const signature = browserActivitySignature(status);
+    const signature = browserActivitySignature(status, chatSessionIdRef.current);
     if (signature === browserSignatureRef.current) return;
     browserSignatureRef.current = signature;
     bump("browser");
@@ -398,31 +433,17 @@ export function WorkLiveCornerCard({
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
-  /**
-   * The tab the card pictures: this chat's own tab when it has one, else the
-   * browser's active tab.
-   *
-   * It used to be the active tab only, so an agent working in a background tab
-   * (`--tab <id>`, or a tab it opened without activating) floated nothing over
-   * its chat while a person's tab sat in front. Among several tabs the chat
-   * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
-   */
-  const activeBrowserTab = useMemo(() => {
-    if (!browserStatus) return null;
-    const active = browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
-    if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
-    let owned: (typeof browserStatus.tabs)[number] | null = null;
-    let ownedAt = -1;
-    for (const tab of browserStatus.tabs) {
-      if (tab.ownerChatSessionId !== chatSessionId) continue;
-      const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
-      if (claimedAt > ownedAt) {
-        owned = tab;
-        ownedAt = claimedAt;
-      }
-    }
-    return owned ?? active;
-  }, [browserStatus, chatSessionId]);
+  const activeBrowserTab = useMemo(
+    () => browserTabForChat(browserStatus, chatSessionId),
+    [browserStatus, chatSessionId],
+  );
+  // The signature is per chat. Re-base it on a chat switch, or the next status
+  // event compares the new chat's tab with the old chat's and counts as activity.
+  const browserStatusRef = useRef(browserStatus);
+  browserStatusRef.current = browserStatus;
+  useEffect(() => {
+    browserSignatureRef.current = browserActivitySignature(browserStatusRef.current, chatSessionId);
+  }, [chatSessionId]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool
@@ -790,7 +811,9 @@ export function WorkLiveCornerCard({
   }, [baseCardSize.width, browserViewRoot, previewTabId, visible]);
 
   // Switching source tools must not leave the previous tool's last frame or
-  // aspect on screen under the new tool's name.
+  // aspect on screen under the new tool's name. A new tab for the same tool
+  // (`previewTabId`) is the same problem: the caption and frames of the old tab
+  // would otherwise linger under the new one.
   useEffect(() => {
     paintToolRef.current = visible ? tool : null;
     liveFrameRef.current = null;
@@ -798,9 +821,10 @@ export function WorkLiveCornerCard({
     setSourceAspect(null);
     setScrubBuffer([]);
     setScrubFrameId(null);
+    setLastTrace(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
-  }, [tool, visible]);
+  }, [previewTabId, tool, visible]);
 
   // One low-frequency tick so "· 2s" ages while you look at it. Only while the
   // card is actually on screen.

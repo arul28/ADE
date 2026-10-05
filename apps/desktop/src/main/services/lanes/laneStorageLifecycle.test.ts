@@ -52,9 +52,22 @@ function installGitStub(args: {
   dirty?: boolean;
   statusOutputs?: string[];
   onRemove?: () => Promise<void> | void;
+  /**
+   * Fires at the first worktree-mutating call of a run. Platforms that can
+   * rename a worktree aside reach `worktree prune` without ever calling
+   * `worktree remove`, so a pause point for "a delete is mid-worktree-step"
+   * has to accept either.
+   */
+  onWorktreeMutation?: () => Promise<void> | void;
   onAdd?: (target: string) => Promise<void> | void;
 } = {}) {
   let statusCall = 0;
+  let mutationSignalled = false;
+  const signalWorktreeMutation = async () => {
+    if (mutationSignalled) return;
+    mutationSignalled = true;
+    await args.onWorktreeMutation?.();
+  };
   vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
     if (command[0] === "rev-parse" && command.includes("--show-toplevel")) {
       if (!options?.cwd || !fs.existsSync(options.cwd)) return gitResult(1, "", "missing");
@@ -71,11 +84,15 @@ function installGitStub(args: {
     if (command[0] === "ls-remote") return gitResult(0, "abc\trefs/heads/feature/storage\n");
     if (command[0] === "merge-base") return gitResult(0);
     if (command[0] === "worktree" && command[1] === "remove") {
+      await signalWorktreeMutation();
       await args.onRemove?.();
       fs.rmSync(command.at(-1)!, { recursive: true, force: true });
       return gitResult(0);
     }
-    if (command[0] === "worktree" && command[1] === "prune") return gitResult(0);
+    if (command[0] === "worktree" && command[1] === "prune") {
+      await signalWorktreeMutation();
+      return gitResult(0);
+    }
     if (command[0] === "show-ref") return gitResult(0);
     if (command[0] === "rev-list" && command[1] === "--left-right") return gitResult(0, "0\t0\n");
     if (command[0] === "rev-parse" && command.includes("@{upstream}")) return gitResult(1);
@@ -595,7 +612,10 @@ describe("lane storage lifecycle", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let removeStarted!: () => void;
     const started = new Promise<void>((resolve) => { removeStarted = resolve; });
-    installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+    // The pause point is the first worktree-mutating call, not `worktree remove`
+    // specifically: on Windows the lane delete can rename the checkout aside and
+    // reach `worktree prune` without ever calling `worktree remove`.
+    installGitStub({ onWorktreeMutation: async () => { removeStarted(); await gate; } });
 
     const deletion = service.delete({ laneId: "12345678-lane", deleteBranch: false });
     await started;
@@ -624,6 +644,32 @@ describe("lane storage lifecycle", () => {
 
     expect(db.get("select lane_id from local_lane_storage_state where lane_id = ?", ["12345678-lane"])).toBeNull();
     expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
+    db.close();
+  });
+
+  it("removes a managed lane's worktree, renaming the checkout aside on Windows", async () => {
+    // This file runs natively on the Windows CI job, and it is the only place
+    // the managed-worktree delete path is exercised there. On Windows the lane
+    // delete renames the checkout aside and prunes instead of walking every
+    // file; both platforms must still end with the lane row and the folder
+    // gone from its path.
+    const { db, service, worktreePath } = await fixture();
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "work.txt"), "lane work\n", "utf8");
+    installGitStub();
+
+    await service.delete({ laneId: "12345678-lane", deleteBranch: false });
+
+    expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    const gitCalls = vi.mocked(runGit).mock.calls.map(([command]) => command.slice(0, 2).join(" "));
+    if (process.platform === "win32") {
+      expect(gitCalls).toContain("worktree prune");
+      expect(gitCalls).not.toContain("worktree remove");
+    } else {
+      expect(gitCalls).toContain("worktree remove");
+      expect(gitCalls).not.toContain("worktree prune");
+    }
     db.close();
   });
 });
@@ -696,5 +742,66 @@ describe("reclaim accepts either spelling of the managed worktrees folder", () =
       laneId: "12345678-lane",
       confirmation: "RECLAIM",
     })).resolves.not.toThrow(/outside ADE's managed worktree folder/i);
+  });
+});
+
+describe("rebuilding a lane worktree whose folder vanished", () => {
+  it("rebuilds it from the local branch once, however many callers ask at the same time", async () => {
+    const { db, service, worktreePath } = await fixture();
+    installGitStub();
+
+    const [first, second] = await Promise.all([
+      service.recreateMissingWorktree({ laneId: "12345678-lane" }),
+      service.recreateMissingWorktree({ laneId: "12345678-lane" }),
+    ]);
+
+    expect(first).toEqual({ recreated: true, worktreePath, branch: "feature/storage" });
+    expect(second).toEqual(first);
+    expect(fs.existsSync(worktreePath)).toBe(true);
+    const adds = vi.mocked(runGitOrThrow).mock.calls.filter(([command]) => command[0] === "worktree" && command[1] === "add");
+    expect(adds).toEqual([[["worktree", "add", worktreePath, "feature/storage"], expect.anything()]]);
+    // Present again, so a later call is a no-op.
+    expect(await service.recreateMissingWorktree({ laneId: "12345678-lane" })).toEqual({ recreated: false });
+    db.close();
+  });
+
+  it.each<[string, { status?: "active" | "archived"; outside?: boolean; branchGone?: boolean; heldElsewhere?: boolean }, RegExp]>([
+    ["an archived lane", { status: "archived" }, /archived/i],
+    ["a folder outside ADE's worktrees folder", { outside: true }, /outside/i],
+    ["a branch deleted locally", { branchGone: true }, /no longer exists locally/i],
+    ["a branch checked out in another worktree", { heldElsewhere: true }, /checked out at/i],
+  ])("refuses %s and touches nothing", async (_label, setup, reason) => {
+    const outsidePath = setup.outside ? path.join(os.tmpdir(), `ade-outside-${Date.now()}`, "feature-12345678") : undefined;
+    const { db, service, worktreesDir, worktreePath } = await fixture({ status: setup.status, worktreePath: outsidePath });
+    if (setup.heldElsewhere) fs.mkdirSync(path.join(worktreesDir, "someone-else"), { recursive: true });
+    installGitStub();
+    if (setup.branchGone) {
+      const base = vi.mocked(runGit).getMockImplementation()!;
+      vi.mocked(runGit).mockImplementation(async (command, options) =>
+        command[0] === "show-ref" ? gitResult(1) : base(command, options));
+    }
+
+    const result = await service.recreateMissingWorktree({ laneId: "12345678-lane" });
+
+    expect(result.recreated).toBe(false);
+    expect(result.recreated ? "" : result.reason).toMatch(reason);
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([command]) => command[0] === "worktree" && command[1] !== "list")).toBe(false);
+    db.close();
+  });
+
+  it("clears a failed rebuild's folder and its own registration, never pruning other lanes", async () => {
+    const { db, service, worktreePath } = await fixture();
+    installGitStub({
+      onAdd: () => { throw new Error("checkout failed"); },
+    });
+
+    await expect(service.recreateMissingWorktree({ laneId: "12345678-lane" })).rejects.toThrow("checkout failed");
+
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    const gitCalls = vi.mocked(runGit).mock.calls.map(([command]) => command);
+    expect(gitCalls).toContainEqual(["worktree", "remove", "--force", worktreePath]);
+    expect(gitCalls.some((command) => command[0] === "worktree" && command[1] === "prune")).toBe(false);
+    db.close();
   });
 });

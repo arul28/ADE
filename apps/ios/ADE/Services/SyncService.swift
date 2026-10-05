@@ -4151,6 +4151,14 @@ final class SyncService: ObservableObject {
   /// authoritative and this bounded cache keeps the list useful offline.
   @Published private(set) var personalChatSessions: [AgentChatSessionSummary] = []
   @Published private(set) var personalChatsRevision = 0
+  /// Pending thread comments per chat session. Filled by
+  /// `chat.listThreadComments` when a chat opens and replaced whole by each
+  /// `session_meta_updated.threadComments` the host emits after a change.
+  /// Written only by `SyncService+ThreadComments.swift`.
+  @Published var threadCommentsBySession: [String: [ChatThreadComment]] = [:]
+  /// Bumped on every change, so a list request that started before a live
+  /// update cannot overwrite it with older data.
+  var threadCommentsWriteVersion: [String: Int] = [:]
   /// Chat launches (instant new-lane chats) this device knows about: host
   /// snapshots plus the per-launch local state (retry request, in-flight start,
   /// deferred messages). Its own observable so a transcript card re-renders on
@@ -6521,6 +6529,7 @@ final class SyncService: ObservableObject {
       "pr_groups",
       "pr_group_members",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "integration_proposals",
       "lanes",
       "lane_list_snapshots",
@@ -10967,6 +10976,7 @@ final class SyncService: ObservableObject {
     "agentRelay",
     "hostContinuation",
     "boardMove",
+    "prWatchWake",
   ]
 
   /// Whether a raw `chat_event` payload carries a message the host delivered on
@@ -12571,7 +12581,7 @@ final class SyncService: ObservableObject {
 
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
-  private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+  func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
     // A chat on another machine carries a machine marker in its project id.
     // `sendCommand` strips it and forwards to that machine; it never reaches
     // a host (see `syncFleetRoute`).
@@ -12589,7 +12599,7 @@ final class SyncService: ObservableObject {
     return (projectId, projectRootPath)
   }
 
-  private func chatActionName(_ projectAction: String, sessionId: String) -> String {
+  func chatActionName(_ projectAction: String, sessionId: String) -> String {
     guard isPersonalChatScope(sessionId: sessionId), projectAction.hasPrefix("chat.") else {
       return projectAction
     }
@@ -13004,6 +13014,7 @@ final class SyncService: ObservableObject {
     modelId: String? = nil,
     reasoningEffort: String? = nil,
     fastMode: Bool? = nil,
+    presetId: String? = nil,
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
@@ -13031,6 +13042,9 @@ final class SyncService: ObservableObject {
     }
     if let fastMode {
       args["fastMode"] = fastMode
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let cols, cols > 0 {
       args["cols"] = cols
@@ -13542,6 +13556,15 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.getChanges", args: ["laneId": laneId], as: DiffChanges.self)
   }
 
+  /// Whether the host understands `mode: "branch"`. An older host reads an
+  /// unknown mode as "unstaged" without complaint, so the Branch section and
+  /// its diffs are offered only when this is advertised.
+  var supportsBranchDiff: Bool { supportsRemoteAction("git.getBranchChanges") }
+
+  func fetchBranchChanges(laneId: String) async throws -> BranchDiffChanges {
+    try await sendDecodableCommand(action: "git.getBranchChanges", args: ["laneId": laneId], as: BranchDiffChanges.self)
+  }
+
   func fetchFileDiff(workspaceId: String? = nil, laneId: String, path: String, mode: String, compareRef: String? = nil, compareTo: String? = nil) async throws -> FileDiff {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -13919,7 +13942,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -13942,7 +13966,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     // Offline: queue the create with a stable command id and record a snapshot
     // so the Work list shows a "Pending sync" row until the queued command
@@ -14010,7 +14035,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     var (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -14033,7 +14059,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     args["kickoffText"] = kickoffText
 
@@ -14095,7 +14122,8 @@ final class SyncService: ObservableObject {
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
-    requestedCwd: String?
+    requestedCwd: String?,
+    presetId: String?
   ) -> ([String: Any], String) {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -14105,6 +14133,9 @@ final class SyncService: ObservableObject {
     ]
     if !trimmedModel.isEmpty {
       args["modelId"] = trimmedModel
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort
@@ -14365,7 +14396,8 @@ final class SyncService: ObservableObject {
     text: String,
     attachments: [AgentChatFileRef]? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    includeThreadComments: Bool = false
   ) async throws -> SyncChatMessageDelivery {
     // Auto-route to the session's foreign project (cross-project "quick look")
     // unless the caller already named a target explicitly (e.g. the hub
@@ -14374,6 +14406,11 @@ final class SyncService: ObservableObject {
     var args: [String: Any] = ["sessionId": sessionId, "text": text]
     if let attachments, !attachments.isEmpty {
       args["attachments"] = chatAttachmentArgs(attachments)
+    }
+    // Only a composer send that shows pending comments sets this; the key is
+    // left out otherwise so older hosts see the payload they always did.
+    if includeThreadComments {
+      args["includeThreadComments"] = true
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -14389,6 +14426,9 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
   }
 
@@ -14447,6 +14487,61 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+  }
+
+  /// `chat.restartSession`: stop the chat's provider process and keep the
+  /// conversation. The host refuses mid-turn with "A turn is running…" unless
+  /// `stopFirst` is set; callers confirm and retry.
+  func restartChatSession(sessionId: String, stopFirst: Bool = false) async throws -> AgentChatRestartSessionResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.restartSession", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    var args: [String: Any] = ["sessionId": sessionId]
+    if stopFirst { args["stopFirst"] = true }
+    let raw = try await sendCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not restart the agent session.")
+    guard let record = raw as? [String: Any] else { return AgentChatRestartSessionResult() }
+    return (try? decode(record, as: AgentChatRestartSessionResult.self)) ?? AgentChatRestartSessionResult()
+  }
+
+  /// Codex goal controls (`chat.setCodexGoal` / `setCodexGoalStatus` /
+  /// `clearCodexGoal`). Each answers with the goal now in force, or nil.
+  func setCodexGoal(sessionId: String, objective: String) async throws -> AgentChatCodexGoal? {
+    try await sendCodexGoalCommand("chat.setCodexGoal", sessionId: sessionId, extra: ["objective": objective])
+  }
+
+  func setCodexGoalStatus(sessionId: String, status: String) async throws -> AgentChatCodexGoal? {
+    try await sendCodexGoalCommand("chat.setCodexGoalStatus", sessionId: sessionId, extra: ["status": status])
+  }
+
+  func clearCodexGoal(sessionId: String) async throws {
+    _ = try await sendCodexGoalCommand("chat.clearCodexGoal", sessionId: sessionId, extra: [:])
+  }
+
+  private func sendCodexGoalCommand(
+    _ projectAction: String,
+    sessionId: String,
+    extra: [String: Any]
+  ) async throws -> AgentChatCodexGoal? {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName(projectAction, sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    var args = extra
+    args["sessionId"] = sessionId
+    let raw = try await sendCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not update the goal.")
+    guard let record = raw as? [String: Any], record["objective"] != nil || record["status"] != nil else { return nil }
+    return try? decode(record, as: AgentChatCodexGoal.self)
   }
 
   func restoreCancelledChatQueue(
@@ -14586,7 +14681,8 @@ final class SyncService: ObservableObject {
     sessionId: String,
     text: String,
     attachments: [AgentChatFileRef]? = nil,
-    dispatchMode: String? = nil
+    dispatchMode: String? = nil,
+    includeThreadComments: Bool = false
   ) async throws -> SyncChatMessageDelivery {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendChatCommand(
@@ -14595,11 +14691,15 @@ final class SyncService: ObservableObject {
         sessionId: sessionId,
         text: text,
         attachments: attachments,
-        dispatchMode: dispatchMode
+        dispatchMode: dispatchMode,
+        includeThreadComments: includeThreadComments ? true : nil
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
   }
 
@@ -14899,6 +14999,26 @@ final class SyncService: ObservableObject {
     _ = try await sendChatCommand(
       action: chatActionName("chat.cancelSteer", sessionId: sessionId),
       payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// The focused machine's last-used chat model and settings, or nil when the
+  /// host has none or predates the command (the phone then keeps its own).
+  func fetchChatLaunchDefaults() async -> AgentChatLaunchDefaults? {
+    guard supportsRemoteAction("chat.getLaunchDefaults") else { return nil }
+    return try? await sendDecodableCommand(
+      action: "chat.getLaunchDefaults",
+      as: AgentChatLaunchDefaults?.self
+    )
+  }
+
+  func moveChatSteer(sessionId: String, steerId: String, toIndex: Int) async throws {
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.moveSteer", sessionId: sessionId),
+      payload: AgentChatMoveSteerRequest(sessionId: sessionId, steerId: steerId, toIndex: toIndex),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -15818,7 +15938,8 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     labels: [String] = [],
     reviewers: [String],
-    strategy: String? = nil
+    strategy: String? = nil,
+    sessionId: String? = nil
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -15838,7 +15959,132 @@ final class SyncService: ObservableObject {
     if let strategy, !strategy.isEmpty {
       args["strategy"] = strategy
     }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
+    }
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
+  }
+
+  private func throwIfCommandRefused(_ raw: Any, fallback: String) throws {
+    guard let record = raw as? [String: Any], (record["ok"] as? Bool) == false else { return }
+    let message = (record["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    throw NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? fallback : message]
+    )
+  }
+
+  func linkPullRequestChatSession(prId: String, sessionId: String, allowCrossLane: Bool = false) async throws {
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatSession")
+    }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if allowCrossLane {
+      args["allowCrossLane"] = true
+    }
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.linkChatSession", args: args),
+      fallback: "Could not link this pull request."
+    )
+  }
+
+  /// Whether the host can arm PR Watch / Ship. Optional on mobile: an older
+  /// host simply has no watch, and the control stays hidden.
+  var supportsPrChatWatch: Bool {
+    supportsRemoteAction("prs.setChatWatch") && supportsRemoteAction("prs.getChatWatches")
+  }
+
+  /// `prs.getChatWatches { sessionId }`: the chat's watches. Nil when the host
+  /// lacks the command, so callers can degrade silently.
+  func fetchPrChatWatches(sessionId: String) async throws -> [PrChatWatchSummary]? {
+    guard supportsRemoteAction("prs.getChatWatches") else { return nil }
+    let raw = try await sendCommand(
+      action: "prs.getChatWatches",
+      args: ["sessionId": sessionId],
+      disconnectOnTimeout: false
+    )
+    guard let rows = raw as? [Any] else { return [] }
+    return rows.compactMap { row in
+      guard let record = row as? [String: Any] else { return nil }
+      return try? decode(record, as: PrChatWatchSummary.self)
+    }
+  }
+
+  /// `prs.setChatWatch { prId, sessionId, mode }`; `mode: nil` stops watching.
+  func setPrChatWatch(prId: String, sessionId: String, mode: String?) async throws -> PrChatWatchSummary? {
+    try requireInvokableRemoteAction("prs.setChatWatch")
+    let raw = try await sendCommand(
+      action: "prs.setChatWatch",
+      args: [
+        "prId": prId,
+        "sessionId": sessionId,
+        "mode": mode.map { $0 as Any } ?? NSNull(),
+      ]
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not change PR Watch.")
+    guard let record = raw as? [String: Any], record["watchId"] != nil else { return nil }
+    return try? decode(record, as: PrChatWatchSummary.self)
+  }
+
+  func unlinkPullRequestChatSession(prId: String, sessionId: String, dismiss: Bool = true) async throws {
+    guard supportsRemoteAction("prs.unlinkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.unlinkChatSession")
+    }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if !dismiss {
+      args["dismiss"] = false
+    }
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.unlinkChatSession", args: args),
+      fallback: "Could not unlink this pull request."
+    )
+  }
+
+  func linkPullRequestChatStack(
+    sessionId: String,
+    stackNumber: Int,
+    prId: String? = nil,
+    siblingPrIds: [String] = []
+  ) async throws {
+    if supportsRemoteAction("prs.linkChatStack") {
+      var args: [String: Any] = [
+        "sessionId": sessionId,
+        "stackNumber": stackNumber,
+      ]
+      if let prId, !prId.isEmpty { args["prId"] = prId }
+      let raw = try await sendCommand(action: "prs.linkChatStack", args: args)
+      try throwIfCommandRefused(raw, fallback: "Could not link this GitHub stack.")
+      return
+    }
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatStack")
+    }
+    // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+    // stack-link action, so we re-derive "link each unclaimed sibling, roll back
+    // on failure" here. The offer remains the owner of that policy.
+    var linked: [String] = []
+    do {
+      for siblingPrId in siblingPrIds {
+        try await linkPullRequestChatSession(
+          prId: siblingPrId,
+          sessionId: sessionId,
+          allowCrossLane: true
+        )
+        linked.append(siblingPrId)
+      }
+    } catch {
+      for prId in linked.reversed() {
+        try? await unlinkPullRequestChatSession(prId: prId, sessionId: sessionId, dismiss: false)
+      }
+      throw error
+    }
   }
 
   func mergePullRequest(
@@ -15848,7 +16094,7 @@ final class SyncService: ObservableObject {
     commitTitle: String? = nil,
     commitBody: String? = nil,
     expectedHeadSha: String? = nil
-  ) async throws {
+  ) async throws -> LandResult {
     var args: [String: Any] = [
       "prId": prId,
       "method": method,
@@ -15859,7 +16105,32 @@ final class SyncService: ObservableObject {
     if let commitTitle, !commitTitle.isEmpty { args["commitTitle"] = commitTitle }
     if let commitBody, !commitBody.isEmpty { args["commitBody"] = commitBody }
     if let expectedHeadSha, !expectedHeadSha.isEmpty { args["expectedHeadSha"] = expectedHeadSha }
-    _ = try await sendCommand(action: "prs.land", args: args)
+    // A GitHub Stack merge can wait up to 45 s on the host before it answers.
+    // A timeout here does not mean the merge failed, so keep the connection.
+    let raw = try await sendCommand(
+      action: "prs.land",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 90_000_000_000
+    )
+    if let queued = raw as? [String: Any], (queued["queued"] as? Bool) == true {
+      return LandResult(
+        prId: prId,
+        success: false,
+        // Queued after a send failure or a timeout: the computer may already be
+        // merging, so say only what the phone knows.
+        error: "Still waiting for the computer. The merge result shows when it answers.",
+        mergeStatus: "pending"
+      )
+    }
+    let result = try decode(raw, as: LandResult.self)
+    // The host reports a refused merge in the result, not as an error.
+    if !result.success && !result.isInFlight {
+      throw NSError(domain: "ADE", code: 40, userInfo: [
+        NSLocalizedDescriptionKey: result.error ?? "GitHub did not merge the pull request.",
+      ])
+    }
+    return result
   }
 
   func closePullRequest(prId: String) async throws {
@@ -21395,6 +21666,58 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// ADE chat spend by chat, lane, or account (`usage.getCostBreakdown`).
+  /// Nil when the host predates it, so the page offers only the Models view.
+  func fetchUsageCostBreakdown(by: String, preset: String, laneId: String? = nil) async throws -> MobileAdeUsageCostBreakdown? {
+    guard supportsRemoteAction("usage.getCostBreakdown") else { return nil }
+    var args: [String: Any] = ["by": by, "preset": preset]
+    if let laneId { args["laneId"] = laneId }
+    return try await sendDecodableCommand(
+      action: "usage.getCostBreakdown",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageCostBreakdown.self
+    )
+  }
+
+  /// One model's detail (`usage.getModelDetail`). Nil when the host predates it.
+  func fetchUsageModelDetail(provider: String, model: String, preset: String) async throws -> MobileAdeUsageModelDetail? {
+    guard supportsRemoteAction("usage.getModelDetail") else { return nil }
+    return try await sendDecodableCommand(
+      action: "usage.getModelDetail",
+      args: ["provider": provider, "model": model, "preset": preset],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageModelDetail.self
+    )
+  }
+
+  var canSetUsageModelPrices: Bool { supportsRemoteAction("usage.setModelPriceOverride") }
+
+  /// Sets or clears the host's price for a model, or its "Map to". `price: nil`
+  /// with `clearPrice` goes back to automatic; `mapTo: ""` removes a mapping.
+  func setUsageModelPrice(model: String, otherModelIds: [String] = [], price: MobileAdeUsageModelPrice?, clearPrice: Bool = false, mapTo: String? = nil) async throws {
+    guard canSetUsageModelPrices else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [
+        NSLocalizedDescriptionKey: "Model prices can't be changed on this machine version. Update ADE on the machine and reconnect.",
+        "ADEErrorCode": "unsupported_action",
+      ])
+    }
+    var args: [String: Any] = ["model": model]
+    if !otherModelIds.isEmpty { args["models"] = otherModelIds }
+    if clearPrice {
+      args["price"] = NSNull()
+    } else if let price {
+      var body: [String: Any] = ["input": price.input, "output": price.output]
+      if let cacheRead = price.cacheRead { body["cacheRead"] = cacheRead }
+      if let cacheWrite = price.cacheWrite { body["cacheWrite"] = cacheWrite }
+      args["price"] = body
+    }
+    if let mapTo { args["mapTo"] = mapTo.isEmpty ? NSNull() : mapTo }
+    _ = try await sendCommand(action: "usage.setModelPriceOverride", args: args)
+  }
+
   func fetchUsageQuotaSnapshot(refresh: Bool = false) async throws -> MobileUsageQuotaSnapshot {
     let action = refresh ? "usage.refreshQuota" : "usage.getQuotaSnapshot"
     guard supportsRemoteAction(action) else {
@@ -22760,6 +23083,11 @@ extension SyncService {
       return trimmed.isEmpty ? nil : trimmed
     }()
     let adoptedManuallyNamed = eventDict?["manuallyNamed"] as? Bool
+    // The full pending-comment list rides this event after every change.
+    // Absent = the patch is about something else; empty = cleared.
+    if let rawComments = eventDict?["threadComments"] as? [Any] {
+      setThreadComments(decodeThreadComments(rawComments), sessionId: envelope.sessionId)
+    }
     if adoptedTitle != nil || adoptedManuallyNamed != nil {
       try? database.updateSessionMeta(
         sessionId: envelope.sessionId,

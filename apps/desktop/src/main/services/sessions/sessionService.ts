@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
 import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processRegistryService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
+import { createAgentShellCleanup } from "./agentShellCleanup";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
 import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
 import { settleSourceMayInterruptActiveTurn } from "./sessionSettleTeardown";
@@ -1181,6 +1182,21 @@ export function createSessionService({
       : { found: true, settled: true };
   };
 
+  const archiveSession = (sessionId: string, archivedAt: string = new Date().toISOString()): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
+
+  const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
+
   return {
     list,
 
@@ -1957,18 +1973,9 @@ export function createSessionService({
       }
     },
 
-    archiveSession(sessionId: string, archivedAt: string = new Date().toISOString()): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
-    },
+    archiveSession,
+
+    agentShells,
 
     unarchiveSession(sessionId: string): boolean {
       const trimmed = sessionId.trim();

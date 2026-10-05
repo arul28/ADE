@@ -74,6 +74,48 @@ describe("normalizeAdeTheme", () => {
     })!;
     expect(theme.palette.accentMuted).toBe("rgba(167, 139, 250, 0.2)");
   });
+
+  it("keeps only closed flair names, and a shadow colour only for a hard shadow", () => {
+    const theme = normalizeAdeTheme({
+      name: "Hostile",
+      palette: CORE,
+      flair: {
+        radius: "banana",
+        shadow: "hard",
+        // Not a colour: it must never reach a CSS custom property.
+        shadowColor: "red; background: url(x)",
+        sansFont: "comic-sans",
+        backdrop: "glitch",
+      },
+    })!;
+    // The unknown names are dropped; the shadow name survives but its hostile
+    // colour does not, so the resolver falls back to the theme's text colour.
+    expect(theme.flair).toEqual({ shadow: "hard" });
+  });
+
+  it("keeps a valid flair byte-for-byte", () => {
+    const theme = normalizeAdeTheme({
+      name: "Sharp",
+      palette: CORE,
+      flair: { radius: "sharp", shadow: "hard", shadowColor: "#f1e8b8", sansFont: "serif", backdrop: "noise" },
+    })!;
+    expect(theme.flair).toEqual({
+      radius: "sharp",
+      shadow: "hard",
+      shadowColor: "#f1e8b8",
+      sansFont: "serif",
+      backdrop: "noise",
+    });
+  });
+
+  it("drops a shadow colour that no hard shadow uses", () => {
+    const theme = normalizeAdeTheme({
+      name: "Glow",
+      palette: CORE,
+      flair: { shadow: "glow", shadowColor: "#ffffff" },
+    })!;
+    expect(theme.flair).toEqual({ shadow: "glow" });
+  });
 });
 
 describe("normalizeAdeThemeList", () => {
@@ -128,6 +170,38 @@ describe("theme file export and import", () => {
     expect(envelope.version).toBe(1);
     expect(envelope.exportedAt).toBe("2026-01-02T03:04:05.000Z");
     expect(themeExportFileName(theme)).toBe("ade-theme-shared.json");
+  });
+
+  it("round-trips syntax colours and flair through a file", () => {
+    const withExtras = normalizeAdeTheme({
+      name: "Extras",
+      baseMode: "dark",
+      palette: CORE,
+      syntax: { keyword: "#cba6f7", comment: "#6c7086" },
+      flair: { radius: "round", shadow: "hard", shadowColor: "#111111", backdrop: "dots" },
+    })!;
+    const parsed = parseAdeThemeFile(serializeAdeTheme(withExtras));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.theme.syntax).toEqual({ keyword: "#cba6f7", comment: "#6c7086" });
+      expect(parsed.theme.flair).toEqual({
+        radius: "round",
+        shadow: "hard",
+        shadowColor: "#111111",
+        backdrop: "dots",
+      });
+    }
+  });
+
+  it("reads an ADE theme file with a BOM, comments and trailing commas", () => {
+    const raw = `\uFEFF{
+      // exported by hand
+      "name": "A//B",
+      "palette": { "bg": "#0b0b0f", "fg": "#ececf1", },
+    }`;
+    const parsed = parseAdeThemeFile(raw);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.theme.name).toBe("A//B");
   });
 });
 

@@ -129,7 +129,7 @@ as a subagent card, but the card closes (and a `subagent` wakes the parent with
 the CLI's last message) only when the CLI process exits. An interactive CLI
 that finishes its task and stays open reports nothing until it is closed.
 Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
-them with `ade chat list`, and read their last message plus terminal tail with
+them with `ade chat list` (archived ones need `--include-archived`), and read their last message plus terminal tail with
 `ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
 to `--mode chat` for a subagent that must report back**: a chat child reports
 after every turn it finishes.
@@ -174,6 +174,15 @@ a chat you do not own:
 - If you need to wait for a subagent before reading final output, use
   `ade chat wait <session> --for idle --timeout-ms <ms>` (also supports
   `active`, `awaiting-input`, and `terminal`).
+- To wait on several chats without holding your turn open, arm a wait and end
+  your turn: `ade chat wait <id> <id> --async [--any] [--for idle]` — ADE wakes
+  you once all (or any) of them get there, even across a restart. List with
+  `ade chat waits`, cancel with `ade chat wait --cancel <waitId>`.
+- To start one chat after another finishes, `ade chat send <B> --after <A>
+  "<prompt>"` sends B the prompt once A is idle.
+- To be woken when your own background job ends, `ade chat wait --background
+  [--job <id>]`, then end your turn (Claude and OpenCode already wake you on
+  their own; this matters for Codex).
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
@@ -237,8 +246,10 @@ What to do instead when you finish: say so in your final message, and use
 row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
 Update the note along the way as the state changes; do not wait until the end.
 
-If you realize the lane, branch, or chat name is wrong, rename it rather than
-living with a bad label:
+Lane and chat names are yours to keep accurate. When the work changes
+direction or moves to a new branch, rename the lane or the chat without asking.
+A lane keeps its name when its branch changes, so a name that still describes
+the old work is yours to fix:
 
 ```bash
 ade chat generate-names                      # title, lane name, and status line
@@ -453,6 +464,52 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `--reasoning-effort`; avoid it for new flows. Common reasoning tiers include
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
+
+## Other machines on the account
+
+Chats, lanes and devices on the user's other machines are reachable with
+`--machine <name>` (a machine key or an unambiguous name). You act there as an
+agent, under that machine's own policy.
+
+```bash
+ade machines list --projects --text              # who is online, what projects each has
+ade chat list --all-machines --text              # every machine in one table
+ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"
+ade chat launch "…" --machine "Mac mini"          # in a new lane there
+ade chat read <id> --machine "Mac mini" --text
+ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
+```
+
+- The project there defaults to this repository's checkout; pick another with
+  `--project <name|path|id>`, add `--clone` to set a missing GitHub repo up,
+  or use `--personal` for projectless chats. Your own lane is never sent: get a
+  lane id with `ade lanes list --machine …`.
+- A `--type subagent` child there wakes you when it finishes, like a local one,
+  with "· on <machine>" and the `ade chat read … --machine` command.
+- `--machine "a,b"` on `chat create` starts one child per machine.
+- An offline machine fails at once and nothing is queued; retry later.
+- Build where the code runs: to build or test an iOS app from a Linux or
+  Windows machine, start a subagent on the Mac rather than driving its
+  simulator from here.
+
+## Archived lanes, chats, and shells
+
+Archiving hides an item; ADE never deletes anything on its own. Archived chats
+and shells are left out of `ade chat list`, `ade terminal list`, and `ade search`
+by default. Pass `--include-archived` to see them in a list. A known id still
+works: `ade chat read <id>`, `ade chat show <id>`, `ade terminal read <id>`.
+
+```bash
+ade archive list --text                       # everything archived, newest first
+ade archive list --kind chat --older-than 14 --text
+ade archive summary --text                    # counts per kind, what is 14+ days old
+```
+
+Restoring is for the CTO (`ade archive restore <kind>:<id>`). Deleting is the
+user's alone: agents and automations are refused. When old archived items pile
+up, tell the user and point them to Settings → Archive; do not try to delete
+them yourself.
 
 ## Fallback path
 

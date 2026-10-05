@@ -269,6 +269,9 @@ private let workUserSegmentsCache: NSCache<NSString, WorkUserSegmentsCacheBox> =
 func workUserMessageSegments(_ message: WorkChatMessage) -> [WorkUserBubbleSegment]? {
   let text = message.markdown
   guard text.utf8.count >= workUserSplitCharacterThreshold else { return nil }
+  // A comment card or a quote is drawn whole: cutting at a blank line would
+  // split the block it is parsed from.
+  guard !workUserMessageHasStructuredBlocks(text) else { return nil }
   let key = (message.markdownDigest ?? workStableDigest(text)) as NSString
   if let cached = workUserSegmentsCache.object(forKey: key) {
     return cached.value.count > 1 ? cached.value : nil

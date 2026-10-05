@@ -1,7 +1,8 @@
 # Theming
 
-ADE ships a real theme system: a versioned theme format, a shipped library, a
-searchable gallery, and a runtime engine that repaints every surface. This doc
+ADE ships a real theme system: a versioned theme format, a shipped library of
+26 families, a searchable gallery, and a runtime engine that repaints every
+surface. This doc
 is the contract. Read it before touching a colour token, the Appearance
 settings, or anything that reads `--color-*`.
 
@@ -41,14 +42,33 @@ A theme does **not** replace that seam. It feeds it:
 | `color.ts` | Colour maths: hex / `rgb()` / `oklch()` parsing, sRGB mixing, Oklch lightness shifts, WCAG contrast. |
 | `resolve.ts` | Derives every omitted palette token and emits the CSS-variable override map plus the xterm palette. |
 | `validate.ts` | Parses and **repairs** untrusted themes; the versioned import/export envelope. |
-| `vscode.ts` | Best-effort VS Code theme import: maps the workbench colours it understands and reports what it could not. |
-| `library.ts` | The shipped themes and the id → theme resolution used everywhere. |
+| `jsonc.ts` | Parses JSON with comments and trailing commas, which is what VS Code theme files are. |
+| `syntax.ts` | The ten syntax colours and the TextMate-scope table that reads them from `tokenColors` and writes them to Shiki. |
+| `vscode.ts` | Best-effort VS Code theme import: maps the workbench, terminal and code colours it understands and reports what it could not. |
+| `family.ts` | The builder every shipped family is written with (`family`, `ansi`) and the gallery collections. |
+| `library.ts`, `libraryOriginals.ts`, `libraryClassics.ts` | The shipped themes and the id → theme resolution used everywhere. |
 
 A theme states the core five — `bg`, `fg`, `surface`, `card`, `accent` — and may
 override any of ~30 semantic tokens (surfaces, borders, muted text, status and
 diff tones, the accent family, popover/modal/composer). Everything it omits is
 derived from those, per base mode. It may also declare a 16-colour terminal ANSI
 palette.
+
+A theme may also state **`syntax`** and **`flair`**, both optional:
+
+- `syntax` holds ten code colours (comment, keyword, string, number, function,
+  type, constant, variable, property, operator). Omitted ones are derived from
+  the theme's terminal palette and nudged until they read against the
+  background. The file editor (Monaco) and chat code blocks (Shiki) are painted
+  from them — `renderer/theme/codeTheme.ts` — so a theme paints its code like
+  everything else. `dark` and `light` keep the editor and code colours ADE has
+  always shipped.
+- `flair` is the part that is not colour: `radius` (sharp, default, soft,
+  round), `shadow` (soft, flat, hard, glow, plus a `shadowColor` for hard),
+  `sansFont` (default, mono, serif, rounded) and `backdrop` (none, grid, dots,
+  scanlines, noise, aurora). Every field is a closed list of names. A theme
+  file can come from a stranger, so nothing in it is ever a CSS string; the
+  engine maps each name to a vetted value.
 
 `AdeTheme.baseMode` (`dark` / `light`) selects the structural block. It is
 declared by the theme, or inferred from the background's relative luminance when
@@ -68,46 +88,72 @@ build understands — repairing it would silently discard tokens it gained.
 `apps/desktop/src/renderer/theme/applyTheme.ts` is the only place a resolved
 theme touches the DOM. One pass per theme change: clear the properties the
 previous theme owned, write the new ones on `<html>`, set `data-theme` and
-`data-theme-id` on `<html>` and `<body>`, and set `color-scheme`. It does no
+`data-theme-id` on `<html>` and remove any stale copy from `<body>`, and set
+`color-scheme`. It does no
 layout reads, so it never forces reflow, and it is called from exactly one
 effect in `App.tsx` keyed on `themeId` + `customThemes`.
+
+Flair reaches the page two ways. Corners, shadows and the interface face are
+custom properties the engine writes (`--radius-*`, `--pane-radius`,
+`--shadow-*`, `--theme-font-sans`), and `index.css` expresses its own radii
+through the same scale so they follow. The backdrop is one static layer,
+`html[data-theme-backdrop]::after`, drawn from `--ade-flair-backdrop*` with
+pointer events off. A few rules read `data-theme-radius` and `data-theme-shadow`
+for surfaces that state a radius or shadow of their own; they run only while the
+active theme asks. The Interface font preference still wins over a theme's face.
 
 Terminals are painted separately: `TerminalView.tsx` reads the active theme's
 resolved ANSI palette and hands it to xterm. `dark` and `light` keep their
 hand-tuned terminal colours; every other theme paints the terminal from its own
 palette.
 
-## Persistence and sync
+## Persistence: per computer
 
-The active theme id (`themeId`) and the custom theme list (`customThemes`) live
-in the same `ade.userPreferences.v1` blob as every other preference, and both
-are registered in `renderer/lib/accountSettingsSync.ts` under the `account`
-scope — so a theme follows you to another machine and the web client, the same
-way the chat font size does. The legacy `theme` key is still written (the base
-mode) so older clients keep working.
+Appearance is **per computer**, not per account. The active theme id
+(`themeId`), the custom theme list (`customThemes`), `themeFollowsSystem`, the
+interface and terminal preferences all live in the `ade.userPreferences.v1`
+blob in this machine's localStorage and are **not** in
+`ACCOUNT_SYNCED_SETTINGS`. A laptop, a desktop and a browser each keep their own
+look; signing in on a new machine does not carry a theme over. The page is under
+Settings → Machines → This computer → Appearance, and has no copy under a remote
+machine. (The Apple device options that used to share the page stay on the
+account, on their own Account page, because the host reads the remote streaming
+cap from the account store.)
 
-Two ordering facts matter and are deliberate:
+Rows an older build already wrote to the account are ignored, not deleted. Move
+a theme between machines with Export and Import.
 
-- The renderer keeps a custom theme **id** verbatim even before its definition
-  has arrived from sync; `resolveThemeById` falls back to the default at paint
-  time and repaints the instant the theme list lands. Resolving early would pin
-  the machine to the default and lose the user's choice.
-- `setTheme` recomputes the store's `theme` (base mode) from the id and the
-  current custom list, so `data-theme`, `color-scheme` and the title-bar overlay
-  never disagree with the painted palette.
+`setTheme` recomputes the store's `theme` (base mode) from the id and the
+current custom list, so `data-theme`, `color-scheme` and the title-bar overlay
+never disagree with the painted palette. The legacy `theme` key is still
+written (the base mode) so older clients keep working.
 
 ## Adding a theme
 
-Add an `AdeTheme` to `ADE_BUILTIN_THEMES` in `library.ts`. It needs an id, a
-name, a base mode and at least the core five palette colours; the gallery preview
-and every surface work from there. Do **not** add per-theme CSS blocks to
-index.css — that would create a second code path for official themes.
+Add a `family(...)` to `library.ts` (an ADE family), `libraryOriginals.ts` (a
+theme with its own flair) or `libraryClassics.ts` (an editor scheme with its
+code colours). A family states a dark and a light variant; each needs a
+description and at least the core five palette colours. State `terminal` for
+a scheme that has an official ANSI set, and `syntax` for one that has editor
+colours. Run both variants through `resolveTheme` and check text contrast
+before shipping. Do **not** add per-theme CSS blocks to index.css — that would
+create a second code path for official themes. Use `flair` for shape and depth,
+and `tags` so the gallery search finds it.
+
+## The gallery
+
+`ThemeGallery.tsx` shows the families in shelves (`THEME_COLLECTIONS`: ADE,
+Originals, Editor classics) and then the user's own themes. The search field
+matches a family's name, both variant names and descriptions, its tags and its
+shelf, and every word has to match. Each swatch shows the theme's corner and
+depth on its accent dot; the stage names the theme's flair in plain words.
 
 ## The customizer
 
 Appearance → Theme → **Customize…** opens `ThemeCustomizer.tsx`, the advanced
 editor. It starts from the active theme, lets the user override any semantic
-token, and shows the same `resolveTheme` output the app paints with, so the
+token, the ten code colours and the shape settings (corners, depth, interface
+type, backdrop), and shows the same `resolveTheme` output the app paints with, so the
 preview and the live contrast warnings are the real thing.
 
 The save rule lives in `themeCustomizerModel.ts` (`planThemeSave`,
@@ -123,17 +169,24 @@ the default; Reset to base restores every token to the base's resolved value.
 
 `ThemeImportExport.tsx` (Appearance → Theme) exports the active theme as the
 versioned ADE envelope — copied to the clipboard and downloaded as
-`ade-theme-<id>.json` — and imports a `.json` file back. Import accepts either
-an ADE theme (`prepareImportedTheme` gives it a collision-free id and stamps its
-source) or a VS Code theme.
+`ade-theme-<id>.json` — and imports a `.json` file back. The export carries the
+palette, terminal colours, code colours and flair. Import accepts either an ADE
+theme (`prepareImportedTheme` gives it a collision-free id and stamps its
+source) or a VS Code theme. Files are read with `parseJsonc`, so the comments
+and trailing commas VS Code themes carry no longer fail as "not valid JSON".
+`ThemeFilesHelp` (a disclosure under the gallery) says all of this to the user
+and links to Open VSX, the VS Code Marketplace and vscodethemes.com.
 
 VS Code import (`shared/theme/vscode.ts`) is **best-effort and says so**. It
-maps the `colors` keys that translate cleanly to ADE tokens and the
-`terminal.ansi*` keys to the ANSI palette, infers the base mode from the editor
-background, and returns the list of keys it could not map — including
-`tokenColors`, whose syntax-highlighting colours ADE does not apply. The import
-dialog shows the user that list; the importer never claims VS Code's syntax
-fidelity it does not have.
+maps the `colors` keys that translate cleanly to ADE tokens, the
+`terminal.ansi*` keys to the ANSI palette, and `tokenColors` to the ten syntax
+colours (through the scope table in `syntax.ts`; `keyword.operator` and
+property scopes need an exact entry, so a broad `keyword` rule does not paint
+every operator). It takes the base mode from the file's `type`, falling back to
+the editor background, and returns the keys it could not map — plus `include`
+and `semanticTokenColors` when present, which it does not follow. The import
+dialog shows that list and how many code colours came in. It still does not read
+a `.vsix`; unzip it and pick a file from its `themes` folder.
 
 ## Adding a token
 
@@ -145,12 +198,11 @@ and should be skipped — the seam recomputes it.
 ## Per-project themes are deliberately not shipped
 
 A theme is a user preference, like the chat font size: it lives in
-`ade.userPreferences.v1` and syncs through the `account` scope, so every surface
-and every machine agree. A per-project theme would layer a second, project-scoped
-choice on top, and the seam for that already exists (`accountSettingsSync`
-supports an `account-repo` scope keyed on the project's git remote). It is not
-shipped because the product questions have more than one reasonable answer and
-the answers disagree with each other:
+`ade.userPreferences.v1` on this computer. A per-project theme would layer a
+second, project-scoped choice on top, and the seam for that already exists
+(`accountSettingsSync` supports an `account-repo` scope keyed on the project's
+git remote). It is not shipped because the product questions have more than one
+reasonable answer and the answers disagree with each other:
 
 - Does a project pin **replace** the user's theme for that project, or only
   override the accent on top of it?

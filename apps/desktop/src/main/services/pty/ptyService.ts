@@ -17,6 +17,7 @@ import {
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
+import { writeCarriesTypedInput, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -27,6 +28,7 @@ import {
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
+import { signalProcessGroup } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
 import type { OpenCodeServerLease } from "../opencode/openCodeServer";
@@ -58,6 +60,7 @@ import {
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
+import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -301,7 +304,12 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
-const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
+// How often a running terminal's on-disk snapshot catches up with its output.
+// Every live reader (terminal preview, screen hydrate) serializes the live
+// mirror or flushes first, and exit and dispose flush, so this cadence only
+// bounds how stale the file is if the brain dies. Each write serializes the
+// whole scrollback, so keep it slow.
+const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
@@ -347,7 +355,7 @@ function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals):
     // a new session, making the child both session and process-group leader.
     // Targeting `-pid` therefore signals the PTY group in one syscall, instead
     // of recursively running synchronous `pgrep` calls on the main thread.
-    process.kill(-Math.trunc(rootPid), signal);
+    signalProcessGroup(Math.trunc(rootPid), signal);
     return true;
   } catch {
     return false;
@@ -459,7 +467,7 @@ function signalPtyTreeProcesses(
     .filter((processGroupId) => processGroupId > 1 && processGroupId !== process.pid));
   for (const processGroupId of processGroups) {
     try {
-      process.kill(-processGroupId, signal);
+      signalProcessGroup(processGroupId, signal);
     } catch {
       // A group may have exited between the process scan and signal.
     }
@@ -771,6 +779,11 @@ type PtyEntry = {
   lastUserInputAt: number;
   /** Monotonic generation used to detect user takeover of deferred input. */
   userInputGeneration: number;
+  /**
+   * An agent started this shell under a chat and nobody has typed into it yet,
+   * so it is still a candidate for `agentShellCleanup`. Cleared on first typing.
+   */
+  agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   runtimeWindowTitleScanBuffer: string;
@@ -1072,6 +1085,8 @@ type TerminalSnapshotMirror = {
   flushTimer: ReturnType<typeof setTimeout> | null;
   lastErrorAt: number;
   writeDisabled: boolean;
+  /** Writes the headless terminal has not parsed yet; it parses on a later tick. */
+  pendingWrites: number;
 };
 
 function cleanShellSpec(file: string): ShellSpec {
@@ -2603,7 +2618,7 @@ export function createPtyService({
       });
       const serializeAddon = new SerializeAddon();
       terminal.loadAddon(serializeAddon as Parameters<HeadlessTerminalInstance["loadAddon"]>[0]);
-      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false };
+      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0, writeDisabled: false, pendingWrites: 0 };
     } catch (err) {
       logger.warn("pty.terminal_snapshot_init_failed", { err: String(err) });
       return null;
@@ -2684,10 +2699,13 @@ export function createPtyService({
     const mirror = entry.terminalSnapshot;
     if (!mirror || !entry.tracked || entry.disposed || !data) return;
     try {
+      mirror.pendingWrites += 1;
       mirror.terminal.write(data, () => {
+        mirror.pendingWrites -= 1;
         scheduleTerminalSnapshotWrite(entry);
       });
     } catch (err) {
+      mirror.pendingWrites = Math.max(0, mirror.pendingWrites - 1);
       const now = Date.now();
       if (now - mirror.lastErrorAt > 10_000) {
         mirror.lastErrorAt = now;
@@ -2704,6 +2722,23 @@ export function createPtyService({
       mirror.flushTimer = null;
     }
     writeTerminalSnapshot(entry);
+  };
+
+  /**
+   * The last snapshot of an ending session. It writes what the mirror has
+   * parsed now, since the timers are unref'd and a brain shutting down exits
+   * first, and writes again once the mirror parses output still queued, since
+   * the write callback schedules nothing for an ended entry.
+   */
+  const flushFinalTerminalSnapshot = (entry: PtyEntry): void => {
+    flushTerminalSnapshot(entry);
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || mirror.pendingWrites === 0) return;
+    try {
+      mirror.terminal.write("", () => writeTerminalSnapshot(entry));
+    } catch {
+      // The snapshot written above stands.
+    }
   };
 
   const resizeTerminalSnapshot = (entry: PtyEntry, cols: number, rows: number): void => {
@@ -4551,7 +4586,9 @@ export function createPtyService({
       endEndedAt = priorEndState.endedAt ?? endedAt;
     }
     sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
-    flushTerminalSnapshot(entry);
+    // A shell App Control just replaced goes now, not on the next tick.
+    if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
+    flushFinalTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
@@ -5784,6 +5821,21 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The user typed into a shell an agent started: it is theirs now, so the
+   * dead-shell cleanup must never archive it. Only the user write paths call
+   * this — an agent's own `writeTerminal` input does not claim the shell.
+   */
+  const claimAgentShellForUser = (entry: PtyEntry, data: string): void => {
+    if (!entry.agentShellCleanupCandidate || !writeCarriesTypedInput(data)) return;
+    entry.agentShellCleanupCandidate = false;
+    try {
+      sessionService.agentShells.markUserInput(entry.sessionId);
+    } catch (error) {
+      logger.warn("pty.agent_shell_claim_failed", { sessionId: entry.sessionId, error: String(error) });
+    }
+  };
+
   const clearCommittedCliActivity = (entry: PtyEntry, data: string): void => {
     if (
       entry.tracked
@@ -5793,6 +5845,11 @@ export function createPtyService({
       sessionService.clearSessionActivity(entry.sessionId);
     }
   };
+
+  // The process that owns the PTYs archives their dead agent shells.
+  sessionService.agentShells.start((error) => {
+    logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+  });
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -6180,6 +6237,13 @@ export function createPtyService({
           ownerProcessStartedAt,
         });
         setRuntimeState(sessionId, "running");
+        if (args.launchedBy === "agent" && chatSessionId) {
+          try {
+            sessionService.agentShells.markAgentLaunched(sessionId);
+          } catch (error) {
+            logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
+          }
+        }
 
         // Attach any requested Linear issues to the freshly-created session row
         // BEFORE env is built below, so getSessionLinearEnv resolves them and the
@@ -6212,6 +6276,15 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
+      } else if (args.launchedBy !== "agent") {
+        // Someone resumed this shell by hand: it is theirs now, so the
+        // dead-shell cleanup must not archive it later. A no-op for any shell
+        // the cleanup never tracked.
+        try {
+          sessionService.agentShells.markUserInput(sessionId);
+        } catch (error) {
+          logger.warn("pty.agent_shell_claim_failed", { sessionId, error: String(error) });
+        }
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
@@ -6724,6 +6797,7 @@ export function createPtyService({
         processOutputData: null,
         lastUserInputAt: 0,
         userInputGeneration: 0,
+        agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
@@ -7534,11 +7608,24 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    write({ ptyId, data }: { ptyId: string; data: string }): void {
+    /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */
+    retireAgentShell({ sessionId, reason }: { sessionId: string; reason: AgentShellRetireReason }): void {
+      try {
+        sessionService.agentShells.markRetiredByAde(sessionId, reason);
+      } catch (error) {
+        logger.warn("pty.agent_shell_retire_failed", { sessionId, error: String(error) });
+      }
+    },
+
+    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
+      // Enter in a CLI chat is a message sent: remember which desktop sent it
+      // (or that nobody can tell, when it came without a stamp).
+      if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -7578,8 +7665,10 @@ export function createPtyService({
         ...(laneId ? { laneId } : {}),
         limit,
       }));
+      const includeArchived = args.includeArchived === true;
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
+        .filter((summary) => includeArchived || !summary.archivedAt)
         .filter((summary) => {
           if (!chatSessionId) return true;
           const linkedChatSessionId = terminalChatSessions.get(summary.id)
@@ -7871,6 +7960,7 @@ export function createPtyService({
       }
       try {
         markPtyUserInput(entry, args.data);
+        if (args.fromUser === true) claimAgentShellForUser(entry, args.data);
         entry.pty.write(args.data);
         clearCommittedCliActivity(entry, args.data);
         tryCliUserTitleFromWrite(entry, args.data);
@@ -7963,6 +8053,7 @@ export function createPtyService({
       const [, entry] = live;
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -8479,6 +8570,7 @@ export function createPtyService({
       terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      flushFinalTerminalSnapshot(entry);
       scheduleTranscriptDependentWork(entry, "dispose");
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
@@ -8510,6 +8602,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
+      sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {
           service.dispose({ ptyId });

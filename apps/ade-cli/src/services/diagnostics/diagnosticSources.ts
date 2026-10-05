@@ -19,7 +19,11 @@ import {
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../../desktop/src/main/services/logging/machineLogger";
 import { resolveRuntimeServiceName } from "../../serviceManager/common";
-import { launchAgentPath } from "../../serviceManager/installLaunchd";
+import {
+  backgroundItemStatusCommand,
+  launchAgentPath,
+  parseBackgroundItemStatus,
+} from "../../serviceManager/installLaunchd";
 import { servicePath as systemdUnitPath } from "../../serviceManager/installSystemd";
 import {
   buildWindowsExportTaskArgs,
@@ -386,13 +390,38 @@ function journalPlan(
   };
 }
 
-/** Every command this platform's report would run. At most one, today. */
+/**
+ * launchd's own view of the job: state, pid, last exit, and why it last ran.
+ * The plist says what the agent SHOULD do; this says what launchd did with it,
+ * and "loaded but never started" is invisible without it.
+ */
+function launchdPrintPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
+  const serviceName = resolveRuntimeServiceName(env);
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const target = `gui/${uid}/${serviceName}`;
+  return { display: `launchctl print ${target}`, command: "launchctl", args: ["print", target] };
+}
+
+/**
+ * macOS Background Items verdict for the agent: whether "Allow in the
+ * Background" lets launchd start it at all.
+ */
+function backgroundItemPlan(env: NodeJS.ProcessEnv, homeDir: string): DiagnosticCommandPlan {
+  const { command, args } = backgroundItemStatusCommand(
+    launchAgentPath(homeDir, resolveRuntimeServiceName(env)),
+  );
+  return { display: "SMAppService.statusForLegacyPlist", command, args };
+}
+
+/** Every command this platform's report would run. */
 function planMachineDiagnosticCommands(args: {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
   homeDir: string;
 }): DiagnosticCommandPlan[] {
-  if (args.platform === "darwin") return [];
+  if (args.platform === "darwin") {
+    return [launchdPrintPlan(args.env), backgroundItemPlan(args.env, args.homeDir)];
+  }
   if (args.platform === "win32") {
     const task = windowsScheduledTaskPlan(args.env);
     return task ? [task] : [];
@@ -466,7 +495,22 @@ function collectServiceDefinition(args: {
   const serviceName = resolveRuntimeServiceName(args.env);
 
   if (args.platform === "darwin") {
-    return [readFileHead("launchd agent", launchAgentPath(args.homeDir, serviceName))];
+    const print = launchdPrintPlan(args.env);
+    const backgroundItem = backgroundItemPlan(args.env, args.homeDir);
+    const backgroundItemAnswer = args.run(backgroundItem.command, backgroundItem.args);
+    return [
+      readFileHead("launchd agent", launchAgentPath(args.homeDir, serviceName)),
+      readCommandOutput("launchd job", print.display, print.command, print.args, args.run, {
+        maxBytes: SERVICE_DEFINITION_MAX_BYTES,
+      }),
+      backgroundItemAnswer && backgroundItemAnswer.status === 0
+        ? {
+          label: "Background Items",
+          path: backgroundItem.display,
+          text: `${parseBackgroundItemStatus(backgroundItemAnswer.stdout)} (raw ${backgroundItemAnswer.stdout.trim() || "empty"})`,
+        }
+        : { label: "Background Items", path: backgroundItem.display, error: "(could not be read)" },
+    ];
   }
   if (args.platform === "win32") {
     const entries = [

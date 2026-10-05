@@ -42,6 +42,7 @@ import {
 } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES } from "./chatHistoryWindow";
 import { confirmDialog } from "../ui/dialog/confirm";
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
@@ -4380,6 +4381,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
         displayText: "Stop checking docs and just drive the browser.",
+        sentByUser: true,
       }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
@@ -4722,7 +4724,7 @@ describe("AgentChatPane submit recovery", () => {
     // what to do, and never titles the row "Error". The failure class still
     // has a home in the identity footer asserted above.
     expect(screen.queryByText("Error")).toBeNull();
-    expect(screen.getByText("Couldn't start this turn")).toBeTruthy();
+    expect(screen.getByText("This turn stopped")).toBeTruthy();
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
@@ -5356,6 +5358,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
         displayText: "Recover by starting a new turn.",
+        sentByUser: true,
       }, null);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5385,6 +5388,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Please keep going.",
         displayText: "Please keep going.",
+        sentByUser: true,
       }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
@@ -6563,6 +6567,9 @@ describe("AgentChatPane submit recovery", () => {
         cursorConfigValues: {},
       }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
+      // A successful handoff closes the form instead of leaving it over the
+      // new chat.
+      expect(screen.queryByTestId("handoff-local")).toBeNull();
     });
   });
 
@@ -6796,6 +6803,103 @@ describe("AgentChatPane submit recovery", () => {
         mode: "fork",
       }), null);
     });
+  });
+
+  it("defaults fork and brief to the source chat's model", async () => {
+    // Codex source on gpt-5.5, with a Claude alternative in the catalog: the
+    // form must start on the model this chat runs on, not the alternative.
+    seedRuntimeModelCatalog();
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2"),
+        usedFallbackSummary: false,
+      },
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    const localView = await screen.findByTestId("handoff-local");
+    await waitFor(() => {
+      expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+    });
+
+    // The brief tab shares the target and must not snap back to the alternative.
+    fireEvent.click(within(localView).getByRole("button", { name: /^Brief$/ }));
+    expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+      }), null);
+    });
+  });
+
+  it("shows a failed local handoff's error inside the form and keeps it open", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      handoffError: new Error("The handoff could not reach the runtime."),
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    // The pane's own error line sits behind the form, so the failure has to be
+    // shown where the user is looking.
+    await waitFor(() => {
+      expect(within(localView).getByText("The handoff could not reach the runtime.")).toBeTruthy();
+    });
+    // The form stays open so the note is not lost and the user can retry.
+    expect(within(localView).getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("closes the local handoff form when the pane switches chats", async () => {
+    const first = buildSession("session-1", { status: "idle" });
+    const second = buildSession("session-2", { status: "idle" });
+    installAdeMocks({ sessions: [first, second] });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={first.laneId}
+          lockSessionId={first.sessionId}
+          hideSessionTabs
+          initialSessionSummary={first}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    openChatHandoff(first.sessionId, "local");
+    await screen.findByTestId("handoff-local");
+
+    // The pane is re-pointed at another chat while the form is open; a form
+    // left mounted would hand off the wrong chat.
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={second.laneId}
+          lockSessionId={second.sessionId}
+          hideSessionTabs
+          initialSessionSummary={second}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId("handoff-local")).toBeNull());
   });
 
   it("shows replay truncation disclosure after fork handoff", async () => {
@@ -10112,7 +10216,7 @@ describe("AgentChatPane submit recovery", () => {
       .toBe(String(openedAtMs));
   });
 
-  it("shows unattended scheduled wakes as one compact review card", async () => {
+  it("marks what arrived while the chat was closed with one New since divider", async () => {
     const openedAtMs = Date.parse("2026-07-10T12:00:00.000Z");
     vi.spyOn(Date, "now").mockReturnValue(openedAtMs);
     const session = buildSession("session-1", { title: "Scheduled work" });
@@ -10120,7 +10224,6 @@ describe("AgentChatPane submit recovery", () => {
       `ade.chat.lastViewed.v1:${session.sessionId}`,
       String(Date.parse("2026-07-10T10:00:00.000Z")),
     );
-    const longOutcome = "Deployment completed after a very long diagnostic summary that should remain in the transcript instead of being crammed into the notice.";
     installAdeMocks({
       sessions: [session],
       eventHistory: {
@@ -10130,47 +10233,15 @@ describe("AgentChatPane submit recovery", () => {
         events: [
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:30:00.000Z",
+            timestamp: "2026-07-10T09:00:00.000Z",
             sequence: 1,
-            event: {
-              type: "user_message",
-              text: "Check CI",
-              deliveryState: "delivered",
-              turnId: "turn-wake-1",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-1",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T10:30:00.000Z",
-                  reason: "Check CI",
-                },
-              },
-            },
+            event: { type: "text", text: "Read before you left", turnId: "turn-old" },
           },
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:31:00.000Z",
+            timestamp: "2026-07-10T10:30:00.000Z",
             sequence: 2,
-            event: { type: "text", text: longOutcome, turnId: "turn-wake-1" },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T11:30:00.000Z",
-            sequence: 3,
-            event: {
-              type: "user_message",
-              text: "Check deployment",
-              deliveryState: "delivered",
-              turnId: "turn-wake-2",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-2",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T11:30:00.000Z",
-                  reason: "Check deployment",
-                },
-              },
-            },
+            event: { type: "text", text: "Arrived while you were away", turnId: "turn-new" },
           },
         ],
       },
@@ -10178,18 +10249,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const digest = await screen.findByTestId("chat-away-digest");
-    expect(within(digest).getByText("While you were away")).toBeTruthy();
-    expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
-    expect(within(digest).queryByText(longOutcome)).toBeNull();
-    expect(screen.getByTestId("chat-composer-notice-overlay").contains(digest)).toBe(true);
-
-    const review = within(digest).getByRole("button", { name: "Review" });
-    expect(review.getAttribute("title")).toBe("First wakeup: Check CI");
-    expect(within(digest).getAllByRole("button")).toHaveLength(2);
-
-    fireEvent.click(within(digest).getByRole("button", { name: "Dismiss while-you-were-away summary" }));
-    await waitFor(() => expect(screen.queryByTestId("chat-away-digest")).toBeNull());
+    const divider = await screen.findByTestId("chat-new-since-divider");
+    const before = await screen.findByText("Read before you left");
+    const after = screen.getByText("Arrived while you were away");
+    expect(before.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByTestId("chat-new-since-divider")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-away-digest")).toBeNull();
   });
 
   it("does not reserve an empty notice row above a live app-panel composer", async () => {
@@ -12550,6 +12616,110 @@ describe("older transcript paging retries", () => {
     );
     expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
   }, 25_000);
+
+  it("stops idle backfill at the resident cap instead of dropping the live tail", async () => {
+    const session = buildSession("session-1", { title: "Huge chat" });
+    // One older event whose resident estimate alone is over the cap: the cap
+    // merge keeps the oldest events, so applying it would drop the tail.
+    const oversized = "x".repeat(Math.ceil(MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES / 2) + 1);
+    let pageRequests = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async (args) => {
+        pageRequests += 1;
+        return {
+          sessionId: args.sessionId,
+          // A whole older turn (one batch is one page). The oversized payload
+          // rides in a field the transcript never draws.
+          events: [{
+            sessionId: args.sessionId,
+            timestamp: "2026-07-10T11:00:00.000Z",
+            sequence: 0,
+            event: { type: "user_message", text: "older prompt", padding: oversized } as AgentChatEventEnvelope["event"],
+          }],
+          startOffset: Math.floor(args.beforeOffset / 2),
+          hasMore: true,
+          sessionFound: true,
+        };
+      },
+    });
+
+    // The reader sits at the live tail of a long chat, far from the top, so
+    // only idle backfill (not the near-top or underfill paths) asks for pages.
+    // jsdom has no layout or idle callbacks; give the transcript pane both.
+    const isPane = (el: Element) => el.classList.contains("ade-chat-timeline-pane");
+    const descriptors = (["scrollHeight", "clientHeight", "scrollTop"] as const)
+      .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
+    const geometry = { scrollHeight: 200_000, clientHeight: 600, scrollTop: 199_400 };
+    for (const [prop, original] of descriptors) {
+      Object.defineProperty(Element.prototype, prop, {
+        configurable: true,
+        get(this: Element) { return isPane(this) ? geometry[prop] : original.get?.call(this); },
+        set(this: Element, value: number) { if (!isPane(this)) original.set?.call(this, value); },
+      });
+    }
+    const originalIdle = [window.requestIdleCallback, window.cancelIdleCallback] as const;
+    window.requestIdleCallback = (callback: IdleRequestCallback) => window.setTimeout(
+      () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+      0,
+    );
+    window.cancelIdleCallback = (handle: number) => window.clearTimeout(handle);
+    try {
+      renderPane(session);
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      // No scroll: the Work pane backfills on its own.
+      await waitFor(() => expect(pageRequests).toBe(1));
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByText("newest visible message")).toBeTruthy();
+      expect(screen.queryByText("older prompt")).toBeNull();
+      // The refused page stops backfill for this chat rather than re-asking.
+      expect(pageRequests).toBe(1);
+    } finally {
+      for (const [prop, original] of descriptors) Object.defineProperty(Element.prototype, prop, original);
+      [window.requestIdleCallback, window.cancelIdleCallback] = originalIdle;
+    }
+  });
+
+  it("ends the retry ladder of a page request still in flight when the pane unmounts", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    let failFirstPage!: (error: Error) => void;
+    const firstPage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
+      failFirstPage = reject;
+    });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async () => {
+        pageAttempts += 1;
+        if (pageAttempts === 1) return firstPage;
+        throw new Error("remote hop dropped");
+      },
+    });
+
+    const view = renderPane(session);
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(pageAttempts).toBe(1));
+
+    // The pane goes away while its page is still out; the page then fails.
+    view.unmount();
+    vi.useFakeTimers();
+    try {
+      failFirstPage(new Error("remote hop dropped"));
+      // Past both backoff steps (800ms, 2400ms): nothing may retry for a pane
+      // that no longer exists.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(pageAttempts).toBe(1);
+      expect(window.ade.agentChat.getEventHistoryPage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("cancels pending paging retries when the session switches", async () => {
     const sessionA = buildSession("session-1", { title: "Chat A" });

@@ -31,6 +31,7 @@ import {
   type ProviderInstanceLoginCommand,
   type ProviderInstanceProvider,
   type ProviderInstanceRegistry,
+  type ProviderInstanceReplacedAccount,
   type ProviderInstanceSettings,
 } from "../../../../desktop/src/shared/types/providerInstances";
 
@@ -70,6 +71,8 @@ type StoredInstance = {
   configHome: string;
   createdAt: string;
   account?: { email?: string; plan?: string };
+  /** The login this config home held before a different one replaced it. */
+  replacedAccount?: ProviderInstanceReplacedAccount;
 };
 
 type RegistryFile = {
@@ -90,7 +93,9 @@ export type ProviderInstanceStoreChange = {
     | "setDefault"
     | "setAccent"
     | "setSettings"
-    | "refresh";
+    | "refresh"
+    | "login"
+    | "dismissReplaced";
   provider?: ProviderInstanceProvider;
   instanceId?: string;
 };
@@ -174,6 +179,16 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     }
     : undefined;
   const accentColor = normalizeProviderInstanceAccent(value.accentColor);
+  const replaced = isRecord(value.replacedAccount) ? value.replacedAccount : null;
+  const replacedEmail = trimmedString(replaced?.email);
+  const replacedPlan = trimmedString(replaced?.plan);
+  const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
+    ? {
+      email: replacedEmail,
+      ...(replacedPlan ? { plan: replacedPlan } : {}),
+      replacedAt: trimmedString(replaced.replacedAt) ?? DEFAULT_INSTANCE_CREATED_AT,
+    }
+    : undefined;
   return {
     id,
     provider,
@@ -182,7 +197,12 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     configHome,
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
+    ...(replacedAccount ? { replacedAccount } : {}),
   };
+}
+
+function sameEmail(a: string | undefined, b: string | undefined): boolean {
+  return Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
 function emptyFile(): RegistryFile {
@@ -301,8 +321,45 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return exists ? pointer : defaultProviderInstanceId(provider);
   }
 
+  /**
+   * Accounts whose saved login stopped working, by instance id, as the usage
+   * poller last read them. In memory only: the poller reads every account
+   * again on its next pass, so a restart re-learns it within one poll.
+   */
+  const brokenLogins = new Set<string>();
+
+  /**
+   * Records whether one account's saved login works. The config home keeps the
+   * account's email after the provider CLI clears a broken login, so the email
+   * alone said "signed in" for an account that could not run a chat.
+   */
+  function setLoginBroken(id: string, broken: boolean): void {
+    if (brokenLogins.has(id) === broken) return;
+    if (broken) brokenLogins.add(id);
+    else brokenLogins.delete(id);
+    const record = get(id);
+    if (record) emit({ reason: "login", provider: record.provider, instanceId: id });
+  }
+
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
-    const signedIn = Boolean(stored.account?.email || stored.account?.plan);
+    const known = Boolean(stored.account?.email || stored.account?.plan);
+    const loginBroken = known && brokenLogins.has(stored.id);
+    const signedIn = known && !loginBroken;
+    const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
+    // Two config homes signed in to one email are one login and one quota. The
+    // first working login in list order (the base identity, then creation
+    // order) owns it: a broken login has no quota to share. With no working
+    // login, the first in list order owns it.
+    const holders = stored.account?.email
+      ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
+      : [];
+    const owner = holders.find((record) => !brokenLogins.has(record.id)) ?? holders[0];
+    const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
+    // A replaced login another account holds again is not lost.
+    const replacedAccount = stored.replacedAccount
+      && !siblings.some((record) => sameEmail(record.account?.email, stored.replacedAccount?.email))
+      ? stored.replacedAccount
+      : undefined;
     return {
       id: stored.id,
       provider: stored.provider,
@@ -313,6 +370,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       createdAt: stored.createdAt,
       ...(stored.account ? { account: stored.account } : {}),
       signedIn,
+      ...(loginBroken ? { loginBroken: true } : {}),
+      ...(sameLoginAs ? { sameLoginAs } : {}),
+      ...(replacedAccount ? { replacedAccount } : {}),
     };
   }
 
@@ -529,8 +589,21 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
+    // An instance id is a label slug and can be reused: recreating an account
+    // with the same label mints the same id, so a stale entry here would report
+    // the fresh account as signed out until its next poll.
+    brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });
     return { removed: true, configHome: record.configHome };
+  }
+
+  /** Forget the login an account held before a different sign-in replaced it. */
+  function dismissReplaced(id: string): ProviderInstance {
+    return mutateRecord(id, "dismissReplaced", (record) => {
+      const next = { ...record };
+      delete next.replacedAccount;
+      return next;
+    });
   }
 
   function getProviderSettings(provider: ProviderInstanceProvider): ProviderInstanceSettings {
@@ -619,6 +692,17 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
         ...(hasAccount ? { account: next } : {}),
       };
       if (!hasAccount) delete updated.account;
+      // A different email in the same config home means a sign-in elsewhere
+      // (`claude /login` in a shell, for the base identity) replaced this
+      // login, and its credentials are gone. Remember it so the panel can offer
+      // to sign it back in instead of silently losing an account.
+      if (previous?.email && next.email && !sameEmail(previous.email, next.email)) {
+        updated.replacedAccount = {
+          email: previous.email,
+          ...(previous.plan ? { plan: previous.plan } : {}),
+          replacedAt: now().toISOString(),
+        };
+      }
       if (index >= 0) file.instances[index] = updated;
       else file.instances = [...file.instances, updated];
     }
@@ -665,6 +749,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     rename,
     setDefault,
     setAccent,
+    dismissReplaced,
     getProviderSettings,
     setProviderSettings,
     getPresetBindings,
@@ -675,6 +760,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       return loginCommandFor(instance);
     },
     refreshAccounts,
+    setLoginBroken,
     /** Every write emits; returns the unsubscribe. */
     onChange(listener: (change: ProviderInstanceStoreChange) => void): () => void {
       listeners.add(listener);

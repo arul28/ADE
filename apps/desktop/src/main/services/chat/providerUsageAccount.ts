@@ -2,7 +2,11 @@ import type {
   AgentChatUsageAccount,
   AgentChatUsageAccountKind,
 } from "../../../shared/types/chat";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import {
+  providerInstanceHasAccount,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
 import { createOpenCodeUsageAccountResolver } from "./openCodeTurnUsage";
 
 /**
@@ -222,7 +226,9 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
         modelProvider: args.modelProvider,
         keyedPreset: runsKeyedPreset(session),
         redirectedEndpoint: Boolean(current.ANTHROPIC_BASE_URL?.trim() || current.ANTHROPIC_AUTH_TOKEN?.trim()),
-        instanceSignedIn: instance?.signedIn === true,
+        // "Did this account's plan pay", not "does its login work now": a turn
+        // that ran proves the login, even while the poller's flag is stale.
+        instanceSignedIn: instance ? providerInstanceHasAccount(instance) : false,
       });
       return buildInstanceUsageAccount({ provider: "claude", kind, instance, routedAway });
     },
@@ -232,7 +238,7 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
       const { kind, routedAway } = codexUsageAccountKind({
         authMode,
         keyedPreset: runsKeyedPreset(session),
-        instanceSignedIn: instance?.signedIn === true,
+        instanceSignedIn: instance ? providerInstanceHasAccount(instance) : false,
       });
       return buildInstanceUsageAccount({ provider: "codex", kind, instance, routedAway, plan: planType });
     },

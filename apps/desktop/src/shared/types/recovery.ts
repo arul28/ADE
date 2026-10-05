@@ -8,6 +8,10 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "storage_read_failed",
   "brain_not_installed",
   "brain_crash_looping",
+  /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
+  "background_item_blocked",
+  /** The service is installed but its brain is not running, with no crash on record. */
+  "brain_not_running",
   "socket_stale_no_owner",
   "socket_owned_by_other",
   "provider_thread_missing",
@@ -53,6 +57,15 @@ export type ProjectRecoveryDiagnosis = {
     | "storage_unreadable"
     | "brain_crash_looping"
     | "brain_not_installed"
+    /**
+     * macOS keeps ADE's launch agent loaded but will not start it, because ADE
+     * is switched off under Login Items → "Allow in the Background". No repair
+     * can change that; the screen sends the person to the switch and resumes
+     * by itself once it is on.
+     */
+    | "background_blocked"
+    /** Installed, not running, and no recorded crash: start it, do not call it a crash loop. */
+    | "brain_not_running"
     | "socket_stale_no_owner"
     | "socket_owned_by_other"
     /**
@@ -89,14 +102,117 @@ export type RepairStepId =
  * row on the recovery screen.
  */
 export const REPAIR_STEP_LABELS: Record<RepairStepId, string> = {
-  check_space: "Checking storage space",
-  stop_service: "Stopping ADE's background service",
-  validate_database: "Checking project data",
-  resolve_migrations: "Finishing interrupted saves",
-  restart_service: "Restarting ADE's background service",
-  verify_endpoint: "Checking the background service",
-  verify_project_rpc: "Checking this project",
+  check_space: "Checking free space",
+  stop_service: "Stopping ADE",
+  validate_database: "Checking this project's ADE data",
+  resolve_migrations: "Finishing anything that was interrupted",
+  restart_service: "Starting ADE again",
+  verify_endpoint: "Checking that ADE answers",
+  verify_project_rpc: "Opening the project",
   reconcile_chats: "Checking chats",
+};
+
+export type RecoveryState = ProjectRecoveryDiagnosis["state"];
+
+/**
+ * What the person reads for each recovery state: the one table both the main
+ * process and the recovery screen use, so they can never say different
+ * things. Written for someone who has never heard of ADE's internals — no
+ * "service", "brain", "socket" or "endpoint". `steps` is what the person does
+ * themselves, and only states with a real chore have it.
+ */
+export const RECOVERY_COPY: Record<RecoveryState, {
+  headline: string;
+  body: string;
+  canAutoRepair: boolean;
+  steps?: readonly string[];
+}> = {
+  healthy: {
+    headline: "ADE is ready",
+    body: "Nothing needs fixing.",
+    canAutoRepair: false,
+  },
+  disk_full: {
+    headline: "Your computer is out of space",
+    body: "ADE needs a little free space to open this project. Your work is safe.",
+    canAutoRepair: true,
+    steps: [
+      "Free up some space. Emptying the Trash is often enough.",
+      "Then choose Fix it.",
+    ],
+  },
+  insufficient_headroom: {
+    headline: "Your computer is almost out of space",
+    body: "ADE keeps a little space free so it never loses your work. Your work is safe.",
+    canAutoRepair: true,
+    steps: [
+      "Free up a few GB. Emptying the Trash is often enough.",
+      "Then choose Fix it.",
+    ],
+  },
+  db_repair_needed: {
+    headline: "This project needs a quick fix",
+    body: "ADE was interrupted while it was saving. Fix it finishes the job. Your files and chats stay where they are.",
+    canAutoRepair: true,
+  },
+  storage_unreadable: {
+    headline: "ADE can't read this project's files",
+    body: "This usually happens when the folder is in iCloud Drive, Dropbox or OneDrive, and the files aren't downloaded to this computer.",
+    canAutoRepair: false,
+    steps: [
+      "Move the project folder to a normal folder on this computer.",
+      "Then choose Try again.",
+    ],
+  },
+  brain_not_installed: {
+    headline: "ADE isn't fully set up",
+    body: "A part of ADE that runs in the background is missing. Fix it sets it up again.",
+    canAutoRepair: true,
+  },
+  brain_crash_looping: {
+    headline: "ADE keeps stopping",
+    body: "A part of ADE that runs in the background keeps stopping. Fix it starts it again.",
+    canAutoRepair: true,
+  },
+  brain_not_running: {
+    headline: "ADE didn't start",
+    body: "A part of ADE that runs in the background is set up, but it didn't start. Fix it starts it.",
+    canAutoRepair: true,
+  },
+  background_blocked: {
+    headline: "Your Mac is blocking ADE",
+    body: "ADE needs permission to run in the background, and that permission is turned off in System Settings.",
+    canAutoRepair: false,
+    steps: [
+      "Choose Open System Settings.",
+      "Under \"Allow in the Background\", turn on ADE. On some Macs it shows under the name of ADE's developer instead.",
+      "Come back here. ADE continues by itself.",
+    ],
+  },
+  socket_stale_no_owner: {
+    headline: "ADE didn't close properly last time",
+    body: "Fix it cleans up and starts ADE again.",
+    canAutoRepair: true,
+  },
+  socket_owned_by_other: {
+    headline: "Another copy of ADE is open",
+    body: "Only one copy of ADE can run on a computer at a time.",
+    canAutoRepair: false,
+    steps: [
+      "Quit the other copy of ADE.",
+      "Then choose Try again.",
+    ],
+  },
+  brain_starting: {
+    headline: "ADE is starting",
+    body: "This can take a minute the first time, or right after an update. The project opens by itself.",
+    canAutoRepair: false,
+  },
+  unknown_failure: {
+    headline: "ADE couldn't open this project",
+    body: "Fix it restarts ADE and checks this project. Your files and chats stay where they are.",
+    canAutoRepair: true,
+  },
 };
 
 /** The order `ProjectRecoveryService.repair` runs the steps in. */
@@ -168,6 +284,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "storage_read_failed": return "storage_unreadable";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
+    case "background_item_blocked": return "background_blocked";
+    case "brain_not_running": return "brain_not_running";
     case "socket_stale_no_owner": return "socket_stale_no_owner";
     case "socket_owned_by_other": return "socket_owned_by_other";
     default: return "unknown_failure";
