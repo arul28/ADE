@@ -928,7 +928,7 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  const standaloneSettingsRoute = isSettingsRoute && !activeProject && standaloneSettingsOpen;
+  const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
   if (!isPersonalChatsRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride

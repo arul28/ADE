@@ -98,7 +98,7 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The two writers of a movie file — the per-turn time-lapse and the captioned recording — serialized against the helper's one recorder per lane, and `startHelperRecording`, the shared start (late-install stop, App Control orphan retry). |
 | `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
@@ -655,7 +655,11 @@ as a `github_pr` owner with the existing `published_to` relation. There is no
 second ingestion path.
 
 A turn that used the desktop also gets a short time-lapse clip in the thread. It
-is context rather than proof and never files a record.
+is context rather than proof and never files a record. The thread card hides
+while either the tools pane or the floating Mac Desktop player is showing that
+lane's desktop, because the clip would repeat what is on screen
+(`workToolOnScreen.ts` notifies on a floating show and unshow;
+`useWorkSurfaceMounted` reads it).
 
 **How the clip is actually made.** There is no frame assembler in the runtime —
 no ffmpeg, no encoder — so stitching kept stills was not a cheap path, it was a
@@ -688,6 +692,21 @@ directory (`$TMPDIR`), both of which are agent-owned scratch space; the proof
 skill documents `$TMPDIR` paths, and the earlier worktree-only rule refused the
 documented command. Everything else is still refused by code, with symlink
 checks on both the directories on the way and the leaf itself.
+
+**Starting a recording.** Every start goes through `startHelperRecording` in
+`macDesktopRecording.ts` (App Control window capture, the user recording, turn
+clips). A helper `record.start` that the driver watchdog answered with "did not
+complete within Ns" may still install its recording late, so ADE follows such a
+start with a stop, but only while that start still owns the slot. "Already
+recording" is treated as an orphan (stop it, retry once) only by App Control,
+whose per-lane key is exclusive and starts one at a time. Mac Desktop never
+stops a recorder that another chat's clip or a user recording holds.
+
+**Capture start in the driver.** `CaptureFrameSink.watchStart` in
+`CaptureEngine.swift` routes a stream's `didStopWithError` during a capture
+start to that start, so a ScreenCaptureKit -3805 stop ends the attempt at once
+instead of waiting out the frame timeout (four attempts used to take about 32 s,
+past the 15 s watchdog). Errors from abandoned attempts' streams are dropped.
 
 **Recording state is one truth.** `record stop` waits at most
 `CaptureEngine.recordingFinalizeBudget` (2 s) for `AVAssetWriter.finishWriting`.

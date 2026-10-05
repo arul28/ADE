@@ -369,7 +369,10 @@ Renderer — onboarding:
   row carries the same right-click project menu as a project tab — change icon,
   clone to this machine, pin or unpin, and copy path — and a project with no
   checkout on this machine offers **Clone locally**. `projectMenuEntries.ts`
-  holds the rows both surfaces share.
+  holds the rows both surfaces share. A **Settings** button sits bottom-left:
+  it sets the app-store flag `standaloneSettingsOpen` and navigates to
+  `/settings`, so a person with no project can still reach the settings that
+  need none (see "Settings with no project" below).
 - `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial
@@ -506,7 +509,9 @@ Renderer — onboarding:
 Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
-  container. It renders; it does not decide. Tabs, ordering, deep-link
+  container and page layout (each section page is one column, with the
+  section rail beside it when there is room; the section layer lives in
+  `settings/settingsTabContent.tsx`). It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
@@ -847,6 +852,16 @@ Renderer — settings:
   — toggles `prTranscriptGists.enabled` in project local config.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — About (version, runtime); rendered in General.
+- `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
+  — **Reset ADE** as its own section, last on General (local machine only;
+  anchor `reset-ade`, legacy `#about.reset` still resolves). It mounts
+  `ResetAdeButton` from `app/ResetAdeDialog.tsx`.
+- `apps/desktop/src/renderer/components/settings/settingsTabContent.tsx`
+  — the tab-section layer: `TAB_SECTIONS`, `TabContent`, and the Providers
+  sub-view. `SettingsPage.tsx` only lays out the page around it.
+- `apps/desktop/src/renderer/components/settings/primitives/SettingsSectionRail.tsx`
+  — the sticky in-page rail of section titles. Rendered when a page has two or
+  more sections; a CSS container query shows it only at 900px or wider.
   `AdeCliSection.tsx` is rendered in General too, directly under Project —
   CLI availability is app basics, not an integration. The
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
@@ -1844,6 +1859,22 @@ local-only and bound-runtime sections on the machine they can actually reach.
 GitHub and Linear integrations are still managed on the selected machine that
 owns those credentials.
 
+Section pages are one column. When a page has two or more sections, a sticky
+rail (`SettingsSectionRail`) lists their titles and scrolls to them; it appears
+only when the page container is 900px or wider.
+
+### Settings with no project
+
+The new-project screen has a **Settings** button. It sets the app-store flag
+`standaloneSettingsOpen` and navigates to `/settings`, and `App` renders
+`SettingsPage` with `standalone`: a Back button returns to the new-project
+screen and the top bar shows a "Settings" tab. Only settings that need no
+project are shown. The manifest's standalone resolver hides `account-repo` and
+`machine-repo` entries, and a tab whose sections all need a project binding is
+left out. Standalone mode ends on a new tab ("+"), Back, closing the Settings
+tab, or opening a project. A project closed while on `/settings` falls back to
+the new-project screen.
+
 `DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
 reordering the sidebar silently moved the landing page.
 
@@ -1851,7 +1882,7 @@ The pages themselves:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, and terminal text. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Account) | `AppleDevicesSection.tsx` | Simulator display, recording overlays, and the remote streaming cap. These follow the account because the host reads the cap from the account store. They sat on the Appearance page until Appearance became per computer. |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |

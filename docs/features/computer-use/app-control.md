@@ -79,6 +79,11 @@ Mac Desktop recording.
 Rules:
 
 - **One per lane.** A lane has at most one recording.
+- **Start.** The start goes through `startHelperRecording`. If the driver
+  watchdog answers a `record.start` as timed out, the recording may still
+  install late, so ADE follows with a stop (only while the start still owns the
+  slot). App Control's per-lane key is exclusive and starts one at a time, so
+  an "already recording" answer here is an orphan: stop it and retry once.
 - **Limits.** Every recording stops itself after 5 minutes of real time
   (`maxSeconds` sets less; `stopReason: "cap"`), after 2 minutes with no
   action (`"idle"`), or when the disk is nearly full (`"disk"`). A recording

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SETTINGS_SECTIONS } from "../app/settingsSections";
 import {
   availableSettingsEntries,
+  clearStandaloneSettingsResolver,
+  setStandaloneSettingsResolver,
   setWebMachineBindingResolver,
   SETTINGS_TABS,
   settingsTabLabel,
@@ -146,16 +148,18 @@ describe("settings manifest", () => {
     }
   });
 
-  it("follows the legacy Activity-settings aliases already in the wild", () => {
+  it("follows the legacy hashes already in the wild", () => {
     // These cards used to live on an Activity tab of their own. That tab is
     // gone and its settings now sit on Notifications, so the old hashes and
     // the old `attention`/`activity` tab names must land on Notifications —
-    // landing them anywhere else would be an invisible dead end.
+    // landing them anywhere else would be an invisible dead end. Reset ADE
+    // used to sit inside the About card, under `#about.reset`.
     for (const [hash, expectedTab] of [
       ["attention-notch", "notifications"],
       ["celebrations", "notifications"],
       ["attention-sounds", "notifications"],
       ["hide-previews", "notifications"],
+      ["about.reset", "general"],
     ] as const) {
       const entry = resolveSettingsHash(hash);
       expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
@@ -474,5 +478,36 @@ describe("web machine-scoped availability", () => {
     setWebMachineBindingResolver(() => true);
     const available = new Set(availableSettingsEntries().map((entry) => entry.id));
     for (const id of machineEntryIds()) expect(available.has(id)).toBe(true);
+  });
+});
+
+/**
+ * Settings with no project open (the new-project screen's Settings button).
+ * A project-scoped setting has nowhere to write there, so nav, search and the
+ * palette must all drop it, and only the page that installed the mode may end
+ * it.
+ */
+describe("standalone settings availability", () => {
+  const isProjectScoped = (scope: string) => scope === "account-repo" || scope === "machine-repo";
+
+  it("hides every project-scoped setting until its own page clears the mode", () => {
+    const installed = () => true;
+    setStandaloneSettingsResolver(installed);
+    try {
+      const available = availableSettingsEntries();
+      expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
+      expect(available.map((entry) => entry.id)).toEqual(
+        SETTINGS_ENTRIES.filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope)).map((entry) => entry.id),
+      );
+      expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
+      expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);
+
+      // Another page's cleanup must not end this page's mode.
+      clearStandaloneSettingsResolver(() => true);
+      expect(availableSettingsEntries().some((entry) => isProjectScoped(entry.scope))).toBe(false);
+    } finally {
+      clearStandaloneSettingsResolver(installed);
+    }
+    expect(availableSettingsEntries().some((entry) => isProjectScoped(entry.scope))).toBe(true);
   });
 });
