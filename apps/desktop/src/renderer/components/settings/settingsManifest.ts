@@ -1136,6 +1136,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
   "session-lifecycle": "storage.session-lifecycle",
+  // Reset ADE lived inside the About card (#1410) before it got its own section.
+  "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
   "product-analytics": "general.analytics",
   storage: "storage.usage",
@@ -1191,8 +1193,13 @@ export function isSettingAvailable(entry: SettingEntry): boolean {
  */
 let standaloneSettingsResolver: (() => boolean) | null = null;
 
-export function setStandaloneSettingsResolver(resolve: (() => boolean) | null): void {
+export function setStandaloneSettingsResolver(resolve: () => boolean): void {
   standaloneSettingsResolver = resolve;
+}
+
+/** Uninstall a standalone resolver, but only if it is still the installed one. */
+export function clearStandaloneSettingsResolver(resolve: () => boolean): void {
+  if (standaloneSettingsResolver === resolve) standaloneSettingsResolver = null;
 }
 
 /**
@@ -1261,6 +1268,14 @@ export function clearWebMachineBindingResolver(resolve: () => boolean): void {
 
 export function hasWebMachineBinding(): boolean {
   return webMachineBindingResolver?.() ?? false;
+}
+
+/** Whether any of these settings is reachable right now. */
+export function sectionHasAvailableEntries(entryIds: readonly string[]): boolean {
+  return entryIds.some((id) => {
+    const entry = settingsEntryById(id);
+    return entry != null && isSettingAvailable(entry);
+  });
 }
 
 /** Every setting reachable in this renderer, in manifest order. */

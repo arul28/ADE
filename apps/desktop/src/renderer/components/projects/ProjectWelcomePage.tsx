@@ -70,6 +70,7 @@ export function ProjectWelcomePage() {
   const theme = useAppStore((s) => s.theme);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
@@ -834,6 +835,7 @@ export function ProjectWelcomePage() {
               // Leave the new-tab state first: it is what is holding this page
               // in front, so a bare navigate would leave Settings behind it.
               cancelNewTab();
+              setStandaloneSettingsOpen(true);
               navigate("/settings");
             }}
           >

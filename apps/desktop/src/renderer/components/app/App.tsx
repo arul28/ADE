@@ -640,6 +640,8 @@ function ProjectTabHost() {
   }, [activeProjectBinding]);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
+  const standaloneSettingsOpen = useAppStore((s) => s.standaloneSettingsOpen);
+  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
@@ -926,7 +928,7 @@ function ProjectTabHost() {
     return GuardLoadingFallback;
   }
 
-  const standaloneSettingsRoute = isSettingsRoute && !activeProject;
+  const standaloneSettingsRoute = isSettingsRoute && !activeProject && standaloneSettingsOpen;
   if (!isPersonalChatsRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
@@ -1001,10 +1003,17 @@ function ProjectTabHost() {
       {/* Standalone Settings: no project is open, so there is no project
           surface to host it. It shows the account and this-computer sections
           and offers a Back to the new-project screen. */}
-      {isSettingsRoute && !activeProject ? (
+      {standaloneSettingsRoute ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
-            <SettingsPage active standalone onClose={() => navigate("/work", { replace: true })} />
+            <SettingsPage
+              active
+              standalone
+              onClose={() => {
+                setStandaloneSettingsOpen(false);
+                navigate("/work", { replace: true });
+              }}
+            />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}

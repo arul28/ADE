@@ -437,6 +437,9 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         stop: async () => (await recorder.stop(key)).filePath || null,
         logger: deps.logger,
         key,
+        // `startRecording` lets one start per lane run, and this key is App
+        // Control's alone, so a recorder the helper still holds is an orphan.
+        exclusive: true,
       });
     } catch (error) {
       // A grant revoked or never made shows up here as a ScreenCaptureKit

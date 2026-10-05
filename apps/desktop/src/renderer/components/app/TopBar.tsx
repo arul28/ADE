@@ -697,7 +697,9 @@ export function TopBar({
   // Settings with no project open — the new-project screen's own Settings
   // entry. It gets a tab of its own, the way a new tab does, so the header
   // always says which surface is in front.
-  const isSettingsTabOpen = settingsRouteActive && !hasProject;
+  const standaloneSettingsOpen = useAppStore((s) => s.standaloneSettingsOpen);
+  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
+  const isSettingsTabOpen = settingsRouteActive && !hasProject && standaloneSettingsOpen;
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -2306,7 +2308,10 @@ export function TopBar({
                 label="Settings"
                 // Its own content is already in front; activating closes nothing.
                 onActivate={() => {}}
-                onClose={() => onNavigate?.("/work", { replace: true })}
+                onClose={() => {
+                  setStandaloneSettingsOpen(false);
+                  onNavigate?.("/work", { replace: true });
+                }}
                 closeTitle="Close settings"
               >
                 <GearSix size={15} weight="duotone" className="shrink-0 text-accent" />
@@ -2315,7 +2320,7 @@ export function TopBar({
             )}
             {isNewTabOpen && (
               <ShellNavTab
-                active={!personalChatsRouteActive}
+                active={!personalChatsRouteActive && !isSettingsTabOpen}
                 label="New Tab"
                 onActivate={() => {
                   if (personalChatsRouteActive) onNavigate?.("/work");

@@ -75,6 +75,15 @@ function isRecorderTakenError(error: unknown): boolean {
   return /is already recording|recording is already starting/i.test(message);
 }
 
+/**
+ * The helper's watchdog reply for a request it gave up on. The work behind it
+ * may still be running (`PendingRequestTracker.swift`).
+ */
+function isWatchdogTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /did not complete within \d+s/.test(message);
+}
+
 /** The file a `record.stop` reply names, if it names one. */
 function stoppedFilePath(reply: DesktopSeatReply | null | undefined): string | null {
   return typeof reply?.filePath === "string" && reply.filePath ? reply.filePath : null;
@@ -91,10 +100,14 @@ function stoppedFilePath(reply: DesktopSeatReply | null | undefined): string | n
  * was refused "not recording" by the caller's own state. One stuck
  * ScreenCaptureKit call wedged the lane's recording until the helper died.
  *
- * Callers start only when they hold no recording for the key, so anything the
- * helper still holds is an orphan. A failed start is followed by a stop, which
- * cancels a start still in flight or ends one that finished late; a start
- * refused because the recorder is taken stops the orphan and tries once more.
+ * So a start the watchdog answered is followed by a stop, which cancels it
+ * while it still runs or ends it once it finished late. `stillOwned` is asked
+ * first: by then the slot may belong to another recording, and that one is
+ * not ours to stop.
+ *
+ * Only an `exclusive` caller — the only one that ever starts this key, one
+ * start at a time — may also treat "already recording" as an orphan, stop it
+ * and try once more. Anyone else can be refused by a real recording.
  */
 export async function startHelperRecording(args: {
   start: () => Promise<void>;
@@ -102,6 +115,8 @@ export async function startHelperRecording(args: {
   stop: () => Promise<string | null>;
   logger: Logger;
   key: string;
+  exclusive: boolean;
+  stillOwned?: () => boolean;
 }): Promise<void> {
   const clear = async (reason: string): Promise<void> => {
     try {
@@ -112,17 +127,21 @@ export async function startHelperRecording(args: {
       // "Not recording" is the common answer here, and it is the state we want.
     }
   };
+  const clearIfTimedOut = async (error: unknown): Promise<void> => {
+    if (isWatchdogTimeout(error) && (args.stillOwned?.() ?? true)) await clear("timed_out");
+  };
   try {
     await args.start();
     return;
   } catch (error) {
-    await clear(isRecorderTakenError(error) ? "taken" : "start_failed");
-    if (!isRecorderTakenError(error)) throw error;
+    await clearIfTimedOut(error);
+    if (!args.exclusive || !isRecorderTakenError(error)) throw error;
+    await clear("taken");
   }
   try {
     await args.start();
   } catch (retryError) {
-    await clear("retry_failed");
+    await clearIfTimedOut(retryError);
     throw retryError;
   }
 }
@@ -618,6 +637,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           stop: async () => stoppedFilePath(await provider.stopRecording({ laneId })),
           logger: deps.logger,
           key: laneId,
+          // Another chat's clip or a user recording can hold this lane's recorder.
+          exclusive: false,
+          stillOwned: () => !isUserRecording(laneId)
+            && deps.observations.getTurnRecording(laneId, chatSessionId)?.turnId === turnId,
         });
       } catch (error) {
         deps.observations.endTurnRecording(laneId, chatSessionId);
@@ -719,6 +742,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           stop: async () => stoppedFilePath(await provider.stopRecording({ laneId })),
           logger: deps.logger,
           key: laneId,
+          exclusive: false,
+          stillOwned: () => !isUserRecording(laneId),
         });
       } catch (error) {
         demoTrackRegistry.discard(demoKey);

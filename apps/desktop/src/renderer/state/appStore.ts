@@ -1459,6 +1459,12 @@ export type AppState = {
    */
   gitFolderTrustPrompt: GitFolderTrustPrompt | null;
   isNewTabOpen: boolean;
+  /**
+   * Settings is open with no project, from the new-project screen's Settings
+   * button. Set only by that request: a project that closes while `/settings`
+   * is on screen falls back to the welcome page, not to this.
+   */
+  standaloneSettingsOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
@@ -1718,6 +1724,7 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
   refreshProject: () => Promise<void>;
@@ -2038,6 +2045,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: cachedLanes?.laneSnapshots ?? [],
         lanes: cachedLanes?.lanes ?? [],
         laneStatusStale: true,
@@ -2097,6 +2105,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   worktreeOpenPrompt: null,
   gitFolderTrustPrompt: null,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
   laneSnapshots: [],
   lanes: [],
@@ -2769,11 +2778,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? { activeDictationTarget: null }
         : prev,
     ),
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
+  // A new tab is the new-project screen, so it also ends Settings-without-a-project.
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
+  setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
@@ -3206,6 +3217,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
             laneStatusStale: true,
@@ -3248,6 +3260,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
           }
         : {
             projectHydrated: true,
@@ -3255,6 +3268,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectTransition: null,
             projectTransitionError: null,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedLanes?.laneSnapshots ?? [],
             lanes: cachedLanes?.lanes ?? [],
             laneStatusStale: true,
@@ -3445,6 +3459,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransition: null,
           projectTransitionError: null,
           isNewTabOpen: false,
+          standaloneSettingsOpen: false,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
@@ -3511,6 +3526,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: [],
         lanes: [],
         lanesLoading: false,
@@ -3593,6 +3609,7 @@ export function createProjectAppStore(
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     theme: rootState.theme,
     themeId: rootState.themeId,

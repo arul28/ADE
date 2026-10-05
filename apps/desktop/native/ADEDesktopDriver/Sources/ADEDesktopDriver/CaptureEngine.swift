@@ -64,22 +64,38 @@ final class CaptureFrameSink: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private let startLock = NSLock()
     private var startWatcher: ((Error) -> Void)?
+    /// The stream this sink belongs to now: the attempt being started, then
+    /// the one that started. One sink serves every retry's stream, and an
+    /// abandoned attempt can still report a stop later. That report is about a
+    /// stream nobody uses, so it must neither end the current attempt nor tell
+    /// the client a running capture was interrupted.
+    private weak var currentStream: SCStream?
 
     /// While a start waits for its completion, a stop error belongs to that
     /// start and goes to `watcher`, not to `onError`. ScreenCaptureKit can stop
     /// a stream with an error (-3805, the app connection interrupted) and then
     /// never call the start's completion; without this the start sat out its
     /// whole wait, every retry did the same, and a 15s request ran past 30s.
-    func watchStart(_ watcher: ((Error) -> Void)?) {
+    func watchStart(_ stream: SCStream, _ watcher: @escaping (Error) -> Void) {
         startLock.lock()
+        currentStream = stream
         startWatcher = watcher
+        startLock.unlock()
+    }
+
+    /// The start answered or was given up on. Later stops go to `onError`.
+    func endStartWatch() {
+        startLock.lock()
+        startWatcher = nil
         startLock.unlock()
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         startLock.lock()
+        let isCurrent = currentStream === stream
         let watcher = startWatcher
         startLock.unlock()
+        guard isCurrent else { return }
         if let watcher {
             watcher(error)
             return
@@ -389,8 +405,8 @@ final class CaptureEngine {
                 let failure = ValueBox<Error>()
                 let stoppedWhileStarting = ValueBox<Error>()
                 let start = AbandonableStart()
-                sink.watchStart { error in stoppedWhileStarting.set(error) }
-                defer { sink.watchStart(nil) }
+                sink.watchStart(stream) { error in stoppedWhileStarting.set(error) }
+                defer { sink.endStartWatch() }
                 stream.startCapture { error in
                     let givenUp = start.answer()
                     failure.set(error)

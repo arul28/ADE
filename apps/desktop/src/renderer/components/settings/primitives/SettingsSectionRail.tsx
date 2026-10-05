@@ -8,12 +8,17 @@ export type SettingsRailEntry = { id: string; title: string };
  * looking at marked. Clicking an entry scrolls to it.
  *
  * Drawn only where the page has room: the CSS container query hides the rail
- * below the split width, and it renders nothing for a page with fewer than two
- * named sections. A list of anchors beside a single section is noise.
+ * below the split width. `TabContent` leaves it out for a page with fewer than
+ * two named sections.
  */
 export function SettingsSectionRail({ entries }: { entries: readonly SettingsRailEntry[] }) {
   const railRef = useRef<HTMLElement | null>(null);
   const [activeId, setActiveId] = useState<string | null>(entries[0]?.id ?? null);
+  // The page hands over a fresh array each render; the listeners follow the
+  // sections, not the array.
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const entriesKey = entries.map((entry) => entry.id).join("\u0000");
 
   useEffect(() => {
     // The nearest scrollable ancestor — the settings page's own scroller. It is
@@ -30,8 +35,9 @@ export function SettingsSectionRail({ entries }: { entries: readonly SettingsRai
       // A section counts as current once its top passes under this line, 96px
       // below the scroller's own top.
       const threshold = scroller.getBoundingClientRect().top + 96;
-      let current = entries[0]?.id ?? null;
-      for (const entry of entries) {
+      const sections = entriesRef.current;
+      let current = sections[0]?.id ?? null;
+      for (const entry of sections) {
         const element = document.getElementById(entry.id);
         if (element && element.getBoundingClientRect().top <= threshold) current = entry.id;
       }
@@ -44,13 +50,11 @@ export function SettingsSectionRail({ entries }: { entries: readonly SettingsRai
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [entries]);
+  }, [entriesKey]);
 
   const jump = useCallback((id: string) => {
     document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, []);
-
-  if (entries.length < 2) return null;
 
   return (
     <nav ref={railRef} className="ade-settings-rail" aria-label="On this page">
