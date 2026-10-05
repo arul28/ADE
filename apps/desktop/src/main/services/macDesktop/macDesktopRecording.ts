@@ -68,6 +68,65 @@ export const MAC_DESKTOP_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
 export type RecordingLengths = DemoRecordingLengths;
 
+/** The helper's answer when its one recorder for the key is already taken. */
+function isRecorderTakenError(error: unknown): boolean {
+  if (error && typeof error === "object" && (error as { code?: unknown }).code === "capture_starting") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /is already recording|recording is already starting/i.test(message);
+}
+
+/** The file a `record.stop` reply names, if it names one. */
+function stoppedFilePath(reply: DesktopSeatReply | null | undefined): string | null {
+  return typeof reply?.filePath === "string" && reply.filePath ? reply.filePath : null;
+}
+
+/**
+ * Starts the helper's recorder for one key, and never leaves it holding a
+ * recording its caller does not know about.
+ *
+ * The helper's watchdog answers a `record.start` that runs past its budget
+ * with `internal_error`, but the start keeps running and later installs its
+ * recording. The caller has already recorded a failure, so nothing would ever
+ * stop it: every later start was refused "already recording", and every stop
+ * was refused "not recording" by the caller's own state. One stuck
+ * ScreenCaptureKit call wedged the lane's recording until the helper died.
+ *
+ * Callers start only when they hold no recording for the key, so anything the
+ * helper still holds is an orphan. A failed start is followed by a stop, which
+ * cancels a start still in flight or ends one that finished late; a start
+ * refused because the recorder is taken stops the orphan and tries once more.
+ */
+export async function startHelperRecording(args: {
+  start: () => Promise<void>;
+  /** Resolves with the file a stopped recording left behind, if any. */
+  stop: () => Promise<string | null>;
+  logger: Logger;
+  key: string;
+}): Promise<void> {
+  const clear = async (reason: string): Promise<void> => {
+    try {
+      const leftover = await args.stop();
+      if (leftover) await fs.promises.rm(leftover, { force: true }).catch(() => {});
+      args.logger.info("recording.helper_orphan_cleared", { key: args.key, reason });
+    } catch {
+      // "Not recording" is the common answer here, and it is the state we want.
+    }
+  };
+  try {
+    await args.start();
+    return;
+  } catch (error) {
+    await clear(isRecorderTakenError(error) ? "taken" : "start_failed");
+    if (!isRecorderTakenError(error)) throw error;
+  }
+  try {
+    await args.start();
+  } catch (retryError) {
+    await clear("retry_failed");
+    throw retryError;
+  }
+}
+
 /**
  * The three lengths from a `record.stop` reply.
  *
@@ -554,7 +613,12 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       if (!recording) return;
       try {
         const provider = await deps.ensureProvider();
-        await provider.startRecording({ laneId, fps: TURN_CLIP_FPS, filePath });
+        await startHelperRecording({
+          start: () => provider.startRecording({ laneId, fps: TURN_CLIP_FPS, filePath }),
+          stop: async () => stoppedFilePath(await provider.stopRecording({ laneId })),
+          logger: deps.logger,
+          key: laneId,
+        });
       } catch (error) {
         deps.observations.endTurnRecording(laneId, chatSessionId);
         deps.logger.debug("mac_desktop.turn_clip_start_failed", {
@@ -650,7 +714,12 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       const demoKey = macDesktopDemoKey(laneId);
       demoTrackRegistry.begin(demoKey, { surface: "mac-desktop", chatSessionId, laneId });
       try {
-        await provider.startRecording({ laneId, fps, filePath, keepIdle: true });
+        await startHelperRecording({
+          start: () => provider.startRecording({ laneId, fps, filePath, keepIdle: true }),
+          stop: async () => stoppedFilePath(await provider.stopRecording({ laneId })),
+          logger: deps.logger,
+          key: laneId,
+        });
       } catch (error) {
         demoTrackRegistry.discard(demoKey);
         throw error;

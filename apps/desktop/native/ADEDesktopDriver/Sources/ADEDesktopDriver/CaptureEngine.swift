@@ -62,7 +62,28 @@ final class CaptureFrameSink: NSObject, SCStreamOutput, SCStreamDelegate {
         onFrame(sampleBuffer)
     }
 
+    private let startLock = NSLock()
+    private var startWatcher: ((Error) -> Void)?
+
+    /// While a start waits for its completion, a stop error belongs to that
+    /// start and goes to `watcher`, not to `onError`. ScreenCaptureKit can stop
+    /// a stream with an error (-3805, the app connection interrupted) and then
+    /// never call the start's completion; without this the start sat out its
+    /// whole wait, every retry did the same, and a 15s request ran past 30s.
+    func watchStart(_ watcher: ((Error) -> Void)?) {
+        startLock.lock()
+        startWatcher = watcher
+        startLock.unlock()
+    }
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        startLock.lock()
+        let watcher = startWatcher
+        startLock.unlock()
+        if let watcher {
+            watcher(error)
+            return
+        }
         onError(error)
     }
 }
@@ -366,7 +387,10 @@ final class CaptureEngine {
                 }
                 let settled = SettledFlag()
                 let failure = ValueBox<Error>()
+                let stoppedWhileStarting = ValueBox<Error>()
                 let start = AbandonableStart()
+                sink.watchStart { error in stoppedWhileStarting.set(error) }
+                defer { sink.watchStart(nil) }
                 stream.startCapture { error in
                     let givenUp = start.answer()
                     failure.set(error)
@@ -376,7 +400,13 @@ final class CaptureEngine {
                     // interrupted every other stream in the process.
                     if givenUp, error == nil { stream.stopCapture { _ in } }
                 }
-                RunLoopPump.wait(until: { settled.isSet }, timeout: 10)
+                RunLoopPump.wait(until: { settled.isSet || stoppedWhileStarting.value != nil }, timeout: 10)
+                if !settled.isSet, let stopError = stoppedWhileStarting.value {
+                    // The stream stopped before its start answered. Given up on
+                    // the same way as a start that never answers, but at once.
+                    if start.abandon(), failure.value == nil { stream.stopCapture { _ in } }
+                    throw stopError
+                }
                 guard settled.isSet else {
                     // A completion that never came. Treated as a failure and
                     // never as a success: the old code carried on here, which
@@ -389,6 +419,11 @@ final class CaptureEngine {
                 if let error = failure.value {
                     stream.stopCapture { _ in }
                     throw error
+                }
+                // Answered, but stopped in the same breath: not a live stream.
+                if let stopError = stoppedWhileStarting.value {
+                    stream.stopCapture { _ in }
+                    throw stopError
                 }
                 if attempt > 0 {
                     log("\(label) started on attempt \(attempt + 1)")

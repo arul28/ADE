@@ -351,10 +351,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     label: "Reset ADE",
     keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
     tab: "general",
-    anchor: "about.reset",
+    anchor: "reset-ade",
     scope: "machine",
     web: "hidden",
-    group: "About",
+    group: "Reset",
   },
 
   // ── Appearance ───────────────────────────────────────────────────────────
@@ -1168,12 +1168,31 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
-  if (!isWebClientMode()) return entry.webOnly !== true;
+  if (!isWebClientMode()) {
+    // Standalone Settings, opened from the new-project screen with no project:
+    // a project-scoped setting has nowhere to write, so it is hidden here as
+    // it is on the web client with no bound machine.
+    if (standaloneSettingsResolver?.() ?? false) {
+      return entry.webOnly !== true && entry.scope !== "account-repo" && entry.scope !== "machine-repo";
+    }
+    return entry.webOnly !== true;
+  }
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
   // bound to. With no tab open there is no such machine, so the control would
   // be a write with nowhere to land — the same reason `hidden` exists.
   return entry.web !== "machine" || hasWebMachineBinding();
+}
+
+/**
+ * Whether Settings is open with no project — the new-project screen's own
+ * Settings entry. Installing the resolver hides every project-scoped setting
+ * from nav, search and the palette at once.
+ */
+let standaloneSettingsResolver: (() => boolean) | null = null;
+
+export function setStandaloneSettingsResolver(resolve: (() => boolean) | null): void {
+  standaloneSettingsResolver = resolve;
 }
 
 /**

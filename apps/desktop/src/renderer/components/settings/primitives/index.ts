@@ -4,6 +4,7 @@
  */
 export { SettingsCard, SettingsGroup, SavedFlash, useSavedFlash } from "./SettingsCard";
 export { SettingsDisclosure } from "./SettingsDisclosure";
+export { SettingsSectionRail, type SettingsRailEntry } from "./SettingsSectionRail";
 export {
   SettingsColumn,
   SettingsPanel,

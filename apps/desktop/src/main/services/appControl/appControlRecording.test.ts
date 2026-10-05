@@ -154,6 +154,42 @@ describe("createAppControlRecording", () => {
     expect(changedRecorder.stop).toHaveBeenCalledWith(appControlRecordingKey("lane-1"));
   });
 
+  /*
+   * The helper keeps one recorder per key, and its watchdog answers a slow
+   * `record.start` with internal_error while the start goes on to install its
+   * recording. Before the fix that orphan refused every later start ("already
+   * recording") and the service refused every stop ("not recording").
+   */
+  it.each([
+    ["a start the watchdog answered for installs its recording late", { heldAtFirstStart: false }],
+    ["the helper already holds an orphan from an earlier run", { heldAtFirstStart: true }],
+  ])("records again when %s", async (_label, { heldAtFirstStart }) => {
+    let held = heldAtFirstStart;
+    let starts = 0;
+    const recorder = windowRecorder(deferred());
+    recorder.start = vi.fn(async () => {
+      starts += 1;
+      if (held) throw new Error("internal_error: Lane app-control:lane-1 is already recording.");
+      if (starts === 1) {
+        held = true;
+        throw new Error("internal_error: record.start did not complete within 16s. The driver gave up waiting and answered on its behalf; the operation may still be running.");
+      }
+      held = true;
+    });
+    recorder.stop = vi.fn(async () => {
+      if (!held) throw new Error("recording_not_running: Lane app-control:lane-1 is not recording.");
+      held = false;
+      return { filePath: "", durationMs: 0, wallDurationMs: 0, idleCutMs: 0 };
+    });
+    const { recording } = harness("darwin", recorder);
+
+    if (!heldAtFirstStart) await expect(recording.startRecording("lane-1", {})).rejects.toThrow(/did not complete/);
+    const status = await recording.startRecording("lane-1", {});
+    expect(status.running).toBe(true);
+    await recording.stopRecording("lane-1");
+    expect(held).toBe(false);
+  });
+
   it("records a Windows lane through the screencast engine, not the Mac window recorder", async () => {
     const recorder = windowRecorder(deferred());
     const backend = {

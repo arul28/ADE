@@ -22,7 +22,7 @@ import {
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { AppleDevicesSection } from "../settings/AppleDevicesSection";
-import { SettingsColumn } from "../settings/primitives";
+import { SettingsColumn, SettingsSectionRail } from "../settings/primitives";
 import { ChatSection } from "../settings/ChatSection";
 import { BudgetCapSettings } from "../settings/BudgetCapEditor";
 import { AboutSection } from "../settings/AboutSection";
@@ -40,6 +40,7 @@ import { BrowserLinksSection } from "../settings/BrowserLinksSection";
 import { BrowserAgentAccessSection } from "../settings/BrowserAgentAccessSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
+import { ResetAdeSection } from "../settings/ResetAdeSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { ProviderAccountsPanel } from "../settings/providers/accounts/ProviderAccountsPanel";
@@ -67,12 +68,16 @@ import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
 import {
   SETTINGS_ENTRIES,
+  SETTINGS_TAB_IDS,
   availableSettingsTabs,
   resolveSettingsHash,
   resolveSettingsTab,
   searchSettingsEntries,
   clearWebMachineBindingResolver,
   setWebMachineBindingResolver,
+  setStandaloneSettingsResolver,
+  isSettingAvailable,
+  settingsEntryById,
   settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
@@ -152,6 +157,15 @@ const TOUR_IDS: Partial<Record<SettingsTabId, string>> = {
  */
 function settingsEntryIdsForTab(tab: SettingsTabId): string[] {
   return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab).map((entry) => entry.id);
+}
+
+/** Whether a section still has at least one setting reachable right now. */
+function sectionHasAvailableEntries(entryIds: readonly string[] | "tab", tab: SettingsTabId): boolean {
+  const ids = entryIds === "tab" ? settingsEntryIdsForTab(tab) : entryIds;
+  return ids.some((id) => {
+    const entry = settingsEntryById(id);
+    return entry != null && isSettingAvailable(entry);
+  });
 }
 
 /** Whether anything on this tab needs a machine to write to. */
@@ -312,10 +326,6 @@ type TabSection = {
   machine?: MachineSectionKind;
   /** How the section is named in "not available here" notes. */
   title?: string;
-  /** `full` spans both columns of a wide page instead of taking one. */
-  span?: "full";
-  /** Stack under the previous section in the same cell of a wide page. */
-  stack?: true;
 };
 
 /**
@@ -356,9 +366,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "About ADE and updates",
     },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health" },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", stack: true },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line" },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", stack: true },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     {
       entryIds: ["general.browser-agent-access"],
       render: () => <BrowserAgentAccessSection />,
@@ -369,12 +379,20 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
     // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", stack: true },
+    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
       title: "Diagnostics sharing",
+    },
+    // Last on purpose: the hard reset is its own section at the very bottom of
+    // General, never a routine control beside About.
+    {
+      entryIds: ["general.reset"],
+      render: () => <ResetAdeSection />,
+      machine: "local",
+      title: "Reset ADE",
     },
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
@@ -403,9 +421,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "routed",
       title: "PR chat transcripts",
     },
-    // Last, so the two short sections above pair up and the full-width
-    // template manager sits under them.
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", span: "full" },
+    // The template manager sits under the two behaviour sections.
+    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates" },
   ],
   // Connections live in the machine's credential store and are read by its
   // runtime. Their calls follow the tab's binding (no pin yet), so they are
@@ -422,14 +439,12 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <StorageSection />,
       machine: "routed",
       title: "Disk usage and cleanup",
-      span: "full",
     },
     {
       entryIds: ["storage.session-lifecycle"],
       render: () => <SessionLifecycleSection />,
       machine: "routed",
       title: "Session lifecycle",
-      span: "full",
     },
   ],
   // Archived lanes and sessions belong to one machine's checkout, so the page
@@ -445,6 +460,25 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
  */
 const AGENTS_TAB_KIND: MachineSectionKind = "routed";
 
+/**
+ * The tabs that still have something to show with no project open.
+ *
+ * Standalone Settings (the new-project screen's own entry) can reach only the
+ * sections that talk straight to this desktop — `machine: "local"`. A tab whose
+ * sections all need a project binding (`routed` / `bound`) would render nothing
+ * but a "not available here" notice, so it is left out of the nav entirely.
+ * Account-style pages carry no machine kind and always render.
+ */
+const STANDALONE_TAB_IDS: ReadonlySet<SettingsTabId> = new Set(
+  SETTINGS_TAB_IDS.filter((tab) => {
+    const sections = TAB_SECTIONS[tab];
+    // Providers is a sub-view router, not a section list; it is routed.
+    if (!sections) return tab !== "agents";
+    if (sections.every((section) => section.machine === undefined)) return true;
+    return sections.some((section) => section.machine === "local");
+  }),
+);
+
 /** Manifest entries whose section only works on the tab's own machine. */
 const BOUND_MACHINE_ENTRY_IDS: ReadonlySet<string> = new Set(
   Object.values(TAB_SECTIONS).flatMap((sections) =>
@@ -455,10 +489,13 @@ const BOUND_MACHINE_ENTRY_IDS: ReadonlySet<string> = new Set(
 function TabContent({
   tab,
   machine,
+  standalone = false,
 }: {
   tab: SettingsTabId;
   /** The machine a Machines page is for. Null for Account and Project pages. */
   machine: SettingsMachinePage | null;
+  /** Standalone Settings (no project) also drops sections with nothing to show. */
+  standalone?: boolean;
 }) {
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
@@ -477,20 +514,31 @@ function TabContent({
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
-  const shown = machine
+  const shown = (machine
     ? sections.filter((section) => !section.machine || machineSectionAvailable(section.machine, machine))
-    : sections;
+    : sections
+  // Standalone Settings has no project, so a section whose settings are all
+  // project-scoped would render an empty card that never loads. Drop it.
+  ).filter((section) => !standalone || sectionHasAvailableEntries(section.entryIds, tab));
   const hiddenTitles = machine
     ? sections.filter((section) => !shown.includes(section)).map((section) => section.title ?? "")
       .filter(Boolean)
     : [];
-  const items = shown.map((section) => {
+  const items = shown.map((section, index) => {
     const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
-    return { section, entryIds, node: (
-      <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-        {section.render()}
-      </WebSettingsSection>
-    ) };
+    return {
+      section,
+      entryIds,
+      // Its own anchor, so the rail can name and reach every section. Sections
+      // used to be paired into cells for the old two-column grid; one column
+      // needs none of that, so each is its own step in the list.
+      id: `ade-settings-section-${index}`,
+      node: (
+        <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
+          {section.render()}
+        </WebSettingsSection>
+      ),
+    };
   });
   const notice = machine && hiddenTitles.length > 0 ? (
     <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
@@ -504,23 +552,21 @@ function TabContent({
       </>
     );
   }
-  // Otherwise the sections flow into a two-column grid on a wide page. A
-  // `stack` section joins the previous cell, so a short pair can sit beside
-  // one tall section and the row still lines up.
-  const cells: { key: string; span?: "full"; nodes: React.ReactNode[] }[] = [];
-  for (const { section, entryIds, node } of items) {
-    const last = cells[cells.length - 1];
-    if (section.stack && last) last.nodes.push(node);
-    else cells.push({ key: entryIds.join(","), span: section.span, nodes: [node] });
-  }
+  // Otherwise the sections run as one single-column list top to bottom. On a
+  // page wide enough for it, a sticky rail beside the list names each section
+  // and scrolls to it.
+  const railEntries = items.flatMap((item) => (item.section.title ? [{ id: item.id, title: item.section.title }] : []));
   return (
     <SettingsColumn wide>
-      <div className="ade-settings-flow">
-        {cells.map((cell) => (
-          <div key={cell.key} className="ade-settings-flow-item" data-span={cell.span}>
-            {cell.nodes}
-          </div>
-        ))}
+      <div className="ade-settings-layout">
+        <SettingsSectionRail entries={railEntries} />
+        <div className="ade-settings-flow">
+          {items.map((item) => (
+            <div key={item.entryIds.join(",")} id={item.id} className="ade-settings-flow-item">
+              {item.node}
+            </div>
+          ))}
+        </div>
       </div>
       {notice}
     </SettingsColumn>
@@ -600,7 +646,11 @@ const FLASH_STYLES = (
 );
 
 
-export function SettingsPage({ active = true }: { active?: boolean } = {}) {
+export function SettingsPage({
+  active = true,
+  standalone = false,
+  onClose,
+}: { active?: boolean; standalone?: boolean; onClose?: () => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   // Read-only: every write to the settings URL goes through `navigate` so the
@@ -645,10 +695,25 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     return () => clearWebMachineBindingResolver(installed);
   }, []);
   const webMachineSectionsHidden = isWebClientMode() && !machineBound;
+  // Standalone Settings, opened from the new-project screen. Installed the same
+  // way as the web resolver, because the manifest answers `isSettingAvailable`
+  // mid-render.
+  const standaloneRef = useRef(standalone);
+  standaloneRef.current = standalone;
+  const standaloneResolverRef = useRef<() => boolean>();
+  if (!standaloneResolverRef.current) standaloneResolverRef.current = () => standaloneRef.current;
+  setStandaloneSettingsResolver(standalone ? standaloneResolverRef.current : null);
+  useEffect(() => () => setStandaloneSettingsResolver(null), []);
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
-  const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
+  const tabs = useMemo(
+    () => {
+      const all = availableSettingsTabs();
+      return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id)) : all;
+    },
+    [machineBound, standalone],
+  );
   // Explicit, so reordering the sidebar cannot move where Settings opens.
   const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
     ? DEFAULT_SETTINGS_TAB
@@ -1038,6 +1103,18 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              {/* Standalone Settings has no project to return to but the
+                  new-project screen, so it carries its own Back. */}
+              {standalone && onClose ? (
+                <button
+                  type="button"
+                  aria-label="Back to new project"
+                  onClick={onClose}
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer", flexShrink: 0, marginLeft: -6 }}
+                >
+                  <ArrowLeft size={18} weight="bold" />
+                </button>
+              ) : null}
               {subViewOpen ? (
                 <button
                   type="button"
@@ -1147,7 +1224,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
             <SettingsMachineScopeProvider key={machinePageScope.machineId} scope={machinePageScope}>
-              <TabContent tab={section} machine={machinePageScope} />
+              <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
             </SettingsMachineScopeProvider>
           ) : (
             <TabContent tab={section} machine={null} />

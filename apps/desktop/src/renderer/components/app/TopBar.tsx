@@ -15,6 +15,7 @@ import {
   DownloadSimple,
   Folder,
   FolderOpen,
+  GearSix,
   Plus,
   Plugs,
   TextT,
@@ -668,12 +669,15 @@ export function TopBar({
   personalChatsRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
+  settingsRouteActive = false,
   onOpenActivityPane,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
+  /** The `#/settings` route is in front. Drives the standalone Settings tab. */
+  settingsRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
   /** Raises the shell's Activity pane over whatever tab is in front. */
   onOpenActivityPane?: () => void;
@@ -690,6 +694,10 @@ export function TopBar({
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const openNewTab = useAppStore((s) => s.openNewTab);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  // Settings with no project open — the new-project screen's own Settings
+  // entry. It gets a tab of its own, the way a new tab does, so the header
+  // always says which surface is in front.
+  const isSettingsTabOpen = settingsRouteActive && !hasProject;
   const personalChatsTabOpen = useAppStore((s) => s.personalChatsTabOpen);
   const closePersonalChatsTab = useAppStore((s) => s.closePersonalChatsTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -1972,6 +1980,7 @@ export function TopBar({
       >
         {tabGroups.length > 0 ||
         isNewTabOpen ||
+        isSettingsTabOpen ||
         personalChatsTabOpen ? (
           <>
             {tabGroups.map((group) => {
@@ -2291,6 +2300,19 @@ export function TopBar({
                 <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
               </ShellNavTab>
             ) : null}
+            {isSettingsTabOpen && (
+              <ShellNavTab
+                active
+                label="Settings"
+                // Its own content is already in front; activating closes nothing.
+                onActivate={() => {}}
+                onClose={() => onNavigate?.("/work", { replace: true })}
+                closeTitle="Close settings"
+              >
+                <GearSix size={15} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Settings</span>
+              </ShellNavTab>
+            )}
             {isNewTabOpen && (
               <ShellNavTab
                 active={!personalChatsRouteActive}

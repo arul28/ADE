@@ -6,7 +6,6 @@ import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { SettingsCard, SettingsGroup } from "./primitives";
-import { ResetAdeButton } from "../app/ResetAdeDialog";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -465,17 +464,6 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
       <SettingsGroup title="Updates" description="Choose whether ADE installs downloaded updates automatically.">
         <AutoUpdatesControls />
       </SettingsGroup>
-
-      {embedded ? null : (
-        <SettingsGroup title="Reset">
-          <SettingsCard
-            anchor="about.reset"
-            title="Reset ADE"
-            description="Removes everything ADE put on this computer, including ADE's data and lanes in every project, then reopens ADE as a new install. Your code and repositories stay."
-            control={<ResetAdeButton label="Reset ADE…" />}
-          />
-        </SettingsGroup>
-      )}
     </div>
   );
 }

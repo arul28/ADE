@@ -67,6 +67,18 @@ export function useWorkSurfaceElementMounted(key: string | null): boolean {
   return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
 }
 
+/**
+ * Whether a surface is showing: laid out in the tools pane, or floating over
+ * the chat. `useWorkSurfaceElementMounted` answers only the first, so a card
+ * that must not duplicate the floating player — the turn's time-lapse — needs
+ * this one. A floating surface is never laid out in the pane, so its key only
+ * ever appears in the `floating` map.
+ */
+export function useWorkSurfaceMounted(key: string | null): boolean {
+  const snapshot = () => (key ? isWorkSurfaceMounted(key) : false);
+  return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
+}
+
 /** A ref that registers its element under `key` while it is mounted. */
 export function useWorkSurfaceMountRef<T extends Element>(key: string | null): (element: T | null) => void {
   const releaseRef = useRef<(() => void) | null>(null);
@@ -83,6 +95,7 @@ export function useWorkSurfaceMountRef<T extends Element>(key: string | null): (
  */
 export function noteFloatingWorkSurfaceShown(key: string): () => void {
   floating.set(key, (floating.get(key) ?? 0) + 1);
+  notifyMountChange();
   let released = false;
   return () => {
     if (released) return;
@@ -90,6 +103,7 @@ export function noteFloatingWorkSurfaceShown(key: string): () => void {
     const next = (floating.get(key) ?? 1) - 1;
     if (next > 0) floating.set(key, next);
     else floating.delete(key);
+    notifyMountChange();
   };
 }
 

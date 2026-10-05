@@ -5,6 +5,7 @@ import {
   ArrowCounterClockwise,
   ChatCircleDots,
   FolderOpen,
+  GearSix,
   GitMerge,
   Plus,
   Trash,
@@ -818,6 +819,29 @@ export function ProjectWelcomePage() {
           />
         ) : null}
       </div>
+
+      {/* The way into Settings with no project open. Bottom-left, so it reads
+          as an app-level door rather than one of the project actions above.
+          The hosted client keeps its own navigation. */}
+      {webMode ? null : (
+        <footer className="ade-welcome-foot">
+          <button
+            type="button"
+            className="ade-welcome-button"
+            data-variant="secondary"
+            data-tour="project.settings"
+            onClick={() => {
+              // Leave the new-tab state first: it is what is holding this page
+              // in front, so a bare navigate would leave Settings behind it.
+              cancelNewTab();
+              navigate("/settings");
+            }}
+          >
+            <GearSix size={15} weight="regular" />
+            Settings
+          </button>
+        </footer>
+      )}
 
       <ContextMenu
         menu={rowMenu}

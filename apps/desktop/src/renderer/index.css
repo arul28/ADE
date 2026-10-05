@@ -5928,7 +5928,10 @@ html[data-motion="reduced"] *::after {
 }
 
 @container settings-column (max-width: 999px) {
-  .ade-settings-column--wide > * {
+  /* The rail layout keeps the full width it was given — capping it would put
+     the rail and the content in a column narrower than the page. Every other
+     child keeps the narrow measure. */
+  .ade-settings-column--wide > :not(.ade-settings-layout) {
     width: 100%;
     max-width: 860px;
     margin-inline: auto;
@@ -6245,8 +6248,8 @@ html[data-motion="reduced"] *::after {
 }
 
 /* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   column that becomes two balanced columns on a wide page. A `full` item
-   spans both. */
+   single-column list, top to bottom. The even two-column grid was tried and
+   read as two columns of uneven height, so it is gone. */
 .ade-settings-flow {
   display: flex;
   flex-direction: column;
@@ -6260,29 +6263,29 @@ html[data-motion="reduced"] *::after {
   min-width: 0;
 }
 
-@container settings-column (min-width: 1180px) {
-  /* Rows, not masonry: each pair of sections starts on the same line, and the
-     panels in a row stretch to the same height, so headings and edges align. */
-  .ade-settings-flow {
+/* A sticky list of the page's own sections, beside the content on a page wide
+   enough for it. Below that width the list is not drawn at all. */
+.ade-settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-rail {
+  display: none;
+}
+
+@container settings-column (min-width: 900px) {
+  .ade-settings-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    align-items: stretch;
-    gap: 32px 28px;
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: start;
+    gap: 40px;
   }
-  .ade-settings-flow-item {
-    display: flex;
-    flex-direction: column;
-  }
-  .ade-settings-flow-item[data-span="full"] {
-    grid-column: 1 / -1;
-  }
-  .ade-settings-flow-item {
-    gap: 32px;
-  }
-  /* Every heading in a row takes the same height (a title and one line), so
-     panels side by side start level whether or not a heading has a caption. */
-  .ade-settings-flow-item:not([data-span="full"]) .ade-settings-head {
-    min-height: 42px;
+  .ade-settings-rail {
+    display: block;
+    position: sticky;
+    top: 8px;
   }
 }
 
