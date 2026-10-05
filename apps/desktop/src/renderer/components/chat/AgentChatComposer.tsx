@@ -1794,7 +1794,8 @@ function ActiveTurnStopButton({
           <button
             type="button"
             className="inline-flex h-7 items-center justify-center px-2 text-red-400/80 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
-            aria-label={selectedCopy.label}
+            aria-label="Stop active turn"
+            aria-description={selectedCopy.label}
             onClick={onStop}
           >
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
