@@ -73,7 +73,12 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   write raises a real `session/request_permission` ADE can reject, and rejecting
   prevents the write. This holds when the cwd is reached through a symlink. The
   user's `~/.claude/settings.json` `defaultMode` does not leak through with the
-  neutralization on.
+  neutralization on. Re-run on 1.0.41 on 2026-10-05 (clean and real `GROK_HOME`,
+  three runs): `echo ping > acp-probe.txt` raised one execute permission request
+  and rejecting it left the file unwritten every time; a previously reported
+  150 s stall with no tool calls did not reproduce, and `pencil`/`higgsfield`
+  MCP startup errors that appear on every run did not affect gating.
+  `fixtures/grok.shell-permission-probe.json` is recaptured from this run.
 - Grok: cancel must be a notification, not a request. Re-verified 2026-10-05 on
   1.0.41 and 1.0.46: a `session/cancel` request answers `-32601`, while the
   notification form returns `stopReason:"cancelled"`.

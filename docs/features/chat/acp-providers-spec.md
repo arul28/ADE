@@ -351,6 +351,19 @@ Rust, Apache-2.0)
      is rename-based and a symlink silently forks the credential. The env var
      is surgical by comparison (skills/agents/MCP/`Claude.md` unaffected) and
      writes nothing to the user's machine.
+  3b. SHELL-PERMISSION PROBE re-run on 1.0.41 (2026-10-05, three runs across
+     clean and real `GROK_HOME`): the model's `echo ping > acp-probe.txt`
+     raised one `session/request_permission` (execute; `always-allow`,
+     `allow-once`, `reject-once`, `reject-always`) and rejecting it left the
+     file unwritten every time, `stopReason: "cancelled"`. A previously
+     reported 150 s stall with zero tool calls and zero requests did NOT
+     reproduce. `pencil` (spawn failure) and `higgsfield` (401) MCP startup
+     errors appear on every run, including the clean `GROK_HOME`, and do not
+     block gating. The execute kind rides the `tool_call_update` (`kind:
+     "execute"`), and `acpSupervisionGuard` reads both `tool_call` and
+     `tool_call_update` kinds, so a silent execute would still be flagged.
+     `fixtures/grok.shell-permission-probe.json` is recaptured from this run
+     (it previously recorded 0 requests and no tools).
   4. Stamp `_meta.clientIdentifier: "ade"` at `initialize`.
   5. `x.ai/session_notification` `pending_interaction{kind:"permission"}` is a
      spinner hint, NOT a permission request. Never answer it. The same method
