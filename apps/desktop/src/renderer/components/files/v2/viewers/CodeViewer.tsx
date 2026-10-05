@@ -174,7 +174,7 @@ export function CodeViewer({
       const host = hostRef.current;
       if (!editor || !host || !host.isConnected) return false;
       // Single-surface Files keeps the inactive column mounted but `inert`.
-      if (host.closest("[inert]")) return false;
+      if (host.closest("[inert], [data-ade-surface-hidden]")) return false;
       const active = document.activeElement;
       const focused =
         editor.hasTextFocus() || (active instanceof Node && host.contains(active));

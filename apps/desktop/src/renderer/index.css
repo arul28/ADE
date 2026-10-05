@@ -5408,16 +5408,10 @@ button, [role="button"] {
   animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
 }
 
-/* Project and route surfaces stay mounted for fast switching. Pause their CSS
-   animations while parked so hidden keep-alive trees cannot keep rendering. */
-[data-ade-animation-state="paused"],
-[data-ade-animation-state="paused"] *,
-[data-ade-animation-state="paused"]::before,
-[data-ade-animation-state="paused"]::after,
-[data-ade-animation-state="paused"] *::before,
-[data-ade-animation-state="paused"] *::after {
-  animation-play-state: paused !important;
-}
+/* Parked project and route surfaces pause their animations through
+   `content-visibility: hidden` (HIDDEN_PAGE_STYLE in App.tsx). Do not add a
+   `[data-ade-animation-state="paused"] *` rule back: toggling it restyled
+   every element of the surface on each switch. */
 
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {

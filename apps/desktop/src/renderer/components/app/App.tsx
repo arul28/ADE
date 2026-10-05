@@ -248,13 +248,29 @@ function defaultHeldRouteForOverlay(pathname: string): string {
   return pathname === "/history" || pathname.startsWith("/history/") ? "/lanes" : "/work";
 }
 
+/*
+ * A parked surface stays mounted for instant switching. `content-visibility:
+ * hidden` keeps its rendering state, takes its content out of hit-testing and
+ * focus, and stops its CSS animations, and it toggles in ~3 ms. The old way —
+ * `inert`, `pointer-events: none` and an `[data-ade-animation-state="paused"] *`
+ * rule — each made the browser restyle every element of the surface: ~200 ms
+ * apiece on a surface holding a long chat, on every project or page switch.
+ * `data-ade-surface-hidden` marks the surface for code that asks "am I
+ * parked?"; no style rule reads it, so toggling it is free.
+ */
 const HIDDEN_PAGE_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
   zIndex: -1,
   opacity: 0,
-  pointerEvents: "none",
+  contentVisibility: "hidden",
 };
+
+/** `inert` used to drop focus from a surface it hid; keep that without restyling it. */
+function blurFocusInside(node: HTMLElement): void {
+  const focused = node.ownerDocument.activeElement;
+  if (focused instanceof HTMLElement && node.contains(focused)) focused.blur();
+}
 
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -462,16 +478,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 
   React.useEffect(() => {
     const node = workSurfaceRef.current;
-    if (!node) return;
-    if (isWorkRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
+    if (node && !isWorkRoute) blurFocusInside(node);
   }, [isWorkRoute, shouldRenderWork]);
 
   React.useEffect(() => {
     const node = lanesSurfaceRef.current;
-    if (!node) return;
-    if (isLanesRoute) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
+    if (node && !isLanesRoute) blurFocusInside(node);
   }, [isLanesRoute, shouldRenderLanes]);
 
   const workSurface = shouldRenderWork ? (
@@ -482,7 +494,8 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           className="h-full min-h-0 w-full"
           aria-hidden={!isWorkRoute}
           data-ade-animation-state={isWorkRoute ? "running" : "paused"}
-          style={!isWorkRoute ? HIDDEN_PAGE_STYLE : undefined}
+          data-ade-surface-hidden={isWorkRoute ? undefined : ""}
+          style={isWorkRoute ? undefined : HIDDEN_PAGE_STYLE}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -504,7 +517,8 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           className="ade-project-page h-full min-h-0 w-full"
           aria-hidden={!isLanesRoute}
           data-ade-animation-state={isLanesRoute ? "running" : "paused"}
-          style={!isLanesRoute ? HIDDEN_PAGE_STYLE : undefined}
+          data-ade-surface-hidden={isLanesRoute ? undefined : ""}
+          style={isLanesRoute ? undefined : HIDDEN_PAGE_STYLE}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
@@ -642,9 +656,7 @@ function ProjectSurface({
 
   React.useEffect(() => {
     const node = surfaceRef.current;
-    if (!node) return;
-    if (active) node.removeAttribute("inert");
-    else node.setAttribute("inert", "");
+    if (node && !active) blurFocusInside(node);
   }, [active]);
 
   return (
@@ -654,17 +666,10 @@ function ProjectSurface({
         className="h-full min-h-0 w-full"
         aria-hidden={!active}
         data-ade-animation-state={active ? "running" : "paused"}
+        data-ade-surface-hidden={active ? undefined : ""}
         data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
-        style={!active
-          ? {
-            position: "absolute",
-            inset: 0,
-            zIndex: -1,
-            opacity: 0,
-            pointerEvents: "none",
-          }
-          : undefined}
+        style={!active ? HIDDEN_PAGE_STYLE : undefined}
       >
         <ProjectRouteContent active={active} route={route} />
       </div>
@@ -882,7 +887,13 @@ function ProjectTabHost() {
       const activeEntry = projectEntries.find((entry) => entry.surfaceKey === activeSurfaceKey);
       if (activeEntry) warm.unshift(activeEntry);
     }
-    return warm;
+    // Recency picks WHICH surfaces stay warm; it must not set their DOM
+    // order. Rendered in recency order, every switch moved the surfaces'
+    // nodes, and a moved node is detached and re-attached: its whole tree
+    // was restyled and laid out again, and every scroll container in it came
+    // back at the top. Tab order is stable across switches.
+    const tabOrder = new Map(projectEntries.map((entry, index) => [entry.surfaceKey, index]));
+    return warm.sort((left, right) => (tabOrder.get(left.surfaceKey) ?? 0) - (tabOrder.get(right.surfaceKey) ?? 0));
   }, [activeSurfaceKey, projectEntries]);
 
   // Inside a project, the account lives in Settings. `/account` (sign-in

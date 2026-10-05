@@ -277,7 +277,7 @@ function panelOwnsAppCommands(panel: HTMLElement | null, hasTab: boolean): boole
     If any of those guards ever becomes a CSS hide, this is what stops a parked
     browser eating the app's chords.
   */
-  if (panel.closest("[inert]")) return false;
+  if (panel.closest("[inert], [data-ade-surface-hidden]")) return false;
   const active = document.activeElement;
   if (active == null) return true;
   if (panel.contains(active)) return true;
