@@ -290,6 +290,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -2318,6 +2320,10 @@ declare global {
           args: AgentChatContinueUsageLimitOnAlternateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
+        switchAccount: (
+          args: AgentChatSwitchAccountArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatSwitchAccountResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
           pin?: OpenProjectBinding | null,

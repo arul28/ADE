@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { CaretUpDown, Check } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AgentChatEventEnvelope, AgentChatUsageAccount } from "../../../shared/types/chat";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
@@ -8,7 +10,10 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { providerDisplayName } from "../../../shared/pendingInputLabels";
+import type { UsageSnapshot } from "../../../shared/types/usage";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { cn } from "../ui/cn";
+import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/paneMenuTokens";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -19,6 +24,10 @@ import { ProviderLogo } from "../shared/ProviderLogos";
  * `instanceId`, resolved against this machine's provider-account registry),
  * then nothing. A provider with one identity per machine and no reported
  * email renders nothing rather than a placeholder.
+ *
+ * On Claude and Codex, when another signed-in account exists, the row opens a
+ * menu that moves the chat to that account: same chat, same thread, next turn
+ * on the other login.
  */
 
 type ChatAccountNoteModel = {
@@ -110,8 +119,9 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     };
   }
 
+  // A dropped turn's account is not where the chat runs now.
   const instance = multi && boundInstanceId
-    ? findInstance(input.instances, multi, turnInstanceId ?? boundInstanceId)
+    ? findInstance(input.instances, multi, (turn ? turnInstanceId : null) ?? boundInstanceId)
     : null;
   const email = clean(turn?.email) ?? clean(instance?.account?.email);
   const plan = clean(turn?.plan) ?? clean(instance?.account?.plan);
@@ -141,6 +151,34 @@ function latestTurnAccount(events: readonly AgentChatEventEnvelope[]): AgentChat
     if (event?.type === "done" && event.account) return event.account;
   }
   return null;
+}
+
+/** Other signed-in accounts this chat can move to. Copies of one login are one account. */
+function switchTargets(
+  instances: readonly ProviderInstance[] | null,
+  provider: ProviderInstanceProvider | null,
+  currentId: string | null,
+): ProviderInstance[] {
+  if (!instances || !provider || !currentId) return [];
+  return instances.filter((instance) =>
+    instance.provider === provider
+    && instance.id !== currentId
+    && instance.signedIn
+    && !instance.sameLoginAs);
+}
+
+/** The tighter of an account's five-hour and weekly room, in percent, when known. */
+function roomLeft(snapshot: UsageSnapshot | null, provider: string, instanceId: string): number | null {
+  if (!snapshot) return null;
+  const accountId = snapshot.accounts?.find(
+    (account) => account.provider === provider && account.instanceId === instanceId,
+  )?.id ?? `${provider}:${instanceId}`;
+  const left = (snapshot.windows ?? [])
+    .filter((window) => window.provider === provider && window.accountId === accountId
+      && (window.windowType === "five_hour" || window.windowType === "weekly")
+      && Number.isFinite(window.percentUsed))
+    .map((window) => 100 - Math.min(100, Math.max(0, window.percentUsed)));
+  return left.length ? Math.min(...left) : null;
 }
 
 /**
@@ -188,13 +226,17 @@ function useCachedRead<T>(
 }
 
 export function ChatAccountNote({
+  sessionId,
   provider,
   instanceId,
   credentialId,
   preset,
   events,
   runtimePin,
+  busy = false,
+  onSwitched,
 }: {
+  sessionId: string;
   provider: string;
   instanceId?: string | null;
   credentialId?: string | null;
@@ -202,6 +244,9 @@ export function ChatAccountNote({
   events: readonly AgentChatEventEnvelope[];
   /** The chat's machine; null is the tab's own binding. */
   runtimePin: OpenProjectBinding | null;
+  /** A turn is running; switching waits for it to end. */
+  busy?: boolean;
+  onSwitched?: () => void;
 }) {
   const turnAccount = useMemo(() => latestTurnAccount(events), [events]);
   const multi = isProviderInstanceProvider(provider) ? provider : null;
@@ -231,19 +276,124 @@ export function ChatAccountNote({
     }),
     [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel],
   );
+  const current = multi && boundInstanceId ? findInstance(instances, multi, boundInstanceId) : null;
+  const targets = useMemo(
+    () => switchTargets(instances, multi, current?.id ?? null),
+    [instances, multi, current?.id],
+  );
+  const [open, setOpen] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+
   if (!model) return null;
-  return (
-    <div
-      data-testid="chat-account-note"
-      className="flex h-[30px] min-w-0 items-center gap-2 px-4 font-sans text-[11px] leading-4"
-      title={model.detail}
-    >
+  const row = (
+    <>
       <span className="flex shrink-0 items-center opacity-80" aria-hidden>
         <ProviderLogo family={model.family} size={13} />
       </span>
       {/* Only the email (or key / endpoint): the label and plan live in the
           hover title, so the row never has to cut anything off. */}
       <span className="min-w-0 truncate text-fg/60">{model.primary}</span>
-    </div>
+    </>
+  );
+  const rowClass = "flex h-[30px] w-full min-w-0 items-center gap-2 px-4 font-sans text-[11px] leading-4";
+  const canSwitch = Boolean(current) && targets.length > 0 && typeof window.ade?.agentChat?.switchAccount === "function";
+  if (!canSwitch || !current) {
+    return (
+      <div data-testid="chat-account-note" className={rowClass} title={model.detail}>
+        {row}
+      </div>
+    );
+  }
+
+  const onOpenChange = (next: boolean) => {
+    if (pendingId) return;
+    setOpen(next);
+    setError(null);
+    // Usage numbers are this machine's; a chat on another machine shows none.
+    if (next && !runtimePin) {
+      window.ade?.usage?.getSnapshot().then(setUsage).catch(() => undefined);
+    }
+  };
+
+  const switchTo = (target: ProviderInstance) => {
+    if (busy || pendingId) return;
+    setPendingId(target.id);
+    setError(null);
+    window.ade.agentChat.switchAccount({ sessionId, instanceId: target.id }, runtimePin)
+      .then((result) => {
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
+        setOpen(false);
+        onSwitched?.();
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPendingId(null));
+  };
+
+  const accountRow = (instance: ProviderInstance, isCurrent: boolean) => {
+    const left = roomLeft(usage, instance.provider, instance.id);
+    let side: string | null = left === null ? null : `${Math.round(left)}% left`;
+    if (pendingId === instance.id) side = "Switching…";
+    return (
+      <>
+        <span className="flex w-3.5 shrink-0 justify-center text-fg/70">
+          {isCurrent ? <Check size={12} weight="bold" /> : null}
+        </span>
+        <span className="min-w-0 flex-1 truncate" title={instance.label}>
+          {clean(instance.account?.email) ?? instance.label}
+        </span>
+        {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}
+      </>
+    );
+  };
+
+  return (
+    <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          data-testid="chat-account-note"
+          className={cn(rowClass, "group cursor-pointer text-left outline-none transition-colors hover:bg-white/[0.03] focus-visible:bg-white/[0.05]")}
+          title={model.detail}
+        >
+          {row}
+          <CaretUpDown
+            size={11}
+            className="ml-auto shrink-0 text-fg/30 transition-colors group-hover:text-fg/60"
+            aria-hidden
+          />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content side="top" align="start" sideOffset={4} className={MENU_CONTENT_CLASS}>
+          <div className={MENU_LABEL_CLASS}>Run this chat on</div>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={(event) => event.preventDefault()}>
+            {accountRow(current, true)}
+          </DropdownMenu.Item>
+          {targets.map((target) => (
+            <DropdownMenu.Item
+              key={target.id}
+              className={MENU_ITEM_CLASS}
+              disabled={busy || (pendingId !== null && pendingId !== target.id)}
+              onSelect={(event) => {
+                event.preventDefault();
+                switchTo(target);
+              }}
+            >
+              {accountRow(target, false)}
+            </DropdownMenu.Item>
+          ))}
+          {busy || error ? (
+            <div className={cn("px-2 pb-1 pt-1.5 text-[10.5px] leading-4", error ? "text-red-300/90" : "text-fg/45")}>
+              {error ?? "Wait for this turn to finish."}
+            </div>
+          ) : null}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }

@@ -4765,6 +4765,21 @@ export type AgentChatContinueUsageLimitOnAlternateResult =
       message: string;
     };
 
+/** Move a chat to another account of its provider, keeping its thread. */
+export type AgentChatSwitchAccountArgs = {
+  sessionId: string;
+  instanceId: string;
+};
+
+export type AgentChatSwitchAccountResult =
+  | { ok: true; instanceId: string }
+  | {
+      ok: false;
+      reason: "busy" | "signed_out" | "failed";
+      /** Ready-to-render sentence; clients show it as-is. */
+      message: string;
+    };
+
 export type AgentChatCancelScheduledWorkResult = {
   schedule: AgentChatScheduledWorkItem;
   providerCancellationRequested: boolean;

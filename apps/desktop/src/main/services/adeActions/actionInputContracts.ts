@@ -408,6 +408,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    switchAccount: {
+      description: "Move a Claude or Codex chat to another signed-in account of the same provider. Same chat and thread; the next turn runs on that account. Refused while a turn runs. Account ids come from `ade providers accounts list`.",
+      input: "object { sessionId: string, instanceId: string }",
+      example: "ade actions run chat.switchAccount --input-json '{\"sessionId\":\"chat-123\",\"instanceId\":\"claude-2\"}' --text",
+    },
     listCliChildSessions: {
       description: "List tracked CLI sessions spawned with a parent chat (`ade new chat --mode cli --parent …`), with status, exit code, lane, and parent. `chat.getTurnStatus` and `chat.readTranscript` also answer for these ids.",
       input: "object { laneId?: string, parentSessionId?: string, includeArchived?: boolean }  (archived hidden by default)",

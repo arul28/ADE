@@ -519,6 +519,7 @@ export type FormatterId =
   | "chat-models"
   | "chat-resume-now"
   | "chat-continue-on-account"
+  | "chat-switch-account"
   | "chat-launch"
   | "chat-launches"
   | "session-lifecycle"
@@ -2051,6 +2052,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
+    $ ade chat switch-account <session> --account <id>  Move a Claude or Codex chat to another account; same thread
+                                                    Account ids: ade providers accounts list. Exit 1 when refused.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
@@ -9106,6 +9109,25 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [
         actionStep("result", "chat", "continueUsageLimitOnAlternate", {
           sessionId: requireValue(sessionId, "sessionId"),
+        }),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result"])
+          ?? (isRecord(result) ? result : {});
+        return record.ok === true ? 0 : 1;
+      },
+    };
+  // Move the chat to another signed-in account of its provider, keeping its
+  // thread. Exit 1 when the host refuses (a turn is running, signed out).
+  if (sub === "switch-account")
+    return {
+      kind: "execute",
+      label: "chat switch-account",
+      formatter: "chat-switch-account",
+      steps: [
+        actionStep("result", "chat", "switchAccount", {
+          sessionId: requireValue(sessionId, "sessionId"),
+          instanceId: requireValue(readValue(args, ["--account", "--instance"]), "--account"),
         }),
       ],
       exitCodeFromResult: (result) => {
@@ -17115,6 +17137,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--input-text",
   "--interval-ms",
   "--instance",
+  "--account",
   "--instance-id",
   "--preset",
   "--preset-id",
@@ -26573,6 +26596,21 @@ export function formatChatContinueOnAccount(value: unknown): string {
   return reason.replace(/\s+/g, " ").trim();
 }
 
+export function formatChatSwitchAccount(value: unknown): string {
+  const record = firstRecord(value, ["result"])
+    ?? (isRecord(value) ? value : null);
+  if (record?.ok === true) {
+    const instanceId = asString(record.instanceId);
+    return instanceId ? `Switched to account ${instanceId}` : "Switched account.";
+  }
+  const error = isRecord(record?.error) ? asString(record.error.message) : null;
+  const reason = asString(record?.message)
+    ?? asString(record?.reason)
+    ?? error
+    ?? "ADE could not switch this chat's account.";
+  return reason.replace(/\s+/g, " ").trim();
+}
+
 export function formatChatResumeNow(value: unknown): string {
   const record = firstRecord(value, ["result"])
     ?? (isRecord(value) ? value : null);
@@ -28995,6 +29033,8 @@ function formatTextOutput(
       return formatChatResumeNow(value);
     case "chat-continue-on-account":
       return formatChatContinueOnAccount(value);
+    case "chat-switch-account":
+      return formatChatSwitchAccount(value);
     case "chat-launch":
       return formatChatLaunch(value);
     case "chat-launches":
@@ -29221,6 +29261,7 @@ function inferFormatter(
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
   if (label === "chat continue-on-account") return "chat-continue-on-account";
+  if (label === "chat switch-account") return "chat-switch-account";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";

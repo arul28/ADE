@@ -2573,6 +2573,7 @@ export type SyncRemoteCommandAction =
   | "chat.cancelScheduledWork"
   | "chat.resumeUsageLimitNow"
   | "chat.continueUsageLimitOnAlternate"
+  | "chat.switchAccount"
   | "chat.setScheduledWorkPaused"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"

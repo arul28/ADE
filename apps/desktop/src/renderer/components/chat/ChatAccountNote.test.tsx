@@ -68,7 +68,7 @@ describe("ChatAccountNote account resolution", () => {
     ];
 
     render(
-      <ChatAccountNote provider="claude" instanceId="work" events={events} runtimePin={pin("turn")} />,
+      <ChatAccountNote sessionId="chat-1" provider="claude" instanceId="work" events={events} runtimePin={pin("turn")} />,
     );
 
     await waitFor(() => {
@@ -81,7 +81,7 @@ describe("ChatAccountNote account resolution", () => {
     installBridge([DEFAULT_INSTANCE, WORK_INSTANCE]);
 
     render(
-      <ChatAccountNote provider="claude" instanceId="work" events={[]} runtimePin={pin("bound")} />,
+      <ChatAccountNote sessionId="chat-1" provider="claude" instanceId="work" events={[]} runtimePin={pin("bound")} />,
     );
 
     await waitFor(() => {
@@ -93,7 +93,7 @@ describe("ChatAccountNote account resolution", () => {
     installBridge([DEFAULT_INSTANCE, WORK_INSTANCE]);
 
     render(
-      <ChatAccountNote provider="claude" instanceId="removed" events={[]} runtimePin={pin("removed")} />,
+      <ChatAccountNote sessionId="chat-1" provider="claude" instanceId="removed" events={[]} runtimePin={pin("removed")} />,
     );
 
     await waitFor(() => {

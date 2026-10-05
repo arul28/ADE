@@ -14867,12 +14867,15 @@ export function AgentChatPane({
   const chatAccountNote = selectedSession && selectedSession.sessionId === renderedSessionId ? (
     <ChatAccountNote
       key={selectedSession.sessionId}
+      sessionId={selectedSession.sessionId}
       provider={selectedSession.provider}
       instanceId={selectedSession.instanceId}
       credentialId={selectedSession.credentialId}
       preset={selectedSessionPreset}
       events={selectedEvents}
       runtimePin={chatRuntimePin}
+      busy={turnActiveBySession[selectedSession.sessionId] ?? false}
+      onSwitched={() => void refreshSessions({ force: true }).catch(() => {})}
     />
   ) : null;
   const chatActionsPanelContent = (
