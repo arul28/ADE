@@ -354,9 +354,9 @@ export function MenuSubmenuStatus({
 
 /* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
    `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
-   dark menu is imperceptible. Menu rows now use the same white-alpha fill every
-   other hoverable surface in the sidebar uses, so "this row is under my cursor"
-   is actually visible. */
+   dark menu is imperceptible. Menu rows now use the same foreground-alpha fill
+   every other hoverable surface in the sidebar uses — `bg-fg/…`, not an alpha of
+   white, so the row still reads as hovered on the light theme too. */
 export const MENU_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-fg/[0.07] focus-visible:bg-fg/[0.07] outline-none";
 export const DESTRUCTIVE_ITEM_CLASS =
