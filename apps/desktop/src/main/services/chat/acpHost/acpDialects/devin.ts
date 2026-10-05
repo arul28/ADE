@@ -4,17 +4,56 @@
  * Windows x86 and arm64 builds exist.
  *
  * Auth: `devin auth login` stores account credentials (browser OAuth, any
- * Devin account — no org required). `devin acp` also honours
- * `WINDSURF_API_KEY` and accepts the ACP `authenticate` request at runtime,
- * so ADE can drive sign-in in-process like the other providers.
+ * Devin account — no org required). The only auth method the 3000.11.3
+ * handshake advertises is `devin-browser`, the browser OAuth flow. ADE still
+ * exports the `WINDSURF_API_KEY` a user saved on the Devin provider page, and
+ * `devin acp` accepts the ACP `authenticate` request at runtime, so an
+ * in-process sign-in path exists — but neither was exercised here.
  *
- * Session ids are the short opaque ids `devin list` shows (e.g. `abc12345`);
- * there is no flag to mint one at launch, and `devin -r <id>` /
- * `devin -c` cover CLI resume. The ACP server reports the id on the wire.
+ * Session ids are the short opaque ids `devin list` shows (e.g.
+ * `cliff-watcher`); there is no flag to mint one at launch, and `devin -r <id>`
+ * / `devin -c` cover CLI resume. The ACP server reports the id on the wire.
  *
  * Devin's `/handoff` escalates a local chat into a cloud session; ADE's own
  * cloud surface covers that path natively, so no dialect wiring is needed
  * for it here.
+ *
+ * ## Verified (2026-10-05, CLI 3000.11.3, macOS arm64)
+ *
+ * Handshake and unauthenticated methods only: this machine has no Devin login
+ * and `authenticate` was not called. The binary reports
+ * `devin 3000.11.3 (9c803229faa4)` from `--version`, while its `initialize`
+ * `agentInfo` says name `affogato`, version `0.0.0-dev`.
+ * `fixtures/devin.initialize.json` holds the captured handshake.
+ *
+ * 1. `session/cancel` as a REQUEST answers -32601. The notification form is
+ *    the only one accepted, exactly like Copilot, Grok, Qwen, and Kimi.
+ * 2. There is no `session/close`: the method answers -32601, and the handshake
+ *    advertises only `list`, `delete`, and `additionalDirectories` under
+ *    `sessionCapabilities`. A pooled process is released, not evicted.
+ * 3. There is no `session/resume` (-32601). `session/load` exists and returns
+ *    the session's modes and config options, and `loadSession` is true, so
+ *    rejoin is `load_only`.
+ * 4. There is no `session/set_model` (-32601). The model is the `model`
+ *    session config option; `session/new` advertises it with a `currentValue`
+ *    and, without a login, an empty choice list. ADE sets it through
+ *    `session/set_config_option`, like Grok, Qwen, and Kimi.
+ * 5. `session/new` succeeds with no login and advertises `mode` and `model`
+ *    config options. `session/set_config_option` on `mode` works; an unknown
+ *    config id is -32002 and an unknown value is -32602. `session/set_mode`
+ *    exists and returns `{}`.
+ * 6. An unauthenticated `session/prompt` is -32000 "Please log in to use
+ *    Devin. Use `/login` to authenticate again." `isAcpAuthError` reads that
+ *    as auth; the literal `notAuthErrorPatterns` regexes did not, so the
+ *    registry carries a pattern for it and for `devin acp --cloud`'s
+ *    "Not logged in. Please run `auth login` first.".
+ * 7. Image prompts are advertised (`promptCapabilities.image: true`); audio is
+ *    not. MCP http and sse are advertised, and the handshake's
+ *    `_meta.mcpConfigPath` lands inside `$XDG_CONFIG_HOME/devin`.
+ *
+ * Unverified and left alone: `session/prompt` beyond the auth error, usage,
+ * compaction, and `authenticate` all need a real login. `oneProcessPerSession`
+ * stays false — no multi-session Devin process was exercised.
  */
 
 import {
@@ -28,11 +67,8 @@ import {
   ADE_CLIENT_INFO,
   inlineImagePrompt,
   standardAcpUsage,
-  standardClose,
   standardLoad,
-  standardResume,
   standardSetConfigOption,
-  standardSetModel,
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
@@ -57,7 +93,7 @@ function storedDevinCliApiKey(baseEnv: NodeJS.ProcessEnv): string | null {
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   // `devin acp --model <name>` sets the default model for every ACP session the
-  // server opens; the per-session `setModel` request still overrides it. The
+  // server opens; the per-session `model` config option still overrides it. The
   // CLI accepts the same fuzzy family names ADE's registry rows carry.
   const model = resolveDevinCliModelForLaunch(context.modelId);
   const args = ["acp", ...(model ? ["--model", model] : [])];
@@ -78,9 +114,14 @@ export const devinDialect = defineAcpDialect({
   binaryNames: ["devin"],
   buildSpawnPlan,
 
-  cancelStyle: "request",
+  // `session/cancel` as a request answers -32601; only the notification form
+  // is accepted (verified 3000.11.3, like the other four CLIs).
+  cancelStyle: "notification",
   poolEnvKeys: ["WINDSURF_API_KEY"],
-  oneProcessPerSession: false,
+  // No `session/close`, so a chat can only end its session by ending the
+  // process. A shared process would keep every closed chat's session alive
+  // for as long as any other chat held it.
+  oneProcessPerSession: true,
   advertiseFsCapability: false,
   advertiseTerminalCapability: false,
   initializeMeta: null,
@@ -110,20 +151,26 @@ export const devinDialect = defineAcpDialect({
   // Devin keeps no local usage ledger of its own.
   localUsage: capabilityAbsent,
   readAccount: readDevinAccount,
-  // Devin reports context size via `usage_update` but never reports a
-  // compaction itself, so the host infers one from a sharp drop in `used`.
+  // Unverified without a login: Devin is expected to report context size via
+  // `usage_update` and never a compaction itself, so the host infers one from a
+  // sharp drop in `used`.
   inferCompaction: true,
   usageUpdateAfterTurn: false,
 
-  closeStyle: "close_request",
-  closeSession: capability(standardClose),
+  // No `session/close` on the wire (-32601). The handshake also omits `close`,
+  // so ending a chat ends its private process.
+  closeStyle: "kill_process",
+  closeSession: capabilityAbsent,
 
-  loadPolicy: "resume_preferred",
-  resumeSession: capability(standardResume),
+  // `session/resume` is -32601 and absent from the handshake; `session/load`
+  // works and `loadSession` is true.
+  loadPolicy: "load_only",
+  resumeSession: capabilityAbsent,
   loadSession: capability(standardLoad),
 
   sessionConfig: capability(standardSetConfigOption),
-  modelSelection: capability(standardSetModel),
+  // The model is the `model` config option; `session/set_model` is -32601.
+  modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: ["mode", "model"],

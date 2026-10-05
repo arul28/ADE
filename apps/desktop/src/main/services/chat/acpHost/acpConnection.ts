@@ -542,12 +542,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   return connection;
 }
 
-export type InitializeAcpConnectionResult = {
-  response: AcpInitializeResponse;
-  /** True when the agent answered with a protocol version this host speaks. */
-  protocolVersionAccepted: boolean;
-};
-
 /**
  * Run the `initialize` handshake.
  *
@@ -571,7 +565,7 @@ export async function initializeAcpConnection(args: {
   connection: AcpConnection;
   dialect: AcpDialect;
   timeoutMs?: number;
-}): Promise<InitializeAcpConnectionResult> {
+}): Promise<AcpInitializeResponse> {
   const { connection, dialect } = args;
   try {
     const response = await connection.request<AcpInitializeResponse>(
@@ -584,11 +578,29 @@ export async function initializeAcpConnection(args: {
       },
       { timeoutMs: args.timeoutMs ?? ACP_HANDSHAKE_TIMEOUT_MS },
     );
+    const advertised = typeof response.protocolVersion === "number" && Number.isFinite(response.protocolVersion)
+      ? response.protocolVersion
+      : null;
+    if (advertised === null) {
+      // ACP requires the agent to name the protocol version it selected. An
+      // answer without one has not established compatibility at all.
+      throw new Error(
+        `${dialect.displayName} answered the ACP handshake without a protocol version, so ADE cannot tell `
+        + `whether it speaks ACP ${ACP_PROTOCOL_VERSION}. Update ${dialect.displayName}, or update ADE.`,
+      );
+    }
+    if (advertised > ACP_PROTOCOL_VERSION) {
+      // The agent speaks a newer protocol than this build of ADE. Continuing
+      // would fail later on an unrecognized request or session update, so stop
+      // at the handshake with a message that names the CLI and both ways out.
+      throw new Error(
+        `${dialect.displayName} answered with ACP protocol version ${advertised}, but this build of ADE speaks `
+        + `version ${ACP_PROTOCOL_VERSION}. Update ADE, or update ${dialect.displayName} to a build that speaks `
+        + `ACP ${ACP_PROTOCOL_VERSION}.`,
+      );
+    }
     connection.initializeResult = response;
-    return {
-      response,
-      protocolVersionAccepted: response.protocolVersion <= ACP_PROTOCOL_VERSION,
-    };
+    return response;
   } catch (error) {
     // A crash during the handshake precedes every exit handler, so the pool's
     // rethrow is the only chance to pass the agent's stderr to the caller.

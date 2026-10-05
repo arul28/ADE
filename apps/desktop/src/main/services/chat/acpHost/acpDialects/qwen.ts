@@ -1,24 +1,31 @@
 /**
  * Qwen Code dialect. `qwen --acp`, npm package `@qwen-code/qwen-code`.
  *
- * Live 0.24.0 handshake: `loadSession`, session list/resume, image + audio
- * prompts, MCP http/sse, `session/set_config_option` for mode/model/
- * reasoning_effort.
- * Slash via `available_commands_update`.
+ * Live handshakes on 0.22.3 and 0.25.0 are identical apart from the version
+ * string: `loadSession`, session list/resume, image + audio prompts, MCP
+ * http/sse, `session/set_config_option` for mode/model/reasoning_effort.
+ * Slash via `available_commands_update`. The 0.24.0 handshake captured earlier
+ * had the same shape.
  *
- * It does **not** advertise `session/close`, and a dummy `session/close` is
- * -32601. Ending a chat therefore ends the process (one process per session),
- * using the private-process posture required by this dialect. Copilot 1.0.82
- * has the same missing-close wire and keeps `close_request` + pool by product
- * call; Qwen follows the handshake so leaked agent sessions cannot pile up in
- * a pooled process.
+ * Neither 0.22.3 nor 0.25.0 advertises `session/close`, and a dummy
+ * `session/close` is -32601 on both. Ending a chat therefore ends the process
+ * (one process per session), using the private-process posture required by
+ * this dialect. Copilot 1.0.82 has the same missing-close wire and keeps
+ * `close_request` + pool by product call; Qwen follows the handshake so leaked
+ * agent sessions cannot pile up in a pooled process.
+ *
+ * Cancel is a **notification**, not a request: both versions answer a
+ * `session/cancel` request with -32601 and register only the notification
+ * handler. ADE sends the notification directly.
  *
  * `QWEN_HOME` names the config directory, in the same shape as `CODEX_HOME`.
  *
- * `qwen auth` is removed in 0.24.0. Unauthenticated `session/new` is
- * "Authentication required: Use Qwen Code CLI to authenticate first." The
- * advertised methods are `openai` and `openai-responses` (both use
- * `OPENAI_API_KEY`); ADE selects the stable `openai` probe and does not write
+ * `qwen auth` is removed. Unauthenticated `session/new` is
+ * "Authentication required: Use Qwen Code CLI to authenticate first."
+ * (-32000) on both versions. The advertised method set varies by version:
+ * 0.22.3 and 0.25.0 advertise only `openai`, while 0.24.0 also advertised
+ * `openai-responses` (all use `OPENAI_API_KEY`). ADE selects the stable
+ * `openai` probe, which every version advertises, and does not write
  * `~/.qwen`, reusing whatever the Qwen CLI already has.
  *
  * `QWEN_CODE_SYSTEM_DEFAULTS_PATH` is how ADE's bundled agent skills reach a
@@ -39,9 +46,9 @@
  *
  * ## Model selection
  *
- * Verified with no-prompt sessions on 0.22.3: `session/new` advertises the
- * `model` option with the suffixed ids of the models in Qwen's settings.
- * `session/set_config_option` takes the suffixed id and the bare id
+ * Verified with no-prompt sessions on 0.22.3 and 0.25.0: `session/new`
+ * advertises the `model` option with the suffixed ids of the models in Qwen's
+ * settings. `session/set_config_option` takes the suffixed id and the bare id
  * (`gpt-5.5`) alike. A model that is not configured for the auth type is
  * -32603 `Model '<id>' not found for authType 'openai'`, and the session stays
  * on its model. The coordinator matches ADE's id against the advertised ids
@@ -117,7 +124,9 @@ export const qwenDialect = defineAcpDialect({
   binaryNames: ["qwen"],
   buildSpawnPlan,
 
-  cancelStyle: "request",
+  // Both 0.22.3 and 0.25.0 register `session/cancel` only as a notification and
+  // answer the request form with -32601, so ADE sends the notification directly.
+  cancelStyle: "notification",
   // The skill-defaults path is a pool key for the same reason the config home
   // is: two chats whose agents were handed different settings files are not
   // interchangeable, even though Qwen's one-process-per-session rule already
@@ -129,7 +138,7 @@ export const qwenDialect = defineAcpDialect({
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
   ],
-  // 0.24.0 has no `session/close`. A process may never be shared.
+  // 0.22.3/0.24.0/0.25.0 have no `session/close`. A process may never be shared.
   oneProcessPerSession: true,
   advertiseFsCapability: false,
   advertiseTerminalCapability: false,
@@ -175,11 +184,14 @@ export const qwenDialect = defineAcpDialect({
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: QWEN_CONFIG_OPTION_IDS,
-  // `default` is Qwen's own value for "no session-scoped effort". ADE sends it
-  // for every clear, also when the session does not list it, so a resumed
-  // session cannot keep an older effort. Qwen answers an unknown value with
-  // -32602, so a build that advertises no choices can still be sent one. A
-  // failed set stops the session start: Qwen keeps the effort on the session.
+  // `default` is Qwen's own value for "no session-scoped effort". 0.22.3
+  // advertises it; 0.25.0 dropped it from the choices but still accepts it and
+  // resets to the model's default effort (`_meta.qwenCode/reasoning.defaultEffort`,
+  // `medium` for gpt-5.5). ADE sends `default` for every clear, also when the
+  // session does not list it, so a resumed session cannot keep an older effort.
+  // Qwen answers an unknown value with -32602, so a build that advertises no
+  // choices can still be sent one. A failed set stops the session start: Qwen
+  // keeps the effort on the session.
   reasoningEffortOption: {
     configId: "reasoning_effort",
     toAgentValue: (effort) => effort,

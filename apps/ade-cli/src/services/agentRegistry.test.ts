@@ -80,6 +80,31 @@ describe("classifyAgentCliError", () => {
     }
   });
 
+  it("installs every ACP CLI from the shared source, at its latest release", async () => {
+    // ADE runs whichever version of these CLIs is installed, so the install
+    // command must fetch the latest release: a pinned `@x.y.z` here would leave
+    // a new user on a build nobody verified.
+    for (const platform of ["darwin", "win32"] as const) {
+      setPlatform(platform);
+      vi.resetModules();
+      const [{ AGENT_CLI_REGISTRY }, { ACP_PROVIDER_METADATA, ACP_PROVIDER_IDS }] = await Promise.all([
+        import("./agentRegistry"),
+        import("../../../desktop/src/shared/acpProviderMetadata"),
+      ]);
+      for (const provider of ACP_PROVIDER_IDS) {
+        const row = AGENT_CLI_REGISTRY.find((entry) => entry.agent === provider);
+        const source = ACP_PROVIDER_METADATA[provider].install;
+        expect(row?.authCommand).toBe(ACP_PROVIDER_METADATA[provider].loginCommand);
+        if (source.kind === "npm") {
+          expect(row?.installCommand).toContain(`npm install -g ${source.packageName}`);
+          expect(row?.installCommand).not.toMatch(/@\d+\.\d+/);
+        } else {
+          expect(row?.installCommand).toBe(source.command);
+        }
+      }
+    }
+  });
+
   it("classifies unauthenticated agent CLIs with auth commands", () => {
     expect(classifyAgentCliError("codex failed: login required")).toMatchObject({
       agent: "codex",

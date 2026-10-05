@@ -1,20 +1,28 @@
 /**
  * Identity facts shared by every ADE surface that presents an ACP provider.
  * Provider-specific setup prose stays in the Settings descriptor, while ids,
- * labels, login commands, and config-home names have one owner.
+ * labels, login commands, install sources, and config-home names have one owner.
  */
 
 export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
 /**
- * Copilot ACP compatibility baseline validated against the live CLI.
+ * Where a provider's CLI comes from, unversioned.
  *
- * ACP is still a public preview in Copilot CLI, so this is a tested baseline
- * rather than a promise that every future vendor release is wire-compatible.
+ * ADE runs whatever CLI the user has installed, so an install command fetches
+ * the latest release rather than pinning a version. `npm` carries the bare
+ * package name because the CLI registry wraps it for its own shell; `script`
+ * is the vendor's own installer, already a shell command.
  */
-export const COPILOT_ACP_COMPATIBILITY_BASELINE = "1.0.86" as const;
-export const COPILOT_NPM_PACKAGE_SPEC = `@github/copilot@${COPILOT_ACP_COMPATIBILITY_BASELINE}` as const;
+export type AcpProviderInstallSource =
+  | { readonly kind: "npm"; readonly packageName: string }
+  | { readonly kind: "script"; readonly command: string };
+
+/** The plain command a desktop surface shows for a provider's install source. */
+export function acpInstallDisplayCommand(source: AcpProviderInstallSource): string {
+  return source.kind === "npm" ? `npm install -g ${source.packageName}` : source.command;
+}
 
 export type AcpProviderMetadata = {
   readonly label: string;
@@ -22,6 +30,7 @@ export type AcpProviderMetadata = {
   readonly loginCommand: string;
   readonly loginHint: string;
   readonly configHomeEnv: string | null;
+  readonly install: AcpProviderInstallSource;
 };
 
 export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMetadata>> = {
@@ -31,6 +40,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "qwen --auth-type=openai",
     loginHint: "configure Qwen Code (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`, or OPENAI_API_KEY / OPENAI_BASE_URL)",
     configHomeEnv: "QWEN_HOME",
+    install: { kind: "npm", packageName: "@qwen-code/qwen-code" },
   },
   kimi: {
     label: "Kimi",
@@ -38,6 +48,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "kimi login",
     loginHint: "kimi login (--region global or mainland-cn)",
     configHomeEnv: "KIMI_CODE_HOME",
+    install: { kind: "script", command: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash" },
   },
   grok: {
     label: "Grok",
@@ -45,6 +56,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "grok login",
     loginHint: "grok login or set XAI_API_KEY",
     configHomeEnv: "GROK_HOME",
+    install: { kind: "npm", packageName: "@xai-official/grok" },
   },
   copilot: {
     label: "GitHub Copilot",
@@ -52,6 +64,7 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "copilot login",
     loginHint: "copilot login",
     configHomeEnv: "COPILOT_HOME",
+    install: { kind: "npm", packageName: "@github/copilot" },
   },
   devin: {
     label: "Devin",
@@ -59,5 +72,6 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "devin auth login",
     loginHint: "devin auth login or set WINDSURF_API_KEY",
     configHomeEnv: null,
+    install: { kind: "script", command: "curl -fsSL https://cli.devin.ai/install.sh | bash" },
   },
 };

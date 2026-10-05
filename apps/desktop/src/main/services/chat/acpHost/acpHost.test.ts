@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACP_METHOD,
   ACP_RPC_METHOD_NOT_FOUND,
+  ACP_RPC_RESOURCE_NOT_FOUND,
   normalizeAcpPermissionRequest,
   normalizeAcpRpcError,
   normalizeAcpRpcId,
@@ -29,6 +30,7 @@ import {
   ACP_DIALECTS,
   acpDialectFor,
   copilotDialect,
+  devinCloudDialect,
   grokDialect,
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_YOLO_MODE_CHANGED_METHOD,
@@ -399,7 +401,6 @@ describe("spawn plans", () => {
     expect(plan.args).toContain("--acp");
     expect(plan.args).toContain("--add-dir");
     expect(plan.args[plan.args.indexOf("--add-dir") + 1]).toBe("/lane/worktree");
-    expect(plan.args).toContain("--config-dir");
     expect(plan.env.COPILOT_HOME).toBe("/home/.copilot");
   });
 
@@ -516,12 +517,33 @@ describe("handshake", () => {
       spawnPlan: dialect.buildSpawnPlan({ binaryPath: "/bin/x", cwd: "/lane", baseEnv: {} }),
       spawnOverride: () => agent.child,
     });
-    const result = await withDeadline("initialize", initializeAcpConnection({ connection, dialect }));
-    expect(result.protocolVersionAccepted).toBe(true);
+    const response = await withDeadline("initialize", initializeAcpConnection({ connection, dialect }));
+    expect(response.protocolVersion).toBe(1);
     const request = agent.received.find((entry) => entry.method === ACP_METHOD.initialize);
     const params = request?.params as Record<string, unknown>;
     expect(params.protocolVersion).toBe(1);
     expect((params.clientCapabilities as Record<string, unknown>).fs).toBeUndefined();
+    connection.dispose("test finished");
+  });
+
+  it.each([
+    { label: "a newer protocol", initialize: { protocolVersion: 2 }, message: /protocol version 2/ },
+    { label: "no protocol version", initialize: {}, message: /without a protocol version/ },
+  ])("refuses an agent with $label, naming the CLI and the remedy", async ({ initialize, message }) => {
+    const agent = createMockAcpAgent();
+    agent.on(ACP_METHOD.initialize, () => ({
+      result: { ...initialize, agentCapabilities: {}, agentInfo: { name: "Grok", version: "9.0.0" } },
+    }));
+    const connection = createAcpConnection({
+      dialect: grokDialect,
+      spawnPlan: grokDialect.buildSpawnPlan({ binaryPath: "/bin/grok", cwd: "/lane", baseEnv: {} }),
+      spawnOverride: () => agent.child,
+    });
+    const attempt = initializeAcpConnection({ connection, dialect: grokDialect });
+    await withDeadline("initialize", expect(attempt).rejects.toThrow(message));
+    await expect(attempt).rejects.toThrow(/Grok/);
+    await expect(attempt).rejects.toThrow(/Update/);
+    expect(connection.initializeResult).toBeNull();
     connection.dispose("test finished");
   });
 
@@ -692,6 +714,33 @@ describe("session entry policy", () => {
       adeHasTranscript: false,
     });
     expect(plan.suppressReplay).toBe(false);
+  });
+
+  it("opens a new session when the agent has no record of the stored one", async () => {
+    // Copilot and Qwen answer load/resume with -32002 for a session that never
+    // finished a turn. The chat must still open rather than stay unopenable.
+    const harness = makeHarness(copilotDialect);
+    harness.agent.on(ACP_METHOD.sessionLoad, () => ({
+      error: { code: ACP_RPC_RESOURCE_NOT_FOUND, message: "Resource not found: session:stale" },
+    }));
+    const session = await withDeadline("open", harness.open({ existingSessionId: "stale", adeHasTranscript: true }));
+    expect(session.sessionId).toBe("session-1");
+    expect(session.entryPlan.mode).toBe("new");
+    expect(harness.agent.methodsReceived()).toEqual(
+      expect.arrayContaining([ACP_METHOD.sessionLoad, ACP_METHOD.sessionNew]),
+    );
+    expect(harness.agent.methodsReceived().indexOf(ACP_METHOD.sessionLoad))
+      .toBeLessThan(harness.agent.methodsReceived().indexOf(ACP_METHOD.sessionNew));
+  });
+
+  it("still fails the open when the rejoin error is anything else", async () => {
+    const harness = makeHarness(copilotDialect);
+    harness.agent.on(ACP_METHOD.sessionLoad, () => ({
+      error: { code: -32603, message: "store locked" },
+    }));
+    const attempt = harness.open({ existingSessionId: "s1", adeHasTranscript: true });
+    await withDeadline("open failure", expect(attempt).rejects.toMatchObject({ code: -32603 }));
+    expect(harness.agent.methodsReceived()).not.toContain(ACP_METHOD.sessionNew);
   });
 
   it("drops every update a suppressed load replays", async () => {
@@ -1137,14 +1186,16 @@ describe("tool call translation", () => {
     })).toEqual([expect.objectContaining({ type: "command", command: "npm test", itemId: "late-kind" })]);
   });
 
-  it("renders an edit tool as file_change rows with diff content", () => {
+  // Grok reports file writes as `write`, which is not an ACP kind; it must
+  // render like an edit, not as a generic tool that swallows the diff.
+  it.each(["edit", "write"])("renders a %s tool as file_change rows with diff content", (kind) => {
     const translator = createAcpEventTranslator();
     translator.beginTurn("turn-1");
     translator.translate({
       sessionUpdate: "tool_call",
       toolCallId: "tc2",
       title: "Edit file",
-      kind: "edit",
+      kind,
       status: "in_progress",
     });
     const events = translator.translate({
@@ -1213,6 +1264,42 @@ describe("tool call translation", () => {
     });
     expect(events.some((event) => event.type === "tool_call")).toBe(true);
     expect(events.some((event) => event.type === "tool_result")).toBe(true);
+  });
+
+  it("keeps a tool call whose kind and status come from a newer schema", async () => {
+    const harness = makeHarness(grokDialect);
+    harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
+      agent.emitUpdate("session-1", {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-new",
+        title: "Consult the oracle",
+        kind: "divination",
+        status: "pending",
+      });
+      // The result arrives on an update whose kind and status are unknown to
+      // ADE. Dropping that update would lose the result the row later shows.
+      agent.emitUpdate("session-1", {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-new",
+        kind: "divination",
+        status: "deferred",
+        rawOutput: "42",
+      });
+      agent.emitUpdate("session-1", {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-new",
+        status: "completed",
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+    const session = await withDeadline("open", harness.open());
+    const outcome = await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
+    expect(outcome.interrupted).toBe(false);
+    const call = harness.events.find((event) => event.type === "tool_call");
+    expect(call).toMatchObject({ type: "tool_call", tool: "Consult the oracle" });
+    const results = harness.events.filter((event) => event.type === "tool_result");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: "completed", result: "42" });
   });
 
   it("closes a tool row exactly once", () => {
@@ -1638,12 +1725,13 @@ describe("permission round trip", () => {
 
 describe("unsupervised session invariant", () => {
   /** One turn that writes a file and never asks. */
-  const writingTurn = (harness: Harness, kind: "edit" | "execute" | "read" = "edit") => {
+  const writingTurn = (harness: Harness, kind: "edit" | "write" | "execute" | "read" = "edit") => {
     harness.agent.on(ACP_METHOD.sessionPrompt, (_params, agent) => {
       agent.emitUpdate("session-1", {
         sessionUpdate: "tool_call",
         toolCallId: `tc-${kind}`,
         title: kind === "execute" ? "Run ls" : "Write src/app.ts",
+        // Grok reports file writes as `write`, which is not an ACP tool kind.
         kind,
         status: "completed",
         rawInput: { command: "ls" },
@@ -1655,9 +1743,9 @@ describe("unsupervised session invariant", () => {
   const notices = (harness: Harness) =>
     harness.events.filter((event) => event.type === "system_notice");
 
-  it("says so once when writes happened with zero permission requests", async () => {
+  it.each(["edit", "write"] as const)("says so once when %s calls happened with zero permission requests", async (kind) => {
     const harness = makeHarness(grokDialect);
-    writingTurn(harness);
+    writingTurn(harness, kind);
     const session = await withDeadline("open", harness.open({ permissionMode: "default" }));
     await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
     expect(notices(harness)).toHaveLength(1);
@@ -1828,7 +1916,7 @@ describe("cancel", () => {
     return { turn, release: () => release!() };
   }
 
-  it.each(["grok", "copilot"] as const)(
+  it.each(ACP_PROVIDER_IDS)(
     "%s sends cancel as a notification, never as a request",
     async (providerId) => {
       const harness = makeHarness(acpDialectFor(providerId));
@@ -1843,20 +1931,10 @@ describe("cancel", () => {
     },
   );
 
-  it.each(["qwen", "kimi"] as const)("%s sends cancel as a request", async (providerId) => {
-    const harness = makeHarness(acpDialectFor(providerId));
-    harness.agent.on(ACP_METHOD.sessionCancel, () => ({ result: {} }));
-    const session = await withDeadline("open", harness.open());
-    const held = await startHeldTurn(harness, session);
-    await withDeadline("cancel", session.cancel("stopped"));
-    const cancel = harness.agent.received.find((entry) => entry.method === ACP_METHOD.sessionCancel);
-    expect(cancel?.isNotification).toBe(false);
-    held.release();
-    await withDeadline("turn", held.turn);
-  });
-
   it("falls back to the notification form when the request form is unknown", async () => {
-    const harness = makeHarness(qwenDialect);
+    // Every local CLI turned out to be notification-only, so the request-style
+    // path is exercised through the cloud dialect, the one dialect that keeps it.
+    const harness = makeHarness(devinCloudDialect);
     // No handler registered, so the mock answers -32601, exactly like Grok.
     const session = await withDeadline("open", harness.open());
     const held = await startHeldTurn(harness, session);
@@ -2438,11 +2516,12 @@ describe("run | degrade conformance matrix", () => {
     prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    // Qwen 0.24.0 has no session/close. It degrades to ending its private process.
-    close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run", devin: "run" },
+    // Qwen and Devin have no session/close. Qwen degrades by ending its private
+    // process; Devin releases its shared one.
+    close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run", devin: "degrade" },
 
-    // Copilot's resume is unverified, so ADE uses session/load instead.
-    resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade", devin: "run" },
+    // Copilot and Devin advertise no session/resume, so ADE uses session/load instead.
+    resume: { qwen: "run", kimi: "run", grok: "run", copilot: "degrade", devin: "degrade" },
     slash_advertise: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     // Kimi's post-turn usage_update and prompt usage are read when they arrive.
     usage_fold: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },

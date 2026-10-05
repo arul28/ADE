@@ -1078,7 +1078,7 @@ import {
   type AcpSlashCommand,
   type AcpRuntimeState,
 } from "./acpHost";
-import { COPILOT_NPM_PACKAGE_SPEC } from "../../../shared/acpProviderMetadata";
+import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../shared/acpProviderMetadata";
 import {
   codexConfigHome,
   copilotConfigHome,
@@ -18641,13 +18641,13 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
-  /** Install command each ACP CLI documents. Only used to write the error card. */
+  /** Install command each ACP CLI documents, from the shared provider table. Only used to write the error card. */
   const ACP_INSTALL_COMMANDS: Record<AcpChatProvider, string> = {
-    qwen: "npm install -g @qwen-code/qwen-code",
-    kimi: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
-    grok: "npm install -g @xai-official/grok@1.0.34",
-    copilot: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
-    devin: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    qwen: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
+    kimi: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
+    grok: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
+    copilot: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.copilot.install),
+    devin: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
   };
 
   /**

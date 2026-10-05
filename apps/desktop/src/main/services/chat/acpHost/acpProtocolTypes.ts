@@ -1,8 +1,16 @@
 /**
  * Agent Client Protocol (ACP) wire types, protocol version 1.
  *
- * These declarations mirror `@agentclientprotocol/sdk@1.4.0`
- * (`dist/schema/types.gen.d.ts`). Only the parts the ADE host uses are here.
+ * These declarations mirror `@agentclientprotocol/sdk@1.7.0`
+ * (`schema/schema.json`). Only the parts the ADE host uses are here.
+ *
+ * Audited against 1.7.0: it removes `mcp/connect`/`mcp/disconnect`, reshapes
+ * `mcp/message`, adds `notice`, `subagent_update`, `session_message`, and
+ * `session_message_chunk` session updates, and adds `subagents`/`notices`
+ * client capabilities. The host uses none of those, so they are not mirrored;
+ * the session/update allow-list drops the new update kinds, unknown agent
+ * notifications are logged and ignored, and `mcp/*` methods are never
+ * registered. A newer agent therefore degrades to "ignored", not a fault.
  *
  * Why the types live in this repository and not in a dependency:
  *
@@ -121,6 +129,15 @@ export type { AcpToolKind };
 
 export type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
+/**
+ * The tool kind and status as they arrive on the wire. Both enums are open: a
+ * CLI on a newer schema (or Grok, which reports file writes as `write`) may
+ * send a value this host does not know. The translator narrows them to the
+ * closed types before anything switches on them.
+ */
+export type AcpWireToolKind = AcpToolKind | (string & {});
+export type AcpWireToolCallStatus = AcpToolCallStatus | (string & {});
+
 export type AcpDiff = {
   path: string;
   oldText?: string | null;
@@ -139,8 +156,8 @@ export type AcpToolCall = {
   toolCallId: AcpToolCallId;
   title: string;
   name?: string | null;
-  kind?: AcpToolKind;
-  status?: AcpToolCallStatus;
+  kind?: AcpWireToolKind;
+  status?: AcpWireToolCallStatus;
   content?: AcpToolCallContent[];
   locations?: AcpToolCallLocation[];
   rawInput?: unknown;
@@ -150,8 +167,8 @@ export type AcpToolCall = {
 
 export type AcpToolCallUpdate = {
   toolCallId: AcpToolCallId;
-  kind?: AcpToolKind | null;
-  status?: AcpToolCallStatus | null;
+  kind?: AcpWireToolKind | null;
+  status?: AcpWireToolCallStatus | null;
   title?: string | null;
   name?: string | null;
   content?: AcpToolCallContent[] | null;
@@ -169,7 +186,8 @@ export type AcpPlanEntryPriority = "high" | "medium" | "low";
 export type AcpPlanEntry = {
   content: string;
   priority?: AcpPlanEntryPriority;
-  status: AcpPlanEntryStatus;
+  /** Open on the wire; a status this host does not know reads as pending. */
+  status: AcpPlanEntryStatus | (string & {});
   _meta?: AcpMeta;
 };
 
@@ -281,26 +299,6 @@ const ACP_CONTENT_BLOCK_NAMES: ReadonlySet<string> = new Set([
   "resource",
 ]);
 
-const ACP_TOOL_KINDS: ReadonlySet<string> = new Set([
-  "read",
-  "edit",
-  "delete",
-  "move",
-  "search",
-  "execute",
-  "think",
-  "fetch",
-  "switch_mode",
-  "other",
-]);
-
-const ACP_TOOL_STATUSES: ReadonlySet<string> = new Set([
-  "pending",
-  "in_progress",
-  "completed",
-  "failed",
-]);
-
 const ACP_PERMISSION_KINDS: ReadonlySet<string> = new Set([
   "allow_once",
   "allow_always",
@@ -350,8 +348,10 @@ function isAcpContentBlock(raw: unknown): boolean {
 
 function isAcpToolCallUpdate(raw: unknown): raw is AcpToolCallUpdate {
   if (!isRecord(raw) || typeof raw.toolCallId !== "string" || !raw.toolCallId.length) return false;
-  if (raw.kind != null && (typeof raw.kind !== "string" || !ACP_TOOL_KINDS.has(raw.kind))) return false;
-  if (raw.status != null && (typeof raw.status !== "string" || !ACP_TOOL_STATUSES.has(raw.status))) return false;
+  // A kind or status from a newer schema keeps the update: the translator
+  // narrows unknown values, and dropping the update would lose its content.
+  if (raw.kind != null && typeof raw.kind !== "string") return false;
+  if (raw.status != null && typeof raw.status !== "string") return false;
   if (raw.title != null && typeof raw.title !== "string") return false;
   if (raw.name != null && typeof raw.name !== "string") return false;
   return raw.content == null || (Array.isArray(raw.content) && raw.content.every(isRecord));
@@ -715,3 +715,9 @@ export type AcpRpcFrame = AcpRpcRequestFrame | AcpRpcNotificationFrame | AcpRpcR
 export const ACP_RPC_METHOD_NOT_FOUND = -32601;
 /** JSON-RPC "invalid request". Some agents answer an unknown notification with it. */
 export const ACP_RPC_INVALID_REQUEST = -32600;
+/**
+ * ACP "resource not found". Copilot and Qwen answer `session/load` and
+ * `session/resume` with it for a session id they never persisted, such as one
+ * that never finished a turn.
+ */
+export const ACP_RPC_RESOURCE_NOT_FOUND = -32002;

@@ -70,20 +70,22 @@ export function behaviorOf<TBehavior>(entry: AcpCapability<TBehavior>): TBehavio
 /**
  * How to stop a running turn.
  *
- * Grok and Copilot's ACP server answer a `session/cancel` REQUEST with -32601
- * on the compatibility baseline. They accept the same call as a notification.
- * Qwen and Kimi accept the request form.
+ * Grok, Copilot, Qwen, Kimi, and Devin answer a `session/cancel` REQUEST with
+ * -32601 on every version checked and accept the same call as a notification.
+ * A request that meets -32601 falls back to the notification, so a wrong style
+ * still stops the turn.
  */
 export type AcpCancelStyle = "request" | "notification";
 
 /**
  * How to end a session.
  *
- * `kill_process` means the agent has no `session/close`. Qwen 0.24.0 is in
- * that group: it does not advertise close and answers -32601. Each such chat
- * owns its own process and the host ends the chat by ending the process.
- * Kimi's 0.39.1 compatibility baseline and 2.0.0 reference both advertise
- * close and implement it, so it is `close_request`.
+ * `kill_process` means the agent has no `session/close`. Qwen 0.22.3/0.24.0/
+ * 0.25.0 is in that group: it does not advertise close and answers -32601.
+ * Each such chat owns its own process and the host ends the chat by ending the
+ * process.
+ * Kimi advertises and implements close on 0.39.1 and 2.1.1, so it is
+ * `close_request`.
  */
 export type AcpCloseStyle = "close_request" | "kill_process";
 

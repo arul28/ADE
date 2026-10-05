@@ -45,7 +45,6 @@ export {
 export {
   GROK_CLAUDE_MARKER_OVERRIDE_ENV,
   GROK_CONFIG_OPTION_IDS,
-  GROK_MINIMUM_VERSION,
   GROK_YOLO_MODE_CHANGED_METHOD,
   grokPermissionModeFlags,
   grokSupervisionEnv,

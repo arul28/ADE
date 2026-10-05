@@ -38,9 +38,11 @@
  *    method carries Grok's usage, so its reader maps that payload to nothing.
  * 4. Read, Grep, and WebSearch never prompt. They are safe commands. Silence
  *    for reads is correct behavior, not a missing prompt.
- * 5. The option ids Grok actually offers are `allow-edits-session`,
- *    `allow-once`, and `reject-once`. The permission bridge classifies them
- *    from the id, so an unrecognized id still lands on a safe kind.
+ * 5. The permission option ids depend on the tool. A write offers
+ *    `allow-edits-session`, `allow-once`, and `reject-once`; an execute offers
+ *    `always-allow`, `allow-once`, `reject-once`, and `reject-always`
+ *    (measured on 1.0.41 and 1.0.46). The permission bridge classifies every
+ *    id it sees, so an unrecognized id still lands on a safe kind.
  * 6. `session/cancel` as a REQUEST answers -32601. Send it as a notification.
  * 7. Usage does not arrive as `usage_update`. Per-response usage, turn totals,
  *    subagents, compaction, and the model catalog ride xAI extension
@@ -62,7 +64,8 @@
  *    the session last ran with. Set through the config option, the same turn
  *    served `grok-4.7-build-fast`. There is no `mode` option. Builds before
  *    1.0.40 advertise no `reasoning_effort` option, so the spawn flag still
- *    carries the effort for them.
+ *    carries the effort for them. The option ids and the model list are the
+ *    same on 1.0.41 and 1.0.46; no context-window option reaches ACP.
  */
 
 import {
@@ -99,9 +102,6 @@ export { GROK_CLAUDE_MARKER_OVERRIDE_ENV, grokSupervisionEnv } from "../../../..
 
 /** Extension notification that switches Grok's auto-approve mode off. */
 export const GROK_YOLO_MODE_CHANGED_METHOD = "x.ai/yolo_mode_changed";
-
-/** Lowest Grok version this dialect is written against. */
-export const GROK_MINIMUM_VERSION = "1.0.13";
 
 /** Every xAI extension method, under both spellings (1.0.40 adds the underscore). */
 const GROK_EXTENSION_NOTIFICATIONS: Record<string, AcpExtensionNotificationReader> = {

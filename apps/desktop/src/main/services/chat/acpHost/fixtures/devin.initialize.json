@@ -1,0 +1,55 @@
+{
+  "protocolVersion": 1,
+  "agentCapabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "sessionCapabilities": {
+      "list": {},
+      "delete": {},
+      "additionalDirectories": {}
+    },
+    "auth": {},
+    "_meta": {
+      "cognition.ai/multiRootWorkspace": true,
+      "cognition.ai/sessionListOrderBy": [
+        "updated_at",
+        "created_at"
+      ],
+      "cognition.ai/sessionRename": true,
+      "cognition.ai/sessionShare": true,
+      "cognition.ai/documentLifecycle": true,
+      "cognition.ai/userEdits": true,
+      "cognition.ai/terminalLifecycle": true,
+      "cognition.ai/userConfig": true,
+      "cognition.ai/userShellCommand": true,
+      "cognition.ai/editableCommands": true,
+      "cognition.ai/commandRevision": true,
+      "cognition.ai/chains": true,
+      "cognition.ai/megaplan": true,
+      "cognition.ai/ruleMentions": true
+    }
+  },
+  "authMethods": [
+    {
+      "id": "devin-browser",
+      "name": "Log in with browser",
+      "description": "Sign in via your browser"
+    }
+  ],
+  "agentInfo": {
+    "name": "affogato",
+    "title": "Devin Agent",
+    "version": "0.0.0-dev"
+  },
+  "_meta": {
+    "mcpConfigPath": "/tmp/ade-devin-home/devin/mcp_config.json"
+  }
+}

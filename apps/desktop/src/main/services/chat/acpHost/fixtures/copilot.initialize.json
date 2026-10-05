@@ -19,7 +19,7 @@
   "agentInfo": {
     "name": "Copilot",
     "title": "Copilot",
-    "version": "1.0.86"
+    "version": "1.0.91"
   },
   "authMethods": [
     {
@@ -28,7 +28,7 @@
       "description": "Run `copilot login` in the terminal",
       "_meta": {
         "terminal-auth": {
-          "command": "/opt/homebrew/Caskroom/copilot-cli/1.0.3/copilot",
+          "command": "copilot",
           "args": [
             "login"
           ],
