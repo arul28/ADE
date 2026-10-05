@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * Can the lane's runtime host host a Mac Desktop display?
@@ -73,7 +74,11 @@ export function useMacDesktopSupport(args: {
   /** The Work route is on screen. Nothing is read otherwise. */
   enabled: boolean;
 }): MacDesktopSupport | null {
-  const key = args.runtimePin?.key ?? "bound";
+  // With no pin the call goes to the window's bound project, and one window
+  // holds several project tabs on different machines: the answer is cached per
+  // binding, or a Mac project's answer would name the tool on a Windows one.
+  const boundKey = useAppStore((state) => state.projectBinding?.key ?? "");
+  const key = args.runtimePin?.key ?? `bound:${boundKey}`;
   const [supported, setSupported] = useState<MacDesktopSupport | null>(() => cache.get(key) ?? null);
   const pinRef = useRef(args.runtimePin);
   pinRef.current = args.runtimePin;

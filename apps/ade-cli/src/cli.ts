@@ -425,21 +425,6 @@ import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./hel
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
-// TEMP(wd-followup): name synchronous child processes that block the brain. Removed before merge.
-if (process.argv.includes("serve") && !process.argv.some((arg) => /^--(service-status|install-service|uninstall-service)$/.test(arg))) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const tempCp = require("node:child_process") as Record<string, (...a: unknown[]) => unknown>;
-  for (const fn of ["spawnSync", "execFileSync", "execSync"]) {
-    const orig = tempCp[fn]!;
-    tempCp[fn] = function (this: unknown, ...a: unknown[]) {
-      const t = Date.now();
-      try { return orig.apply(this, a); } finally {
-        const ms = Date.now() - t;
-        if (ms >= 200) console.error(JSON.stringify({ event: "brain.sync_child_process", fn, cmd: String(a[0]).slice(-80), args: JSON.stringify(a[1] ?? []).slice(0, 160), ms, at: new Date().toISOString() }));
-      }
-    };
-  }
-}
 
 export type JsonObject = Record<string, unknown>;
 
