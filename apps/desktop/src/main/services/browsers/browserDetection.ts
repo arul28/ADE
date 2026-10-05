@@ -245,6 +245,5 @@ export function detectBrowsersCached(): Promise<DetectedBrowser[]> {
 export const _testing = {
   detectBrowsers,
   expandWindowsBrowserExecutable,
-  macApplicationDirectories,
   resolveDetectedBrowserCommand,
 };

@@ -155,6 +155,7 @@ Pick a named layer and never type a z-index:
 
 | Layer | Value | For |
 |---|---|---|
+| `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
