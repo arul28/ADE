@@ -186,6 +186,9 @@ export type SubagentSpawnAnchorRenderEvent = {
   agentType: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   /**
    * Explicit display name from the lifecycle events (Claude Task `name`, Codex
    * nickname, Cursor label). The card title comes from
@@ -234,6 +237,9 @@ export type SubagentResultCardRenderEvent = {
   agentType?: string | null;
   /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
   provider?: string | null;
+  /** The model and effort the agent reported, shown on the card's meta line. */
+  model?: string | null;
+  reasoningEffort?: string | null;
   background?: boolean;
   label?: string | null;
   status: SubagentCardTerminalStatus;
@@ -663,6 +669,9 @@ type SubagentAnchorState = {
   label: string | null;
   agentType: string | null;
   provider: string | null;
+  /** The model and effort the agent reported; null until it does. */
+  model: string | null;
+  reasoningEffort: string | null;
   taskType: string | null;
   command: string | null;
   background: boolean;
@@ -2138,6 +2147,8 @@ function spawnAnchorEvent(
     description: subagentTitleDescription(state) ?? "Subagent task",
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     label: state.label,
     background: state.background,
     status: "running",
@@ -2179,6 +2190,9 @@ function enrichSubagentStateFromEvent(
   if (!state.label) state.label = subagentText(event.label);
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
   state.provider = subagentText(record.provider) ?? state.provider;
+  const model = subagentText((event as { model?: unknown }).model);
+  if (model && model !== "inherit") state.model = model;
+  state.reasoningEffort = subagentText((event as { reasoningEffort?: unknown }).reasoningEffort) ?? state.reasoningEffort;
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
@@ -2277,6 +2291,8 @@ function handleSubagentLifecycleEvent(
       label: null,
       agentType: null,
       provider: null,
+      model: null,
+      reasoningEffort: null,
       taskType: null,
       command: null,
       background: false,
@@ -2464,6 +2480,8 @@ function handleSubagentLifecycleEvent(
     description: subagentTitleDescription(state),
     agentType: state.agentType,
     provider: state.provider,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
     background: state.background,
     label: state.label,
     status: terminalStatus,

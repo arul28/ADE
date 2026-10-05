@@ -9,8 +9,9 @@
  * Cost is priced in the currency of each route's billing:
  * - A plan route costs a share of the plan. ADE's quota ledger knows what one
  *   percent of each plan window has cost in list-price dollars
- *   (`usdPerPercent`), so a task's list-price cost converts to plan percent.
- *   The percent is then weighted by pressure: how fast the window is being
+ *   (`usdPerPercent`), so a task's list-price cost converts to plan percent,
+ *   and the percent to dollars of the plan's own price (`planPercentUsd`).
+ *   That is then weighted by pressure: how fast the window is being
  *   used against how much of it has passed. A window close to its limit
  *   blocks its plan's routes.
  * - A metered route costs its dollars.
@@ -44,11 +45,30 @@ export const ROUTER_MAX_SLOWDOWN = 1.5;
 /** Own turns on a model before the router trusts a route it has never run. */
 export const ROUTER_TRUST_MIN_TURNS = 30;
 /**
- * What one percent of a weekly plan is worth in dollars when converting plan
- * percent to a common unit. An assumption, not a fact: about a $200/month plan.
- * It only matters when plans compete with metered routes.
+ * What each plan costs a month, to price a percent of its window in dollars.
+ * An assumption, not a fact: the common top tier of each plan (Claude Max,
+ * ChatGPT Pro, Cursor Pro, OpenCode Go). It matters only when plans compete
+ * with each other or with metered routes. One flat value for every plan made
+ * a percent of a $10 monthly plan cost the same as a percent of a $200 weekly
+ * one, so the router moved DeepSeek work on OpenCode Go onto Claude.
  */
-export const ROUTER_PLAN_PERCENT_USD = 0.5;
+export const ROUTER_PLAN_MONTHLY_USD: Record<string, number> = {
+  claude: 200,
+  codex: 200,
+  cursor: 20,
+  "opencode-go": 10,
+};
+/** The value of a percent when the plan or its window is unknown: a $200 plan's weekly percent. */
+const FALLBACK_PERCENT_USD = 200 / (100 * (30 / 7));
+
+/** Dollars one percent of the plan's burn-rate window is worth. */
+export function planPercentUsd(state: Pick<PlanState, "plan" | "rateWindow">): number {
+  const monthly = ROUTER_PLAN_MONTHLY_USD[state.plan];
+  const windowMs = state.rateWindow ? WINDOW_MS[state.rateWindow] : undefined;
+  if (monthly == null || !windowMs) return FALLBACK_PERCENT_USD;
+  const windowsPerMonth = WINDOW_MS.monthly! / windowMs;
+  return monthly / (100 * windowsPerMonth);
+}
 /** A window at or above this share used blocks its plan. */
 const WINDOW_BLOCK_SHARE = 0.95;
 
@@ -58,24 +78,92 @@ const WINDOW_MS: Record<string, number> = {
   monthly: 30 * 86_400_000,
 };
 
-const EDIT_WORDS = /\b(fix|implement|edit|write|refactor|add|change|update|build|create|migrate|rename|remove|delete|port|wire|patch|apply)\b/i;
-const HEAVY_WORDS = /\b(implement|build|refactor|migrate|rewrite|feature|port|redesign|overhaul|phase)\b/i;
-const READ_WORDS = /\b(research|investigate|find|search|read|explore|summari[sz]e|look (up|into|at)|map|trace|explain|inventory|survey|locate|list|scan|understand|analy[sz]e)\b/i;
-const REVIEW_WORDS = /\b(review|audit|verify|check|critique|second opinion|assess)\b/i;
-const TEST_WORDS = /\b(run (the )?(tests?|suite|ci)|typecheck|lint|test shard|flaky)\b/i;
+const EDIT_WORDS = /\b(fix(es)?|implement|edit|write|refactor|add|change|update|build|create|migrate|rename|remove|delete|port|wire|patch|apply|split|extract|move|replace|convert|upgrade|bump|redesign|polish)\b/i;
+const HEAVY_WORDS = /\b(implement|build|refactor|migrate|rewrite|feature|port|redesign|overhaul|phase|stage|unit \d|end-to-end)\b/i;
+const READ_WORDS = /\b(research|investigate|find|search|read|explore|summari[sz]e|look (up|into|at)|map|trace|explain|inventory|survey|locate|list|scan|understand|analy[sz]e|classify|compare|diagnose|study|document|catalog(ue)?)\b/i;
+const REVIEW_WORDS = /\b(re-?review|review(er)?|audit|verify|verification|check|critique|second opinion|assess|findings|track [abc]|correctness|maintainability|conformance)\b/i;
+const TEST_WORDS = /\b(run (the )?(tests?|suite|ci)|typecheck|lint|test shard|flaky|ci shard|reproduce)\b/i;
+/**
+ * A brief that forbids all edits: the strongest signal a prompt carries. A
+ * scoped ban ("do not edit anything under apps/ios", "never touch the owner's
+ * machines") is an edit brief with a fence, so the object must be every file.
+ */
+const NO_EDIT_WORDS = /\b(read[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])|report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
+/** "Read-only" in a brief's opening lines is a whole-task rule; later it is about one command or file. */
+const OPENING_READ_ONLY = /^[\s\S]{0,160}\bread[- ]only\b/i;
+/** Boilerplate every ADE brief carries; it says nothing about the task. */
+const BRIEF_BOILERPLATE = /do not start subagents or parallel reviewers; do all the work yourself\.?/gi;
+/** "Read /tmp/brief.md and follow it": an instruction to load the brief, not a read task. */
+const READ_THE_BRIEF = /\bread\s+(the\s+(file\s+)?)?[\w./~-]+\.(md|txt|prompt)\b/gi;
 
-/** A task's kind from its description and agent type. Keyword rules; unknown when nothing matches. */
-export function classifyRouterTask(description: string, agentType?: string | null): RouterTaskKind {
+/** Opening clauses that hand a worker code to change. */
+const EDIT_BRIEF_WORDS = /\b(you\s+(are\s+)?(implement(ing)?|apply(ing)?|fix(ing)?|build(ing)?|writ(e|ing)|port(ing)?|refactor(ing)?|add(ing)?|own|updat(e|ing)|the\s+\w+\s+implementer)|implementer\b|implement\s+(the|a|an|part|unit|phase|stage)|apply\s+(the\s+|these\s+|verified\s+|final\s+)?(\/quality\s+)?(fix|finding|change|delta)|edit\s+(only|files only)|work\s+only\s+in|allowlist|leave changes uncommitted)/i;
+/** An imperative edit verb that opens a sentence: "Fix …", "Task: write …". */
+const OPENING_EDIT_VERB = /(^|[.:!]\s+)(fix|implement|write|add|build|apply|port|refactor|update|rewrite|remove|migrate|redesign|create)\b/i;
+const LIGHT_EDIT_WORDS = /\b(docs?|documentation|logging|tests?|rename|typo|copy)\b/i;
+
+/** Where a kind came from, recorded so the shadow log can be audited. */
+export type RouterTaskKindSource = "agent_type" | "prompt" | "description" | "none";
+
+/**
+ * A task's kind from its agent type, the short label the parent gave it, and
+ * the brief itself. The label alone ("Quality Track A correctness") says too
+ * little: the brief states whether the worker may edit, which is what decides
+ * how far its quality may drop. Keyword rules; unknown when nothing matches.
+ */
+export function classifyRouterTaskDetailed(
+  description: string,
+  agentType?: string | null,
+  prompt?: string | null,
+): { kind: RouterTaskKind; source: RouterTaskKindSource } {
   const type = agentType?.toLowerCase() ?? "";
-  if (type === "explore" || type.includes("search") || type.includes("research")) return "read_only";
-  if (type.includes("review") || type.includes("verif")) return "review";
-  const text = description.slice(0, 2_000);
-  const edits = EDIT_WORDS.test(text);
+  if (type === "explore" || type.includes("search") || type.includes("research")) return { kind: "read_only", source: "agent_type" };
+  if (type.includes("review") || type.includes("verif") || type.includes("audit")) return { kind: "review", source: "agent_type" };
+  const label = description.slice(0, 300);
+  const brief = (prompt ?? "").replace(BRIEF_BOILERPLATE, "").trim().slice(0, 4_000);
+  const head = brief.slice(0, 1_500);
+  const opening = brief.slice(0, 250);
+  const labelVerb = /^\W*([a-z-]+)/i.exec(label)?.[1] ?? "";
+  const editKind = (): RouterTaskKind => {
+    const heavy = !LIGHT_EDIT_WORDS.test(label) && (HEAVY_WORDS.test(label) || (HEAVY_WORDS.test(head) && brief.length >= 4_000));
+    return heavy ? "heavy_edit" : "light_edit";
+  };
+  // The opening sentence states the job; a later "read-only" is usually about one command or file.
+  if (brief && (EDIT_BRIEF_WORDS.test(opening) || OPENING_EDIT_VERB.test(opening))) return { kind: editKind(), source: "prompt" };
+  if (EDIT_WORDS.test(labelVerb) && !OPENING_READ_ONLY.test(head)) return { kind: editKind(), source: "description" };
+  if (brief && (NO_EDIT_WORDS.test(head) || OPENING_READ_ONLY.test(head))) {
+    return { kind: REVIEW_WORDS.test(label) || REVIEW_WORDS.test(head) ? "review" : "read_only", source: "prompt" };
+  }
+  if (brief && EDIT_BRIEF_WORDS.test(head)) return { kind: editKind(), source: "prompt" };
+  const fromLabel = classifyText(label);
+  if (fromLabel !== "unknown") return { kind: fromLabel, source: "description" };
+  if (brief) {
+    const fromBrief = classifyText(head.replace(READ_THE_BRIEF, ""));
+    if (fromBrief !== "unknown") return { kind: fromBrief, source: "prompt" };
+  }
+  // A workflow agent is named for its job (`/root/quality_correctness`).
+  const fromType = type.includes("/") || type.includes("_") ? classifyText(type.replace(/[/_-]+/g, " ").trim()) : "unknown";
+  if (fromType !== "unknown") return { kind: fromType, source: "agent_type" };
+  return { kind: "unknown", source: "none" };
+}
+
+/** Keyword rules over one short text. The first word decides a tie: a label is an imperative. */
+function classifyText(text: string): RouterTaskKind {
+  const firstWord = /^\W*([a-z-]+)/i.exec(text)?.[1] ?? "";
+  if (REVIEW_WORDS.test(firstWord)) return "review";
+  if (READ_WORDS.test(firstWord)) return "read_only";
   if (TEST_WORDS.test(text) && !HEAVY_WORDS.test(text)) return "test_run";
-  if (REVIEW_WORDS.test(text) && !edits) return "review";
+  const edits = EDIT_WORDS.test(text);
+  if (EDIT_WORDS.test(firstWord)) return HEAVY_WORDS.test(text) ? "heavy_edit" : "light_edit";
+  if (REVIEW_WORDS.test(text)) return "review";
   if (READ_WORDS.test(text) && !edits) return "read_only";
   if (edits) return HEAVY_WORDS.test(text) ? "heavy_edit" : "light_edit";
   return "unknown";
+}
+
+/** A task's kind; see `classifyRouterTaskDetailed`. */
+export function classifyRouterTask(description: string, agentType?: string | null, prompt?: string | null): RouterTaskKind {
+  return classifyRouterTaskDetailed(description, agentType, prompt).kind;
 }
 
 export type PlanState = {
@@ -84,6 +172,8 @@ export type PlanState = {
   accountId: string | null;
   /** List-price dollars per percent of the plan's longest known window. */
   usdPerPercent: number | null;
+  /** The window `usdPerPercent` is measured on (`weekly`, `monthly`). */
+  rateWindow: string | null;
   /**
    * How much quota movement the burn rate rests on. The rate counts ADE turns
    * only, so use of the same plan outside ADE makes the plan look dearer than
@@ -106,6 +196,7 @@ function accountState(plan: string, accountId: string, windows: readonly AdeQuot
   let pressure = 1;
   let blockedReason: string | null = null;
   let usdPerPercent: number | null = null;
+  let rateWindow: string | null = null;
   let burnConfidence: AdeQuotaBurnRate["confidence"] = "none";
   let longest = 0;
   for (const window of windows) {
@@ -115,6 +206,7 @@ function accountState(plan: string, accountId: string, windows: readonly AdeQuot
     if (duration && window.usdPerPercent != null && window.confidence !== "none" && duration > longest) {
       longest = duration;
       usdPerPercent = window.usdPerPercent;
+      rateWindow = window.windowType;
       burnConfidence = window.confidence;
     }
     if (used == null || !duration || resetsInMs == null || resetsInMs <= 0) continue;
@@ -130,6 +222,7 @@ function accountState(plan: string, accountId: string, windows: readonly AdeQuot
     plan,
     accountId,
     usdPerPercent,
+    rateWindow,
     burnConfidence,
     pressure,
     blockedReason,
@@ -142,12 +235,10 @@ function accountState(plan: string, accountId: string, windows: readonly AdeQuot
 }
 
 /**
- * The live state of each plan, from the quota ledger's burn rates. A plan with
- * several accounts is as good as its best account: unblocked first, then the
- * lowest pressure. A burn rate learned on one account stands in for another
- * account of the same plan that has none yet.
+ * Each plan account's own state, by account id. An account with no burn rate
+ * yet borrows one from another account of the same plan.
  */
-export function planStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
+export function accountStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
   const states = new Map<string, PlanState>();
   for (const plan of ["claude", "codex", "cursor", "opencode-go"]) {
     const byAccount = new Map<string, AdeQuotaBurnRate[]>();
@@ -162,10 +253,27 @@ export function planStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowM
     for (const state of accounts) {
       if (state.usdPerPercent != null || !shared) continue;
       state.usdPerPercent = shared.usdPerPercent;
+      state.rateWindow = shared.rateWindow;
       state.burnConfidence = shared.burnConfidence;
     }
-    accounts.sort((a, b) => Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason)) || a.pressure - b.pressure);
-    states.set(plan, accounts[0] ?? { plan, accountId: null, usdPerPercent: null, burnConfidence: "none", pressure: 1, blockedReason: null, windows: [] });
+    for (const state of accounts) states.set(state.accountId!, state);
+  }
+  return states;
+}
+
+/**
+ * The live state of each plan, from the quota ledger's burn rates. A plan with
+ * several accounts is as good as its best account: unblocked first, then the
+ * lowest pressure.
+ */
+export function planStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
+  const accounts = [...accountStatesFromBurnRates(rates, nowMs).values()];
+  const states = new Map<string, PlanState>();
+  for (const plan of ["claude", "codex", "cursor", "opencode-go"]) {
+    const own = accounts
+      .filter((state) => state.plan === plan)
+      .sort((a, b) => Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason)) || a.pressure - b.pressure);
+    states.set(plan, own[0] ?? { plan, accountId: null, usdPerPercent: null, rateWindow: null, burnConfidence: "none", pressure: 1, blockedReason: null, windows: [] });
   }
   return states;
 }
@@ -191,7 +299,7 @@ export function routeCost(route: ModelRoute, plans: ReadonlyMap<string, PlanStat
   }
   const planPercent = usd / state.usdPerPercent;
   return {
-    units: planPercent * ROUTER_PLAN_PERCENT_USD * state.pressure,
+    units: planPercent * planPercentUsd(state) * state.pressure,
     planPercent,
     blockedReason: state.blockedReason,
     note: state.pressure !== 1 ? `${state.plan} pressure ${state.pressure.toFixed(2)}` : null,
@@ -209,6 +317,11 @@ export type RouterDecision = {
 export type RouterPick = {
   kind: RouterTaskKind;
   reference: RouterDecision | null;
+  /**
+   * Best route on the reference's own model: only the effort changes. The
+   * safest switch: same harness, same plan, same prompt cache family.
+   */
+  sameModel: RouterDecision | null;
   /** Best route in the reference's harness: what ADE could switch to today. */
   sameHarness: RouterDecision | null;
   /** Best route in any allowed harness. */
@@ -258,7 +371,7 @@ export function pickRoute(input: RouterPickInput): RouterPick {
   const allow = input.allowBilling ?? new Set<RouteBilling["kind"]>(["plan"]);
   const ref = input.reference;
   const refDecision = ref ? decision(ref, routeCost(ref, input.plans), null) : null;
-  const keep = (why: string): RouterPick => ({ kind: input.kind, reference: refDecision, sameHarness: null, anyHarness: null, keptBecause: why });
+  const keep = (why: string): RouterPick => ({ kind: input.kind, reference: refDecision, sameModel: null, sameHarness: null, anyHarness: null, keptBecause: why });
   if (!ref || !refDecision) return keep("the task's model is not in the catalog");
   if (ref.quality.score == null) return keep("no public quality data for the task's model");
   const floor = ref.quality.score - ROUTER_QUALITY_TOLERANCE[input.kind];
@@ -290,11 +403,13 @@ export function pickRoute(input: RouterPickInput): RouterPick {
   // Keep the reference unless a candidate is cheaper, or the reference cannot run (blocked plan).
   const better = (item: RouterDecision | null): RouterDecision | null =>
     item && (refDecision.cost.blockedReason || refUnits == null || item.cost.units! < refUnits) ? item : null;
+  const sameModel = better(cheapest(candidates.filter((item) => item.route.harness === ref.harness && item.route.modelId === ref.modelId)));
   const sameHarness = better(cheapest(candidates.filter((item) => item.route.harness === ref.harness)));
   const anyHarness = better(cheapest(candidates));
   return {
     kind: input.kind,
     reference: refDecision,
+    sameModel,
     sameHarness,
     anyHarness,
     keptBecause: sameHarness || anyHarness

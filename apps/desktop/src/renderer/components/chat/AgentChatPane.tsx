@@ -130,6 +130,7 @@ import {
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
   resolveProviderGroupForModel,
+  resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
@@ -6043,8 +6044,25 @@ export function AgentChatPane({
     ? formatSubagentModelChip(subagentModelAttribution({
       snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
       sessionModelLabel: selectedModelDesc?.displayName ?? selectedSession?.model ?? null,
+      reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
+  /**
+   * The composer under a subagent's thread shows THAT agent's model and effort,
+   * locked, not the parent's. A model the catalog cannot name keeps the
+   * parent's chip; the lock line still names the child's model.
+   */
+  const subagentComposerModel = useMemo(() => {
+    if (!subagentView) return null;
+    const reported = subagentViewSnapshot?.model ?? subagentMetadata?.model ?? null;
+    const descriptor = reported && reported !== "inherit"
+      ? resolveScopedModelDescriptor(reported, modelCatalogScopeKey) ?? resolveModelDescriptor(reported)
+      : null;
+    return {
+      modelId: descriptor?.id ?? (reported && reported !== "inherit" ? null : modelId),
+      effort: subagentViewSnapshot?.reasoningEffort ?? null,
+    };
+  }, [modelCatalogScopeKey, modelId, subagentMetadata?.model, subagentView, subagentViewSnapshot?.model, subagentViewSnapshot?.reasoningEffort]);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
@@ -15441,7 +15459,7 @@ export function AgentChatPane({
             isActive={isTileActive}
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
-            modelId={modelId}
+            modelId={subagentComposerModel?.modelId ?? modelId}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={selectedSessionId ? selectedSession?.presetId ?? null : draftHarnessPresetId}
@@ -15462,9 +15480,9 @@ export function AgentChatPane({
               setRuntimeCatalogVersion((version) => version + 1);
             }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
-            reasoningEffort={reasoningEffort}
-            effectiveReasoningEffort={effectiveReasoningEffort}
-            fastMode={fastMode}
+            reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
+            effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
+            fastMode={subagentComposerModel ? false : fastMode}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
             usageViewModel={selectedUsageViewModel}

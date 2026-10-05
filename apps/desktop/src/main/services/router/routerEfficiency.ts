@@ -9,7 +9,8 @@
  * - the thread's first turn;
  * - the turn after a context compaction;
  * - a turn that starts after the cache expired (idle longer than its TTL);
- * - a turn where the user changed the model or effort (the cache rebuilt anyway).
+ * - a turn where the user changed the model or effort, or the chat moved to
+ *   another account (the cache rebuilt anyway).
  * The turns from one switch point to the next are a segment. Each segment gets
  * one decision from routerCore, and its list-price cost scales by the picked
  * route's cost per task over the reference route's.
@@ -39,6 +40,8 @@ export type ThreadSegment = {
   /** The model the thread asked for; the router routes requests, not what a gateway served. */
   model: string | null;
   effort: string | null;
+  /** The account the segment billed (`accountKey`); a plan's percent is per account. */
+  account: string | null;
   startsAt: RouterSwitchPoint;
   turns: AdeTurnUsageRecord[];
 };
@@ -82,7 +85,12 @@ export function segmentThreads(turns: readonly AdeTurnUsageRecord[]): ThreadSegm
       if (!previous || !current) reason = "thread_start";
       else if (previous.compactions > 0) reason = "compaction";
       else if (turnStartMs(turn) - Date.parse(previous.at) > ttl) reason = "cache_expired";
-      else if (turn.provider !== current.provider || model !== current.model || effort !== current.effort) reason = "route_changed";
+      else if (
+        turn.provider !== current.provider
+        || model !== current.model
+        || effort !== current.effort
+        || (turn.accountKey ?? null) !== current.account
+      ) reason = "route_changed";
       if (reason) {
         current = {
           sessionId,
@@ -90,6 +98,7 @@ export function segmentThreads(turns: readonly AdeTurnUsageRecord[]): ThreadSegm
           provider: turn.provider,
           model,
           effort,
+          account: turn.accountKey ?? null,
           startsAt: reason,
           turns: [],
         };
@@ -114,6 +123,11 @@ function costRatio(pick: RouterDecision | null, reference: RouterDecision | null
   return pick.savingShare != null ? 1 - pick.savingShare : 1;
 }
 
+/** Quota providers are named after the harness; OpenCode's windows are the Go plan's. */
+function planQuotaProvider(plan: string): string {
+  return plan === "opencode-go" ? "opencode" : plan;
+}
+
 const cents = (usd: number): number => Math.round(usd * 100) / 100;
 const share = (part: number, whole: number): number | null => (whole > 0 ? Math.round((1 - part / whole) * 1000) / 1000 : null);
 
@@ -124,16 +138,25 @@ const share = (part: number, whole: number): number | null => (whole > 0 ? Math.
  * pick. This view shows both currencies side by side.
  */
 export type RouterBillingEfficiency = {
-  /** `claude plan`, `codex plan`, `metered (opencode-zen)`, `free`, or `unrouted`. */
+  /**
+   * `claude plan · claude:beats`, `codex plan · codex:codex`,
+   * `metered (opencode-zen)`, `free`, or `unrouted`. A plan row is one
+   * account: each account has its own window and burn rate, so adding the
+   * spend of three Claude logins and dividing by one login's rate gave a
+   * percent no window can reach.
+   */
   billing: string;
   plan: string | null;
+  account: string | null;
   actualUsd: number;
+  sameModelUsd: number;
   sameHarnessUsd: number;
   anyHarnessUsd: number;
-  /** List dollars per percent of the plan's longest window, from the quota ledger; null for non-plan billing. */
+  /** List dollars per percent of this account's longest window, from the quota ledger; null for non-plan billing. */
   usdPerPercent: number | null;
-  /** Percent of the plan's longest window (weekly for Claude and Codex). Null without a burn rate. */
+  /** Percent of the account's longest window (weekly for Claude and Codex). Null without a burn rate. */
   actualPercent: number | null;
+  sameModelPercent: number | null;
   sameHarnessPercent: number | null;
   anyHarnessPercent: number | null;
 };
@@ -150,17 +173,20 @@ export type RouterThreadEfficiency = {
   /** Turns with a list price. Unpriced turns add no dollars on either side. */
   pricedTurns: number;
   actualUsd: number;
+  /** The same turns if each segment had kept its model and run at the router's effort. */
+  sameModelUsd: number;
   /** The same turns if each segment had run on the router's pick inside its own harness. */
   sameHarnessUsd: number;
   /** The same turns if each segment had run on the router's pick in any harness. */
   anyHarnessUsd: number;
+  sameModelSaving: number | null;
   sameHarnessSaving: number | null;
   anyHarnessSaving: number | null;
-  switchedSegments: { sameHarness: number; anyHarness: number };
+  switchedSegments: { sameModel: number; sameHarness: number; anyHarness: number };
   byBilling: RouterBillingEfficiency[];
   /** Why segments kept their route, weighted by what they cost. */
   kept: Array<{ reason: string; segments: number; turns: number; actualUsd: number }>;
-  topMoves: { sameHarness: RouterEfficiencyMove[]; anyHarness: RouterEfficiencyMove[] };
+  topMoves: { sameModel: RouterEfficiencyMove[]; sameHarness: RouterEfficiencyMove[]; anyHarness: RouterEfficiencyMove[] };
   topThreads: Array<{
     sessionId: string;
     parentSessionId: string | null;
@@ -169,6 +195,7 @@ export type RouterThreadEfficiency = {
     turns: number;
     segments: number;
     actualUsd: number;
+    sameModelUsd: number;
     sameHarnessUsd: number;
     anyHarnessUsd: number;
   }>;
@@ -178,14 +205,16 @@ export type ThreadReplayInput = {
   turns: readonly AdeTurnUsageRecord[];
   routes: readonly ModelRoute[];
   plans: ReadonlyMap<string, PlanState>;
+  /** Each plan account's own state, by account id; percent figures use it. */
+  accounts?: ReadonlyMap<string, PlanState>;
   trusted: ReadonlySet<string>;
 };
 
-function billingLabel(route: RouteBilling | null): string {
+function billingLabel(route: RouteBilling | null, account: string | null): string {
   if (!route) return "unrouted";
   switch (route.kind) {
     case "plan":
-      return `${route.plan} plan`;
+      return account ? `${route.plan} plan · ${account}` : `${route.plan} plan`;
     case "metered":
       return `metered (${route.channel})`;
     case "free":
@@ -197,10 +226,12 @@ function billingLabel(route: RouteBilling | null): string {
 type SegmentDecision = {
   pricedTurns: number;
   actualUsd: number;
+  sameModelUsd: number;
   sameHarnessUsd: number;
   anyHarnessUsd: number;
   /** The route the segment ran on, as a route id when the catalog knows it. */
   from: string;
+  sameModelTo: string | null;
   sameHarnessTo: string | null;
   anyHarnessTo: string | null;
   billing: { actual: RouteBilling | null; sameHarness: RouteBilling | null; anyHarness: RouteBilling | null };
@@ -231,9 +262,11 @@ function decideSegment(segment: ThreadSegment, input: ThreadReplayInput, plans: 
   return {
     pricedTurns,
     actualUsd,
+    sameModelUsd: actualUsd * costRatio(pick?.sameModel ?? null, pick?.reference ?? null),
     sameHarnessUsd: actualUsd * costRatio(pick?.sameHarness ?? null, pick?.reference ?? null),
     anyHarnessUsd: actualUsd * costRatio(pick?.anyHarness ?? null, pick?.reference ?? null),
     from: pick?.reference?.route.id ?? `${segment.provider}|${segment.model ?? "?"}|${segment.effort ?? "-"}`,
+    sameModelTo: pick?.sameModel?.route.id ?? null,
     sameHarnessTo: pick?.sameHarness?.route.id ?? null,
     anyHarnessTo: pick?.anyHarness?.route.id ?? null,
     billing: {
@@ -255,15 +288,44 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
   const segments = segmentThreads(input.turns);
   const segmentsByStart: Record<RouterSwitchPoint, number> = { thread_start: 0, compaction: 0, cache_expired: 0, route_changed: 0 };
   const kept = new Map<string, { segments: number; turns: number; actualUsd: number }>();
-  const moves = { sameHarness: new Map<string, RouterEfficiencyMove>(), anyHarness: new Map<string, RouterEfficiencyMove>() };
+  const moves = {
+    sameModel: new Map<string, RouterEfficiencyMove>(),
+    sameHarness: new Map<string, RouterEfficiencyMove>(),
+    anyHarness: new Map<string, RouterEfficiencyMove>(),
+  };
   const threads = new Map<string, RouterThreadEfficiency["topThreads"][number]>();
-  const billing = new Map<string, { plan: string | null; actualUsd: number; sameHarnessUsd: number; anyHarnessUsd: number }>();
-  const totals = { pricedTurns: 0, actualUsd: 0, sameHarnessUsd: 0, anyHarnessUsd: 0 };
-  const switched = { sameHarness: 0, anyHarness: 0 };
+  type BillingEntry = { plan: string | null; account: string | null; actualUsd: number; sameModelUsd: number; sameHarnessUsd: number; anyHarnessUsd: number };
+  const billing = new Map<string, BillingEntry>();
+  const totals = { pricedTurns: 0, actualUsd: 0, sameModelUsd: 0, sameHarnessUsd: 0, anyHarnessUsd: 0 };
+  const switched = { sameModel: 0, sameHarness: 0, anyHarness: 0 };
 
-  const addBilling = (route: RouteBilling | null, side: "actualUsd" | "sameHarnessUsd" | "anyHarnessUsd", usd: number) => {
-    const label = billingLabel(route);
-    const entry = billing.get(label) ?? { plan: route?.kind === "plan" ? route.plan : null, actualUsd: 0, sameHarnessUsd: 0, anyHarnessUsd: 0 };
+  /**
+   * The account a side bills. A pick on the segment's own plan stays on the
+   * segment's account; a pick on another plan lands on that plan's best account.
+   */
+  const accountFor = (route: RouteBilling | null, actual: RouteBilling | null, segmentAccount: string | null): string | null => {
+    if (route?.kind !== "plan") return null;
+    const best = plans.get(route.plan)?.accountId ?? null;
+    // The segment's own login, when it is a login of this plan's provider
+    // (a Claude chat running OpenCode Go's DeepSeek bills the Go account) and
+    // has a name (`opencode:local` is the one named Go account without it).
+    const own = actual?.kind === "plan" && actual.plan === route.plan
+      && segmentAccount?.startsWith(`${planQuotaProvider(route.plan)}:`)
+      && !segmentAccount.endsWith(":local")
+      ? segmentAccount
+      : null;
+    return own ?? best;
+  };
+  const addBilling = (route: RouteBilling | null, account: string | null, side: Exclude<keyof BillingEntry, "plan" | "account">, usd: number) => {
+    const label = billingLabel(route, account);
+    const entry = billing.get(label) ?? {
+      plan: route?.kind === "plan" ? route.plan : null,
+      account,
+      actualUsd: 0,
+      sameModelUsd: 0,
+      sameHarnessUsd: 0,
+      anyHarnessUsd: 0,
+    };
     entry[side] += usd;
     billing.set(label, entry);
   };
@@ -281,11 +343,19 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     segmentsByStart[segment.startsAt] += 1;
     totals.pricedTurns += decision.pricedTurns;
     totals.actualUsd += decision.actualUsd;
+    totals.sameModelUsd += decision.sameModelUsd;
     totals.sameHarnessUsd += decision.sameHarnessUsd;
     totals.anyHarnessUsd += decision.anyHarnessUsd;
-    addBilling(decision.billing.actual, "actualUsd", decision.actualUsd);
-    addBilling(decision.billing.sameHarness, "sameHarnessUsd", decision.sameHarnessUsd);
-    addBilling(decision.billing.anyHarness, "anyHarnessUsd", decision.anyHarnessUsd);
+    const actualAccount = accountFor(decision.billing.actual, decision.billing.actual, segment.account);
+    addBilling(decision.billing.actual, actualAccount, "actualUsd", decision.actualUsd);
+    // An effort change keeps the plan and the account.
+    addBilling(decision.billing.actual, actualAccount, "sameModelUsd", decision.sameModelUsd);
+    addBilling(decision.billing.sameHarness, accountFor(decision.billing.sameHarness, decision.billing.actual, segment.account), "sameHarnessUsd", decision.sameHarnessUsd);
+    addBilling(decision.billing.anyHarness, accountFor(decision.billing.anyHarness, decision.billing.actual, segment.account), "anyHarnessUsd", decision.anyHarnessUsd);
+    if (decision.sameModelTo) {
+      switched.sameModel += 1;
+      noteMove(moves.sameModel, decision.from, decision.sameModelTo, decision.actualUsd, decision.sameModelUsd);
+    }
     if (decision.sameHarnessTo) {
       switched.sameHarness += 1;
       noteMove(moves.sameHarness, decision.from, decision.sameHarnessTo, decision.actualUsd, decision.sameHarnessUsd);
@@ -309,12 +379,14 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
       turns: 0,
       segments: 0,
       actualUsd: 0,
+      sameModelUsd: 0,
       sameHarnessUsd: 0,
       anyHarnessUsd: 0,
     };
     thread.turns += segment.turns.length;
     thread.segments += 1;
     thread.actualUsd += decision.actualUsd;
+    thread.sameModelUsd += decision.sameModelUsd;
     thread.sameHarnessUsd += decision.sameHarnessUsd;
     thread.anyHarnessUsd += decision.anyHarnessUsd;
     threads.set(segment.sessionId, thread);
@@ -324,6 +396,11 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     .sort((a, b) => b.actualUsd - a.actualUsd)
     .slice(0, TOP_LIMIT)
     .map((move) => ({ ...move, actualUsd: cents(move.actualUsd), routedUsd: cents(move.routedUsd) }));
+  const usdPerPercentFor = (entry: BillingEntry): number | null => {
+    if (!entry.plan) return null;
+    const own = entry.account ? input.accounts?.get(entry.account)?.usdPerPercent : null;
+    return own ?? plans.get(entry.plan)?.usdPerPercent ?? null;
+  };
 
   return {
     threads: threads.size,
@@ -333,24 +410,29 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     segmentsByStart,
     pricedTurns: totals.pricedTurns,
     actualUsd: cents(totals.actualUsd),
+    sameModelUsd: cents(totals.sameModelUsd),
     sameHarnessUsd: cents(totals.sameHarnessUsd),
     anyHarnessUsd: cents(totals.anyHarnessUsd),
+    sameModelSaving: share(totals.sameModelUsd, totals.actualUsd),
     sameHarnessSaving: share(totals.sameHarnessUsd, totals.actualUsd),
     anyHarnessSaving: share(totals.anyHarnessUsd, totals.actualUsd),
     switchedSegments: switched,
     byBilling: [...billing]
       .sort((a, b) => b[1].actualUsd - a[1].actualUsd || b[1].anyHarnessUsd - a[1].anyHarnessUsd)
       .map(([label, entry]) => {
-        const usdPerPercent = entry.plan ? plans.get(entry.plan)?.usdPerPercent ?? null : null;
+        const usdPerPercent = usdPerPercentFor(entry);
         const percent = (usd: number): number | null => (usdPerPercent ? Math.round((usd / usdPerPercent) * 100) / 100 : null);
         return {
           billing: label,
           plan: entry.plan,
+          account: entry.account,
           actualUsd: cents(entry.actualUsd),
+          sameModelUsd: cents(entry.sameModelUsd),
           sameHarnessUsd: cents(entry.sameHarnessUsd),
           anyHarnessUsd: cents(entry.anyHarnessUsd),
           usdPerPercent,
           actualPercent: percent(entry.actualUsd),
+          sameModelPercent: percent(entry.sameModelUsd),
           sameHarnessPercent: percent(entry.sameHarnessUsd),
           anyHarnessPercent: percent(entry.anyHarnessUsd),
         };
@@ -358,13 +440,14 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     kept: [...kept]
       .sort((a, b) => b[1].actualUsd - a[1].actualUsd)
       .map(([reason, entry]) => ({ reason, ...entry, actualUsd: cents(entry.actualUsd) })),
-    topMoves: { sameHarness: topMoves(moves.sameHarness), anyHarness: topMoves(moves.anyHarness) },
+    topMoves: { sameModel: topMoves(moves.sameModel), sameHarness: topMoves(moves.sameHarness), anyHarness: topMoves(moves.anyHarness) },
     topThreads: [...threads.values()]
       .sort((a, b) => b.actualUsd - a.actualUsd)
       .slice(0, TOP_LIMIT)
       .map((thread) => ({
         ...thread,
         actualUsd: cents(thread.actualUsd),
+        sameModelUsd: cents(thread.sameModelUsd),
         sameHarnessUsd: cents(thread.sameHarnessUsd),
         anyHarnessUsd: cents(thread.anyHarnessUsd),
       })),
@@ -373,72 +456,80 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
 
 /** One shadow decision and its outcome, as the efficiency report reads them. */
 export type SubagentShadowRecord = {
+  sameModelSaving: number | null;
   sameHarnessSaving: number | null;
   anyHarnessSaving: number | null;
-  picked: { sameHarness: boolean; anyHarness: boolean };
+  picked: { sameModel: boolean; sameHarness: boolean; anyHarness: boolean };
   outcome: { totalTokens: number | null; costUsd: number | null } | null;
 };
 
 export type RouterSubagentEfficiency = {
   decisions: number;
   withOutcome: number;
+  sameModelPicks: number;
   sameHarnessPicks: number;
   anyHarnessPicks: number;
   /** Tokens of the finished subagents that reported them. */
   tokens: number;
   /** Saving weighted by each subagent's tokens; a kept route saves nothing. */
+  sameModelSaving: number | null;
   sameHarnessSaving: number | null;
   anyHarnessSaving: number | null;
   /** Subagents whose runtime reported a price (OpenCode today). */
   pricedSubagents: number;
   actualUsd: number;
+  sameModelUsd: number;
   sameHarnessUsd: number;
   anyHarnessUsd: number;
 };
 
 export function summarizeSubagents(records: readonly SubagentShadowRecord[]): RouterSubagentEfficiency {
+  const picks = { sameModel: 0, sameHarness: 0, anyHarness: 0 };
+  const tokens = { all: 0, sameModel: 0, sameHarness: 0, anyHarness: 0 };
+  const usd = { actual: 0, sameModel: 0, sameHarness: 0, anyHarness: 0 };
   let withOutcome = 0;
-  let sameHarnessPicks = 0;
-  let anyHarnessPicks = 0;
-  let tokens = 0;
-  let sameTokens = 0;
-  let anyTokens = 0;
   let pricedSubagents = 0;
-  let actualUsd = 0;
-  let sameHarnessUsd = 0;
-  let anyHarnessUsd = 0;
   for (const record of records) {
-    if (record.picked.sameHarness) sameHarnessPicks += 1;
-    if (record.picked.anyHarness) anyHarnessPicks += 1;
+    if (record.picked.sameModel) picks.sameModel += 1;
+    if (record.picked.sameHarness) picks.sameHarness += 1;
+    if (record.picked.anyHarness) picks.anyHarness += 1;
     if (!record.outcome) continue;
     withOutcome += 1;
-    const sameKeep = 1 - (record.picked.sameHarness ? record.sameHarnessSaving ?? 0 : 0);
-    const anyKeep = 1 - (record.picked.anyHarness ? record.anyHarnessSaving ?? 0 : 0);
+    const keep = {
+      sameModel: 1 - (record.picked.sameModel ? record.sameModelSaving ?? 0 : 0),
+      sameHarness: 1 - (record.picked.sameHarness ? record.sameHarnessSaving ?? 0 : 0),
+      anyHarness: 1 - (record.picked.anyHarness ? record.anyHarnessSaving ?? 0 : 0),
+    };
     const used = record.outcome.totalTokens;
     if (used != null && used > 0) {
-      tokens += used;
-      sameTokens += used * sameKeep;
-      anyTokens += used * anyKeep;
+      tokens.all += used;
+      tokens.sameModel += used * keep.sameModel;
+      tokens.sameHarness += used * keep.sameHarness;
+      tokens.anyHarness += used * keep.anyHarness;
     }
     const cost = record.outcome.costUsd;
     if (cost != null) {
       pricedSubagents += 1;
-      actualUsd += cost;
-      sameHarnessUsd += cost * sameKeep;
-      anyHarnessUsd += cost * anyKeep;
+      usd.actual += cost;
+      usd.sameModel += cost * keep.sameModel;
+      usd.sameHarness += cost * keep.sameHarness;
+      usd.anyHarness += cost * keep.anyHarness;
     }
   }
   return {
     decisions: records.length,
     withOutcome,
-    sameHarnessPicks,
-    anyHarnessPicks,
-    tokens,
-    sameHarnessSaving: share(sameTokens, tokens),
-    anyHarnessSaving: share(anyTokens, tokens),
+    sameModelPicks: picks.sameModel,
+    sameHarnessPicks: picks.sameHarness,
+    anyHarnessPicks: picks.anyHarness,
+    tokens: tokens.all,
+    sameModelSaving: share(tokens.sameModel, tokens.all),
+    sameHarnessSaving: share(tokens.sameHarness, tokens.all),
+    anyHarnessSaving: share(tokens.anyHarness, tokens.all),
     pricedSubagents,
-    actualUsd: cents(actualUsd),
-    sameHarnessUsd: cents(sameHarnessUsd),
-    anyHarnessUsd: cents(anyHarnessUsd),
+    actualUsd: cents(usd.actual),
+    sameModelUsd: cents(usd.sameModel),
+    sameHarnessUsd: cents(usd.sameHarness),
+    anyHarnessUsd: cents(usd.anyHarness),
   };
 }
