@@ -27,6 +27,7 @@ import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
 import { chipFromDeeplinkTarget } from "../../../shared/chips";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import {
@@ -243,6 +244,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath]);
   // A `localhost` link in this reply means the chat's machine.
   const runtimePin = useChatRuntimeScope().pin;
+  // Right-click on a link: copy it, or send it to a browser of your choosing.
+  const { onContextMenu: onLinkContextMenu, menu: linkContextMenu } = useChatLinkContextMenu(runtimePin);
   // Lanes, chats, models and the rest that this reply names. The lookup only
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
@@ -431,6 +434,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             event.preventDefault();
             openUrlInAdeBrowser(href, { runtimePin });
           }}
+          onContextMenu={(event) => onLinkContextMenu(event, href)}
           className={
             neu
               ? "text-(color:--chat-ink)/85 underline decoration-(color:--chat-ink)/28 underline-offset-2 transition-colors hover:text-(color:--chat-ink) hover:decoration-(color:--chat-ink)/45"
@@ -441,7 +445,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
 
   return (
     <div
@@ -462,6 +466,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     >
       <MarkdownBody markdown={markdown} components={components} remarkPlugins={remarkPlugins} />
       {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} remarkPlugins={remarkPlugins} /> : null}
+      {linkContextMenu}
     </div>
   );
 });
