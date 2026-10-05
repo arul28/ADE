@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
@@ -64,6 +64,39 @@ function seedSessions(sessions: TerminalSessionSummary[]): void {
   });
 }
 
+function seedForeignSessions(sessions: TerminalSessionSummary[]): void {
+  useAppStore.setState({
+    project: { rootPath: PROJECT_ROOT } as never,
+    projectBinding: null,
+    sessionsCacheByProject: { [PROJECT_ROOT]: [] },
+    crossMachineLanesByMachineId: {
+      "machine-foreign": {
+        machineId: "machine-foreign",
+        machineName: "Mac Studio (12)",
+        targetId: "target-foreign",
+        projectId: "project-foreign",
+        binding: FOREIGN_PIN,
+        online: true,
+        lanes: [],
+        sessions,
+        prs: [],
+        lastSyncedAtMs: Date.now(),
+        error: null,
+      },
+    },
+  } as never);
+}
+
+const FOREIGN_PIN = {
+  kind: "remote" as const,
+  key: "remote:target-foreign:project-foreign",
+  targetId: "target-foreign",
+  runtimeName: "Mac Studio (12)",
+  projectId: "project-foreign",
+  rootPath: "/repo-foreign",
+  displayName: "Foreign repo",
+};
+
 describe("ChatLifecyclePill", () => {
   let sessionsApi: Record<string, ReturnType<typeof vi.fn>>;
 
@@ -81,8 +114,9 @@ describe("ChatLifecyclePill", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
-    useAppStore.setState({ sessionsCacheByProject: {} });
+    useAppStore.setState({ sessionsCacheByProject: {}, crossMachineLanesByMachineId: {} });
     Reflect.deleteProperty(window, "ade");
     vi.clearAllMocks();
   });
@@ -177,5 +211,37 @@ describe("ChatLifecyclePill", () => {
     fireEvent.click(screen.getByRole("button", { name: "Wake now" }));
 
     await waitFor(() => expect(sessionsApi.wakeSession).toHaveBeenCalledWith("session-1", "manual"));
+  });
+
+  it("resolves a foreign snoozed chat and routes Wake now to its owning runtime", async () => {
+    seedForeignSessions([makeSession({ id: "foreign-session-1", ...snoozedOverrides() })]);
+    render(<ChatLifecyclePill sessionId="foreign-session-1" runtimePin={FOREIGN_PIN} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Wake now" }));
+
+    await waitFor(() => expect(sessionsApi.wakeSession).toHaveBeenCalledWith(
+      "foreign-session-1",
+      "manual",
+      FOREIGN_PIN,
+    ));
+  });
+
+  it("repaints a foreign snoozed chat when its deadline expires", () => {
+    vi.useFakeTimers();
+    const nowMs = Date.parse("2026-08-29T12:00:00.000Z");
+    vi.setSystemTime(nowMs);
+    seedForeignSessions([makeSession({
+      id: "foreign-session-expiring",
+      snoozedUntil: new Date(nowMs + 1_000).toISOString(),
+      snoozedAt: new Date(nowMs - 60_000).toISOString(),
+    })]);
+    const { container } = render(<ChatLifecyclePill sessionId="foreign-session-expiring" />);
+
+    expect(screen.getByRole("button", { name: "Wake now" })).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1_250);
+    });
+
+    expect(container.firstChild).toBeNull();
   });
 });

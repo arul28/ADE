@@ -556,6 +556,18 @@ Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
   it off): composer/banner ~10 pts, user bubbles (`ade-liquid-glass`) ~5, shell
   header ~4. Changing it changes the look; it is a design decision.
 
+### Composer floats over the thread
+
+The transcript scrolls behind the composer and its status chips
+(`ChatSurfaceShell overlayFooter`). The footer's height reaches the list
+through `chatComposerOverlayInset` and is written straight onto the scroll
+pane's `padding-bottom` and the Jump pill's `bottom`. Keep it that way: an
+inherited CSS variable on the shell would restyle every transcript node on
+each prompt line, and React state would re-render the list. The list re-pins
+itself when the inset grows while stuck to the bottom. A/B in one dev session
+(3.6 MB chat, interleaved): wheel scroll renderer 51.5 vs 52.4%, GPU 56.3 vs
+55.2% (noise); cold open to first rows median 172 vs 178 ms, same long frames.
+
 ### Background cost with no visual change (measured, second pass)
 
 - An infinite animation over a `backdrop-filter` re-runs the blur and

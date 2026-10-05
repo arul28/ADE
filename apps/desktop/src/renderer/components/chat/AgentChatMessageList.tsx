@@ -280,6 +280,8 @@ import {
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
 import { ChatProofFilmstrip } from "./chatCardPrimitives";
+import { useChatComposerJumpSlot, useChatComposerOverlayInset } from "./chatComposerOverlayInset";
+import { createPortal } from "react-dom";
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -5451,6 +5453,8 @@ function writeTranscriptCollapseCache(
 /** How far back from the tail we look for the streaming text row. */
 const PACED_TEXT_ROW_SCAN_DEPTH = 8;
 
+const JUMP_TO_LATEST_BOTTOM_PX = 16;
+
 function AgentChatMessageListMain({
   events,
   chatSources = null,
@@ -6786,6 +6790,29 @@ function AgentChatMessageListMain({
     el.scrollTop = pinTarget;
     programmaticScrollTargetRef.current = el.scrollTop;
     setScrollTop(el.scrollTop);
+  }, []);
+
+  // The composer floats over the bottom of this list (see ChatSurfaceShell
+  // `overlayFooter`). Reserve its height at the end of the scroll content so
+  // the last row can scroll clear of it, and lift the jump pill above it.
+  // Written to the DOM directly: the height moves with every prompt line, and
+  // neither a list render nor a subtree restyle should pay for that.
+  const composerOverlayInsetRef = useRef(0);
+  const jumpToLatestRef = useRef<HTMLButtonElement | null>(null);
+  useChatComposerOverlayInset((px) => {
+    composerOverlayInsetRef.current = px;
+    const el = scrollRef.current;
+    if (el) {
+      el.style.paddingBottom = px > 0 ? `calc(var(--chat-timeline-pad-bottom) + ${px}px)` : "";
+      // A taller composer must not cover the line a pinned reader is on.
+      if (stickToBottomRef.current) pinScrollToBottomNow(el);
+    }
+    if (jumpToLatestRef.current) jumpToLatestRef.current.style.bottom = `${JUMP_TO_LATEST_BOTTOM_PX + px}px`;
+  });
+  const jumpToLatestSlot = useChatComposerJumpSlot();
+  const setJumpToLatestEl = useCallback((el: HTMLButtonElement | null) => {
+    jumpToLatestRef.current = el;
+    if (el) el.style.bottom = `${JUMP_TO_LATEST_BOTTOM_PX + composerOverlayInsetRef.current}px`;
   }, []);
 
   const measureScrollContainerHeight = useCallback(() => {
@@ -8196,6 +8223,14 @@ function AgentChatMessageListMain({
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
   const showJumpToLatest = !stickToBottom && !sessionEnded;
+  const jumpToLatestLabel = newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump to latest message";
+  const jumpToLatestContent = (
+    <>
+      <CaretDown size={9} weight="bold" />
+      {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
+      <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
+    </>
+  );
 
   return (
     <ChatWorkspacePathProvider value={workspacePaths}>
@@ -8294,18 +8329,36 @@ function AgentChatMessageListMain({
           )}
         </div>
       </div>
-      {showJumpToLatest ? (
-        <button
-          type="button"
-          onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/20 px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
-          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump to latest message"}
-        >
-          <CaretDown size={9} weight="bold" />
-          {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
-          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
-        </button>
-      ) : null}
+      {showJumpToLatest
+        ? jumpToLatestSlot
+          // Docked at the right end of the chip row above the prompt, in line
+          // with the chips, instead of floating a row higher over the thread.
+          ? createPortal(
+              <button
+                type="button"
+                onClick={jumpToLatest}
+                data-testid="chat-jump-to-latest"
+                data-docked=""
+                className="pointer-events-auto inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-violet-400/30 bg-[color:var(--chat-canvas-bg)] bg-[image:linear-gradient(rgb(139_92_246/0.2),rgb(139_92_246/0.2))] px-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 transition-colors hover:bg-[image:linear-gradient(rgb(139_92_246/0.3),rgb(139_92_246/0.3))]"
+                aria-label={jumpToLatestLabel}
+              >
+                {jumpToLatestContent}
+              </button>,
+              jumpToLatestSlot,
+            )
+          : (
+            <button
+              ref={setJumpToLatestEl}
+              type="button"
+              onClick={jumpToLatest}
+              data-testid="chat-jump-to-latest"
+              className="absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/20 px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
+              aria-label={jumpToLatestLabel}
+            >
+              {jumpToLatestContent}
+            </button>
+          )
+        : null}
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

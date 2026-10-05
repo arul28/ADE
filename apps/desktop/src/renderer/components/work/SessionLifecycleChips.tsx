@@ -1,23 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Moon } from "@phosphor-icons/react";
+import { useEffect, useMemo, useState } from "react";
 
-import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import type { TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
-import { isSessionSnoozed, nextSnoozeDeadlineMs, snoozeWakeLabel } from "../../lib/sessionSnooze";
-import { wakeSessionNow } from "../terminals/sessionLifecycleActions";
-import { AnchoredMenu } from "../ui/AnchoredMenu";
-import { cn } from "../ui/cn";
+import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 
-/**
- * Ambient snooze chip for a chat surface header.
- *
- * Settled state lives only in the compact composer-adjacent pill; repeating it
- * in the header added chrome without adding information. Snooze stays here
- * because its wake deadline is useful away from the composer too.
- */
-
-const CHIP_CLASS =
-  "inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.04] px-1.5 font-sans text-[10px] font-medium text-muted-fg/75 transition-colors hover:border-white/[0.18] hover:text-fg/85";
 const LIFECYCLE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 
 /**
@@ -62,93 +48,4 @@ export function useSessionLifecycleSnapshot(
   }, [lifecycleEpoch, snapshot]);
 
   return snapshot;
-}
-
-/** Portalled so the header's stacking and the tile's clipping cannot hide it. */
-function ChipMenu({
-  label,
-  anchorRef,
-  items,
-  onClose,
-}: {
-  label: string;
-  anchorRef: RefObject<HTMLElement | null>;
-  items: Array<{ key: string; label: string; onSelect: () => void }>;
-  onClose: () => void;
-}) {
-  return (
-    <AnchoredMenu
-      open
-      anchorRef={anchorRef}
-      onClose={onClose}
-      role="menu"
-      aria-label={label}
-      className="ade-liquid-glass-menu min-w-[150px] py-1"
-    >
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          role="menuitem"
-          className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
-          onClick={() => {
-            onClose();
-            item.onSelect();
-          }}
-        >
-          {item.label}
-        </button>
-      ))}
-    </AnchoredMenu>
-  );
-}
-
-export function SessionSnoozeChip({
-  sessionId,
-  className,
-  runtimePin = null,
-}: {
-  sessionId: string | null | undefined;
-  className?: string;
-  runtimePin?: OpenProjectBinding | null;
-}) {
-  const session = useSessionLifecycleSnapshot(sessionId);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-
-  if (!session) return null;
-
-  const snoozed = isSessionSnoozed(session);
-  if (!snoozed) return null;
-
-  const wakeLabel = snoozeWakeLabel(session.snoozedUntil);
-
-  return (
-    <span className={cn("relative inline-flex", className)}>
-      <button
-        ref={chipRef}
-        type="button"
-        className={CHIP_CLASS}
-        data-testid="chat-session-snoozed-chip"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-label={wakeLabel ? `Snoozed, ${wakeLabel}` : "Snoozed"}
-        title={wakeLabel ? `Snoozed — ${wakeLabel}` : "Snoozed"}
-        onClick={() => setMenuOpen((current) => !current)}
-      >
-        <Moon size={10} weight="fill" aria-hidden />
-        snoozed
-      </button>
-      {menuOpen ? (
-        <ChipMenu
-          label="Snoozed session"
-          anchorRef={chipRef}
-          onClose={() => setMenuOpen(false)}
-          items={[
-            { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session, runtimePin); } },
-          ]}
-        />
-      ) : null}
-    </span>
-  );
 }

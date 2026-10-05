@@ -236,6 +236,7 @@ import {
 } from "../terminals/importSessions/contract";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
+import { ChatComposerOverlayClear } from "./chatComposerOverlayInset";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
@@ -15263,9 +15264,6 @@ export function AgentChatPane({
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
-        // Snooze keeps a small header affordance; settled state is shown only
-        // in the compact pill floating directly above the composer.
-        snoozeSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
         // Only wire the pane toggle where the pane actually renders (a selected
@@ -15972,13 +15970,34 @@ export function AgentChatPane({
 
   // Settled / snoozed and branch drift, side by side on the composer's top
   // edge instead of stacked cards over the thread.
+  // The row's right end is where Jump to Latest docks while a chip is showing
+  // (see chatComposerOverlayInset); otherwise the pill floats in its default spot.
   const composerStatusStrip = (
-    <StatusStrip
-      className={layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]"}
+    <div
+      data-chat-composer-chip-row=""
+      className={cn(
+        "flex min-w-0 items-center gap-2 [&:not(:has([data-testid=chat-composer-status-strip]>*))]:hidden",
+        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+      )}
     >
+    <StatusStrip className="min-w-0 flex-1">
       {lifecyclePill}
       <LaneBranchComposerChip laneId={laneId} />
+      {sessionDelta ? (
+        // The chat's running diff. A chip on the composer's edge, not a row
+        // under the thread: the thread now scrolls behind the composer.
+        <span
+          data-notice-tone="neutral"
+          style={{ ["--status-chip-fill" as string]: "rgb(255 255 255 / 0.03)" }}
+          className="pointer-events-auto inline-flex h-[22px] shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] bg-[var(--status-chip-fill)] px-2 font-mono text-[length:calc(var(--chat-font-size)*10.5/14)]"
+        >
+          <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
+          <span className="text-red-400/75">-{sessionDelta.deletions}</span>
+        </span>
+      ) : null}
     </StatusStrip>
+    <div data-chat-composer-jump-slot="" className="flex shrink-0 pb-1.5 empty:hidden" />
+    </div>
   );
   /**
    * The turn's time-lapse of the lane's macOS screen, when there was one.
@@ -15997,12 +16016,13 @@ export function AgentChatPane({
     />
   ) : null;
   const composerNoticeOverlay = macDesktopTimeLapseCard ? (
-    <div
+    <ChatComposerOverlayClear
+      baseBottomPx={8}
       data-testid="chat-composer-notice-overlay"
-      className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
+      className="pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
-    </div>
+    </ChatComposerOverlayClear>
   ) : null;
 
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
@@ -16282,6 +16302,7 @@ export function AgentChatPane({
         onDropCapture={clearChatPaneDropActive}
         dropOverlay={chatPaneDropActive ? <ChatAttachmentDropOverlay variant="pane" /> : undefined}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
+        overlayFooter
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
@@ -16576,12 +16597,6 @@ export function AgentChatPane({
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}
-                    {sessionDelta ? (
-                      <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
-                        <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
-                        <span className="text-red-400/75">-{sessionDelta.deletions}</span>
-                      </div>
-                    ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}

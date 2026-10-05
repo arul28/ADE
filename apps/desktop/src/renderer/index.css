@@ -3370,6 +3370,26 @@ button, [role="button"] {
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
 }
 
+/* The composer floats over the bottom of the transcript (ChatSurfaceShell
+   `overlayFooter`). Only its own controls take the pointer: the gaps around and
+   between them leave the thread underneath selectable and clickable. */
+[data-chat-composer-overlay] {
+  pointer-events: none;
+}
+[data-chat-composer-overlay] [data-chat-composer-dock] > * {
+  pointer-events: auto;
+}
+[data-chat-composer-overlay] [data-chat-composer-chip-row],
+[data-chat-composer-overlay] [data-testid="chat-composer-status-strip"] {
+  pointer-events: none;
+}
+/* Status chips float over transcript text there, so each gets an opaque plate
+   under its tint instead of reading through to the words behind it. */
+[data-chat-composer-overlay] [data-notice-tone] {
+  background-color: var(--chat-canvas-bg);
+  background-image: linear-gradient(var(--status-chip-fill), var(--status-chip-fill));
+}
+
 /* New-chat prompt + shelf sit a step darker than in-session composer chrome. */
 [data-chat-empty-state] [data-chat-composer-mode].ade-liquid-glass-strong {
   background:
