@@ -245,6 +245,23 @@ describe("projectIconResolver", () => {
     readdirSpy.mockRestore();
   });
 
+  it("reuses a no-icon result until the project root changes", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "README.md", "# no icon here");
+    expect(resolveProjectIconPath(root)).toBeNull();
+
+    const readdirSpy = vi.spyOn(fs, "readdirSync");
+    const existsSpy = vi.spyOn(fs, "existsSync");
+    expect(resolveProjectIconPath(root)).toBeNull();
+    expect(readdirSpy).not.toHaveBeenCalled();
+    expect(existsSpy).not.toHaveBeenCalled();
+    readdirSpy.mockRestore();
+    existsSpy.mockRestore();
+
+    const iconPath = writeFile(root, "favicon.svg", "<svg>favicon</svg>");
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
   it("uses an Electron nativeImage thumbnail for mobile when one can be decoded", () => {
     const root = makeProjectRoot();
     writeFile(root, "icon.png", PNG_DATA);
