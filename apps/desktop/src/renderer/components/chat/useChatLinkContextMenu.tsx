@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type MouseEvent, type ReactNode } from 
 import { LinkSimple } from "@phosphor-icons/react";
 
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { canOpenInAdeBrowser, canOpenUrlOnThisMachine } from "../../lib/openExternal";
 import { ContextMenu, type ContextMenuEntry } from "../ui/ContextMenu";
 
 /**
@@ -29,29 +30,36 @@ export function useChatLinkContextMenu(runtimePin: OpenProjectBinding | null | u
 
   const close = useCallback(() => setAnchor(null), []);
 
-  const entries = useMemo<ContextMenuEntry[]>(
-    () =>
-      anchor
-        ? [
-            {
-              kind: "item",
-              key: "copy",
-              label: "Copy link",
-              icon: LinkSimple,
-              onSelect: () => {
-                void copyLink(anchor.href);
-              },
-            },
-            {
-              kind: "open-link-in",
-              key: "open-in",
-              url: anchor.href,
-              runtimePin: runtimePin ?? null,
-            },
-          ]
-        : [],
-    [anchor, runtimePin],
-  );
+  const entries = useMemo<ContextMenuEntry[]>(() => {
+    if (!anchor) return [];
+    const rows: ContextMenuEntry[] = [
+      {
+        kind: "item",
+        key: "copy",
+        label: "Copy link",
+        icon: LinkSimple,
+        onSelect: () => {
+          void copyLink(anchor.href);
+        },
+      },
+    ];
+    // Rendered markdown keeps hrefs no browser can take — `irc:`, `xmpp:`,
+    // protocol-relative — and a remote chat's `localhost` belongs to that
+    // machine. Offering "Open in" for either is a row whose only outcome is an
+    // allowlist error or the wrong computer, so the menu shrinks to what works.
+    if (
+      canOpenInAdeBrowser(anchor.href)
+      || canOpenUrlOnThisMachine(anchor.href, { runtimePin: runtimePin ?? null })
+    ) {
+      rows.push({
+        kind: "open-link-in",
+        key: "open-in",
+        url: anchor.href,
+        runtimePin: runtimePin ?? null,
+      });
+    }
+    return rows;
+  }, [anchor, runtimePin]);
 
   // Portalled: chat rows animate with `motion`, and a transform anywhere above
   // a `position: fixed` menu makes it anchor to that ancestor instead of the

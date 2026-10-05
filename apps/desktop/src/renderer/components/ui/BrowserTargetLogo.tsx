@@ -31,7 +31,7 @@ export function BrowserTargetLogo({
   iconDataUrl,
   size = 16,
 }: {
-  browserId: BrowserTarget | string;
+  browserId: BrowserTarget;
   iconDataUrl?: string | null;
   size?: number;
 }) {
@@ -53,7 +53,7 @@ export function BrowserTargetLogo({
       </span>
     );
   }
-  const Glyph = BROWSER_GLYPH[browserId as BrowserTarget] ?? Browser;
+  const Glyph = BROWSER_GLYPH[browserId] ?? Browser;
   return (
     <span
       aria-hidden

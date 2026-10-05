@@ -12,6 +12,15 @@
  * competes directly with the body-portaled dialogs.
  */
 export const Z_LAYERS = {
+  /**
+   * A submenu panel floating off its host menu row.
+   *
+   * Relative, not absolute: the panel is a child of the host menu, so it is
+   * ordered inside that menu's stacking context. The host's own layer (a
+   * context menu, a dialog popover, a sheet) is what decides which app
+   * surfaces the whole menu covers; this only has to beat its siblings.
+   */
+  menuPanel: 60,
   /** Draft chrome while a new chat opens, beneath the first-message handoff. */
   chatDraftDeparture: 79,
   /** The first-message handoff animation above the departing draft chrome. */

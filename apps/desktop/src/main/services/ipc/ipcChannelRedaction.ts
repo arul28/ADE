@@ -18,6 +18,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.ptySendToSession]: new Set(["text"]),
   [IPC.ptyWrite]: new Set(["data"]),
   [IPC.appOpenExternal]: new Set(["url"]),
+  // A link a user handed to a browser can be a signed or presigned URL, or an
+  // OAuth callback still carrying its `code`.
+  [IPC.appOpenInBrowser]: new Set(["url"]),
   [IPC.builtInBrowserNavigate]: new Set(["url"]),
   [IPC.builtInBrowserCreateTab]: new Set(["url"]),
   [IPC.builtInBrowserShowPanel]: new Set(["url"]),

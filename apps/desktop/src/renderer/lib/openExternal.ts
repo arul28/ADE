@@ -121,6 +121,45 @@ export function normalizeBrowserUrlInput(url: string | undefined | null): string
   return completeBrowserUrl(url, { fallback: "passthrough" });
 }
 
+/**
+ * True when the main process would accept this URL for an OS opener.
+ *
+ * Mirrors `normalizeExternalUrl` in `ade-cli/src/lib/externalLinks.ts`, which
+ * is the allowlist every external open actually goes through. Kept here so a
+ * menu can avoid offering a destination that would only come back as an error:
+ * rendered markdown keeps `file:`, `irc:` and `xmpp:` hrefs that main rejects.
+ */
+export function canOpenUrlExternally(url: string | undefined | null): boolean {
+  const normalized = normalizeBrowserUrlInput(url);
+  if (!normalized) return false;
+  try {
+    const { protocol } = new URL(normalized);
+    return protocol === "http:" || protocol === "https:" || protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when this URL can be handed to an OS browser **on this computer**.
+ *
+ * A chat on another machine can print `http://localhost:4180`, which means that
+ * machine's port. ADE reaches it through its tunnel, and only ADE's own browser
+ * can — an OS browser here would open this computer's port 4180, which is
+ * nothing. So a link that belongs to a remote machine is never "openable
+ * externally", whatever its scheme.
+ */
+export function canOpenUrlOnThisMachine(
+  url: string | undefined | null,
+  context?: LinkOpenContext | null,
+): boolean {
+  // Normalize first, like every other caller: a scheme-less `127.0.0.1:8080`
+  // is a loopback link too, and the raw string would not be recognised as one.
+  const normalized = url ? normalizeBrowserUrlInput(url) : null;
+  if (normalized && remoteMachineForLoopbackLink(normalized, context)) return false;
+  return canOpenUrlExternally(url);
+}
+
 export function canOpenInAdeBrowser(url: string | undefined | null): boolean {
   const normalized = normalizeBrowserUrlInput(url);
   if (!normalized) return false;

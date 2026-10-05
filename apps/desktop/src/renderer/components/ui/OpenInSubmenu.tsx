@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { AppWindow } from "@phosphor-icons/react";
 
 import {
@@ -12,12 +6,14 @@ import {
   type EditorTarget,
   type OpenPathInEditorRemote,
 } from "../../../shared/editorTargets";
-import { MenuSubmenu } from "../ui/MenuSubmenu";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import {
+  MENU_ITEM_CLASS,
+  MenuSubmenu,
+  MenuSubmenuStatus,
+} from "../ui/MenuSubmenu";
+import { COLORS } from "../lanes/laneDesignTokens";
 import { EditorTargetLogo } from "./EditorTargetLogo";
-
-const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-fg/[0.07] focus-visible:bg-fg/[0.07] outline-none";
+import { useInstalledTargets } from "./useInstalledTargets";
 
 export function OpenInSubmenu({
   rootPath,
@@ -38,44 +34,17 @@ export function OpenInSubmenu({
   label?: string;
   icon?: ReactNode;
 }) {
-  const [installed, setInstalled] = useState<EditorTarget[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const detector = window.ade?.app?.getInstalledEditors;
-    if (typeof detector !== "function") {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    void detector()
-      .then((targets) => {
-        if (!cancelled) setInstalled(targets);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled)
-          setError(reason instanceof Error ? reason.message : String(reason));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const eligible = useMemo(
-    () =>
-      installed.filter((target) => {
-        const definition = editorTargetDefinition(target);
-        if (!definition) return false;
-        return !remote || definition.supportsRemote;
-      }),
-    [installed, remote],
+  const { items, error: detectionError } = useInstalledTargets<EditorTarget>(
+    window.ade?.app?.getInstalledEditors,
   );
+  // A row that failed to launch is its own message, distinct from "detection
+  // failed" — the list is still valid, one editor just would not start.
+  const [openError, setOpenError] = useState<string | null>(null);
+  const eligible = (items ?? []).filter((target) => {
+    const definition = editorTargetDefinition(target);
+    if (!definition) return false;
+    return !remote || definition.supportsRemote;
+  });
 
   const open = async (target: EditorTarget) => {
     try {
@@ -86,7 +55,7 @@ export function OpenInSubmenu({
       });
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setOpenError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -114,13 +83,8 @@ export function OpenInSubmenu({
       }}
       panelMinWidth={230}
     >
-      {loading ? (
-        <div
-          className="px-3 py-2 text-[11px]"
-          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
-        >
-          Detecting editors…
-        </div>
+      {items === null ? (
+        <MenuSubmenuStatus>Detecting editors…</MenuSubmenuStatus>
       ) : eligible.length > 0 ? (
         eligible.map((target) => {
           const definition = editorTargetDefinition(target);
@@ -139,23 +103,14 @@ export function OpenInSubmenu({
           );
         })
       ) : (
-        <div
-          className="px-3 py-2 text-[11px]"
-          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
-        >
+        <MenuSubmenuStatus>
           {remote
             ? "No compatible remote editor detected"
             : "No installed editors detected"}
-        </div>
+        </MenuSubmenuStatus>
       )}
-      {error ? (
-        <div
-          className="px-3 py-2 text-[11px]"
-          role="alert"
-          style={{ color: COLORS.danger }}
-        >
-          {error}
-        </div>
+      {detectionError || openError ? (
+        <MenuSubmenuStatus tone="danger">{detectionError ?? openError}</MenuSubmenuStatus>
       ) : null}
     </MenuSubmenu>
   );

@@ -55,7 +55,8 @@ import {
   type OpenPathTarget,
 } from "../../../shared/editorTargets";
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
-import { browserIconDataUrl, detectBrowsersCached } from "../browsers/browserDetection";
+import { detectBrowsersCached } from "../browsers/browserDetection";
+import { browserIconDataUrl } from "../browsers/browserIcons";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {

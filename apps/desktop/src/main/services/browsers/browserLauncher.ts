@@ -13,25 +13,40 @@ import { execFile, spawn } from "node:child_process";
 import {
   browserTargetDefinition,
   isBrowserTarget,
-  type BrowserTarget,
 } from "../../../shared/browserTargets";
 import { normalizeExternalUrl } from "../shared/externalLinks";
 import { detectBrowsersCached, resolveDetectedBrowserCommand } from "./browserDetection";
 
 const OPEN_TIMEOUT_MS = 5_000;
 
-function launchDetached(command: string, url: string): void {
-  const child = spawn(command, [url], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
+/**
+ * Launch the browser and return once the OS has actually started it.
+ *
+ * Resolving on `spawn` rather than immediately is the point: a browser that was
+ * removed between detection and this click fails here, and the caller's error
+ * row is the only thing that would tell the user. `unref` then lets ADE exit
+ * without waiting on a browser that is meant to outlive it.
+ */
+function launchDetached(command: string, url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = spawn(command, [url], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    child.once("spawn", () => {
+      if (settled) return;
+      settled = true;
+      child.unref();
+      resolve();
+    });
   });
-  // The browser outlives ADE's interest in it, and a failure to *start* is
-  // reported through the `error` event below rather than a rejected promise.
-  child.once("error", () => {
-    /* Reported by the caller's own checks; nothing to retry here. */
-  });
-  child.unref();
 }
 
 /**
@@ -42,24 +57,26 @@ export async function openUrlInBrowser(url: string, browserId: unknown): Promise
   const normalized = normalizeExternalUrl(url);
   if (!normalized) throw new Error("Invalid URL");
   if (!isBrowserTarget(browserId)) throw new Error("Unknown browser.");
-
   const definition = browserTargetDefinition(browserId);
+
   // Detection populated the launch map before the menu that offered this row
   // was drawn; a cached call is enough to guarantee it is still there.
   await detectBrowsersCached();
-  const command = resolveDetectedBrowserCommand(browserId as BrowserTarget);
+  const command = resolveDetectedBrowserCommand(browserId);
   if (!command) {
     throw new Error(`${definition?.label ?? "That browser"} is not installed.`);
   }
 
   if (process.platform === "darwin") {
+    // The absolute helper path, matching `externalLinks.openExternalUrl`: a
+    // bare `open` resolves through PATH, and `-a` must not be hijackable.
     await new Promise<void>((resolve, reject) => {
-      execFile("open", ["-a", command, normalized], { timeout: OPEN_TIMEOUT_MS }, (error) => {
+      execFile("/usr/bin/open", ["-a", command, normalized], { timeout: OPEN_TIMEOUT_MS }, (error) => {
         if (error) reject(error);
         else resolve();
       });
     });
     return;
   }
-  launchDetached(command, normalized);
+  await launchDetached(command, normalized);
 }

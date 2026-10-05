@@ -1,11 +1,24 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { AppWindow, ArrowSquareOut } from "@phosphor-icons/react";
 
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { canOpenInAdeBrowser, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
+import {
+  canOpenInAdeBrowser,
+  canOpenUrlOnThisMachine,
+  normalizeBrowserUrlInput,
+  openExternalUrl,
+  openUrlInAdeBrowser,
+} from "../../lib/openExternal";
 import { BrowserTargetLogo } from "./BrowserTargetLogo";
-import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu } from "./MenuSubmenu";
+import {
+  MENU_ITEM_CLASS,
+  MenuRowIcon,
+  MenuSeparator,
+  MenuSubmenu,
+  MenuSubmenuStatus,
+} from "./MenuSubmenu";
+import { useInstalledTargets } from "./useInstalledTargets";
 
 /**
  * "Open this link in ▸" — ADE's own browser, the system default, and every
@@ -13,8 +26,11 @@ import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu } from "./Menu
  *
  * The installed list comes from the main process, which reads the app icons off
  * the machine itself. Detection is desktop-only: on the hosted web client the
- * bridge method is absent and the panel falls back to the two choices that
+ * bridge method is absent, so the panel falls back to the two choices that
  * still mean something there.
+ *
+ * Mirrors `OpenInSubmenu`'s props for parity with the other "Open in ▸" row;
+ * like it, the host supplies the styling and this component supplies the rows.
  */
 export function OpenLinkInSubmenu({
   url,
@@ -35,33 +51,24 @@ export function OpenLinkInSubmenu({
   label?: string;
   icon?: ReactNode;
 }) {
-  // null while detecting, so an empty list and a pending one read differently.
-  const [browsers, setBrowsers] = useState<InstalledBrowser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const detector = window.ade?.app?.getInstalledBrowsers;
-    if (typeof detector !== "function") {
-      setBrowsers([]);
-      return;
-    }
-    void detector()
-      .then((found) => {
-        if (!cancelled) setBrowsers(found);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        setBrowsers([]);
-        setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { items: browsers, error: detectionError } = useInstalledTargets<InstalledBrowser>(
+    window.ade?.app?.getInstalledBrowsers,
+  );
+  // A row that failed to launch is its own message — pointing it at a different
+  // browser than the one clicked would be a silent substitution.
+  const [openError, setOpenError] = useState<string | null>(null);
+  // A `localhost` link belongs to the machine the chat runs on; only ADE's
+  // browser can reach it. Rendered markdown also keeps hrefs no browser can
+  // take (`irc:`, protocol-relative), where a row's only outcome is an
+  // allowlist error. Both cases leave the external rows off.
+  const external = canOpenUrlOnThisMachine(url, { runtimePin: runtimePin ?? null });
+  const ade = canOpenInAdeBrowser(url);
+  // The gate above normalizes; `openExternalUrl` does not. Hand it the same
+  // completed URL so a link that passed the gate cannot fail on the way out.
+  const openUrl = normalizeBrowserUrlInput(url) ?? url;
 
   const openExternal = () => {
-    openExternalUrl(url);
+    openExternalUrl(openUrl);
     onClose();
   };
 
@@ -75,15 +82,15 @@ export function OpenLinkInSubmenu({
     if (typeof opener !== "function") {
       // No OS browser bridge (hosted web): the system default is the honest
       // equivalent of "some other browser".
-      openExternalUrl(url);
+      openExternalUrl(openUrl);
       onClose();
       return;
     }
     try {
-      await opener({ url, browserId: browser.id });
+      await opener({ url: openUrl, browserId: browser.id });
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setOpenError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -104,18 +111,20 @@ export function OpenLinkInSubmenu({
       panelStyle={{ padding: "4px 0" }}
       panelMinWidth={230}
     >
-      {canOpenInAdeBrowser(url) ? (
+      {ade ? (
         <button type="button" role="menuitem" className={MENU_ITEM_CLASS} onClick={openInAde}>
           <MenuRowIcon icon={AppWindow} />
           ADE Browser
         </button>
       ) : null}
-      <button type="button" role="menuitem" className={MENU_ITEM_CLASS} onClick={openExternal}>
-        <MenuRowIcon icon={ArrowSquareOut} />
-        System Browser
-      </button>
-      {browsers === null ? (
-        <div className="px-3 py-2 text-[11px] text-muted-fg/55">Detecting browsers…</div>
+      {external ? (
+        <button type="button" role="menuitem" className={MENU_ITEM_CLASS} onClick={openExternal}>
+          <MenuRowIcon icon={ArrowSquareOut} />
+          System Browser
+        </button>
+      ) : null}
+      {!external ? null : browsers === null ? (
+        <MenuSubmenuStatus>Detecting browsers…</MenuSubmenuStatus>
       ) : browsers.length > 0 ? (
         <>
           <MenuSeparator />
@@ -133,10 +142,8 @@ export function OpenLinkInSubmenu({
           ))}
         </>
       ) : null}
-      {error ? (
-        <div className="px-3 py-2 text-[11px] text-rose-300" role="alert">
-          {error}
-        </div>
+      {detectionError || openError ? (
+        <MenuSubmenuStatus tone="danger">{detectionError ?? openError}</MenuSubmenuStatus>
       ) : null}
     </MenuSubmenu>
   );

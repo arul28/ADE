@@ -9,28 +9,28 @@
  * ADE names it, and nothing else.
  */
 
-export type BrowserTargetPlatform = "darwin" | "win32" | "linux";
+/**
+ * The systems ADE looks for browsers on. The union is derived from this list
+ * rather than written beside it, so the guard below cannot prove a type the
+ * catalog does not actually use.
+ */
+const BROWSER_TARGET_PLATFORMS = ["darwin", "win32", "linux"] as const;
+
+export type BrowserTargetPlatform = (typeof BROWSER_TARGET_PLATFORMS)[number];
 
 /**
- * Declared rather than derived from {@link BROWSER_TARGETS}: the catalog's
- * entries are typed by it, so deriving it back from them is a cycle. Adding a
- * browser means adding its id here and its entry below — the two are checked
- * against each other by `isBrowserTarget`/`browserTargetDefinition` callers.
+ * Whether an arbitrary `process.platform` value is one of the systems above.
+ * A guard rather than a cast: callers then handle "this OS is unknown"
+ * explicitly instead of pretending it cannot happen.
  */
-export type BrowserTarget =
-  | "chrome"
-  | "safari"
-  | "firefox"
-  | "edge"
-  | "brave"
-  | "arc"
-  | "chromium"
-  | "vivaldi"
-  | "opera"
-  | "zen";
+export function isBrowserTargetPlatform(
+  value: string,
+): value is BrowserTargetPlatform {
+  return BROWSER_TARGET_PLATFORMS.some((platform) => platform === value);
+}
 
 export type BrowserTargetDefinition = {
-  id: BrowserTarget;
+  id: string;
   label: string;
   /** Systems the browser ships on at all. */
   platforms: readonly BrowserTargetPlatform[];
@@ -52,8 +52,12 @@ export type BrowserTargetDefinition = {
 /**
  * Every browser ADE offers. Order is the order the menu shows them in —
  * roughly by how often they are someone's default.
+ *
+ * Held as a `const` catalog so `id` stays a literal, which is what lets
+ * {@link BrowserTarget} be derived rather than hand-listed; `BROWSER_TARGETS`
+ * below is the widened view callers iterate.
  */
-export const BROWSER_TARGETS: readonly BrowserTargetDefinition[] = [
+const BROWSER_TARGET_CATALOG = [
   {
     id: "chrome",
     label: "Google Chrome",
@@ -80,6 +84,9 @@ export const BROWSER_TARGETS: readonly BrowserTargetDefinition[] = [
     winExecutables: [
       "{{ProgramFiles}}/Mozilla Firefox/firefox.exe",
       "{{ProgramFilesX86}}/Mozilla Firefox/firefox.exe",
+      // Firefox's stub installer can install for the current user only, which
+      // lands here rather than under Program Files.
+      "{{LocalAppData}}/Mozilla Firefox/firefox.exe",
     ],
     linuxCommands: ["firefox"],
   },
@@ -151,7 +158,25 @@ export const BROWSER_TARGETS: readonly BrowserTargetDefinition[] = [
     winExecutables: ["{{ProgramFiles}}/Zen Browser/zen.exe"],
     linuxCommands: ["zen-browser", "zen"],
   },
-];
+] as const satisfies readonly BrowserTargetDefinition[];
+
+/**
+ * The browsers ADE can open a link in, widest view.
+ *
+ * Derived from the catalog's literal `id`s, so a browser is named in exactly
+ * one place: adding an entry widens this union, and a union member can never
+ * outlive its catalog entry.
+ */
+export type BrowserTarget = (typeof BROWSER_TARGET_CATALOG)[number]["id"];
+
+/**
+ * A catalog entry as callers receive it: the definition plus the exact id, so
+ * a detected browser carries the union member rather than a bare string.
+ */
+export type BrowserTargetEntry = BrowserTargetDefinition & { id: BrowserTarget };
+
+export const BROWSER_TARGETS: readonly BrowserTargetEntry[] =
+  BROWSER_TARGET_CATALOG;
 
 export function browserTargetDefinition(target: BrowserTarget) {
   return BROWSER_TARGETS.find((entry) => entry.id === target) ?? null;
