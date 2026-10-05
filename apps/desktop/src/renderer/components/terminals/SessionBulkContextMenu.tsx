@@ -184,15 +184,20 @@ export function SessionBulkContextMenu({
           kind: "label",
           key: "lanes-foreign",
           label: otherMachineLanes.size === 1
-            ? "1 lane on another machine not included"
-            : `${otherMachineLanes.size} lanes on other machines not included`,
+            ? "1 lane not available in this tab"
+            : `${otherMachineLanes.size} lanes not available in this tab`,
         },
       );
     }
 
     let lanesLabel = "Lanes";
     if (singleLane) lanesLabel = `Lane · ${singleLane.name}`;
-    else if (laneIds.length > 1) lanesLabel = `Manage ${laneIds.length} lanes`;
+    // Only name the batch when every selected lane is actionable; a mixed
+    // selection keeps the neutral label and lets the rows' "x of y" hints say
+    // which are left out (primary lanes never manage).
+    else if (laneIds.length > 1 && manageableLaneIds.length === laneIds.length) {
+      lanesLabel = `Manage ${laneIds.length} lanes`;
+    }
 
     return [
       { kind: "label", key: "count", label: `${total} selected` },
