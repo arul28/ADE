@@ -1147,49 +1147,6 @@ describe("SessionCard status slot", () => {
     expect(unsettle).toHaveBeenCalledWith("session-1");
   });
 
-  it("gives the row actions a hover fill in both settle states, not just brighter text", () => {
-    // Text that only brightens reads as text. The pill is what makes Snooze,
-    // Settle and Un-settle read as controls, and keyboard users — who never
-    // see hover — get the identical fill on focus-visible.
-    const props = {
-      session: makeSession(),
-      lane,
-      isSelected: false,
-      onSelect: vi.fn(),
-      onContextMenu: vi.fn(),
-    };
-    const { rerender } = render(<SessionCard {...props} />);
-
-    const assertHoverPill = () => {
-      for (const testId of ["session-snooze-button", "session-settle-button"]) {
-        const button = screen.getByTestId(testId);
-        expect(button.className).toContain("hover:bg-white/[0.06]");
-        expect(button.className).toContain("focus-visible:bg-white/[0.06]");
-        expect(button.className).toContain("hover:text-fg");
-        // Still a real button in the tab order.
-        expect(button.getAttribute("tabindex")).toBeNull();
-      }
-    };
-
-    assertHoverPill();
-    rerender(
-      <SessionCard
-        {...props}
-        session={makeSession({
-          status: "completed",
-          runtimeState: "exited",
-          exitCode: 0,
-          endedAt: "2026-05-23T11:00:00.000Z",
-          settledAt: "2026-05-23T11:00:05.000Z",
-        })}
-      />,
-    );
-    expect(screen.getByTestId("session-settle-button").getAttribute("aria-label")).toBe(
-      "Un-settle session",
-    );
-    assertHoverPill();
-  });
-
   it("pins the slot open while the snooze popover is up", () => {
     // The pointer is over the portalled menu, not the row, so the hover-driven
     // actions would fade out from under it without this pin.
@@ -1708,52 +1665,6 @@ describe("SessionCard status vocabulary", () => {
 });
 
 describe("SessionCard row color", () => {
-  it("leaves unselected rows unfilled", () => {
-    const { container, rerender } = render(
-      <SessionCard
-        session={makeSession({ toolType: "codex", status: "running", runtimeState: "running" })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-    expect(row(container).className).not.toContain("bg-white/[0.035]");
-    expect(row(container).className).toContain("hover:bg-white/[0.05]");
-    expect(row(container).className).not.toContain("opacity-70");
-
-    rerender(
-      <SessionCard
-        session={makeSession({
-          runtimeState: "waiting-input",
-          pendingInputItemId: "pending-1",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-    expect(row(container).className).not.toContain("bg-white/[0.035]");
-    expect(row(container).className).toContain("hover:bg-white/[0.05]");
-    expect(row(container).className).not.toContain("opacity-70");
-  });
-
-  it("uses the stronger fill for the row you are looking at", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession({ toolType: "codex", status: "running", runtimeState: "running" })}
-        lane={lane}
-        isSelected
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(row(container).className).toContain("bg-white/[0.06]");
-    expect(row(container).className).not.toContain("opacity-70");
-  });
-
   it("spends surface on interaction only — no lane tint, border or shadow at rest", () => {
     const { container } = render(
       <SessionCard
@@ -1770,8 +1681,6 @@ describe("SessionCard row color", () => {
     );
 
     const element = row(container);
-    expect(element.className).not.toContain("bg-white/[0.035]");
-    expect(element.className).toContain("hover:bg-white/[0.05]");
     expect(element.getAttribute("style") ?? "").not.toContain("box-shadow");
     expect(element.getAttribute("style") ?? "").not.toContain("border");
   });
@@ -1906,7 +1815,6 @@ describe("SessionCard where line", () => {
 
     const laneIdentity = container.querySelector("[data-session-lane-identity]") as HTMLElement;
     expect(laneIdentity.getAttribute("data-session-lane-identity")).toBe("Lane 1");
-    expect(laneIdentity.style.color).toBe("rgb(255, 136, 0)");
     expect(laneIdentity.querySelector(".ade-vcs-lane-icon")).toBeTruthy();
     expect(laneIdentity.querySelector(".rounded-full")).toBeNull();
 

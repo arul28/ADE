@@ -72,10 +72,15 @@ describe("tailwind token wiring", () => {
      * family rule alone cannot see it — `surface` was defined in both themes
      * and absent from the config, so `bg-surface` compiled to nothing while
      * this guard stayed green. Everything else in a class string (`border-box`
-     * in an inline style, a stock Tailwind colour) is skipped.
+     * in an inline style, a stock Tailwind colour) is skipped. Light mode
+     * restates stock shades (`--color-amber-300`) to repaint them; restating a
+     * Tailwind colour does not make it vocabulary, so those names stay out.
      */
+    const stockShade = /^(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-\d+$/;
     const defined = new Set(
-      [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((match) => match[1]!),
+      [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)]
+        .map((match) => match[1]!)
+        .filter((name) => !stockShade.test(name)),
     );
     const ours = (name: string): boolean =>
       defined.has(name)

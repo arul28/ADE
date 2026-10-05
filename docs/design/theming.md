@@ -31,6 +31,34 @@ A theme does **not** replace that seam. It feeds it:
 `data-theme` carries the **base mode** (which structural block to use);
 `data-theme-id` carries **identity** (which theme is active).
 
+### Light mode readability
+
+Most component colours are written for a dark page. Light themes stay readable
+through the `[data-theme="light"]` seam rather than through per-component
+branches, so every light theme (built-in and shipped families alike) gets the
+same treatment:
+
+- **Status tints.** Light mode restates Tailwind's pale shades (50–400) as deep
+  ones, and 900/950 as pale ones in the colour families, so `text-amber-200` or
+  `text-red-300/75` reads on a light page. The grey families remap only 50–400.
+  A pale or deep colour that must not flip — text on the always-accent user
+  bubble or a fixed dark overlay — is written as a hex (`text-[#ecfeff]/85`).
+- **Overlays and hairlines.** Faint washes and borders are tints of
+  `--color-fg` (`bg-fg/[0.06]`, `border-fg/10`, `fgTint(6)` in
+  `laneDesignTokens.ts`), not of white, so they show on light pages and look
+  the same on dark ones.
+- **Surfaces.** Menus and popovers paint from tokens (`--work-popover-bg`,
+  `--color-popup-bg`, `POPOVER_SURFACE_CLASS` in `paneMenuTokens.ts`), never a
+  hard-coded dark hex.
+- **Lane and status colours as text.** Use `toneText(color)` in TS or
+  `text-tone-[#hex]` in a class. Both keep the colour whole on dark pages and
+  pull it toward `--color-fg` on light pages by `--ade-tone-text-strength`.
+- **Text on a solid tone fill** (an amber button, a violet checkbox) uses
+  `--ade-on-tone-ink`: near-black on dark pages, white on light ones.
+- **Chat ink.** The "No tint" chat palette and anything printed on the user's
+  accent bubble use `--chat-ink`; light pages set it to `--color-fg` and the
+  bubble pins it back to white.
+
 ## The format
 
 `apps/desktop/src/shared/theme/` owns the whole model — no React, no DOM, no
