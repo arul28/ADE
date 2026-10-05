@@ -55,7 +55,7 @@ The first line may carry a title. Everything after it is your markup.
 | `ade.resize()` | Re-measures the scene and asks the host for the new height. |
 | `ade.on("update", fn)` | Registers a listener for host messages. ADE sends none today, so it never fires. |
 | `ade.emit(name, payload)` | Posts an event to the host. No ADE surface reads it today, so it is dropped. |
-| `ade.ready()` | Call it when your first paint is done. |
+| `ade.ready()` | Call it when your first paint is done. It does not have to wait for your animations; the still waits for them (see Lifetime). |
 
 CSS variables, already set on `:root`: `--bg`, `--surface`, `--border`, `--fg`,
 `--fg-muted`, `--accent`, `--success`, `--warning`, `--danger`, `--font-sans`,
@@ -76,7 +76,11 @@ CSS variables, already set on `:root`: `--bg`, `--surface`, `--border`, `--fg`,
 
 A scene runs live for the turn or call that produced it. Where a capture route
 exists, ADE then snapshots it to a still image, and scrollback shows the picture
-rather than re-executed code. Where no capture route exists, such as the browser
+rather than re-executed code. The still is taken when the scene stops moving:
+no Web Animation or CSS animation running and no DOM change for 600 ms, or
+4 seconds after the scene loads if it never stops (a loop). Animations you
+start with `ade.animate`, CSS keyframes, or `ade.countUp` all count, so they
+play out before the picture is taken. Where no capture route exists, such as the browser
 preview, the live frame stays mounted and keeps running. Either way, make the
 scene readable when it stops moving. A scene whose meaning depends on an
 animation the user has to catch is meaningless tomorrow.

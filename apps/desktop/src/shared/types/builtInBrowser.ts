@@ -57,7 +57,20 @@ export type BuiltInBrowserClaimArgs = BuiltInBrowserProjectScopeArgs & {
   leaseTtlMs?: number | null;
 };
 
-export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & {
+/**
+ * Open the tab in its own throwaway sign-in instead of the shared profile: an
+ * in-memory cookie jar and storage that nobody else's tabs see, wiped when the
+ * last tab using it closes and never restored after a restart. Use it to sign
+ * in as a test account without signing the user out. `profile` names the jar
+ * so several tabs of one chat can share it ("owner", "viewer"); it implies
+ * `isolated`. Without a name the chat gets one jar called "default".
+ */
+export type BuiltInBrowserIsolationArgs = {
+  isolated?: boolean;
+  profile?: string | null;
+};
+
+export type BuiltInBrowserNavigateArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
@@ -77,6 +90,12 @@ export type BuiltInBrowserTab = {
    * title reads "New tab" rather than the empty document title.
    */
   isLaunchpad: boolean;
+  /**
+   * The isolated profile this tab signs in with, or null for the shared
+   * profile. Fixed for the tab's life. Absent on a main process that predates
+   * isolated tabs, which reads as null.
+   */
+  isolatedProfile?: string | null;
   /**
    * Best favicon Chromium reported for the current document: the first http(s)
    * URL, or a `data:` icon under 32 KB. Cleared the moment the tab navigates to
@@ -428,7 +447,7 @@ export type BuiltInBrowserSessionsResult = {
   sessions: BuiltInBrowserSession[];
 };
 
-export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & {
+export type BuiltInBrowserCreateTabArgs = BuiltInBrowserClaimArgs & BuiltInBrowserIsolationArgs & {
   url?: string | null;
   activate?: boolean;
   openPanel?: boolean;

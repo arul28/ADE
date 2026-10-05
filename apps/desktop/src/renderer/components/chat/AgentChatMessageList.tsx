@@ -6598,8 +6598,8 @@ function AgentChatMessageListMain({
    * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
    * exactly that against the chat's project root (named in the URL) — so a local project gets real
    * previews synchronously, with no per-tile IPC. A remote project has no such
-   * handler, so picture tiles fall back to their kind label and the drawer
-   * (which reads bytes over the runtime) stays the way to view them.
+   * handler, so this answers null and the filmstrip reads the picture over the
+   * runtime, the same way the drawer and answer citations do.
    *
    * Only pictures come back. A recording is not an `<img>`, so the filmstrip
    * resolves it through the same media-server preview the drawer uses (see

@@ -10,7 +10,7 @@
  * restating what the tool header already says.
  */
 import type { Dispatch, KeyboardEvent, MutableRefObject, SetStateAction } from "react";
-import { Globe, Plus, Robot, X } from "@phosphor-icons/react";
+import { Detective, Globe, Plus, Robot, X } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { BuiltInBrowserTab } from "../../../../shared/types/builtInBrowser";
 import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
@@ -168,7 +168,11 @@ export function BrowserTabStrip({
                 active ? "text-fg/92" : "text-muted-fg/70 hover:bg-fg/[0.04] hover:text-fg/85",
               )}
               style={groupColor ? { boxShadow: `inset 0 0 0 1px ${groupColor}` } : undefined}
-              title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
+              title={[
+                ownerTitle,
+                tab.isolatedProfile ? `Separate sign-in "${tab.isolatedProfile}" · not your cookies` : null,
+                tabUrl ?? label,
+              ].filter(Boolean).join(" · ")}
             >
               {active ? (
                 reduceMotion ? (
@@ -220,6 +224,14 @@ export function BrowserTabStrip({
                     aria-label="Recording"
                     title="Recording this tab"
                     className="h-[5px] w-[5px] shrink-0 rounded-full bg-rose-400 shadow-[0_0_0_2.5px_rgba(251,113,133,0.18)]"
+                  />
+                ) : null}
+                {tab.isolatedProfile ? (
+                  <Detective
+                    size={11}
+                    weight="duotone"
+                    aria-label={`Separate sign-in "${tab.isolatedProfile}"`}
+                    className="shrink-0 text-violet-200/70"
                   />
                 ) : null}
                 {ownerLabel ? (

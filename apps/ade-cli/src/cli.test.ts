@@ -14996,6 +14996,18 @@ describe("ADE CLI", () => {
         args: { tabId: "tab-9", preset: "ipad" },
       },
     });
+
+    // Without --tab, emulate the tab the open drove. An agent's open stays in
+    // the background, so the active tab is somebody else's.
+    const untargeted = buildCliPlan(["browser", "open", "localhost:5173", "--device", "ipad"]);
+    if (untargeted.kind !== "execute") throw new Error("expected an execute plan");
+    const untargetedParams = untargeted.steps[1]?.params as (values: Record<string, unknown>) => {
+      arguments: { args: Record<string, unknown> };
+    };
+    expect(untargetedParams({ result: { targetTabId: "tab-new", activeTabId: "tab-human" } }).arguments.args)
+      .toMatchObject({ tabId: "tab-new", preset: "ipad" });
+    expect(untargetedParams({ result: { activeTabId: "tab-human" } }).arguments.args)
+      .toMatchObject({ tabId: "tab-human" });
   }));
 
   // One row per flag-to-arg mapping the browser subcommands own. The subcommand
@@ -15003,6 +15015,11 @@ describe("ADE CLI", () => {
   // flag lands in which daemon arg, and the defaults a bare flag implies.
   it.each<[string[], string, Record<string, unknown>]>([
     [["open", "localhost:5173", "--new-tab"], "navigate", { url: "localhost:5173", newTab: true, openPanel: true }],
+    [["open", "localhost:3000/login", "--isolated"], "navigate", { url: "localhost:3000/login", isolated: true }],
+    [["open", "localhost:3000/login", "--profile", "viewer"], "navigate", { url: "localhost:3000/login", profile: "viewer" }],
+    // A value flag ahead of the subcommand: `viewer` must not be read as one.
+    [["--profile", "viewer", "open", "localhost:3000/login"], "navigate", { url: "localhost:3000/login", profile: "viewer" }],
+    [["new-tab", "localhost:3000/login", "--profile", "owner"], "createTab", { url: "localhost:3000/login", profile: "owner" }],
     [["panel", "--url", "localhost:5173"], "showPanel", { url: "localhost:5173" }],
     [["authorize", "--tab", "tab-1", "--lease-ttl-ms", "4500"], "requestOriginAccess", { tabId: "tab-1", leaseTtlMs: 4500 }],
     [["open", "https://example.com", "--tab", "tab-1"], "navigate", { url: "https://example.com", tabId: "tab-1", openPanel: true }],

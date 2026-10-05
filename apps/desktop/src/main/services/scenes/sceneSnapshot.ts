@@ -53,6 +53,48 @@ export function clampSceneCaptureRect(
   return { x: x0, y: y0, width, height };
 }
 
+/**
+ * Turn the renderer's rect into the one `capturePage` reads, or null.
+ *
+ * Two corrections, and both exist because the picture is a crop of the whole
+ * window — anything wrong here keeps a picture of something other than the scene:
+ *
+ *  - UNITS. `getBoundingClientRect()` answers in CSS px; `capturePage` crops in
+ *    DIP. They differ by the page zoom (ADE's View → Zoom), so at any zoom but
+ *    100% an unscaled rect lands beside the scene, at the wrong size.
+ *  - NO PARTIAL CROP. The renderer only asks for a rect that is wholly on
+ *    screen. If, by the time it gets here, the rect pokes out of the page, the
+ *    intersection {@link clampSceneCaptureRect} would return is a sliver of the
+ *    scene that would be kept as if it were the whole — so this refuses
+ *    instead. A pixel of rounding slack either way is not a sliver.
+ */
+export function resolveSceneCaptureRect(
+  rect: SceneCaptureRect | null | undefined,
+  content: { width: number; height: number },
+  zoomFactor: number,
+): SceneCaptureRect | null {
+  if (!rect) return null;
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const scaled = {
+    x: rect.x * zoom,
+    y: rect.y * zoom,
+    width: rect.width * zoom,
+    height: rect.height * zoom,
+  };
+  const slack = 1;
+  const left = Math.round(scaled.x);
+  const top = Math.round(scaled.y);
+  if (
+    left < -slack
+    || top < -slack
+    || left + Math.round(scaled.width) > content.width + slack
+    || top + Math.round(scaled.height) > content.height + slack
+  ) {
+    return null;
+  }
+  return clampSceneCaptureRect(scaled, content);
+}
+
 /** Largest PNG we will turn back into bytes for the proof drawer (~8 MB decoded). */
 const MAX_SCENE_PNG_BYTES = 12_000_000;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";

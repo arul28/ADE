@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
-import type { BrowserWindow, DownloadItem, WebContents } from "electron";
+import type { BrowserWindow, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -194,6 +194,11 @@ import {
 } from "./builtInBrowserPermissions";
 import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
 import {
+  createBuiltInBrowserIsolatedSessions,
+  type BrowserDownloadListener,
+  type BrowserTabIsolation,
+} from "./builtInBrowserIsolation";
+import {
   createBuiltInBrowserStateStore,
   type BuiltInBrowserRestoredCollection,
 } from "./builtInBrowserStateStore";
@@ -350,6 +355,7 @@ function navigationApprovalEffect(
 export type BrowserTabState = {
   id: string;
   view: WebContentsView | null;
+  isolation: BrowserTabIsolation | null;
   webContents: WebContents;
   ownsWebContents: boolean;
   consoleDiagnostics: BuiltInBrowserDiagnostics["console"];
@@ -508,11 +514,6 @@ type BrowserSessionState = {
 };
 
 export type BuiltInBrowserElementTargetInput = BuiltInBrowserObservationArgs & BuiltInBrowserElementTargetArgs;
-type BrowserDownloadListener = (
-  event: { preventDefault: () => void },
-  item: DownloadItem,
-  downloadWebContents: WebContents,
-) => void;
 
 type BrowserNetworkObserver = {
   onRequestStarted: (details: Record<string, unknown>) => void;
@@ -2113,7 +2114,9 @@ function createBuiltInBrowserWindowService(args: {
     reconcileAgentViewports();
     const status = getStatus();
     if (!restoringTabs && args.onStateChange) {
-      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+      // An isolated tab's sign-in lives only in memory, so restoring its URL
+      // after a restart would reopen it in the user's own profile.
+      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed() && !tab.isolation);
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
         tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
@@ -2260,6 +2263,7 @@ function createBuiltInBrowserWindowService(args: {
         teardownTabCapabilities(tab);
       }
       tabs = nextTabs;
+      releaseUnusedIsolatedSessions();
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
     pruneBrowserSessions();
@@ -2604,14 +2608,18 @@ function createBuiltInBrowserWindowService(args: {
     && !tab.handoff?.previousOwner.laneId
     && !tab.handoff?.previousOwner.chatSessionId;
 
-  const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
+  const reusableOwnedTabForInput = (
+    input: BuiltInBrowserClaimArgs = {},
+    accept: (tab: BrowserTabState) => boolean = () => true,
+  ): BrowserTabState | null => {
     pruneDestroyedTabs();
+    const matches = (entry: BrowserTabState): boolean => tabMatchesOwnerInput(entry, input) && accept(entry);
     // Prefer the tab the user most recently activated for this lane; otherwise
     // fall back to the newest matching tab (reverse creation order) so a lane
     // with multiple owned tabs doesn't keep driving the oldest one.
     const current = activeTab();
-    if (current && tabMatchesOwnerInput(current, input)) return current;
-    return [...tabs].reverse().find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
+    if (current && matches(current)) return current;
+    return [...tabs].reverse().find(matches) ?? null;
   };
 
   const clearSelectionInternal = (): void => {
@@ -3085,9 +3093,11 @@ function createBuiltInBrowserWindowService(args: {
           const popupWebContents = (
             options as Electron.BrowserWindowConstructorOptions & { webContents?: WebContents }
           ).webContents;
+          // Chromium opens a popup in its opener's partition, so an isolated
+          // tab's popup (an OAuth window, a "share" link) keeps its sign-in.
           const nextView = popupWebContents
             ? new WebContentsView({ webContents: popupWebContents })
-            : new WebContentsView({ webPreferences: browserWebPreferences() });
+            : new WebContentsView({ webPreferences: browserWebPreferences(opener?.isolation?.partition) });
           const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
           if (!popupWebContents) {
             void tab.webContents.loadURL(popupUrl).catch((error) => {
@@ -3285,8 +3295,8 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
-  const browserWebPreferences = (): Electron.WebPreferences => ({
-    partition: BROWSER_PARTITION,
+  const browserWebPreferences = (partition: string = BROWSER_PARTITION): Electron.WebPreferences => ({
+    partition,
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -3294,7 +3304,10 @@ function createBuiltInBrowserWindowService(args: {
     backgroundThrottling: false,
   });
 
-  const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
+  const createTabStateForView = (
+    nextView: WebContentsView,
+    isolation: BrowserTabIsolation | null = null,
+  ): BrowserTabState => {
     // Match a normal browser canvas. Many sites leave their root background
     // transparent, so a dark ADE-specific backing color makes light pages
     // unreadable even though the site's own text remains dark.
@@ -3307,6 +3320,7 @@ function createBuiltInBrowserWindowService(args: {
     return {
       id: `tab-${randomUUID()}`,
       view: nextView,
+      isolation,
       webContents: wc,
       ownsWebContents: true,
       consoleDiagnostics: [],
@@ -3343,11 +3357,12 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createTabState = (): BrowserTabState => {
+  const createTabState = (isolation: BrowserTabIsolation | null = null): BrowserTabState => {
     configureBrowserSession();
+    if (isolation) isolatedSessions.ensure(isolation, browserDownloadListener);
     return createTabStateForView(new WebContentsView({
-      webPreferences: browserWebPreferences(),
-    }));
+      webPreferences: browserWebPreferences(isolation?.partition),
+    }), isolation);
   };
 
   const popupUrlForOpen = (url: string): string | null => {
@@ -3370,7 +3385,7 @@ function createBuiltInBrowserWindowService(args: {
     options: { activate: boolean },
   ): BrowserTabState => {
     configureBrowserSession();
-    const tab = createTabStateForView(nextView);
+    const tab = createTabStateForView(nextView, opener?.isolation ?? null);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
@@ -3833,17 +3848,34 @@ function createBuiltInBrowserWindowService(args: {
     browserDownloadListener = null;
   };
 
+  /** Session setup every tab's profile gets, shared or isolated. */
+  const configureTabSession = (browserSession: Electron.Session): void => {
+    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    args.permissionController.configureSession(browserSession);
+    args.networkRouter.configureSession(browserSession);
+  };
+
+  const isolatedSessions = createBuiltInBrowserIsolatedSessions({
+    ownerKey: `${args.collection.key}\u0000${randomUUID()}`,
+    configureSession: configureTabSession,
+    logger,
+  });
+
+  const releaseUnusedIsolatedSessions = (): void => {
+    isolatedSessions.release(new Set(tabs.flatMap((tab) => (
+      tab.isolation && !tab.webContents.isDestroyed() ? [tab.isolation.partition] : []
+    ))));
+  };
+
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = browserSessionForProfile();
     configuredBrowserSession = browserSession;
-    configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
-    args.permissionController.configureSession(browserSession);
+    configureTabSession(browserSession);
     unsubscribeNetworkObserver = args.networkRouter.subscribe({
       onRequestStarted: trackNetworkRequestStart,
       onRequestFinished: trackNetworkRequestEnd,
     });
-    args.networkRouter.configureSession(browserSession);
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) {
@@ -4627,10 +4659,20 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
+    const isolation = isolatedSessions.forInput(input);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
-    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input) : null;
-    let createNewTab = explicitNewTab || (reuseOwnedTab && !reusableOwnedTab);
+    // A chat never drifts between identities by reusing a tab: only a tab in
+    // the sign-in this call asked for (the shared one when it asked for none).
+    const inRequestedSignIn = (tab: BrowserTabState): boolean => (
+      (tab.isolation?.partition ?? null) === (isolation?.partition ?? null)
+    );
+    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input, inRequestedSignIn) : null;
+    // An isolated open never lands in whatever tab happens to be active: that
+    // tab is in some other sign-in.
+    let createNewTab = explicitNewTab
+      || (reuseOwnedTab && !reusableOwnedTab)
+      || (Boolean(isolation) && !input.tabId && !reusableOwnedTab);
     const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
     if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
@@ -4641,6 +4683,11 @@ function createBuiltInBrowserWindowService(args: {
     if (!createNewTab && input.tabId) {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+      if (isolation && existingTab.isolation?.partition !== isolation.partition) {
+        throw new Error(
+          `Browser tab ${input.tabId} is not in the isolated profile "${isolation.profile}". A tab's sign-in is fixed when it opens; open a new tab with that profile instead.`,
+        );
+      }
     } else if (reusableOwnedTab) {
       existingTab = reusableOwnedTab;
     }
@@ -4658,7 +4705,7 @@ function createBuiltInBrowserWindowService(args: {
     // prompt. Deciding before the wait let each of them see "no owned tab yet"
     // and open its own — three example.com tabs for one intent.
     if (reuseOwnedTab && !reusableOwnedTab) {
-      const ownedNow = reusableOwnedTabForInput(input);
+      const ownedNow = reusableOwnedTabForInput(input, inRequestedSignIn);
       if (ownedNow) {
         assertHandoffAllowsAgentAction(ownedNow, input);
         assertTabLeaseAvailable(ownedNow, input);
@@ -4666,6 +4713,9 @@ function createBuiltInBrowserWindowService(args: {
         createNewTab = false;
       }
     }
+    // A sign-in whose last tab just closed is still being wiped; a tab made in
+    // it now would lose whatever it signs in to when the wipe lands.
+    if (createNewTab && isolation) await isolatedSessions.whenReady(isolation);
     const targetTabBeforeNavigate = createNewTab ? null : existingTab ?? activeTab();
     const targetIsInspectTab = Boolean(inspecting && targetTabBeforeNavigate && targetTabBeforeNavigate.id === activeTabId);
     const nextActiveTabId = shouldActivate ? existingTab?.id ?? null : activeTabId;
@@ -4676,7 +4726,7 @@ function createBuiltInBrowserWindowService(args: {
     if (switchingTabs) {
       clearSelectionInternal();
     }
-    let tab = createNewTab ? createTabState() : null;
+    let tab = createNewTab ? createTabState(isolation) : null;
     if (tab) {
       tabs = [...tabs, tab];
       if (shouldActivate) activeTabId = tab.id;
@@ -4707,8 +4757,10 @@ function createBuiltInBrowserWindowService(args: {
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
-    // Normalize URL up front so we don't leave an orphan tab on invalid input.
+    // Normalize URL and profile up front so we don't leave an orphan tab, or
+    // side effects, on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    const isolation = isolatedSessions.forInput(input);
     await args.agentAccessController.requireUrlAccess(
       normalizedUrl,
       input,
@@ -4720,7 +4772,8 @@ function createBuiltInBrowserWindowService(args: {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
     }
-    const tab = createTabState();
+    if (isolation) await isolatedSessions.whenReady(isolation);
+    const tab = createTabState(isolation);
     // No URL means "give me somewhere to start": the tab stays on about:blank
     // and the pane renders its launchpad. ADE never picks a home page for you,
     // and never issues a request you did not ask for.
@@ -4807,6 +4860,7 @@ function createBuiltInBrowserWindowService(args: {
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
     }
+    releaseUnusedIsolatedSessions();
     attachViewsToCurrentWindow();
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
@@ -5412,6 +5466,7 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [];
     browserSessions = [];
     activeTabId = null;
+    releaseUnusedIsolatedSessions();
     configuredBrowserSession = null;
   }
 
@@ -6415,6 +6470,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     url,
     title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
     isLaunchpad,
+    isolatedProfile: tab.isolation?.profile ?? null,
     faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),

@@ -759,6 +759,7 @@ ade --socket app-control terminal write --data "y\n"               # answer a pr
 ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
 ade --socket app-control actions --text                            # full app_control action inventory
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
+ade --socket browser open http://localhost:3000/login --profile viewer --text  # own throwaway sign-in, not the user's
 ade --socket browser authorize --text                             # ask the user to let this chat use the ADE browser (only when the setting asks)
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane

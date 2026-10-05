@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { SCENE_CONTENT_SECURITY_POLICY } from "../../../shared/chatScene";
 import { createSceneDocumentStore, parseSceneRequestId } from "./sceneDocumentStore";
-import { clampSceneCaptureRect, decodeScenePngDataUrl } from "./sceneSnapshot";
+import { clampSceneCaptureRect, decodeScenePngDataUrl, resolveSceneCaptureRect } from "./sceneSnapshot";
 
 describe("scene document store", () => {
   it("serves a prepared document with the scene policy headers", () => {
@@ -71,6 +71,26 @@ describe("scene document store", () => {
 /* --- The snapshot half: what a freeze may capture, and what may be decoded. --- */
 
 const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * The renderer measures in CSS px and `capturePage` crops in DIP; they differ
+ * by the page zoom. A rect that pokes out of the page is refused, never cut to
+ * a sliver that would be kept as if it were the whole scene.
+ */
+describe("resolveSceneCaptureRect", () => {
+  const content = { width: 1200, height: 800 };
+  it.each([
+    ["at 100% zoom", { x: 10, y: 20, width: 300, height: 200 }, 1, { x: 10, y: 20, width: 300, height: 200 }],
+    ["at 125% zoom, scaled into DIP", { x: 100, y: 40, width: 400, height: 200 }, 1.25, { x: 125, y: 50, width: 500, height: 250 }],
+    ["at 80% zoom", { x: 100, y: 100, width: 500, height: 250 }, 0.8, { x: 80, y: 80, width: 400, height: 200 }],
+    ["one pixel of rounding past the edge", { x: 0, y: 0, width: 1201, height: 800 }, 1, { x: 0, y: 0, width: 1200, height: 800 }],
+    ["a bad zoom factor, read as 100%", { x: 10, y: 20, width: 300, height: 200 }, Number.NaN, { x: 10, y: 20, width: 300, height: 200 }],
+    ["a rect scrolled half off the top", { x: 0, y: -100, width: 400, height: 300 }, 1, null],
+    ["a rect past the bottom once zoom is applied", { x: 0, y: 500, width: 400, height: 200 }, 1.5, null],
+  ])("%s", (_label, rect, zoom, expected) => {
+    expect(resolveSceneCaptureRect(rect, content, zoom)).toEqual(expected);
+  });
+});
 
 describe("clampSceneCaptureRect", () => {
   const content = { width: 1200, height: 800 };

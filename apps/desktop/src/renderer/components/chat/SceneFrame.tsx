@@ -35,7 +35,8 @@ import { useSceneStillLatch } from "./useSceneStillLatch";
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 760;
 /**
- * How long a freeze waits for a scene to come fully on screen before giving up
+ * How long a finished turn waits, after its scene settles, for the still —
+ * which waits in turn for the scene to come fully on screen — before giving up
  * and leaving the live frame up uncaptured.
  *
  * There has to be a deadline, because "fully visible" is a state some scenes
@@ -135,6 +136,105 @@ function isSceneRectFullyVisible(rect: DOMRect): boolean {
   return rect.top >= 0 && rect.left >= 0 && rect.bottom <= viewportHeight && rect.right <= viewportWidth;
 }
 
+/** The `overflow` values that clip descendants to the element's padding box. */
+const CLIPPING_OVERFLOW = new Set(["hidden", "clip", "auto", "scroll", "overlay"]);
+
+/** Sub-pixel slack for the containment checks: layout is fractional, a capture is not. */
+const SCENE_RECT_EPSILON = 0.5;
+
+/**
+ * The shell's rect, but only when every pixel inside it is this scene, on
+ * screen, right now. Null otherwise.
+ *
+ * The snapshot is a grab of the WINDOW cropped to this rect, so whatever is
+ * painted there is what gets kept. Inside the window viewport is not enough:
+ *
+ *  - The transcript is its own scroller, and the chat header sits above it in
+ *    the same window. A scene scrolled half under the scroller's top edge still
+ *    has a non-negative window rect, so the crop came back as the chat header
+ *    painted over the scene's hidden top. Every clipping ancestor has to
+ *    contain the rect too.
+ *  - The composer floats over the bottom of the transcript, and a dialog or
+ *    menu can sit over anything. Hit-testing a few points finds whatever is
+ *    painted on top; anything that is not this shell means "not now".
+ */
+function measureCapturableSceneRect(shell: HTMLElement): DOMRect | null {
+  const rect = shell.getBoundingClientRect();
+  if (!isSceneRectFullyVisible(rect)) return null;
+  for (let el = shell.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+    const style = window.getComputedStyle(el);
+    if (!CLIPPING_OVERFLOW.has(style.overflowX) && !CLIPPING_OVERFLOW.has(style.overflowY)) continue;
+    // The clip edge is the padding box: the border box less the borders.
+    const box = el.getBoundingClientRect();
+    const left = box.left + el.clientLeft;
+    const top = box.top + el.clientTop;
+    if (
+      rect.left < left - SCENE_RECT_EPSILON
+      || rect.top < top - SCENE_RECT_EPSILON
+      || rect.right > left + el.clientWidth + SCENE_RECT_EPSILON
+      || rect.bottom > top + el.clientHeight + SCENE_RECT_EPSILON
+    ) {
+      return null;
+    }
+  }
+  if (typeof document.elementFromPoint === "function") {
+    const inset = 2;
+    const points: Array<[number, number]> = [
+      [rect.left + inset, rect.top + inset],
+      [rect.right - inset, rect.top + inset],
+      [rect.left + inset, rect.bottom - inset],
+      [rect.right - inset, rect.bottom - inset],
+      [rect.left + rect.width / 2, rect.top + rect.height / 2],
+    ];
+    for (const [x, y] of points) {
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !shell.contains(hit)) return null;
+    }
+  }
+  return rect;
+}
+
+function sameSceneRect(a: DOMRect, b: DOMRect): boolean {
+  return Math.abs(a.left - b.left) < SCENE_RECT_EPSILON
+    && Math.abs(a.top - b.top) < SCENE_RECT_EPSILON
+    && Math.abs(a.width - b.width) < SCENE_RECT_EPSILON
+    && Math.abs(a.height - b.height) < SCENE_RECT_EPSILON;
+}
+
+type SceneCapture = (rect: { x: number; y: number; width: number; height: number }) => Promise<string | null>;
+
+/**
+ * Grab the shell, or answer why not.
+ *
+ * Measured twice — before the request and after the picture comes back —
+ * because the grab is asynchronous: it lands on a later compositor frame, and
+ * the transcript re-pins its scroll and re-measures rows at exactly the moments
+ * a scene tends to be captured (a turn ending, the composer resizing). A rect
+ * that moved in between describes a place the scene no longer was, and the
+ * picture is of whatever slid into it. Such a picture is thrown away, never kept.
+ */
+async function captureSceneShell(
+  shell: HTMLElement,
+  capture: SceneCapture,
+): Promise<{ kind: "captured"; dataUrl: string } | { kind: "not-visible" | "moved" | "empty" }> {
+  const before = measureCapturableSceneRect(shell);
+  if (!before) return { kind: "not-visible" };
+  const dataUrl = await capture({
+    x: before.x, y: before.y, width: before.width, height: before.height,
+  });
+  const after = shell.isConnected ? measureCapturableSceneRect(shell) : null;
+  if (!after || !sameSceneRect(before, after)) return { kind: "moved" };
+  return dataUrl ? { kind: "captured", dataUrl } : { kind: "empty" };
+}
+
+/**
+ * How long a capture thrown away for moving waits before it tries again. It
+ * doubles per consecutive miss up to the cap: a pinned transcript scrolls every
+ * frame while a turn streams, and each try is a window grab plus a PNG encode.
+ */
+const SCENE_CAPTURE_RETRY_MS = 250;
+const SCENE_CAPTURE_RETRY_MAX_MS = 4_000;
+
 export function SceneFrame({
   source,
   live = false,
@@ -157,22 +257,11 @@ export function SceneFrame({
   const [height, setHeight] = useState(220);
   const [status, setStatus] = useState<Status>("loading");
   const [sceneError, setSceneError] = useState<string | null>(null);
-  const [snapshot, setSnapshot] = useState<string | null>(null);
   const [proofState, setProofState] = useState<"idle" | "saving" | "saved">("idle");
   /**
-   * Bumped whenever something worth re-checking happened while a freeze was
-   * waiting for the scene to come fully on screen. Only ever counts up, and
-   * needs no reset on the one path that does leave `frozen` — a latch release,
-   * `frozen → loading → running`.
-   *
-   * Because a rehydrated scene mounts no frame at all: the freeze effect gates
-   * on `status === "running"`, which a rehydrated mount never reaches, so
-   * nothing incremented this while the picture was up. The value a release
-   * comes back to is the value the scene ran with, and the deadline it pairs
-   * with is reset per document anyway.
+   * When a finished turn stops waiting for its scene's still and freezes
+   * without one. Armed per document, at the first settle after the turn ended.
    */
-  const [freezeAttempt, setFreezeAttempt] = useState(0);
-  /** When the wait above runs out. Set on the first partial-visibility check. */
   const freezeDeadlineRef = useRef<number | null>(null);
 
   /**
@@ -202,6 +291,8 @@ export function SceneFrame({
   const [stillAttempt, setStillAttempt] = useState(0);
   /** One still per mounted scene: a second capture would only cost a window grab. */
   const stillTakenRef = useRef(false);
+  /** Consecutive captures thrown away for moving; sets the retry backoff. */
+  const captureMissesRef = useRef(0);
 
   /**
    * Show the picture this scene already left behind, or run its code? The whole
@@ -343,6 +434,7 @@ export function SceneFrame({
   useEffect(() => {
     freezeDeadlineRef.current = null;
     stillTakenRef.current = false;
+    captureMissesRef.current = 0;
     setStill(null);
   }, [src]);
 
@@ -378,25 +470,26 @@ export function SceneFrame({
    *
    * Runs while the scene is still LIVE — that is the whole point, and it is why
    * this is a separate effect from the freeze below rather than a flag on it.
-   * The frame keeps running afterwards; nothing here tears anything down.
+   * The frame keeps running afterwards; nothing here tears anything down. It is
+   * also the ONLY capture: the freeze waits for this picture rather than taking
+   * its own.
    *
-   * Visibility is the same all-or-nothing rule the freeze uses, for the same
-   * reason: main intersects the rect, so a partly visible scene would be kept
-   * forever as a picture of a sliver of itself. Unlike the freeze there is no
-   * deadline — a scene that is never fully visible simply has no still, which
-   * is the state we were already in — so this waits on an IntersectionObserver
-   * and takes the picture the first moment the whole view is on screen.
+   * Visibility is all-or-nothing, see {@link measureCapturableSceneRect}: a
+   * capture is a crop of the window, so a scene that is not wholly on screen
+   * and on top would be kept forever as a picture of something else. There is
+   * no deadline here — a scene that is never capturable simply has no still —
+   * so this waits on scroll and an IntersectionObserver and takes the picture
+   * the first moment the whole view is on screen.
    */
   useEffect(() => {
     if (!settled || stillTakenRef.current || status !== "running" || !src) return;
     const capture = window.ade?.scene?.snapshot;
     const shell = shellRef.current;
     if (typeof capture !== "function" || !shell) return;
-    const rect = shell.getBoundingClientRect();
-    if (!isSceneRectFullyVisible(rect)) {
+    if (!measureCapturableSceneRect(shell)) {
       const retry = () => {
-        const current = shellRef.current?.getBoundingClientRect();
-        if (current && isSceneRectFullyVisible(current)) setStillAttempt((attempt) => attempt + 1);
+        const current = shellRef.current;
+        if (current && measureCapturableSceneRect(current)) setStillAttempt((attempt) => attempt + 1);
       };
       // Scroll is captured because the transcript has its own scroller; the
       // observer covers what scrolling does not, such as a pane resize.
@@ -418,13 +511,28 @@ export function SceneFrame({
     // two captures in flight would write two artifacts for one scene.
     stillTakenRef.current = true;
     let cancelled = false;
+    let retryTimer: number | null = null;
     const title = (!failed && parsed.title) || "Generated view";
-    void capture({
-      x: Math.round(rect.x), y: Math.round(rect.y),
-      width: Math.round(rect.width), height: Math.round(rect.height),
-    })
-      .then(async (dataUrl) => {
-        if (cancelled || !dataUrl) return;
+    void captureSceneShell(shell, capture)
+      .then(async (result) => {
+        if (cancelled) return;
+        if (result.kind !== "captured") {
+          // Not a picture of this scene. Release the latch and look again
+          // shortly: a re-pin or a re-measure is usually over within a frame
+          // or two, and the scroll/intersection wait takes over if the scene
+          // has gone off screen meanwhile. An empty answer (a minimized or
+          // hidden window) retries on the same backoff; nothing else would
+          // ever wake this effect again.
+          stillTakenRef.current = false;
+          const misses = captureMissesRef.current++;
+          retryTimer = window.setTimeout(
+            () => setStillAttempt((attempt) => attempt + 1),
+            Math.min(SCENE_CAPTURE_RETRY_MS * 2 ** misses, SCENE_CAPTURE_RETRY_MAX_MS),
+          );
+          return;
+        }
+        captureMissesRef.current = 0;
+        const { dataUrl } = result;
         setStill(dataUrl);
         if (scopeKey) rememberSceneStill(scopeKey, { dataUrl });
         // Bytes on disk are what survives this window. A host with no route for
@@ -451,97 +559,48 @@ export function SceneFrame({
         // view comes back into a capturable state.
         stillTakenRef.current = false;
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
   }, [settled, status, src, stillAttempt, scopeKey, failed, parsed, sessionId]);
 
-  // Freeze: capture the frame's rect, then swap the image in and drop the frame
-  // so nothing keeps executing in scrollback.
+  /**
+   * Freeze: once the turn is over, swap the frame for its still and drop the
+   * frame so nothing keeps executing in scrollback.
+   *
+   * The freeze takes no picture of its own. It used to, the moment the turn
+   * ended — and `status === "running"` only means the scene said `ready`, which
+   * an author may call synchronously at the end of the script, before a single
+   * animation has played. A turn that ended a beat after its scene mounted froze
+   * a half-drawn view (a bar at 70%, a card still at opacity 0), and the status
+   * flip cancelled the settle capture that was about to take the right one. So
+   * the freeze waits for the settle, and the settle still IS the picture.
+   *
+   * The wait is bounded twice. The settle is bounded by the host's own settle
+   * deadline above. After it, the still may still be waiting for the scene to
+   * come fully on screen, which some scenes never do (`MAX_HEIGHT` is taller
+   * than a short window) — so after {@link SCENE_FREEZE_DEADLINE_MS} the freeze
+   * gives up and leaves the live frame up, uncaptured, rather than wait forever.
+   */
   useEffect(() => {
-    // `status === "running"` is the draw gate: at `loading` the frame was
-    // handed its src on this very render and has painted nothing, so a capture
-    // here snapshots a blank rect.
     if (live || status !== "running" || !src) return;
-    // A settle-time still already exists, so the freeze no longer has to hold a
-    // capture window open: swap straight to the picture. This is what makes a
-    // scene that is half off screen stop executing in scrollback instead of
-    // waiting out a deadline it can never meet.
     if (still) { setStatus("frozen"); return; }
-    let cancelled = false;
-    const capture = window.ade?.scene?.snapshot;
-    const shell = shellRef.current;
-    const rect = shell?.getBoundingClientRect();
-    if (typeof capture !== "function" || !rect) {
+    if (typeof window.ade?.scene?.snapshot !== "function") {
       // No capture route (browser preview): leave the frame up rather than
       // replacing a working view with nothing.
       setStatus("frozen");
       return;
     }
-    // A snapshot is a window grab cropped to this rect, and main INTERSECTS
-    // that rect with the content box rather than shifting it — so a scene that
-    // is half scrolled off, or only partly on screen, freezes to the visible
-    // sliver. That crop is permanent, and it is also what the Proof button
-    // files. A partial picture of a view is worse than no picture of it, so
-    // this waits instead.
-    if (!isSceneRectFullyVisible(rect)) {
-      const now = Date.now();
-      if (freezeDeadlineRef.current == null) freezeDeadlineRef.current = now + SCENE_FREEZE_DEADLINE_MS;
-      if (now >= freezeDeadlineRef.current) {
-        // Waited long enough — and some scenes can never come fully on screen
-        // at all. Fall back to the no-capture-route behaviour: the live frame
-        // stays up rather than being replaced by a cropped still of itself.
-        setStatus("frozen");
-        return;
-      }
-      // Re-check, never freeze blind. The transcript's own auto-scroll fires
-      // constantly and usually leaves the scene no more visible than before, so
-      // freezing on the next scroll whatever the rect says would leave a live
-      // iframe mounted in scrollback. Nothing here changes state unless the
-      // scene is genuinely visible or the deadline has passed.
-      const retry = () => {
-        if (cancelled) return;
-        const current = shellRef.current?.getBoundingClientRect();
-        const visible = current ? isSceneRectFullyVisible(current) : false;
-        if (visible || Date.now() >= (freezeDeadlineRef.current ?? 0)) {
-          setFreezeAttempt((attempt) => attempt + 1);
-        }
-      };
-      // Scroll is captured because the scene sits inside the transcript's own
-      // scroller, not the window's; the observer covers the cases scrolling
-      // does not, such as a pane resize.
-      window.addEventListener("scroll", retry, { capture: true, passive: true });
-      let observer: IntersectionObserver | null = null;
-      if (shell && typeof IntersectionObserver === "function") {
-        // `isIntersecting` plus the rect re-check inside `retry`, not
-        // `intersectionRatio >= 1`: a fractional layout reports 0.999… for a
-        // rect that is entirely on screen, and that ratio never fires.
-        observer = new IntersectionObserver(
-          (entries) => { if (entries.some((entry) => entry.isIntersecting)) retry(); },
-          { threshold: [0, 1] },
-        );
-        observer.observe(shell);
-      }
-      // And the deadline itself has to be able to fire on its own: a scene in a
-      // window too short to ever hold it produces no scroll and no new
-      // intersection, so nothing else would ever wake this up.
-      const deadlineTimer = window.setTimeout(
-        retry,
-        Math.max(0, freezeDeadlineRef.current - now),
-      );
-      return () => {
-        cancelled = true;
-        window.clearTimeout(deadlineTimer);
-        window.removeEventListener("scroll", retry, true);
-        observer?.disconnect();
-      };
-    }
-    void capture({
-      x: Math.round(rect.x), y: Math.round(rect.y),
-      width: Math.round(rect.width), height: Math.round(rect.height),
-    })
-      .then((url) => { if (!cancelled) { setSnapshot(url ?? null); setStatus("frozen"); } })
-      .catch(() => { if (!cancelled) setStatus("frozen"); });
-    return () => { cancelled = true; };
-  }, [live, src, status, freezeAttempt, still]);
+    if (!settled) return;
+    const now = Date.now();
+    if (freezeDeadlineRef.current == null) freezeDeadlineRef.current = now + SCENE_FREEZE_DEADLINE_MS;
+    const timer = window.setTimeout(
+      () => setStatus((prev) => (prev === "running" ? "frozen" : prev)),
+      Math.max(0, freezeDeadlineRef.current - now),
+    );
+    return () => window.clearTimeout(timer);
+  }, [live, src, status, settled, still]);
 
   /** True while the latch says "picture", so a release can be told from a mount. */
   const wasRehydratedRef = useRef(false);
@@ -569,17 +628,15 @@ export function SceneFrame({
     if (typeof attach !== "function") return;
     setProofState("saving");
     void attach({
-      // The settle-time still is the same picture the user is looking at, and
-      // on a scene that was never fully visible at the end of its turn it is
-      // the ONLY one — filing proof from `snapshot` alone meant the Proof
-      // button on a scrolled-past scene filed nothing.
-      dataUrl: snapshot ?? still,
+      // The settle-time still: the one picture this mount takes, and the one
+      // the user is looking at once the scene has frozen.
+      dataUrl: still,
       title: (!failed && parsed.title) || "Generated view",
       sessionId: sessionId ?? null,
     })
       .then((ok) => setProofState(ok ? "saved" : "idle"))
       .catch(() => setProofState("idle"));
-  }, [failed, parsed, snapshot, still, sessionId]);
+  }, [failed, parsed, still, sessionId]);
 
   if (streaming) {
     // Deliberately not the parse-failure block: a fence that is two lines in is
@@ -622,11 +679,11 @@ export function SceneFrame({
 
   const title = parsed.title ?? "Generated view";
   /**
-   * The picture, in order of how close it is to what the user last saw: the
-   * freeze capture, then this mount's settle still, then the still a previous
-   * mount or a previous window left on disk.
+   * The picture, in order of how close it is to what the user last saw: this
+   * mount's settle still, then the still a previous mount or a previous window
+   * left on disk.
    */
-  const pictureSrc = snapshot ?? still ?? storedStillSrc;
+  const pictureSrc = still ?? storedStillSrc;
   const showFrame = !rehydrated && !undecided && (status !== "frozen" || !pictureSrc);
 
   return (

@@ -432,15 +432,27 @@ export function ChatProofFilmstrip({
             const broken = artifact.availability != null && artifact.availability !== "available";
             if (!broken && isVideoArtifact(artifact)) {
               return (
-                <ProofFilmstripVideoTile
+                <ProofFilmstripPreviewTile
                   key={artifact.id}
                   artifact={artifact}
+                  media="video"
                   allowLocalArtifactProtocol={allowLocalArtifactProtocol}
                   onOpen={onOpenArtifact}
                 />
               );
             }
             const src = broken || !isImageArtifact(artifact) ? null : (resolveThumbnailSrc?.(artifact) ?? null);
+            if (!broken && !src && isImageArtifact(artifact)) {
+              return (
+                <ProofFilmstripPreviewTile
+                  key={artifact.id}
+                  artifact={artifact}
+                  media="image"
+                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
+                  onOpen={onOpenArtifact}
+                />
+              );
+            }
             return (
               <button
                 key={artifact.id}
@@ -468,14 +480,7 @@ export function ChatProofFilmstrip({
                     Missing proof
                   </span>
                 ) : (
-                  <span
-                    className={cn(
-                      "flex aspect-[16/10] w-full items-center justify-center px-1 text-center text-fg/35",
-                      CHAT_CARD_MICRO_TEXT,
-                    )}
-                  >
-                    {artifact.kind}
-                  </span>
+                  <ProofFilmstripKindLabel artifact={artifact} />
                 )}
               </button>
             );
@@ -486,19 +491,37 @@ export function ChatProofFilmstrip({
   );
 }
 
+/** What a tile shows where it has no picture: the artifact's kind. */
+function ProofFilmstripKindLabel({ artifact, icon }: { artifact: ComputerUseArtifactView; icon?: React.ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-fg/35",
+        CHAT_CARD_MICRO_TEXT,
+      )}
+    >
+      {icon}
+      {artifact.kind.replace(/_/g, " ")}
+    </span>
+  );
+}
+
 /**
- * One recorded proof in the filmstrip: the recording's first frame behind a
- * play badge, resolved through the drawer's preview path (the media server on
- * this computer, or the runtime on a paired one) so it shows the same poster
- * the drawer shows. Until that resolves — and when it cannot — the tile shows
- * the kind instead of a broken image. Clicking opens the drawer, which plays it.
+ * A proof tile whose picture comes through the drawer's preview path (the
+ * media server or artifact protocol on this computer, the runtime on a paired
+ * one), so it shows what the drawer shows. A recording shows its first frame
+ * behind a play badge; a picture shows itself. Until the preview resolves, and
+ * when it cannot, the tile shows the kind instead of a broken image. Clicking
+ * opens the drawer.
  */
-function ProofFilmstripVideoTile({
+function ProofFilmstripPreviewTile({
   artifact,
+  media,
   allowLocalArtifactProtocol,
   onOpen,
 }: {
   artifact: ComputerUseArtifactView;
+  media: "video" | "image";
   allowLocalArtifactProtocol: boolean;
   onOpen?: (artifact: ComputerUseArtifactView) => void;
 }) {
@@ -506,7 +529,7 @@ function ProofFilmstripVideoTile({
     artifact,
     allowLocalArtifactProtocol,
   );
-  const label = artifact.kind.replace(/_/g, " ");
+  const ready = !failed ? preview : null;
   return (
     <button
       ref={containerRef}
@@ -514,28 +537,30 @@ function ProofFilmstripVideoTile({
       title={artifact.title || artifact.uri || artifact.id}
       aria-label={artifact.title || artifact.uri || "Open proof"}
       onClick={() => onOpen?.(artifact)}
-      data-chat-proof-video=""
+      data-chat-proof-video={media === "video" ? "" : undefined}
       className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-fg/[0.07] bg-black/25 transition-colors hover:border-fg/[0.16]"
     >
-      {preview && !failed ? (
+      {ready && media === "video" ? (
         <ProofVideoPoster
           artifact={artifact}
-          preview={preview}
+          preview={ready}
           badgeSize="sm"
           interactive={false}
           className="aspect-[16/10] w-full"
           onError={onMediaError}
         />
+      ) : ready ? (
+        <img
+          src={ready}
+          alt={artifact.title || "Proof"}
+          className="aspect-[16/10] w-full object-cover"
+          onError={onMediaError}
+        />
       ) : (
-        <span
-          className={cn(
-            "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-fg/35",
-            CHAT_CARD_MICRO_TEXT,
-          )}
-        >
-          <VideoCamera size={14} weight="duotone" aria-hidden />
-          {label}
-        </span>
+        <ProofFilmstripKindLabel
+          artifact={artifact}
+          icon={media === "video" ? <VideoCamera size={14} weight="duotone" aria-hidden /> : undefined}
+        />
       )}
     </button>
   );

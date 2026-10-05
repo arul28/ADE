@@ -132,7 +132,33 @@ is open, actions fail with `handoff_active`: do not retry or open a second tab,
 and never hand the tab back yourself. ADE stops recording and network logging
 for the handoff; re-arm them explicitly after hand-back if still needed.
 
-### 6. Handle remote lanes and loopback URLs
+### 6. Sign in as a test account in an isolated tab
+
+A normal tab uses the user's own sign-ins. Signing in there as another
+account (a test user, a second role) signs the user out of that site, and on
+localhost that means every port. Open an isolated tab instead: it has its own
+cookies and storage, kept in memory and wiped when its last tab closes. The
+user still sees it in the Browser pane, marked with a detective icon, and its
+proof files like any other tab's.
+
+```bash
+ade --socket browser open localhost:3000/login --profile owner --text
+ade --socket browser open localhost:3000/login --profile viewer --text
+```
+
+`--profile <name>` picks the sign-in; each chat gets its own set of names,
+so two chats saying "viewer" stay apart. `--isolated` alone uses one sign-in
+named `default`. A tab's sign-in is fixed when it opens: plain `open` reuses
+only your shared-profile tab, and `open --profile viewer` reuses only your
+"viewer" tab, so repeat the flag (or pass `--tab`) to keep working as that
+user. The result line `sign-in:` says which one a tab uses. Close the tabs
+when the test is done to throw the sign-ins away.
+
+Use the shared profile only for the user's own account. Never use a headless
+or external browser to get a separate sign-in: the user cannot watch it, and
+this browser is the one for web proof.
+
+### 7. Handle remote lanes and loopback URLs
 
 The user may be on another machine (a MacBook connected to this Mac Studio).
 To show them a page, use `ade --socket browser open <url> --panel`. ADE opens
@@ -159,7 +185,7 @@ is waiting for the human, so do not open it again. Success says `on <desktop>
 via tunnel`. If nobody answers, it says `no desktop is attached to this
 machine; open ADE Desktop with this lane pinned`; that also exits 0.
 
-### 7. Record only when a video helps
+### 8. Record only when a video helps
 
 Run `ade --socket browser record start --tab <tab-id> --fps 60 --caption "Flow"`
 and stop it with `ade --socket browser record stop --tab <tab-id>`. Use 30 or
@@ -172,7 +198,7 @@ cut, page loads sped up, zoom to each click, a pointer, under 10 MB); mark each
 step with `ade proof step "<what happens next>"`, and pass `--plain` only when
 the user asks for the recording as it was recorded.
 
-### 8. Let presence explain the work
+### 9. Let presence explain the work
 
 Do not set browser presence yourself. Every authenticated agent browser
 command updates it automatically, and the user sees a globe badge with

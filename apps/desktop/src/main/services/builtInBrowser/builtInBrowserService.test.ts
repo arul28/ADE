@@ -254,6 +254,8 @@ const fakes = vi.hoisted(() => {
       get: () => Promise<Array<{ domain?: string; expirationDate?: number }>>;
     };
     flushStorageData: () => void;
+    clearStorageData: () => Promise<void>;
+    clearCache: () => Promise<void>;
     getCacheSize: () => Promise<number>;
     webRequest: {
       onBeforeSendHeaders: (handler: unknown) => void;
@@ -271,6 +273,8 @@ const fakes = vi.hoisted(() => {
   const getCookies = vi.fn(async (): Promise<Array<{ domain?: string; expirationDate?: number }>> => []);
   const getCacheSize = vi.fn(async (): Promise<number> => 0);
   const flushStorageData = vi.fn((): void => undefined);
+  /** Electron's storage wipe, recorded per partition so a test can hold it open. */
+  const clearStorageData = vi.fn(async (_partition: string): Promise<void> => undefined);
   const sessionsByPartition = new Map<string, FakeSession>();
   const sessionForPartition = (partition: string): FakeSession => {
     const existing = sessionsByPartition.get(partition);
@@ -281,6 +285,8 @@ const fakes = vi.hoisted(() => {
         get: getCookies,
       },
       flushStorageData,
+      clearStorageData: () => clearStorageData(partition),
+      clearCache: async () => undefined,
       getCacheSize,
       webRequest: {
         onBeforeSendHeaders: (handler: unknown) => {
@@ -367,6 +373,7 @@ const fakes = vi.hoisted(() => {
     webContentsInstances,
     webContentsViewInstances,
     partitionCalls,
+    clearStorageData,
     openExternal: vi.fn(async (_url: string) => undefined),
     screen: fakeScreen,
     beforeSendHeadersHandlers,
@@ -682,6 +689,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.getCacheSize.mockReset();
     fakes.getCacheSize.mockResolvedValue(0);
     fakes.flushStorageData.mockClear();
+    fakes.clearStorageData.mockReset();
+    fakes.clearStorageData.mockResolvedValue(undefined);
     fakes.openExternal.mockClear();
     fakes.appGetPath.mockClear();
     fakes.appIsReady.mockReset();
@@ -1565,6 +1574,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         chatSessionId: "chat-1",
       }, browserWin);
       await firstService.createTab({ url: "https://console.aws.amazon.com/", activate: true }, browserWin);
+      // An isolated sign-in lives only in memory; restoring its URL would
+      // reopen it in the user's own profile, so it is never saved.
+      await firstService.createTab({
+        url: "https://app.test/login",
+        activate: false,
+        profile: "viewer",
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      }, browserWin);
       await firstService.flushStorage();
       firstService.dispose();
 
@@ -3265,6 +3283,125 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(status.activeTabId).toBe(firstTabId);
     expect(status.ownerLaneId).toBe("lane-3");
     expect(status.ownerChatSessionId).toBe("chat-3");
+  });
+
+  describe("isolated sign-ins", () => {
+    /** The partition the most recently created tab view was given. */
+    const newestPartition = (): string | undefined => (
+      fakes.webContentsViewInstances.at(-1)?.webPreferences as { partition?: string } | undefined
+    )?.partition;
+    const chat = (chatSessionId: string) => ({ laneId: "lane-1", chatSessionId });
+
+    it("gives each chat and profile its own in-memory sign-in, apart from the user's", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const open = async (input: Record<string, unknown>) => {
+        const status = await service.navigate({ url: "https://app.test/login", newTab: true, ...input });
+        return { tabId: status.targetTabId, partition: newestPartition() };
+      };
+
+      const shared = await open({});
+      const viewer = await open({ profile: "viewer", ...chat("chat-1") });
+      const viewerAgain = await open({ profile: "viewer", ...chat("chat-1") });
+      const owner = await open({ profile: "owner", ...chat("chat-1") });
+      const otherChatViewer = await open({ profile: "viewer", ...chat("chat-2") });
+      const unnamed = await open({ isolated: true, ...chat("chat-1") });
+
+      expect(shared.partition).toBe("persist:ade-browser");
+      const isolated = [viewer, owner, otherChatViewer, unnamed].map((entry) => entry.partition);
+      expect(isolated.every((partition) => partition && !partition.startsWith("persist:"))).toBe(true);
+      expect(new Set(isolated).size).toBe(4);
+      expect(viewerAgain.partition).toBe(viewer.partition);
+      const profileOf = (tabId: string | null | undefined) => (
+        service.getStatus().tabs.find((tab) => tab.id === tabId)?.isolatedProfile ?? null
+      );
+      expect([shared, viewer, owner, otherChatViewer, unnamed].map((entry) => profileOf(entry.tabId)))
+        .toEqual([null, "viewer", "owner", "viewer", "default"]);
+    });
+
+    it("reuses only a tab in the sign-in the open asked for", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const reuse = (input: Record<string, unknown>) => service.navigate({
+        url: "https://app.test/",
+        reuseOwnedTab: true,
+        ...chat("chat-1"),
+        ...input,
+      });
+
+      const viewer = await reuse({ profile: "viewer" });
+      const shared = await reuse({});
+      expect(shared.targetTabCreated).toBe(true);
+      expect(shared.targetTabId).not.toBe(viewer.targetTabId);
+
+      const viewerAgain = await reuse({ profile: "viewer" });
+      expect(viewerAgain).toMatchObject({ targetTabId: viewer.targetTabId, targetTabCreated: false });
+      const sharedAgain = await reuse({});
+      expect(sharedAgain).toMatchObject({ targetTabId: shared.targetTabId, targetTabCreated: false });
+
+      await expect(service.navigate({
+        url: "https://app.test/",
+        tabId: shared.targetTabId,
+        profile: "viewer",
+        ...chat("chat-1"),
+      })).rejects.toThrow(/not in the isolated profile "viewer"/);
+      expect(service.getStatus().tabs).toHaveLength(2);
+    });
+
+    it.each([
+      ["a space", "bad name"],
+      ["a path", "../viewer"],
+      ["41 characters", "a".repeat(41)],
+      ["punctuation", "viewer!"],
+    ])("refuses a profile name with %s before opening anything", async (_label, profile) => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await expect(service.createTab({ url: "https://app.test/", profile, ...chat("chat-1") }))
+        .rejects.toThrow(/profile name/);
+      await expect(service.navigate({ url: "https://app.test/", profile, ...chat("chat-1") }))
+        .rejects.toThrow(/profile name/);
+      expect(service.getStatus().tabs).toHaveLength(0);
+      expect(fakes.webContentsViewInstances).toHaveLength(0);
+    });
+
+    it("wipes a sign-in when its last tab closes, and a new tab waits for the wipe", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const first = await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+      const partition = newestPartition();
+      const second = await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+
+      await service.closeTab({ tabId: first.targetTabId ?? "" });
+      expect(fakes.clearStorageData).not.toHaveBeenCalled();
+
+      const wipe = createDeferred<void>();
+      fakes.clearStorageData.mockReturnValueOnce(wipe.promise);
+      await service.closeTab({ tabId: second.targetTabId ?? "" });
+      expect(fakes.clearStorageData).toHaveBeenCalledWith(partition);
+
+      const viewsBefore = fakes.webContentsViewInstances.length;
+      let reopened = false;
+      const reopen = service
+        .navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") })
+        .then((status) => { reopened = true; return status; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(reopened).toBe(false);
+      expect(fakes.webContentsViewInstances).toHaveLength(viewsBefore);
+
+      wipe.resolve();
+      await reopen;
+      expect(newestPartition()).toBe(partition);
+    });
+
+    it("opens a popup in its opener's sign-in", async () => {
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.navigate({ url: "https://app.test/", newTab: true, profile: "viewer", ...chat("chat-1") });
+      const partition = newestPartition();
+      const opener = fakes.webContentsInstances.at(-1);
+
+      const response = opener?.openWindow("https://app.test/share");
+      expect(response?.action).toBe("allow");
+      response?.createWindow?.({});
+
+      expect(newestPartition()).toBe(partition);
+      expect(service.getStatus().tabs.at(-1)?.isolatedProfile).toBe("viewer");
+    });
   });
 
   it("reuses the current chat's owned tab for agent browser opens", async () => {
