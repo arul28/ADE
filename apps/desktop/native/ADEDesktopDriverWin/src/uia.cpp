@@ -307,17 +307,20 @@ UiaElement Uia::resolveText(const std::string& laneId, const std::string& text) 
   return *best;
 }
 
-bool Uia::newestFocused(const std::string& laneId, UiaElement& out) {
+bool Uia::newestFocused(const std::string& laneId, UiaElement& out, HWND preferWindow) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto lane = byLane_.find(laneId);
   if (lane == byLane_.end() || lane->second.empty()) return false;
-  for (const auto& e : byId_[lane->second.back()].elements) {
-    if (e.focused) {
-      out = e;
-      return true;
-    }
+  const auto& elements = byId_[lane->second.back()].elements;
+  const UiaElement* first = nullptr;
+  for (const auto& e : elements) {
+    if (!e.focused) continue;
+    if (preferWindow && e.window == preferWindow) { out = e; return true; }
+    if (!first) first = &e;
   }
-  return false;
+  if (!first) return false;
+  out = *first;
+  return true;
 }
 
 bool Uia::invoke(const UiaElement& e) {

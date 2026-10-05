@@ -67,7 +67,10 @@ class Uia {
   // Resolves a case-insensitive text match in the lane's newest observation.
   UiaElement resolveText(const std::string& laneId, const std::string& text);
   // The focused element of the newest observation, if any.
-  bool newestFocused(const std::string& laneId, UiaElement& out);
+  // The focused element of the lane's newest observation. Every top-level
+  // window reports its own focused element, so one in `preferWindow` (the
+  // foreground window) wins over the others.
+  bool newestFocused(const std::string& laneId, UiaElement& out, HWND preferWindow = nullptr);
 
   // Actions. Each returns false when the element has no pattern for it.
   bool invoke(const UiaElement& e);

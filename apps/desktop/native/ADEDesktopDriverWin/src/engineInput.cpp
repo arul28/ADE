@@ -139,7 +139,10 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       // Never reuse the previous observation's focused element for typing.
       auto observation = uia_.observe(laneWindows(lane), 400, 1500);
       uia_.remember(lane.laneId, observation);
-      haveTarget = uia_.newestFocused(lane.laneId, e);
+      // The window in front is where a person's typing goes. A console
+      // window reports itself focused even behind another window, and was
+      // picked (and raised) over the Notepad the agent had just clicked.
+      haveTarget = uia_.newestFocused(lane.laneId, e, priv ? currentForeground() : nullptr);
     }
     if (haveTarget) out["resolvedIndex"] = e.index;
     if (priv) {
