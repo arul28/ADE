@@ -307,6 +307,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   let repoSlugPass: Promise<{ owner: string; name: string } | null> | null = null;
   let laneBranchPass: Promise<Map<string, string>> | null = null;
+  // A sweep enqueues every PR at once, and each one re-read the whole PR list
+  // and re-synced its chat terms: quadratic in PRs, seconds of brain time per
+  // drain on a repo with a thousand of them. One read per pass serves them all.
+  let prSummariesPass: Promise<PrSummary[]> | null = null;
 
   const stripBranchRef = (branchRef: string | null | undefined): string | null => {
     const trimmed = (branchRef ?? "").trim();
@@ -403,6 +407,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         if (dueNow.length === 0) break;
         repoSlugPass = null;
         laneBranchPass = null;
+        prSummariesPass = null;
         for (const [key, entry] of dueNow) {
           queue.delete(key);
           try {
@@ -933,10 +938,25 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
+  const prSummariesForPass = (prs: NonNullable<typeof deps.prs>): Promise<PrSummary[]> => {
+    if (!prSummariesPass) {
+      const pending = (async () => {
+        const summaries = await prs.listAll();
+        await syncPrTermsByChatSession(summaries);
+        return summaries;
+      })();
+      prSummariesPass = pending;
+      // A failed read is retried by the next PR, as each one used to read alone.
+      pending.catch(() => {
+        if (prSummariesPass === pending) prSummariesPass = null;
+      });
+    }
+    return prSummariesPass;
+  };
+
   const processPr = async (prId: string): Promise<void> => {
     if (!deps.prs) return;
-    const summaries = await deps.prs.listAll();
-    await syncPrTermsByChatSession(summaries);
+    const summaries = await prSummariesForPass(deps.prs);
     const summary = summaries.find((pr) => pr.id === prId);
     if (!summary) {
       withTransaction(() => deleteDocsWhere("doc_id = ?", [`pr:${prId}`]));

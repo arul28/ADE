@@ -112,8 +112,33 @@ function parseNpmPrefix(line: string, homeDir: string): string | null {
   return expandHomePath(raw, homeDir);
 }
 
+/**
+ * How long a shell PATH or npm prefix read is reused. Both are read on every
+ * agent env build -- the shell one by spawning a login shell synchronously,
+ * which stalled the brain's event loop (and every chat's status with it) for
+ * each turn. Neither changes between turns; an edited rc file shows up within
+ * a minute.
+ */
+const ENVIRONMENT_PROBE_TTL_MS = 60_000;
+const npmPrefixBinDirsCache = new Map<string, { at: number; dirs: string[] }>();
+const shellPathCache = new Map<string, { at: number; path: string | null }>();
+const ENVIRONMENT_PROBE_CACHE_MAX = 32;
+
+function rememberProbe<T>(cache: Map<string, T>, key: string, value: T): void {
+  if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
+  cache.set(key, value);
+}
+
 function readNpmPrefixBinDirs(env: NodeJS.ProcessEnv): string[] {
   const homeDir = getHomeDir(env);
+  const cached = npmPrefixBinDirsCache.get(homeDir);
+  if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.dirs;
+  const dirs = readNpmPrefixBinDirsUncached(homeDir);
+  rememberProbe(npmPrefixBinDirsCache, homeDir, { at: Date.now(), dirs });
+  return dirs;
+}
+
+function readNpmPrefixBinDirsUncached(homeDir: string): string[] {
   const rcPaths = [
     path.join(homeDir, ".npmrc"),
     path.join(homeDir, ".config", "npm", "npmrc"),
@@ -372,6 +397,21 @@ export function augmentPathWithKnownCliDirs(
 }
 
 function readShellPath(
+  shellPath: string,
+  shellFlag: "-lc" | "-ic",
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): string | null {
+  const source = env ?? process.env;
+  const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
+  const cached = shellPathCache.get(key);
+  if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.path;
+  const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
+  rememberProbe(shellPathCache, key, { at: Date.now(), path: resolved });
+  return resolved;
+}
+
+function readShellPathUncached(
   shellPath: string,
   shellFlag: "-lc" | "-ic",
   timeoutMs: number,
