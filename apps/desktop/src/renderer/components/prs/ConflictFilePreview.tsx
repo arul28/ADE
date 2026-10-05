@@ -57,8 +57,8 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
   return (
     <div
       style={{
-        background: "#0C0A10",
-        border: "1px solid #1E1B26",
+        background: "var(--color-bg)",
+        border: "1px solid var(--color-border)",
         marginBottom: 8,
       }}
     >
@@ -67,15 +67,15 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
         className="flex items-center justify-between"
         style={{
           padding: "8px 12px",
-          borderBottom: hasDetailContent ? "1px solid #1E1B26" : "none",
-          background: "#13101A",
+          borderBottom: hasDetailContent ? "1px solid var(--color-border)" : "none",
+          background: "var(--color-surface)",
         }}
       >
         <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
           <FileIcon size={16} weight="duotone" style={{ color: "#F59E0B", flexShrink: 0 }} />
           <span
             className="font-mono font-semibold truncate"
-            style={{ fontSize: 12, color: "#FAFAFA" }}
+            style={{ fontSize: 12, color: "var(--color-fg)" }}
           >
             {file.path}
           </span>
@@ -111,8 +111,8 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
                 fontSize: 9,
                 padding: "2px 8px",
                 background: showRawMarkers ? "#A78BFA18" : "transparent",
-                color: showRawMarkers ? "#A78BFA" : "#52525B",
-                border: `1px solid ${showRawMarkers ? "#A78BFA30" : "#27272A"}`,
+                color: showRawMarkers ? "#A78BFA" : "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))",
+                border: `1px solid ${showRawMarkers ? "#A78BFA30" : "var(--color-border)"}`,
                 cursor: "pointer",
                 marginLeft: 4,
               }}
@@ -146,7 +146,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
                 style={{
                   fontSize: 11,
                   lineHeight: "18px",
-                  color: "#A1A1AA",
+                  color: "var(--color-secondary-fg)",
                   padding: "8px 10px",
                   margin: 0,
                   background: "#22C55E08",
@@ -177,7 +177,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
                 style={{
                   fontSize: 11,
                   lineHeight: "18px",
-                  color: "#A1A1AA",
+                  color: "var(--color-secondary-fg)",
                   padding: "8px 10px",
                   margin: 0,
                   background: "#EF444408",
@@ -205,7 +205,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
             className="font-mono font-bold uppercase tracking-[1px]"
             style={{
               fontSize: 9,
-              color: "#71717A",
+              color: "var(--color-muted-fg)",
               marginBottom: 6,
             }}
           >
@@ -216,18 +216,18 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
             style={{
               fontSize: 11,
               lineHeight: "18px",
-              color: "#A1A1AA",
+              color: "var(--color-secondary-fg)",
               padding: "8px 10px",
               margin: 0,
-              background: "#0F0D14",
-              border: "1px solid #1E1B26",
+              background: "var(--color-surface-recessed)",
+              border: "1px solid var(--color-border)",
               overflowX: "auto",
               whiteSpace: "pre-wrap",
               wordBreak: "break-all",
             }}
           >
             {file.diffHunk.split("\n").map((line, i) => {
-              let lineColor = "#A1A1AA";
+              let lineColor = "var(--color-secondary-fg)";
               if (line.startsWith("+")) lineColor = "#22C55E";
               else if (line.startsWith("-")) lineColor = "#EF4444";
               else if (line.startsWith("@@")) lineColor = "#A78BFA";
@@ -259,7 +259,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
             style={{
               fontSize: 11,
               lineHeight: "18px",
-              color: "#A1A1AA",
+              color: "var(--color-secondary-fg)",
               padding: "8px 10px",
               margin: 0,
               background: "#F59E0B06",
@@ -293,7 +293,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
             className="font-mono"
             style={{
               fontSize: 11,
-              color: "#71717A",
+              color: "var(--color-muted-fg)",
               padding: "8px 10px",
               background: "#F59E0B06",
               borderLeft: "2px solid #F59E0B30",

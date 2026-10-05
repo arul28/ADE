@@ -81,7 +81,7 @@ export function AnsweredQuestionReceipt({
         aria-expanded={open}
         data-testid="answered-question-receipt-toggle"
         onClick={() => setOpen((prev) => !prev)}
-        className="w-full rounded-md py-0.5 text-left transition-colors hover:bg-white/[0.03]"
+        className="w-full rounded-md py-0.5 text-left transition-colors hover:bg-fg/[0.03]"
       >
         <ChatCardRow
           tone={resolution === "accepted" ? "ok" : "idle"}
@@ -105,7 +105,7 @@ export function AnsweredQuestionReceipt({
       {open ? (
         <div
           data-testid="answered-question-receipt-detail"
-          className="ml-[26px] mt-1 border-l border-white/[0.06] pl-3"
+          className="ml-[26px] mt-1 border-l border-fg/[0.06] pl-3"
         >
           {questions.map((question, questionIndex) => {
             const { pickLabels, note } = question.isSecret

@@ -222,8 +222,8 @@ export function DraftMachinePicker({
             "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
             "font-sans text-[11px] font-medium transition-colors",
             open
-              ? "border-white/[0.12] bg-white/[0.06] text-fg/85"
-              : "border-white/[0.07] bg-white/[0.03] text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg/85",
+              ? "border-fg/[0.12] bg-fg/[0.06] text-fg/85"
+              : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
             disabled && "cursor-not-allowed opacity-45",
           )}
         >
@@ -247,7 +247,7 @@ export function DraftMachinePicker({
                   role="menu"
                   aria-label="Choose a machine"
                   onKeyDown={handleMenuKeyDown}
-                  className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+                  className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={{
                     width: placement?.width ?? MENU_WIDTH,
                     left: placement?.left ?? 0,
@@ -272,7 +272,7 @@ export function DraftMachinePicker({
                         }}
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",
-                          active ? "text-fg/90" : "text-fg/65 hover:bg-white/[0.06] hover:text-fg/90",
+                          active ? "text-fg/90" : "text-fg/65 hover:bg-fg/[0.06] hover:text-fg/90",
                           reason && "cursor-not-allowed opacity-40 hover:bg-transparent",
                         )}
                       >

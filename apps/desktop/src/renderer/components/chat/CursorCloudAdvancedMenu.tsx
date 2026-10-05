@@ -117,7 +117,7 @@ export function CursorCloudAdvancedMenu({
             "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 font-sans text-[11px] font-medium transition-colors",
             active || open
               ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-100/90"
-              : "border-white/[0.07] bg-white/[0.03] text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg/85",
+              : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
           )}
         >
           Advanced
@@ -136,7 +136,7 @@ export function CursorCloudAdvancedMenu({
             role="menu"
             aria-label="Cursor Cloud advanced"
             data-cursor-cloud-advanced-menu
-            className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+            className="fixed z-[100] overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
             style={{
               width: placement?.width ?? MENU_WIDTH,
               left: placement?.left ?? 0,
@@ -160,7 +160,7 @@ export function CursorCloudAdvancedMenu({
               </div>
             ) : (
               <label
-                className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-white/[0.06]"
+                className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-fg/[0.06]"
               >
                 <input
                   type="checkbox"
@@ -193,7 +193,7 @@ export function CursorCloudAdvancedMenu({
             )}
             {attachableSecretCount > 0 ? (
               <>
-                <div className="my-1.5 border-t border-white/[0.06]" />
+                <div className="my-1.5 border-t border-fg/[0.06]" />
                 <CursorCloudSecretsList
                   availableNames={availableNames}
                   selectedNames={selectedNames}

@@ -3,8 +3,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { PortalContainerContext } from "../ui/portalContainer";
 
 const OVERLAY_CLASS = "fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-6";
-const PANEL_CLASS = "rounded-xl border border-white/[0.08] bg-[var(--color-bg)] shadow-2xl outline-none";
-const CLOSE_BUTTON_CLASS = "rounded-md border border-white/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/70";
+const PANEL_CLASS = "rounded-xl border border-fg/[0.08] bg-[var(--color-bg)] shadow-2xl outline-none";
+const CLOSE_BUTTON_CLASS = "rounded-md border border-fg/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/70";
 
 /**
  * One handoff dialog shell. Radix gives Escape, outside-press dismiss, and focus

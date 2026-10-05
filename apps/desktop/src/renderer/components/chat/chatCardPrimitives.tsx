@@ -64,10 +64,10 @@ export type ChatCardSkin = "line" | "inset" | "bordered" | "rail" | "plain";
 
 /** Card shells. `line` is the default — no box, just a hairline rule. */
 export const CHAT_CARD_SKIN: Record<ChatCardSkin, string> = {
-  line: "px-0.5 py-2 border-b border-white/[0.06] last:border-b-0",
-  inset: `px-3 py-2.5 bg-white/[0.03] ${CARD_RADIUS}`,
-  bordered: `px-3 py-2.5 bg-white/[0.025] border border-white/[0.07] ${CARD_RADIUS}`,
-  rail: `px-3 py-2.5 bg-white/[0.03] border-l-2 rounded-r-[calc(var(--chat-radius-card)-6px)]`,
+  line: "px-0.5 py-2 border-b border-fg/[0.06] last:border-b-0",
+  inset: `px-3 py-2.5 bg-fg/[0.03] ${CARD_RADIUS}`,
+  bordered: `px-3 py-2.5 bg-fg/[0.025] border border-fg/[0.07] ${CARD_RADIUS}`,
+  rail: `px-3 py-2.5 bg-fg/[0.03] border-l-2 rounded-r-[calc(var(--chat-radius-card)-6px)]`,
   plain: "py-1",
 };
 
@@ -180,8 +180,8 @@ export function ChatCardChip({
     ok: "text-emerald-300/85 border-emerald-300/25",
     warn: "text-amber-300/85 border-amber-300/25",
     running: "text-[color:var(--chat-accent)] border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]",
-    idle: "text-fg/40 border-white/[0.07]",
-    neutral: "text-fg/48 border-white/[0.07]",
+    idle: "text-fg/40 border-fg/[0.07]",
+    neutral: "text-fg/48 border-fg/[0.07]",
   }[tone];
   return (
     <span
@@ -247,7 +247,7 @@ export function ChatCardButton({
         CHAT_CARD_MICRO_TEXT,
         primary
           ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[color:var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-          : "border-white/[0.08] bg-white/[0.03] text-fg/60 hover:text-fg/85",
+          : "border-fg/[0.08] bg-fg/[0.03] text-fg/60 hover:text-fg/85",
       )}
     >
       {children}
@@ -263,12 +263,12 @@ export function ChatCardMeter({ progress, className }: { progress: ChatCardProgr
     ["passed", "bg-emerald-400/70"],
     ["failed", "bg-amber-400/80"],
     ["running", "bg-[color:var(--chat-accent)]"],
-    ["queued", "bg-white/12"],
+    ["queued", "bg-fg/12"],
   ];
   const total = segments.reduce((sum, [bucket]) => sum + Math.max(0, progress[bucket]), 0);
   if (total <= 0) return null;
   return (
-    <div className={cn("flex h-[3px] overflow-hidden rounded-full bg-white/[0.05]", className)} aria-hidden>
+    <div className={cn("flex h-[3px] overflow-hidden rounded-full bg-fg/[0.05]", className)} aria-hidden>
       {segments.map(([bucket, fill]) => {
         const value = Math.max(0, progress[bucket]);
         if (value <= 0) return null;
@@ -283,7 +283,7 @@ export function ChatCardMeter({ progress, className }: { progress: ChatCardProgr
  * text direction so a truncated file path keeps its filename visible.
  */
 export function ChatCardDetail({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mt-2 flex flex-col border-t border-white/[0.06] pt-2", className)}>{children}</div>;
+  return <div className={cn("mt-2 flex flex-col border-t border-fg/[0.06] pt-2", className)}>{children}</div>;
 }
 
 export function ChatCardDetailRow({
@@ -342,7 +342,7 @@ export function ChatCardDetailRow({
         clickEvent.stopPropagation();
         onClick();
       }}
-      className={cn(className, "w-full rounded-sm text-left transition-colors hover:bg-white/[0.03]")}
+      className={cn(className, "w-full rounded-sm text-left transition-colors hover:bg-fg/[0.03]")}
     >
       {body}
     </button>
@@ -365,10 +365,10 @@ export function ChatCardDiffStat({ additions, deletions }: { additions: number; 
 export function ChatTurnRule({ label, children }: { label?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span className="h-px flex-1 bg-fg/[0.06]" />
       <span className={cn("shrink-0 font-mono tabular-nums text-fg/40", CHAT_CARD_META_TEXT)}>{label}</span>
       {children}
-      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span className="h-px flex-1 bg-fg/[0.06]" />
     </div>
   );
 }
@@ -452,7 +452,7 @@ export function ChatProofFilmstrip({
                   "w-24 shrink-0 overflow-hidden rounded-[7px] border bg-black/25 transition-colors",
                   broken
                     ? "border-amber-200/[0.16] bg-amber-300/[0.04] hover:border-amber-200/30"
-                    : "border-white/[0.07] hover:border-white/[0.16]",
+                    : "border-fg/[0.07] hover:border-fg/[0.16]",
                 )}
               >
                 {src ? (
@@ -515,7 +515,7 @@ function ProofFilmstripVideoTile({
       aria-label={artifact.title || artifact.uri || "Open proof"}
       onClick={() => onOpen?.(artifact)}
       data-chat-proof-video=""
-      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
+      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-fg/[0.07] bg-black/25 transition-colors hover:border-fg/[0.16]"
     >
       {preview && !failed ? (
         <ProofVideoPoster

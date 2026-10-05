@@ -680,7 +680,7 @@ export function WorkSidebar({
         "flex h-full min-h-0 min-w-0 flex-col overflow-hidden outline-none",
         // Opaque when it is the whole page: the columns it covers are hidden,
         // and a translucent pane over nothing reads as a broken overlay.
-        maximized ? "bg-bg" : "border-l border-white/[0.08] bg-surface/85",
+        maximized ? "bg-bg" : "border-l border-fg/[0.08] bg-surface/85",
       )}
     >
       {/* One bar for both states. The strip does not disappear when the picker

@@ -2,8 +2,11 @@ import type { ButtonHTMLAttributes, HTMLAttributes, MouseEvent } from "react";
 import { cn } from "../ui/cn";
 import { LaneIcon, BranchIcon } from "../ui/vcsIcons";
 import { LaneNamingLabel } from "./LaneNamingLabel";
+import { toneText } from "../lanes/laneDesignTokens";
 
-const DEFAULT_LANE_COLOR = "#ffffff";
+// The theme text colour, not white, so an uncoloured lane still reads on a
+// light page.
+const DEFAULT_LANE_COLOR = "var(--color-fg)";
 
 export function laneDisplayColor(laneColor?: string | null): string {
   const trimmed = laneColor?.trim();
@@ -17,7 +20,7 @@ export function LaneLogoMark({
   color: string;
   size?: number;
 }) {
-  return <LaneIcon size={size} weight="regular" className="shrink-0" style={{ color }} />;
+  return <LaneIcon size={size} weight="regular" className="shrink-0" style={{ color: toneText(color) }} />;
 }
 
 export type LaneChipProps = {
@@ -51,7 +54,7 @@ export function LaneChip({
   );
   const chipStyle = {
     maxWidth,
-    color,
+    color: toneText(color),
     ...style,
   };
   const displayedName = naming ? "Naming lane…" : laneName;
@@ -148,7 +151,7 @@ export function SessionLaneHeaderLabel({
             "ade-lane-branch-inline-lane inline-flex min-w-0 shrink items-center gap-1.5 overflow-hidden border-0 bg-transparent p-0",
             "cursor-pointer transition-opacity hover:opacity-80",
           )}
-          style={{ color }}
+          style={{ color: toneText(color) }}
           title={`Open lane: ${laneName}`}
           onClick={(event) => {
             event.stopPropagation();
@@ -163,7 +166,7 @@ export function SessionLaneHeaderLabel({
       ) : (
         <span
           className="ade-lane-branch-inline-lane inline-flex min-w-0 shrink items-center gap-1.5 overflow-hidden"
-          style={{ color }}
+          style={{ color: toneText(color) }}
           title={laneName}
           onContextMenu={onLaneContextMenu}
         >

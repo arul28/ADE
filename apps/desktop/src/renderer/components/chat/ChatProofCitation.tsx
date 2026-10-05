@@ -99,7 +99,7 @@ function CitationPlaceholder({ children, tone = "muted" }: { children: React.Rea
         "my-2 flex min-h-12 items-center gap-2 rounded-xl border px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] not-italic",
         tone === "warning"
           ? "border-amber-300/[0.14] bg-amber-400/[0.05] text-amber-100/70"
-          : "border-white/[0.06] bg-white/[0.025] text-muted-fg/50",
+          : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/50",
       )}
     >
       {children}
@@ -143,7 +143,7 @@ function CitedProofMedia({
       className="block min-w-0"
     >
       {loading ? (
-        <span className="flex min-h-40 items-center justify-center rounded-xl border border-white/[0.06] bg-black/20 text-muted-fg/35">
+        <span className="flex min-h-40 items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
@@ -151,7 +151,7 @@ function CitedProofMedia({
       ) : preview && image ? (
         <button
           type="button"
-          className="block max-w-full overflow-hidden rounded-xl border border-white/[0.07] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+          className="block max-w-full overflow-hidden rounded-xl border border-fg/[0.07] bg-black/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
           aria-label={`Enlarge ${text}`}
           onClick={() => setLightboxOpen(true)}
         >
@@ -171,7 +171,7 @@ function CitedProofMedia({
           preload="metadata"
           onError={onMediaError}
           aria-label={text}
-          className={cn("m-0 block h-auto max-w-full rounded-xl border border-white/[0.07] bg-black", mediaHeight)}
+          className={cn("m-0 block h-auto max-w-full rounded-xl border border-fg/[0.07] bg-black", mediaHeight)}
         />
       ) : !image && !video ? (
         <CitationPlaceholder>{`${text} (${artifact.kind.replace(/_/g, " ")}) cannot show inline. It is in the proof drawer.`}</CitationPlaceholder>

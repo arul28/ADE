@@ -204,7 +204,7 @@ export function ChatTaskListCard({
     <div
       className={cn(
         CHAT_CARD_WIDTH_CLASS,
-        "rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.06] bg-white/[0.03]",
+        "rounded-[calc(var(--chat-radius-card)-6px)] border border-fg/[0.06] bg-fg/[0.03]",
       )}
       data-testid="chat-task-list-card"
       data-open={open ? "true" : "false"}

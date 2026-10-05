@@ -99,8 +99,8 @@ export function RuleHistory({
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex w-[320px] shrink-0 min-h-0 flex-col border-r border-white/[0.06]">
-        <div className="shrink-0 border-b border-white/[0.06] px-4 py-3">
+      <div className="flex w-[320px] shrink-0 min-h-0 flex-col border-r border-fg/[0.06]">
+        <div className="shrink-0 border-b border-fg/[0.06] px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-fg">{ruleName}</div>

@@ -45,7 +45,7 @@ export const GitHubRepoSyncBar = memo(function GitHubRepoSyncBar({
         aria-label="Sync now"
         title="Sync now"
         onClick={() => void onSync()}
-        className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors duration-150 hover:bg-white/[0.06]"
+        className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors duration-150 hover:bg-fg/[0.06]"
         style={{ color: syncing ? COLORS.accent : COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }}
       >
         <ArrowsClockwise size={12} className={syncing ? "animate-spin" : ""} />

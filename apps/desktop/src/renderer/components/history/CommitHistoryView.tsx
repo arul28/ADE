@@ -759,7 +759,7 @@ export function CommitHistoryView({
       <>
         <span>{matches.size.toLocaleString()} {matches.size === 1 ? "match" : "matches"} in {commits.length.toLocaleString()} commits</span>
         {hasMore ? (
-          <button type="button" className="rounded-[5px] px-1.5 py-0.5 text-fg/80 hover:bg-white/[0.06] hover:text-fg" onClick={() => void loadOlder(SEARCH_PAGE_SIZE)}>
+          <button type="button" className="rounded-[5px] px-1.5 py-0.5 text-fg/80 hover:bg-fg/[0.06] hover:text-fg" onClick={() => void loadOlder(SEARCH_PAGE_SIZE)}>
             Search older
           </button>
         ) : null}
@@ -773,7 +773,7 @@ export function CommitHistoryView({
           {fold === "tips" && rowCount < commits.length ? ` · ${(commits.length - rowCount).toLocaleString()} folded` : ""}
         </span>
         {hasMore ? (
-          <button type="button" className="rounded-[5px] px-1.5 py-0.5 text-fg/80 hover:bg-white/[0.06] hover:text-fg" onClick={() => void loadOlder()}>
+          <button type="button" className="rounded-[5px] px-1.5 py-0.5 text-fg/80 hover:bg-fg/[0.06] hover:text-fg" onClick={() => void loadOlder()}>
             Load older
           </button>
         ) : null}
@@ -799,7 +799,7 @@ export function CommitHistoryView({
             <button
               type="button"
               onClick={() => void reload({ keepAnchor: false })}
-              className="inline-flex h-7 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] text-fg/80 hover:bg-white/[0.06] hover:text-fg"
+              className="inline-flex h-7 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] text-fg/80 hover:bg-fg/[0.06] hover:text-fg"
             >
               <ArrowClockwise size={13} />
               Try again
@@ -810,9 +810,9 @@ export function CommitHistoryView({
         <div className="flex-1 overflow-hidden" aria-busy aria-label={laneName ? `Loading ${laneName}` : "Loading commits"}>
           {Array.from({ length: 14 }, (_, index) => (
             <div key={index} className="flex items-center gap-3 px-3" style={{ height: COMMIT_ROW_HEIGHT, opacity: 1 - index * 0.06 }}>
-              <span className="h-2 w-2 shrink-0 rounded-full bg-white/[0.08]" />
-              <span className="h-2.5 rounded bg-white/[0.06]" style={{ width: `${38 + ((index * 37) % 40)}%` }} />
-              <span className="ml-auto h-2.5 w-16 rounded bg-white/[0.04]" />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-fg/[0.08]" />
+              <span className="h-2.5 rounded bg-fg/[0.06]" style={{ width: `${38 + ((index * 37) % 40)}%` }} />
+              <span className="ml-auto h-2.5 w-16 rounded bg-fg/[0.04]" />
             </div>
           ))}
         </div>
@@ -850,7 +850,7 @@ export function CommitHistoryView({
                     {behind > 0 ? (
                       <span className={`shrink-0 tabular-nums text-muted-fg/70 transition-opacity duration-150${statusStale ? " opacity-50" : ""}`} data-stale={statusStale || undefined}>{behind.toLocaleString()} behind</span>
                     ) : null}
-                    <span aria-hidden className="h-px min-w-0 flex-1 bg-white/[0.07]" />
+                    <span aria-hidden className="h-px min-w-0 flex-1 bg-fg/[0.07]" />
                   </div>
                 );
               }

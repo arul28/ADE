@@ -716,7 +716,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             style={menuStyle}
           >
             {/* Header hint */}
-            <div className="flex items-center gap-2 border-b border-white/[0.06] px-3.5 py-2.5">
+            <div className="flex items-center gap-2 border-b border-fg/[0.06] px-3.5 py-2.5">
               {trigger!.type === "at" ? (
                 <>
                   <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
@@ -908,7 +908,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                           <span className="ml-auto truncate text-fg/40">{command.description}</span>
                         )}
                         {sourceLabel ? (
-                          <span className="ml-auto shrink-0 rounded-sm bg-white/[0.05] px-1 py-px text-[9px] text-fg/40">
+                          <span className="ml-auto shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px text-[9px] text-fg/40">
                             {sourceLabel}
                           </span>
                         ) : null}
@@ -920,7 +920,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             </div>
 
             {/* Key hints */}
-            <div className="border-t border-white/[0.06] px-3.5 py-1.5 text-[10px] text-fg/32">
+            <div className="border-t border-fg/[0.06] px-3.5 py-1.5 text-[10px] text-fg/32">
               ↑↓ move · Tab insert · Esc close
             </div>
           </motion.div>

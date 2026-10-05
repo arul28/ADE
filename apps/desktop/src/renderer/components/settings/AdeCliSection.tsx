@@ -185,7 +185,7 @@ function codeStyle(): CSSProperties {
     fontSize: 11,
     padding: "1px 4px",
     borderRadius: 4,
-    background: "rgba(255,255,255,0.08)",
+    background: "color-mix(in srgb, var(--color-fg) 8%, transparent)",
     color: COLORS.textPrimary,
   };
 }

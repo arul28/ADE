@@ -244,10 +244,10 @@ export const ModelListRow = memo(function ModelListRow({
           onKeyDown={handleRowKeyDown}
           className={cn(
             "group flex w-full cursor-pointer items-start gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors duration-100",
-            "outline-none focus-visible:bg-white/[0.05]",
+            "outline-none focus-visible:bg-fg/[0.05]",
             isActive
               ? "bg-violet-500/[0.10] text-fg"
-              : "text-fg/85 hover:bg-white/[0.04]",
+              : "text-fg/85 hover:bg-fg/[0.04]",
             !isAvailable && "opacity-55",
           )}
         >
@@ -364,7 +364,7 @@ export const ModelListRow = memo(function ModelListRow({
                 reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100",
                 activeTier
                   ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
-                  : "border-white/[0.08] bg-white/[0.02] text-muted-fg/55 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg/80 active:bg-white/[0.12]",
+                  : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55 hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg/80 active:bg-fg/[0.12]",
               )}
             >
               <Lightning size={8} weight={activeTier === "fast" ? "fill" : "regular"} />
@@ -388,7 +388,7 @@ export const ModelListRow = memo(function ModelListRow({
       <ContextMenu.Portal>
         <ContextMenu.Content
           className={cn(
-            "z-[110] min-w-[10rem] overflow-hidden rounded-md border border-white/[0.08] bg-[#13111A] p-1",
+            "z-[110] min-w-[10rem] overflow-hidden rounded-md border border-fg/[0.08] bg-(color:--work-popover-bg) p-1",
             "shadow-[0_8px_24px_rgba(0,0,0,0.45)]",
           )}
         >
@@ -423,7 +423,7 @@ function ContextMenuItem({
       disabled={disabled}
       className={cn(
         "flex h-7 cursor-pointer select-none items-center rounded px-2 text-[11px] outline-none",
-        "text-fg/85 data-[highlighted]:bg-white/[0.06] data-[highlighted]:text-fg",
+        "text-fg/85 data-[highlighted]:bg-fg/[0.06] data-[highlighted]:text-fg",
         "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40",
       )}
     >

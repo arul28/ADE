@@ -315,7 +315,7 @@ function EarlierToggle({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-fg/[0.035] hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
       Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}
@@ -328,7 +328,7 @@ function ShowAllButton({ hiddenLabel, onClick }: { hiddenLabel: string; onClick:
     <button
       type="button"
       onClick={onClick}
-      className="mx-2 flex w-[calc(100%-1rem)] items-center rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-white/[0.035] hover:text-fg/60"
+      className="mx-2 flex w-[calc(100%-1rem)] items-center rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-fg/[0.035] hover:text-fg/60"
     >
       Show all ({hiddenLabel})
     </button>
@@ -407,7 +407,7 @@ function PaneScalableSection<T>({
   };
 
   return (
-    <section className={cn("pb-3", hasPrecedingSection && "border-t border-white/[0.04]")}>
+    <section className={cn("pb-3", hasPrecedingSection && "border-t border-fg/[0.04]")}>
       <SectionHeader
         label={label}
         hint={allClear ? "all clear" : hint}
@@ -589,7 +589,7 @@ function ScheduledWorkRow({
       data-paused={isPaused || undefined}
       className={cn(
         "group grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5",
-        "transition-colors duration-150 hover:bg-white/[0.035]",
+        "transition-colors duration-150 hover:bg-fg/[0.035]",
         isPaused && "opacity-45",
       )}
       title={prompt || detail || snapshot.title}
@@ -618,7 +618,7 @@ function ScheduledWorkRow({
           >
             {snapshot.title}
           </span>
-          <span className="shrink-0 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+          <span className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
             {scheduledKindLabel(snapshot.kind)}
           </span>
         </div>
@@ -651,7 +651,7 @@ function ScheduledWorkRow({
             onClick={onCancel}
             aria-label={`Cancel ${snapshot.title}`}
             title={snapshot.kind === "cron" ? "Cancel through Claude CronDelete" : "Cancel scheduled work"}
-            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-white/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <X aria-hidden size={11} weight="bold" />
           </button>
@@ -734,7 +734,7 @@ function BackgroundCommandRow({
   const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
 
   return (
-    <div className="rounded-md transition-colors duration-150 hover:bg-white/[0.035]">
+    <div className="rounded-md transition-colors duration-150 hover:bg-fg/[0.035]">
       <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 pr-1">
       <button
         type="button"
@@ -787,9 +787,9 @@ function BackgroundCommandRow({
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-white/[0.025] px-2.5 py-2">
+            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-fg/[0.025] px-2.5 py-2">
               {cwd ? (
-                <span className="inline-block rounded-sm bg-white/[0.05] px-1.5 py-px font-mono text-[10px] text-fg/45">
+                <span className="inline-block rounded-sm bg-fg/[0.05] px-1.5 py-px font-mono text-[10px] text-fg/45">
                   {cwd}
                 </span>
               ) : null}
@@ -924,7 +924,7 @@ function SubagentRow({
         className={cn(
           "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
           "transition-colors duration-150",
-          "hover:bg-white/[0.04]",
+          "hover:bg-fg/[0.04]",
           (selected || expanded)
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
@@ -952,7 +952,7 @@ function SubagentRow({
               {snapshot.workflowName}
             </span>
           ) : kindLabel ? (
-            <span className="ml-1.5 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+            <span className="ml-1.5 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
               {kindLabel}
             </span>
           ) : null}
@@ -1020,7 +1020,7 @@ function SubagentRow({
             <button
               type="button"
               onClick={() => setFilesOpen((open) => !open)}
-              className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-sans text-[11px] text-fg/50 hover:bg-white/[0.04] hover:text-fg/70"
+              className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-sans text-[11px] text-fg/50 hover:bg-fg/[0.04] hover:text-fg/70"
             >
               {filesOpen ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
               {filePaths.length} file{filePaths.length === 1 ? "" : "s"} returned
@@ -1029,7 +1029,7 @@ function SubagentRow({
               type="button"
               onClick={copyFilePaths}
               title="Copy all paths"
-              className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 font-sans text-[10.5px] text-fg/40 hover:bg-white/[0.04] hover:text-fg/70"
+              className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 font-sans text-[10.5px] text-fg/40 hover:bg-fg/[0.04] hover:text-fg/70"
             >
               <CopySimple size={11} />
               copy paths
@@ -1057,7 +1057,7 @@ function SubagentRow({
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-white/[0.025] px-2.5 py-2 font-sans text-[10.5px] leading-4 text-fg/55">
+            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-fg/[0.025] px-2.5 py-2 font-sans text-[10.5px] leading-4 text-fg/55">
               {snapshot.description ? (
                 <div className="break-words text-fg/65">{snapshot.description}</div>
               ) : null}
@@ -1613,7 +1613,7 @@ export function ChatSubagentsPanel({
 
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}
       {hasTasks && taskList && taskProgress ? (
-        <section className={cn("pb-3", hasGoal && "border-t border-white/[0.04]")} data-testid="chat-info-tasks">
+        <section className={cn("pb-3", hasGoal && "border-t border-fg/[0.04]")} data-testid="chat-info-tasks">
           {/* One line: the label, the count and the collapse arrow. The list's
               own "Plan" title would only repeat it. Open by default. */}
           <SectionHeader
@@ -1680,7 +1680,7 @@ export function ChatSubagentsPanel({
               onClick={onToggleSchedulesPaused}
               aria-label={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
               title={schedulesPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat"}
-              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/65"
+              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/35 transition-colors hover:bg-fg/[0.05] hover:text-fg/65"
             >
               {schedulesPaused ? <Play aria-hidden size={11} weight="fill" /> : <Pause aria-hidden size={11} weight="fill" />}
             </button>

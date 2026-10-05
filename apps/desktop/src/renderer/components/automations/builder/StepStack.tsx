@@ -126,7 +126,7 @@ export function StepStack({
         <button
           type="button"
           onClick={addCleanup}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/[0.1] px-3 py-2 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-amber-500/30 hover:text-amber-200"
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-fg/[0.1] px-3 py-2 text-[11px] font-medium text-muted-fg/70 transition-colors hover:border-amber-500/30 hover:text-amber-200"
         >
           <Broom size={13} weight="regular" />
           Add a cleanup step (delete the lane when done)
@@ -149,7 +149,7 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
           "flex h-5 w-5 items-center justify-center rounded-full border transition-colors",
           open
             ? "border-accent/50 bg-accent/15 text-accent"
-            : "border-white/[0.1] bg-white/[0.03] text-muted-fg/50 hover:border-accent/40 hover:text-accent",
+            : "border-fg/[0.1] bg-fg/[0.03] text-muted-fg/50 hover:border-accent/40 hover:text-accent",
         )}
         title="Insert step here"
       >
@@ -181,7 +181,7 @@ function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors",
           open
             ? "border-accent/40 bg-accent/[0.06] text-fg"
-            : "border-white/[0.08] bg-white/[0.03] text-fg/85 hover:border-accent/30 hover:bg-white/[0.05]",
+            : "border-fg/[0.08] bg-fg/[0.03] text-fg/85 hover:border-accent/30 hover:bg-fg/[0.05]",
         )}
       >
         <span className="flex items-center gap-2">
@@ -220,7 +220,7 @@ function StepMenu({
       open={open}
       anchorRef={anchorRef}
       onClose={onClose}
-      className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+      className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
       role="menu"
     >
       {ADDABLE_KINDS.map((kind) => {
@@ -232,9 +232,9 @@ function StepMenu({
             type="button"
             role="menuitem"
             onClick={() => onPick(kind)}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]"
+            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-fg/[0.05]"
           >
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
               <Icon size={12} weight="fill" style={{ color: def.accent }} />
             </span>
             <span className="min-w-0 flex-1">
@@ -250,7 +250,7 @@ function StepMenu({
 
 function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-white/[0.1] bg-white/[0.02] p-3">
+    <div className="rounded-xl border border-dashed border-fg/[0.1] bg-fg/[0.02] p-3">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">Pick a first step</div>
       <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
         {ADDABLE_KINDS.map((kind) => {
@@ -261,9 +261,9 @@ function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepKind) => void }) {
               key={kind}
               type="button"
               onClick={() => onAdd(kind)}
-              className="flex items-start gap-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]"
+              className="flex items-start gap-2.5 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-fg/[0.05]"
             >
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]">
+              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
                 <Icon size={12} weight="fill" style={{ color: def.accent }} />
               </span>
               <span className="min-w-0 flex-1">

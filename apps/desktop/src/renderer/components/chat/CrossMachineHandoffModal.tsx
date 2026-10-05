@@ -955,7 +955,7 @@ export function CrossMachineHandoffModal({
                 setCloneApproved(false);
                 setError(null);
               }}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
             >
               <ArrowLeft size={12} /> Back
             </button>
@@ -995,7 +995,7 @@ export function CrossMachineHandoffModal({
         </div>
       }
     >
-        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-white/[0.065] px-5 py-4">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-fg/[0.065] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200">
               <CloudArrowUp size={19} weight="duotone" />
@@ -1014,7 +1014,7 @@ export function CrossMachineHandoffModal({
             aria-label="Close handoff setup"
             onClick={onClose}
             disabled={sending}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-30"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-30"
           >
             <X size={15} />
           </button>
@@ -1063,7 +1063,7 @@ export function CrossMachineHandoffModal({
           {stage === "choose" ? (
             <div className="space-y-5">
               <div>
-                <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
+                <div className="inline-flex w-full rounded-lg border border-fg/[0.07] bg-fg/[0.02] p-0.5">
                   {([
                     { value: "fork" as const, label: "Fork", disabled: !sourceProviderSupportsFork },
                     { value: "brief" as const, label: "Brief", disabled: false },
@@ -1153,10 +1153,10 @@ export function CrossMachineHandoffModal({
                           "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors",
                           selected
                             ? "border-sky-300/26 bg-sky-400/[0.09]"
-                            : "border-white/[0.065] bg-white/[0.025] hover:bg-white/[0.045]",
+                            : "border-fg/[0.065] bg-fg/[0.025] hover:bg-fg/[0.045]",
                         )}
                       >
-                        <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", selected ? "bg-sky-300/12 text-sky-200" : "bg-white/[0.04] text-fg/48")}>
+                        <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", selected ? "bg-sky-300/12 text-sky-200" : "bg-fg/[0.04] text-fg/48")}>
                           <Desktop size={17} />
                         </div>
                         <div className="min-w-0 flex-1">
@@ -1179,7 +1179,7 @@ export function CrossMachineHandoffModal({
                     );
                   })}
                   {!loading && eligibleConnections.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-white/[0.09] px-4 py-6 text-center">
+                    <div className="rounded-xl border border-dashed border-fg/[0.09] px-4 py-6 text-center">
                       <Desktop size={22} className="mx-auto text-fg/28" />
                       <div className="mt-2 text-[11px] font-semibold text-fg/62">No eligible connected machines</div>
                       <div className="mt-1 text-[10px] leading-4 text-fg/40">
@@ -1244,7 +1244,7 @@ export function CrossMachineHandoffModal({
                     placeholder={mode === "fork"
                       ? "Optional. Tell the new chat what to do next; otherwise it just keeps going from the full history."
                       : "Optional. Tell the new chat what to do next; otherwise it just continues from the summary."}
-                    className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-white/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
+                    className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-fg/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
                   />
                   <span className="mt-1 block text-right text-[9px] text-fg/28">{continuationPrompt.length} / 4,000</span>
                 </label>
@@ -1301,7 +1301,7 @@ export function CrossMachineHandoffModal({
                   layout="inline"
                 />
               ) : null}
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-fg/[0.07] bg-fg/[0.025] px-3 py-2.5">
                 <input
                   type="checkbox"
                   checked={cloneApproved}
@@ -1326,7 +1326,7 @@ export function CrossMachineHandoffModal({
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[14px] font-semibold text-fg/90">Ready to continue on {selectedConnection.target.name}</div>
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[10px] text-fg/60">
+                <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 text-[10px] text-fg/60">
                   {isInsecureRoute(selectedConnection) ? <ShieldWarning size={11} /> : <LockKey size={11} />}
                   {routeLabel(selectedConnection)}
                 </div>
@@ -1393,7 +1393,7 @@ export function CrossMachineHandoffModal({
                 />
               ) : null}
               {/* What travels, as marks rather than a paragraph. */}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/[0.065] bg-white/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-fg/[0.065] bg-fg/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
                 <span className="inline-flex items-center gap-1.5">
                   <HardDrives size={13} className="text-fg/40" />
                   {reviewIsFork ? "Sent: the full conversation history" : "Sent: a short summary of this chat"}

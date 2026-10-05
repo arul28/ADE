@@ -35,8 +35,8 @@ function Chip({
         "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border text-[11px] font-medium transition-colors duration-100",
         provider ? "pl-1.5 pr-2.5" : "px-2.5",
         selected
-          ? "border-white/[0.14] bg-white/[0.08] text-fg"
-          : "border-white/[0.05] bg-transparent text-muted-fg/75 hover:bg-white/[0.035] hover:text-fg",
+          ? "border-fg/[0.14] bg-fg/[0.08] text-fg"
+          : "border-fg/[0.05] bg-transparent text-muted-fg/75 hover:bg-fg/[0.035] hover:text-fg",
       )}
     >
       {provider ? (
@@ -90,7 +90,7 @@ export function ImportTopBar({
   sourceDisabled: boolean;
 }) {
   return (
-    <div className="flex shrink-0 flex-col gap-2 border-b border-white/[0.06] px-4 py-2.5 sm:px-5">
+    <div className="flex shrink-0 flex-col gap-2 border-b border-fg/[0.06] px-4 py-2.5 sm:px-5">
       <div className="flex min-w-0 items-center gap-2">
         <LaneCombobox
           lanes={laneOptions}
@@ -116,7 +116,7 @@ export function ImportTopBar({
             placeholder="Search"
             aria-label="Search sessions"
             data-import-search=""
-            className="h-7 w-full rounded-full border border-white/[0.06] bg-white/[0.02] pl-7 pr-3 text-[11.5px] text-fg placeholder:text-muted-fg/45 focus:border-white/[0.14] focus:bg-white/[0.035] focus:outline-none"
+            className="h-7 w-full rounded-full border border-fg/[0.06] bg-fg/[0.02] pl-7 pr-3 text-[11.5px] text-fg placeholder:text-muted-fg/45 focus:border-fg/[0.14] focus:bg-fg/[0.035] focus:outline-none"
           />
         </label>
         <SmartTooltip content={{ label: "Refresh", description: "Scan again for sessions." }}>
@@ -125,7 +125,7 @@ export function ImportTopBar({
             onClick={onRefresh}
             disabled={loading}
             aria-label="Refresh session list"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/[0.06] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg disabled:cursor-default"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-fg/[0.06] text-muted-fg/70 transition-colors hover:bg-fg/[0.04] hover:text-fg disabled:cursor-default"
           >
             {loading ? <CircleNotch size={12} className="animate-spin" /> : <ArrowClockwise size={12} />}
           </button>

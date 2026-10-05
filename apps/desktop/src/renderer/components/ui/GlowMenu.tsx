@@ -193,7 +193,7 @@ export function GlowMenu<T extends string>({
       className={cn(
         flat
           ? "relative min-w-0 flex-1 overflow-hidden"
-          : "relative min-w-0 overflow-hidden rounded-xl border border-white/[0.08] bg-gradient-to-b from-surface/80 to-bg/40 p-1 shadow-lg backdrop-blur-lg",
+          : "relative min-w-0 overflow-hidden rounded-xl border border-fg/[0.08] bg-gradient-to-b from-surface/80 to-bg/40 p-1 shadow-lg backdrop-blur-lg",
         className,
       )}
       initial="initial"

@@ -192,8 +192,8 @@ export function ChatProofArtifactCard({
       ref={containerRef}
       data-chat-proof-artifact={artifact.id}
       className={cn(
-        "group min-w-0 overflow-hidden rounded-2xl border border-white/[0.075] bg-white/[0.028] shadow-[0_16px_44px_-34px_rgba(0,0,0,0.9)]",
-        "transition-[border-color,background-color,transform] duration-200 hover:border-white/[0.12] hover:bg-white/[0.04]",
+        "group min-w-0 overflow-hidden rounded-2xl border border-fg/[0.075] bg-fg/[0.028] shadow-[0_16px_44px_-34px_rgba(0,0,0,0.9)]",
+        "transition-[border-color,background-color,transform] duration-200 hover:border-fg/[0.12] hover:bg-fg/[0.04]",
         "w-full",
       )}
     >
@@ -219,7 +219,7 @@ export function ChatProofArtifactCard({
           <button
             type="button"
             onClick={openExternal}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 font-sans text-[10px] font-medium text-muted-fg/42 transition-colors hover:bg-white/[0.055] hover:text-fg/75"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 font-sans text-[10px] font-medium text-muted-fg/42 transition-colors hover:bg-fg/[0.055] hover:text-fg/75"
           >
             Open
             <ArrowSquareOut size={11} />
@@ -229,7 +229,7 @@ export function ChatProofArtifactCard({
 
       <div className={cn("px-2.5", variant === "timeline" ? "pb-2.5" : "pb-3")}>
         {loading ? (
-          <div className="flex min-h-36 items-center justify-center rounded-xl border border-white/[0.055] bg-black/18 text-muted-fg/35">
+          <div className="flex min-h-36 items-center justify-center rounded-xl border border-fg/[0.055] bg-black/18 text-muted-fg/35">
             <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof preview" />
           </div>
         ) : failed ? (
@@ -239,7 +239,7 @@ export function ChatProofArtifactCard({
         ) : preview && image ? (
           <button
             type="button"
-            className="block w-full overflow-hidden rounded-xl border border-white/[0.06] bg-black/22 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+            className="block w-full overflow-hidden rounded-xl border border-fg/[0.06] bg-black/22 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
             aria-label={`Enlarge ${artifact.title}`}
             onClick={() => setLightboxOpen(true)}
           >
@@ -254,7 +254,7 @@ export function ChatProofArtifactCard({
             />
           </button>
         ) : preview && video ? (
-          <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-black">
+          <div className="overflow-hidden rounded-xl border border-fg/[0.06] bg-black">
             <ProofVideoPoster
               artifact={artifact}
               preview={preview}
@@ -265,7 +265,7 @@ export function ChatProofArtifactCard({
             />
           </div>
         ) : !image && !video ? (
-          <div className="flex min-h-20 items-center gap-3 rounded-xl border border-white/[0.05] bg-black/14 px-3.5 py-3">
+          <div className="flex min-h-20 items-center gap-3 rounded-xl border border-fg/[0.05] bg-black/14 px-3.5 py-3">
             <FileText size={18} weight="duotone" className="shrink-0 text-muted-fg/30" />
             <div className="min-w-0 font-sans text-[10.5px] leading-4 text-muted-fg/44">
               {artifact.description?.trim() || "Supporting artifact collected with this chat."}
@@ -315,15 +315,15 @@ export function ChatProofTimeline({
   return (
     <section data-chat-proof-timeline="" className="mt-5 min-w-0 pb-1">
       <div className="mb-2.5 flex items-center gap-2">
-        <span className="h-px flex-1 bg-white/[0.055]" />
+        <span className="h-px flex-1 bg-fg/[0.055]" />
         <div className="inline-flex items-center gap-1.5 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/44">
           <Cube size={11} weight="duotone" />
           Proof collected in this chat
-          <span className="rounded-full bg-white/[0.055] px-1.5 font-mono text-[8.5px] tabular-nums text-fg/52">
+          <span className="rounded-full bg-fg/[0.055] px-1.5 font-mono text-[8.5px] tabular-nums text-fg/52">
             {artifacts.length}
           </span>
         </div>
-        <span className="h-px flex-1 bg-white/[0.055]" />
+        <span className="h-px flex-1 bg-fg/[0.055]" />
       </div>
       <div className="grid min-w-0 grid-cols-1 gap-2.5">
         {visibleArtifacts.map((artifact) => (
@@ -338,7 +338,7 @@ export function ChatProofTimeline({
       {hiddenCount > 0 && onOpenDrawer ? (
         <button
           type="button"
-          className="mt-2.5 w-full rounded-xl border border-white/[0.055] bg-white/[0.018] py-2 font-sans text-[10.5px] text-muted-fg/46 transition-colors hover:border-white/[0.1] hover:bg-white/[0.04] hover:text-fg/68"
+          className="mt-2.5 w-full rounded-xl border border-fg/[0.055] bg-fg/[0.018] py-2 font-sans text-[10.5px] text-muted-fg/46 transition-colors hover:border-fg/[0.1] hover:bg-fg/[0.04] hover:text-fg/68"
           onClick={onOpenDrawer}
         >
           View {hiddenCount} earlier proof item{hiddenCount === 1 ? "" : "s"}
@@ -399,7 +399,7 @@ function DrawerProofTile({
           "relative overflow-hidden rounded-lg border bg-black/22",
           hasPreviewProblem
             ? "border-amber-200/[0.11] bg-amber-300/[0.03]"
-            : "border-white/[0.07]",
+            : "border-fg/[0.07]",
         )}
       >
         {hasPreviewProblem ? (
@@ -663,7 +663,7 @@ export function ChatComputerUsePanel({
             title="Refresh proof"
             aria-label="Refresh proof"
             onClick={() => void onRefresh()}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/70"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/35 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
           >
             <ArrowClockwise size={11} weight="bold" />
           </button>
@@ -715,14 +715,14 @@ export function ChatComputerUsePanel({
               className={cn(
                 "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
                 filter.media === option.value
-                  ? "bg-white/[0.09] text-fg/85"
-                  : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+                  ? "bg-fg/[0.09] text-fg/85"
+                  : "text-muted-fg/50 hover:bg-fg/[0.05] hover:text-fg/70",
               )}
             >
               {option.label}
             </button>
           ))}
-          <span className="mx-0.5 h-3 w-px bg-white/[0.08]" aria-hidden />
+          <span className="mx-0.5 h-3 w-px bg-fg/[0.08]" aria-hidden />
           <button
             type="button"
             aria-pressed={filter.inAnswerOnly}
@@ -730,8 +730,8 @@ export function ChatComputerUsePanel({
             className={cn(
               "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
               filter.inAnswerOnly
-                ? "bg-white/[0.09] text-fg/85"
-                : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+                ? "bg-fg/[0.09] text-fg/85"
+                : "text-muted-fg/50 hover:bg-fg/[0.05] hover:text-fg/70",
             )}
           >
             In answers

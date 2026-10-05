@@ -167,7 +167,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
+        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-fg/[0.04]"
         style={{ fontFamily: SANS_FONT, color: COLORS.textPrimary }}
       >
         <PrAgentAvatar
@@ -224,7 +224,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
       {open && body ? (
         <div
           className="border-t px-4 py-3"
-          style={{ borderColor: COLORS.border, background: "rgba(255,255,255,0.01)" }}
+          style={{ borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-fg) 1%, transparent)" }}
         >
           <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
             {body}

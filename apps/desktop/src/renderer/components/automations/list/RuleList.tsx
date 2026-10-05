@@ -84,7 +84,7 @@ const FILTER_CHIP_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-colum
 const FILTER_CHIP_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
 const TOOLBAR_ICON_BUTTON_CLASS =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg disabled:opacity-50";
+  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-fg/[0.06] hover:text-fg disabled:opacity-50";
 
 function defaultRuleKey(rule: AutomationRuleSummary): string {
   return rule.id;
@@ -151,7 +151,7 @@ export function RuleList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b border-white/[0.06] px-2.5 pb-2 pt-1">
+      <div className="shrink-0 border-b border-fg/[0.06] px-2.5 pb-2 pt-1">
         <div className="flex items-center gap-1">
           <div className="relative min-w-0 flex-1">
             <MagnifyingGlass size={12} weight="bold" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />

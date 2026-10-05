@@ -160,7 +160,7 @@ export function NeedsAttentionBlock({
                     onOpen(entry.entry.id);
                   }
                 }}
-                className="group flex cursor-pointer items-center gap-2.5 px-4 py-1.5 transition-colors hover:bg-white/[0.035]"
+                className="group flex cursor-pointer items-center gap-2.5 px-4 py-1.5 transition-colors hover:bg-fg/[0.035]"
               >
                 <PrAgentAvatar login={entry.entry.author} isBot={entry.identity.isBot} avatarUrl={entry.entry.avatarUrl} size={16} />
                 <span className="shrink-0 text-[12px] font-medium" style={{ color: COLORS.textPrimary }}>
@@ -305,7 +305,7 @@ export function BotGroupRow({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-white/[0.035]"
+        className="flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-fg/[0.035]"
         style={{ background: "transparent", border: "none", cursor: "pointer" }}
       >
         <PrAgentAvatar login={group.identity.login} isBot avatarUrl={group.avatarUrl} size={20} />
@@ -338,7 +338,7 @@ export function BotGroupRow({
                     if (!entryOpen) onFocus(event.id);
                   }}
                   aria-expanded={entryOpen}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.04]"
                   style={{ background: "transparent", border: "none", cursor: "pointer" }}
                 >
                   <span className="inline-flex shrink-0">{entryStateIcon(event)}</span>

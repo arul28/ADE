@@ -536,7 +536,7 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
       <div
         className={cn(
           "mx-2 overflow-hidden rounded-lg border border-transparent transition-colors",
-          isSelected ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
+          isSelected ? "bg-fg/[0.06]" : "hover:bg-fg/[0.04]",
         )}
         data-thread-id={session.id}
         data-machine-id={entry.machineId}

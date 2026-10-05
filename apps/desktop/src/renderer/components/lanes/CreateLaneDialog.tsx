@@ -531,11 +531,11 @@ export function CreateLaneDialog({
                     ) : null}
                   </>
                 ) : loadingBranches ? (
-                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
                     Loading branches...
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-dashed border-fg/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
                     No {createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.
                   </div>
                 )}
@@ -548,7 +548,7 @@ export function CreateLaneDialog({
                   type="button"
                   onClick={() => setPickerOpen(true)}
                   disabled={busy || laneCreated || (loadingBranches && allBranches.length === 0)}
-                  className="flex w-full items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-left transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex w-full items-center gap-3 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-3 py-2.5 text-left transition-colors hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                   aria-label="Choose import branch"
                   aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
                   data-tour="lanes.createDialog.branchPickerOpen"
@@ -564,7 +564,7 @@ export function CreateLaneDialog({
                             {selectedBranchMeta.branch.name}
                           </span>
                           {selectedBranchMeta.branch.isRemote ? (
-                            <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
+                            <span className="rounded-full bg-fg/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-fg">
                               remote
                             </span>
                           ) : null}
@@ -655,7 +655,7 @@ export function CreateLaneDialog({
         </section>
 
         {/* Advanced — Linear issue + template */}
-        <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
+        <details open className="group rounded-xl border border-fg/[0.06] bg-fg/[0.02] open:bg-fg/[0.03]">
           <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
             <span className="flex items-center gap-2">
               <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
@@ -874,7 +874,7 @@ function SelectedLinearIssueCard({
         </div>
         <button
           type="button"
-          className="rounded-md p-1 text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg"
+          className="rounded-md p-1 text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg"
           onClick={onClear}
           aria-label="Disconnect Linear issue"
         >

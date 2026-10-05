@@ -388,7 +388,7 @@ function AppleMiniPlayerFrameView({
             <button
               type="button"
               disabled={starting}
-              className="rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg disabled:opacity-50"
+              className="rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-fg/[0.07] hover:text-fg disabled:opacity-50"
               onClick={startDevice}
             >
               {starting ? "Starting…" : "Start"}

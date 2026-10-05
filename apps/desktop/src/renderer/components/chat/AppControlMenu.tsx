@@ -197,12 +197,12 @@ export function AppControlMenu({
         onClick={() => setOpen((value) => !value)}
         className={cn(
           "inline-flex min-w-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[11px] font-medium",
-          "text-fg/85 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
+          "text-fg/85 transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06]",
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
           // 40, not 45: the same disabled weight `MENU_ITEM_CLASS` gives the
           // browser menu next door.
           "disabled:cursor-not-allowed disabled:opacity-40",
-          open && "bg-white/[0.06]",
+          open && "bg-fg/[0.06]",
           triggerClassName,
         )}
       >
@@ -293,7 +293,7 @@ export function AppControlMenuItem({
           "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
           tone === "danger"
             ? "text-rose-200/85 hover:bg-rose-500/12"
-            : "text-fg/85 hover:bg-white/[0.06]",
+            : "text-fg/85 hover:bg-fg/[0.06]",
           disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
         )}
       >

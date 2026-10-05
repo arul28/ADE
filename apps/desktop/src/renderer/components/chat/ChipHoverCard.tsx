@@ -429,8 +429,8 @@ export function useChipHoverCard(
             role="tooltip"
             data-chip-hover-card={data.kind}
             className={
-              "pointer-events-none absolute max-w-[300px] rounded-lg border border-white/12"
-              + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+              "pointer-events-none absolute max-w-[300px] rounded-lg border border-fg/12"
+              + " bg-(color:--work-popover-bg) px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
             }
             style={{
               top: coords?.y ?? 0,

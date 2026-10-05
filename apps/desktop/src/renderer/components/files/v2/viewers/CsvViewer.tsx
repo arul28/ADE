@@ -178,7 +178,7 @@ export function CsvViewer(props: ViewerProps) {
       {/* Frozen header */}
       <div
         className="grid shrink-0 border-b text-xs font-semibold"
-        style={{ gridTemplateColumns: gridTemplate, borderColor: COLORS.border, background: "rgba(255,255,255,0.03)" }}
+        style={{ gridTemplateColumns: gridTemplate, borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
       >
         {header.map((cell, col) => (
           <button
@@ -208,7 +208,7 @@ export function CsvViewer(props: ViewerProps) {
                   top: vItem.start,
                   height: ROW_HEIGHT,
                   gridTemplateColumns: gridTemplate,
-                  borderColor: "rgba(255,255,255,0.04)",
+                  borderColor: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
                 }}
               >
                 {header.map((_, col) => (

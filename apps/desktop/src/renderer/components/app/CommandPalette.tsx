@@ -2631,8 +2631,8 @@ export function CommandPalette({
                                             className={cn(
                                               "mx-2 flex w-[calc(100%-1rem)] items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors",
                                               isSelected
-                                                ? "bg-white/[0.06]"
-                                                : "hover:bg-white/[0.04]",
+                                                ? "bg-fg/[0.06]"
+                                                : "hover:bg-fg/[0.04]",
                                             )}
                                             onMouseEnter={() =>
                                               setSelectedIdx(index)
@@ -2849,7 +2849,7 @@ function ProjectLocationChooser({
                   : "Projects on this computer"}
               </span>
               {isRemote ? (
-                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#FBBF24]">
+                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:color-mix(in_srgb,#FBBF24_var(--ade-tone-text-strength,100%),var(--color-fg))]">
                   Connected
                 </span>
               ) : null}

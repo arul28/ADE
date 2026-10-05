@@ -86,7 +86,7 @@ function ChipSelect<T extends string>({
 }) {
   return (
     <label
-      className="relative inline-flex h-7 max-w-[210px] items-center gap-1 rounded-full border border-white/[0.09] bg-white/[0.04] pl-2.5 pr-6 text-[11.5px] text-fg/80 transition-colors hover:border-white/20"
+      className="relative inline-flex h-7 max-w-[210px] items-center gap-1 rounded-full border border-fg/[0.09] bg-fg/[0.04] pl-2.5 pr-6 text-[11.5px] text-fg/80 transition-colors hover:border-fg/20"
       title={title}
     >
       <span className="text-muted-fg/55">{label}</span>
@@ -319,7 +319,7 @@ export function CloudAgentsPanel({
       panelStyle={{
         background: "var(--ade-shell-surface, #121019)",
         borderRadius: 16,
-        borderColor: `color-mix(in srgb, ${brand.accent} 26%, rgba(255,255,255,0.08))`,
+        borderColor: `color-mix(in srgb, ${brand.accent} 26%, color-mix(in srgb, var(--color-fg) 8%, transparent))`,
         boxShadow: `0 30px 90px rgba(0,0,0,0.6), 0 0 0 1px color-mix(in srgb, ${brand.accent} 12%, transparent)`,
       }}
     >
@@ -344,7 +344,7 @@ export function CloudAgentsPanel({
           aria-label="Refresh"
           title="Refresh"
           onClick={() => void refresh(true)}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/70 transition-colors hover:bg-white/[0.07] hover:text-fg"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/70 transition-colors hover:bg-fg/[0.07] hover:text-fg"
         >
           <ArrowsClockwise size={15} weight="bold" className={refreshing ? "animate-spin" : undefined} />
         </button>
@@ -353,7 +353,7 @@ export function CloudAgentsPanel({
           aria-label="Close"
           title="Close"
           onClick={onClose}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/70 transition-colors hover:bg-white/[0.07] hover:text-fg"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/70 transition-colors hover:bg-fg/[0.07] hover:text-fg"
         >
           <X size={15} weight="bold" />
         </button>
@@ -361,7 +361,7 @@ export function CloudAgentsPanel({
 
       {/* Launch bar */}
       {!unavailable ? (
-        <div className="mx-5 shrink-0 rounded-2xl border border-white/[0.09] bg-black/20 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] focus-within:border-white/[0.18]">
+        <div className="mx-5 shrink-0 rounded-2xl border border-fg/[0.09] bg-black/20 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] focus-within:border-fg/[0.18]">
           <textarea
             ref={promptRef}
             value={prompt}
@@ -426,7 +426,7 @@ export function CloudAgentsPanel({
       {/* Toolbar */}
       {!unavailable ? (
         <div className="mx-5 mt-3 flex shrink-0 flex-wrap items-center gap-2">
-          <div className="flex items-center gap-0.5 rounded-full border border-white/[0.07] bg-white/[0.025] p-0.5">
+          <div className="flex items-center gap-0.5 rounded-full border border-fg/[0.07] bg-fg/[0.025] p-0.5">
             {FILTERS.map((option) => (
               <button
                 key={option.id}
@@ -435,7 +435,7 @@ export function CloudAgentsPanel({
                 onClick={() => setFilter(option.id)}
                 className={cn(
                   "inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11.5px] transition-colors",
-                  filter === option.id ? "bg-white/[0.1] text-fg" : "text-muted-fg/65 hover:text-fg/90",
+                  filter === option.id ? "bg-fg/[0.1] text-fg" : "text-muted-fg/65 hover:text-fg/90",
                   option.id === "needs_you" && counts.needs_you > 0 && filter !== option.id && "text-amber-200/90",
                 )}
               >
@@ -447,13 +447,13 @@ export function CloudAgentsPanel({
           <button
             type="button"
             onClick={() => setScope((current) => (current === "project" ? "everywhere" : "project"))}
-            className="inline-flex h-7 items-center rounded-full border border-white/[0.07] px-2.5 text-[11.5px] text-muted-fg/70 transition-colors hover:border-white/15 hover:text-fg/90"
+            className="inline-flex h-7 items-center rounded-full border border-fg/[0.07] px-2.5 text-[11.5px] text-muted-fg/70 transition-colors hover:border-fg/15 hover:text-fg/90"
             title={scope === "project" ? "Showing this project's repo. Click to include every repo." : "Showing every repo. Click for this project only."}
           >
             {scope === "project" ? "This project" : "All repos"}
           </button>
           <span className="flex-1" />
-          <label className="inline-flex h-7 w-[220px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 focus-within:border-white/20">
+          <label className="inline-flex h-7 w-[220px] items-center gap-1.5 rounded-full border border-fg/[0.07] bg-fg/[0.025] px-2.5 focus-within:border-fg/20">
             <MagnifyingGlass size={12} className="text-muted-fg/50" />
             <input
               value={query}
@@ -471,7 +471,7 @@ export function CloudAgentsPanel({
         {loading && !list ? (
           <div className="space-y-2 px-3 pt-3" aria-label="Loading">
             {[0, 1, 2, 3].map((index) => (
-              <div key={index} className="h-[70px] animate-pulse rounded-xl bg-white/[0.03]" />
+              <div key={index} className="h-[70px] animate-pulse rounded-xl bg-fg/[0.03]" />
             ))}
           </div>
         ) : unavailable || loadError ? (
@@ -484,13 +484,13 @@ export function CloudAgentsPanel({
               {unavailable ?? loadError}
             </div>
             {brand.loginCommand ? (
-              <code className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 font-mono text-[12px] text-fg/85">{brand.loginCommand}</code>
+              <code className="rounded-lg border border-fg/10 bg-black/30 px-3 py-1.5 font-mono text-[12px] text-fg/85">{brand.loginCommand}</code>
             ) : null}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => void refresh(true)}
-                className="inline-flex h-8 items-center rounded-lg border border-white/10 px-3 text-[12px] text-fg/80 hover:border-white/20"
+                className="inline-flex h-8 items-center rounded-lg border border-fg/10 px-3 text-[12px] text-fg/80 hover:border-fg/20"
               >
                 Try again
               </button>
@@ -538,7 +538,7 @@ export function CloudAgentsPanel({
                     {section.label}
                   </span>
                   <span className="text-[10.5px] tabular-nums text-muted-fg/35">{section.agents.length}</span>
-                  <span className="h-px flex-1 bg-white/[0.05]" />
+                  <span className="h-px flex-1 bg-fg/[0.05]" />
                 </div>
                 <div className="space-y-0.5">
                   {section.agents.map((agent) => (
@@ -568,7 +568,7 @@ export function CloudAgentsPanel({
       </div>
 
       {/* Footer */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.06] px-5 py-2 text-[11px] text-muted-fg/45">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-fg/[0.06] px-5 py-2 text-[11px] text-muted-fg/45">
         <span className="inline-flex items-center gap-1.5">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/70" aria-hidden />
           Live{fetchedAge ? ` · updated ${fetchedAge === "now" ? "just now" : `${fetchedAge} ago`}` : ""}

@@ -140,7 +140,7 @@ function Swatch({
         cursor: isTaken ? "not-allowed" : "pointer",
         outline: isSelected ? "2px solid var(--color-accent, #fff)" : "none",
         outlineOffset: 2,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+        boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 18%, transparent)",
         border: "none",
         padding: 0,
         transition: "transform 80ms",

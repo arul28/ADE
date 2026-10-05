@@ -45,7 +45,7 @@ function Section({
 }) {
   return (
     <section className={cn(sectionCls, "overflow-hidden")}>
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2.5">
+      <div className="flex items-center gap-2 border-b border-fg/[0.06] px-4 py-2.5">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/12 text-accent">
           <Icon size={13} weight="fill" />
         </span>
@@ -226,7 +226,7 @@ export function RuleBuilder({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="shrink-0 border-b border-white/[0.06] bg-white/[0.02] px-5 py-3">
+      <div className="shrink-0 border-b border-fg/[0.06] bg-fg/[0.02] px-5 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -302,7 +302,7 @@ export function RuleBuilder({
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 placeholder="What this automation is for (optional)"
               />
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2">
                 <span className="min-w-0">
                   <span className="block text-[11.5px] text-fg/90">Enabled</span>
                   <span className="mt-0.5 block text-[10px] text-muted-fg/60">

@@ -1,4 +1,5 @@
 import React from "react";
+import { toneText } from "../laneDesignTokens";
 import type { LaneSummary } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { LaneIcon } from "../../ui/vcsIcons";
@@ -29,7 +30,7 @@ function StackRow({
   const accent = getLaneAccent(lane, colorIndex);
   const content = (
     <>
-      <span className={cn("flex min-w-0 shrink items-center gap-1.5 text-[13px]", current ? "font-semibold" : "font-medium")} style={{ color: accent }}>
+      <span className={cn("flex min-w-0 shrink items-center gap-1.5 text-[13px]", current ? "font-semibold" : "font-medium")} style={{ color: toneText(accent) }}>
         <LaneIcon size={13} />
         <span className="min-w-0 truncate">{lane.name}</span>
       </span>

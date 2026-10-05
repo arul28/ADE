@@ -165,7 +165,7 @@ export function BrowserTabStrip({
                 "group/tab relative inline-flex h-6 max-w-[144px] min-w-[84px] shrink-0 items-center",
                 "gap-1.5 rounded-md px-2 text-[12px]",
                 "transition-colors duration-[120ms] ease-out",
-                active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
+                active ? "text-fg/92" : "text-muted-fg/70 hover:bg-fg/[0.04] hover:text-fg/85",
               )}
               style={groupColor ? { boxShadow: `inset 0 0 0 1px ${groupColor}` } : undefined}
               title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
@@ -174,13 +174,13 @@ export function BrowserTabStrip({
                 reduceMotion ? (
                   <span
                     aria-hidden="true"
-                    className="absolute inset-0 rounded-md bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-fg/[0.07]"
                   />
                 ) : (
                   <motion.span
                     aria-hidden="true"
                     layoutId={TAB_INDICATOR_LAYOUT_ID}
-                    className="absolute inset-0 rounded-md bg-white/[0.07]"
+                    className="absolute inset-0 rounded-md bg-fg/[0.07]"
                     transition={TAB_INDICATOR_SPRING}
                   />
                 )
@@ -238,7 +238,7 @@ export function BrowserTabStrip({
                 className={cn(
                   "relative -mr-1 inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px]",
                   "text-muted-fg/45 opacity-0 transition-colors duration-[120ms] ease-out",
-                  "hover:bg-white/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                  "hover:bg-fg/[0.1] hover:text-fg/85 group-hover/tab:opacity-100 focus-visible:opacity-100",
                   TOOLBAR_FOCUS,
                 )}
                 onClick={(event) => {
@@ -270,7 +270,7 @@ export function BrowserTabStrip({
         onClick={onNewTab}
         className={cn(
           "mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-          "text-muted-fg/60 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+          "text-muted-fg/60 transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg/85",
           "disabled:cursor-not-allowed disabled:opacity-45",
           TOOLBAR_FOCUS,
         )}

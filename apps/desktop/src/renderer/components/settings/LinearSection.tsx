@@ -604,7 +604,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             }}>
               <div style={{
                 width: 40, height: 40, borderRadius: 10,
-                background: "rgba(255,255,255,0.04)",
+                background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}>
                 <Key size={20} weight="duotone" style={{ color: COLORS.textMuted }} />
@@ -632,7 +632,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   }}
                   style={{
                     flex: 1, height: 36, borderRadius: 8,
-                    background: "rgba(255,255,255,0.03)",
+                    background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
                     border: `1px solid ${COLORS.border}`,
                     padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT,
                     color: COLORS.textPrimary, outline: "none",
@@ -708,7 +708,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             gap: 12,
             padding: "9px 11px",
             borderRadius: 8,
-            background: "rgba(255,255,255,0.03)",
+            background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
             border: `1px solid ${COLORS.border}`,
             marginBottom: 10,
           }}>

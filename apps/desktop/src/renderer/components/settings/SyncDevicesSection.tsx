@@ -74,7 +74,7 @@ const detailBlockStyle: React.CSSProperties = {
   border: `1px solid ${COLORS.border}`,
   borderRadius: 12,
   padding: 14,
-  background: "rgba(255,255,255,0.015)",
+  background: "color-mix(in srgb, var(--color-fg) 1.5%, transparent)",
 };
 
 const panelStyle: React.CSSProperties = {
@@ -649,7 +649,7 @@ function MachineNameRow({
             height: 28,
             borderRadius: 8,
             border: `1px solid ${COLORS.accentBorder}`,
-            background: "rgba(255,255,255,0.06)",
+            background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
             color: COLORS.textPrimary,
             fontFamily: SANS_FONT,
             fontSize: 13,
@@ -1451,13 +1451,13 @@ function PinEditor({
                 color: COLORS.textPrimary,
                 background: filled
                   ? "rgba(167, 139, 250, 0.10)"
-                  : "rgba(255, 255, 255, 0.06)",
+                  : "color-mix(in srgb, var(--color-fg) 6%, transparent)",
                 border: `1px solid ${
                   isFocused
                     ? COLORS.accent
                     : filled
                       ? COLORS.accentBorder
-                      : "rgba(255, 255, 255, 0.18)"
+                      : "color-mix(in srgb, var(--color-fg) 18%, transparent)"
                 }`,
                 borderRadius: 10,
                 outline: "none",

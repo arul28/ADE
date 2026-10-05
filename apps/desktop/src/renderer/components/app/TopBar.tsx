@@ -327,7 +327,7 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
 }
 
 const HEADER_STATUS_MENU_ROW_CLASS =
-  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-fg/[0.06] hover:text-fg/90";
 
 function ShellConnectionChip({
   label,
@@ -463,7 +463,7 @@ function HeaderStatusMenu({
           maxHeight: "calc(100vh - 80px)",
           overflowY: "auto",
         } : undefined}
-        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-fg/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
         onClose={close}
       >
         <div role="menu" aria-label="Connections and usage">

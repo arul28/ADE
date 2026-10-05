@@ -12,7 +12,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
  * (the alternatives), and ghost for the meta actions — report, copy, disclose.
  */
 export const ERROR_PRIMARY_BUTTON =
-  "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 px-4 text-[13px] font-semibold text-[#1a1206] transition-colors hover:bg-amber-300 disabled:opacity-60";
+  "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 px-4 text-[13px] font-semibold text-(color:--ade-on-tone-ink) transition-colors hover:bg-amber-300 disabled:opacity-60";
 
 export const ERROR_SECONDARY_BUTTON =
   "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07] disabled:opacity-60";

@@ -260,7 +260,7 @@ export function ChatUserMinimap({
               // the card would chase the pointer and reselect messages.
               onMouseMove={(event) => event.stopPropagation()}
             >
-              <span className="block rounded-xl border border-white/[0.08] bg-[color:rgb(12,12,16)]/95 p-3 text-left font-sans shadow-xl shadow-black/25 backdrop-blur-md">
+              <span className="block rounded-xl border border-fg/[0.08] bg-[color:rgb(12,12,16)]/95 p-3 text-left font-sans shadow-xl shadow-black/25 backdrop-blur-md">
                 {previewOutcomeLabel ? (
                   <span
                     className={cn(

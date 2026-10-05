@@ -55,7 +55,7 @@ export function WarmEmptyState({
                   onClick={() => onOpen(path)}
                   className={[
                     "flex h-7 items-center gap-2 rounded-[6px] px-2 text-left text-[12px]",
-                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.05]",
+                    "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.05]",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                   ].join(" ")}
                   style={{ color: COLORS.textMuted }}

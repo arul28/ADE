@@ -233,7 +233,7 @@ function PrDetails({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-white/[0.04]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-medium transition-colors hover:bg-fg/[0.04]"
         style={{ color: COLORS.textPrimary }}
       >
         <CaretRight
@@ -602,7 +602,7 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
   const { icon: Glyph, color } = getFileIcon(fileName);
   return (
     <div className="mb-3 overflow-hidden rounded-[8px] last:mb-0" style={{ background: "rgba(0,0,0,0.25)" }} data-testid="pr-md-code-file">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: "rgba(255,255,255,0.035)", color: COLORS.textSecondary }}>
+      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", color: COLORS.textSecondary }}>
         <Glyph size={12} style={{ color }} />
         <span className="min-w-0 flex-1 truncate font-mono">{fileName}</span>
         <button
@@ -614,7 +614,7 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
               window.setTimeout(() => setCopied(false), 1200);
             });
           }}
-          className="rounded px-1.5 py-0.5 text-[10.5px] hover:bg-white/[0.07]"
+          className="rounded px-1.5 py-0.5 text-[10.5px] hover:bg-fg/[0.07]"
           style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}
         >
           {copied ? "Copied" : "Copy"}

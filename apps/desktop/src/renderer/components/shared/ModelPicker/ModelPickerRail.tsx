@@ -63,7 +63,7 @@ export const ModelPickerRail = memo(function ModelPickerRail({
       role="tablist"
       aria-orientation="vertical"
       data-model-picker-rail="true"
-      className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-white/[0.06] bg-black/[0.18] p-1"
+      className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-fg/[0.06] bg-black/[0.18] p-1"
     >
       {entries.map((entry, index) => {
         const key = entryKey(entry);
@@ -155,7 +155,7 @@ const RailButton = memo(function RailButton({
 
   return (
     <>
-      {showDivider ? <div className="my-0.5 h-px bg-white/[0.05]" aria-hidden /> : null}
+      {showDivider ? <div className="my-0.5 h-px bg-fg/[0.05]" aria-hidden /> : null}
       <button
         ref={refCallback}
         type="button"
@@ -171,8 +171,8 @@ const RailButton = memo(function RailButton({
         className={cn(
           "relative inline-flex aspect-square w-full items-center justify-center rounded-md transition-colors duration-100",
           isSelected
-            ? "bg-white/[0.07] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
-            : "text-fg/75 hover:bg-white/[0.04]",
+            ? "bg-fg/[0.07] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
+            : "text-fg/75 hover:bg-fg/[0.04]",
         )}
       >
         {icon}

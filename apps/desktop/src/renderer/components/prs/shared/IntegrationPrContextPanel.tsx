@@ -7,7 +7,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div
       className="font-mono font-bold uppercase tracking-[1px]"
-      style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}
+      style={{ fontSize: 10, color: "var(--color-muted-fg)", marginBottom: 12 }}
     >
       {children}
     </div>
@@ -22,8 +22,8 @@ function Timeline({
   return (
     <div
       style={{
-        background: "#13101A",
-        border: "1px solid #1E1B26",
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
         padding: 16,
       }}
     >
@@ -34,7 +34,7 @@ function Timeline({
             ? { bg: "#22C55E18", fg: "#22C55E", border: "#22C55E30" }
             : stage.status === "current"
               ? { bg: "#A78BFA18", fg: "#C4B5FD", border: "#A78BFA30" }
-              : { bg: "#71717A12", fg: "#71717A", border: "#27272A" };
+              : { bg: "color-mix(in srgb, var(--color-muted-fg) 7%, transparent)", fg: "var(--color-muted-fg)", border: "var(--color-border)" };
           return (
             <React.Fragment key={stage.key}>
               <div
@@ -51,7 +51,7 @@ function Timeline({
                 {stage.label}
               </div>
               {index < stages.length - 1 ? (
-                <ArrowRight size={12} weight="bold" style={{ color: "#52525B" }} />
+                <ArrowRight size={12} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
               ) : null}
             </React.Fragment>
           );
@@ -110,8 +110,8 @@ export function IntegrationPrContextPanel({
 
       <div
         style={{
-          background: "#13101A",
-          border: "1px solid #1E1B26",
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
           padding: 16,
         }}
       >
@@ -123,7 +123,7 @@ export function IntegrationPrContextPanel({
                 Integration Lane Is Now A Normal PR
               </div>
               <div className="font-mono" style={{ fontSize: 10, color: "#DDD6FE", lineHeight: "16px" }}>
-                ADE assembled the selected source lanes into <span style={{ color: "#FAFAFA" }}>{pr.headBranch}</span> and opened this PR from that integration lane.
+                ADE assembled the selected source lanes into <span style={{ color: "var(--color-fg)" }}>{pr.headBranch}</span> and opened this PR from that integration lane.
                 {" "}
                 From here on, this behaves like a normal PR. The original source lanes stay visible here as provenance.
               </div>
@@ -158,16 +158,16 @@ export function IntegrationPrContextPanel({
           style={{
             marginTop: 12,
             paddingTop: 12,
-            borderTop: "1px solid #1E1B26",
+            borderTop: "1px solid var(--color-border)",
           }}
         >
           <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
             <SectionLabel>INTEGRATION PROVENANCE</SectionLabel>
-            <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
+            <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "var(--color-secondary-fg)" }}>
               {sourceLanes.length} LANE{sourceLanes.length !== 1 ? "S" : ""}
             </span>
           </div>
-          <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}>
+          <div className="font-mono" style={{ fontSize: 10, color: "var(--color-muted-fg)", marginBottom: 12 }}>
             These lanes were used to assemble the integration lane. Live merge checks now run on {liveLaneName}.
           </div>
           <div className="flex flex-col" style={{ gap: 4 }}>
@@ -176,17 +176,17 @@ export function IntegrationPrContextPanel({
                 key={lane.laneId}
                 style={{
                   padding: "10px 12px",
-                  background: "#0F0D14",
-                  border: "1px solid #1E1B26",
+                  background: "var(--color-surface-recessed)",
+                  border: "1px solid var(--color-border)",
                 }}
               >
                 <div className="flex items-center justify-between" style={{ gap: 8 }}>
                   <div className="flex items-center" style={{ gap: 8 }}>
-                    <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                    <span className="font-mono font-semibold" style={{ fontSize: 12, color: "var(--color-fg)" }}>
                       {lane.laneName}
                     </span>
                     {lane.branchRef ? (
-                      <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>
+                      <span className="font-mono" style={{ fontSize: 10, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>
                         {lane.branchRef}
                       </span>
                     ) : null}
@@ -201,8 +201,8 @@ export function IntegrationPrContextPanel({
               </div>
             ))}
           </div>
-          <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #1E1B2680" }}>
-            <ArrowRight size={12} weight="bold" style={{ color: "#52525B" }} />
+          <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)" }}>
+            <ArrowRight size={12} weight="bold" style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }} />
             <span
               className="font-mono font-bold uppercase tracking-[1px] inline-flex items-center"
               style={{
@@ -215,14 +215,14 @@ export function IntegrationPrContextPanel({
             >
               {targetLaneName}
             </span>
-            <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>integration target</span>
+            <span className="font-mono" style={{ fontSize: 10, color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))" }}>integration target</span>
           </div>
         </div>
 
         {actions ? (
           <div
             className="flex flex-wrap items-center"
-            style={{ gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid #1E1B26" }}
+            style={{ gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)" }}
           >
             {actions}
           </div>

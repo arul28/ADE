@@ -119,7 +119,7 @@ function LinearIssueDetails({
           </span>
           <span className="font-mono text-[12px] text-fg/80">{issue.identifier}</span>
           {issue.stateName ? (
-            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-fg/70" style={{ background: "rgba(255,255,255,0.06)" }}>
+            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
               {issue.stateName}
             </span>
           ) : null}
@@ -131,7 +131,7 @@ function LinearIssueDetails({
           <p className="mt-4 text-[13px] text-muted-fg/50">No description.</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/10 px-3 py-2">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-fg/10 px-3 py-2">
         {issue.url ? (
           <button
             type="button"

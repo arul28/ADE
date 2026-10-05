@@ -72,19 +72,19 @@ export const WORK_TOOL_CHROME_ROW = cn(
  *
  * Split out from the button below because the browser pane's controls are the
  * same square with a different disabled treatment, and two hand-typed copies of
- * `h-7 w-7 … rounded-[7px] … hover:bg-white/[0.06]` is exactly how the two
+ * `h-7 w-7 … rounded-[7px] … hover:bg-fg/[0.06]` is exactly how the two
  * toolbars drifted apart the first time.
  */
 export const WORK_TOOL_CHROME_GHOST = cn(
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border-0 bg-transparent",
-  "text-muted-fg/80 hover:bg-white/[0.06] hover:text-fg",
+  "text-muted-fg/80 hover:bg-fg/[0.06] hover:text-fg",
 );
 
 /** 28px ghost square. Hover and press are a fill change and nothing else. */
 export const WORK_TOOL_CHROME_BUTTON = cn(
   WORK_TOOL_CHROME_GHOST,
-  "text-muted-fg active:bg-white/[0.09]",
-  "data-[state=open]:bg-white/[0.09] data-[state=open]:text-fg",
+  "text-muted-fg active:bg-fg/[0.09]",
+  "data-[state=open]:bg-fg/[0.09] data-[state=open]:text-fg",
   WORK_TOOL_CHROME_MOTION,
   WORK_TOOL_CHROME_FOCUS,
   "disabled:pointer-events-none disabled:opacity-35",
@@ -94,7 +94,7 @@ export const WORK_TOOL_CHROME_BUTTON = cn(
 export const WORK_TOOL_CHROME_CHIP = cn(
   "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-[7px] border-0 bg-transparent px-2",
   "text-[12px] font-medium text-fg/80",
-  "hover:bg-white/[0.06] hover:text-fg active:bg-white/[0.09]",
+  "hover:bg-fg/[0.06] hover:text-fg active:bg-fg/[0.09]",
   WORK_TOOL_CHROME_MOTION,
   WORK_TOOL_CHROME_FOCUS,
   "disabled:pointer-events-none disabled:opacity-35",

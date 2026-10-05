@@ -79,15 +79,15 @@ const REASONING_TONE_STYLES: Record<
   }
 > = {
   auto: {
-    color: "#A1A1AA",
+    color: "var(--color-zinc-400, #A1A1AA)",
     rgb: "161 161 170",
-    trigger: "border-white/[0.06] bg-white/[0.03] text-fg/80 hover:border-white/[0.10] hover:bg-white/[0.055]",
-    chip: "border-white/[0.08] bg-white/[0.055] text-muted-fg/78",
-    thumb: "border-zinc-200/70 bg-zinc-200 text-zinc-950",
-    ridge: "bg-white/20",
+    trigger: "border-fg/[0.06] bg-fg/[0.03] text-fg/80 hover:border-fg/[0.10] hover:bg-fg/[0.055]",
+    chip: "border-fg/[0.08] bg-fg/[0.055] text-muted-fg/78",
+    thumb: "border-[#e4e4e7]/70 bg-[#e4e4e7] text-[#09090b]",
+    ridge: "bg-fg/20",
   },
   low: {
-    color: "#6EE7B7",
+    color: "var(--color-emerald-300, #6EE7B7)",
     rgb: "52 211 153",
     trigger: "border-emerald-300/22 bg-emerald-500/[0.075] text-emerald-100 hover:border-emerald-300/32 hover:bg-emerald-500/[0.11]",
     chip: "border-emerald-300/26 bg-emerald-500/[0.14] text-emerald-100",
@@ -95,7 +95,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-emerald-200",
   },
   steady: {
-    color: "#67E8F9",
+    color: "var(--color-cyan-300, #67E8F9)",
     rgb: "34 211 238",
     trigger: "border-cyan-300/22 bg-cyan-500/[0.075] text-cyan-100 hover:border-cyan-300/32 hover:bg-cyan-500/[0.11]",
     chip: "border-cyan-300/26 bg-cyan-500/[0.14] text-cyan-100",
@@ -103,7 +103,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-cyan-200",
   },
   smart: {
-    color: "#93C5FD",
+    color: "var(--color-blue-300, #93C5FD)",
     rgb: "96 165 250",
     trigger: "border-sky-300/22 bg-sky-500/[0.075] text-sky-100 hover:border-sky-300/32 hover:bg-sky-500/[0.11]",
     chip: "border-sky-300/26 bg-sky-500/[0.14] text-sky-100",
@@ -111,7 +111,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-sky-200",
   },
   deep: {
-    color: "#C4B5FD",
+    color: "var(--color-violet-300, #C4B5FD)",
     rgb: "167 139 250",
     trigger: "border-violet-300/24 bg-violet-500/[0.08] text-violet-100 hover:border-violet-300/34 hover:bg-violet-500/[0.12]",
     chip: "border-violet-300/28 bg-violet-500/[0.15] text-violet-100",
@@ -119,7 +119,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-violet-200",
   },
   max: {
-    color: "#D8B4FE",
+    color: "var(--color-purple-300, #D8B4FE)",
     rgb: "192 132 252",
     trigger: "border-fuchsia-300/28 bg-fuchsia-500/[0.09] text-fuchsia-100 hover:border-fuchsia-300/38 hover:bg-fuchsia-500/[0.13]",
     chip: "border-fuchsia-300/30 bg-fuchsia-500/[0.17] text-fuchsia-100",
@@ -127,7 +127,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-fuchsia-100",
   },
   ultra: {
-    color: "#F5D0FE",
+    color: "var(--color-fuchsia-200, #F5D0FE)",
     rgb: "232 121 249",
     trigger: "border-fuchsia-200/45 bg-fuchsia-500/[0.14] text-fuchsia-50 hover:border-fuchsia-100/60 hover:bg-fuchsia-500/[0.2]",
     chip: "border-fuchsia-100/45 bg-fuchsia-400/[0.22] text-fuchsia-50",
@@ -483,8 +483,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           <div
             data-reasoning-effort-picker-content="true"
             className={cn(
-              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
-              "bg-[#17151A]/96 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
+              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-fg/[0.08]",
+              "bg-(color:--work-popover-bg) p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
               isUltraActive && "ade-reasoning-effort-content-ultra",
             )}
             data-reasoning-ultra={isUltraActive ? "true" : undefined}
@@ -521,7 +521,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
             ) : null}
             <div
               data-reasoning-slider-track
-              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-[#242327] p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
+              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-secondary p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
               onPointerDown={handleTrackPointerDown}
               onPointerMove={handleTrackPointerMove}
               onPointerUp={handleTrackPointerUp}
@@ -568,7 +568,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                       <span
                         className={cn(
                           "h-1 w-1 rounded-full transition-all duration-200",
-                          isActive ? cn("h-1.5 w-1.5", tone.ridge, "shadow-[0_0_10px_currentColor]") : "bg-white/20",
+                          isActive ? cn("h-1.5 w-1.5", tone.ridge, "shadow-[0_0_10px_currentColor]") : "bg-fg/20",
                         )}
                         aria-hidden
                       />
@@ -631,8 +631,8 @@ const ReasoningEffortTrigger = memo(
               : "h-8 px-2 text-[11px] sm:text-[12px]",
             tone.trigger,
             ultra && "ade-reasoning-effort-trigger-ultra",
-            open && "ring-1 ring-white/[0.06]",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            open && "ring-1 ring-fg/[0.06]",
+            disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
             className,
           )}
         >

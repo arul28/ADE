@@ -77,7 +77,7 @@ function AgentLimits({
   const hasLimits = Boolean(step.stopAfterMin || step.stopWhenIdleMin);
 
   return (
-    <div className="rounded-md border border-white/[0.06] bg-white/[0.02]">
+    <div className="rounded-md border border-fg/[0.06] bg-fg/[0.02]">
       <button
         type="button"
         aria-expanded={open}
@@ -96,7 +96,7 @@ function AgentLimits({
         </span>
       </button>
       {open ? (
-        <div className="space-y-2.5 border-t border-white/[0.06] px-3 pb-3 pt-2.5">
+        <div className="space-y-2.5 border-t border-fg/[0.06] px-3 pb-3 pt-2.5">
           <div className="grid items-center gap-x-3 gap-y-2 sm:grid-cols-[8rem_1fr]">
             <span className="text-[11.5px] text-fg/85">Stop after</span>
             <MinutesInput

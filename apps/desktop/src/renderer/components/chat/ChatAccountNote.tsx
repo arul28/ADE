@@ -358,7 +358,7 @@ export function ChatAccountNote({
         <button
           type="button"
           data-testid="chat-account-note"
-          className={cn(rowClass, "group cursor-pointer text-left outline-none transition-colors hover:bg-white/[0.03] focus-visible:bg-white/[0.05]")}
+          className={cn(rowClass, "group cursor-pointer text-left outline-none transition-colors hover:bg-fg/[0.03] focus-visible:bg-fg/[0.05]")}
           title={model.detail}
         >
           {row}

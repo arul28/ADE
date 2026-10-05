@@ -71,7 +71,7 @@ export function ComposerSmartLinkMenu({
       ref={menuRef}
       role="menu"
       aria-label={menuLabel}
-      className="fixed z-[1000] flex -translate-y-full overflow-hidden rounded-lg border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_95%,black_5%)] shadow-[0_16px_42px_rgba(0,0,0,0.48)] backdrop-blur-xl"
+      className="fixed z-[1000] flex -translate-y-full overflow-hidden rounded-lg border border-fg/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_95%,black_5%)] shadow-[0_16px_42px_rgba(0,0,0,0.48)] backdrop-blur-xl"
       style={{ left: position.left, top: position.top, width: 224 }}
     >
       <button
@@ -86,7 +86,7 @@ export function ComposerSmartLinkMenu({
         <Copy size={13} weight="bold" />
         {copyLabel}
       </button>
-      <div className="w-px bg-white/[0.06]" />
+      <div className="w-px bg-fg/[0.06]" />
       <button
         type="button"
         role="menuitem"

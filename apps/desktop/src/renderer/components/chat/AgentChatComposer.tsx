@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
@@ -598,8 +599,8 @@ function PendingApprovalDetail({
   const detail = approvalRequestDetail(request);
   if (approvalDetailIsRedundant(detail, description) || !detail) return null;
   return (
-    <div className="mb-2 overflow-hidden rounded-[var(--chat-radius-md,8px)] border border-white/[0.07] bg-black/25">
-      <div className="border-b border-white/[0.05] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-widest text-fg/35">
+    <div className="mb-2 overflow-hidden rounded-[var(--chat-radius-md,8px)] border border-fg/[0.07] bg-black/25">
+      <div className="border-b border-fg/[0.05] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-widest text-fg/35">
         {detail.kind === "command" ? "Command" : "Path"}
       </div>
       <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/80">
@@ -750,7 +751,7 @@ function ComposerMachineChip({
             onClick={action.onClick}
             className={cn(
               "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1 transition-colors",
-              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-white/[0.05] hover:text-fg/85",
+              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-fg/[0.05] hover:text-fg/85",
               action.offline && "opacity-60",
             )}
             style={{ whiteSpace: "nowrap" }}
@@ -824,7 +825,7 @@ function ComposerHarnessChip({ harness }: { harness: HarnessPresetBody }) {
       aria-label={`Runs in ${label}`}
       title={`Runs in ${label}`}
       className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-1 font-sans text-[9px] font-medium"
-      style={{ borderColor: colorToRgba(accent, 0.3), color: accent, whiteSpace: "nowrap" }}
+      style={{ borderColor: colorToRgba(accent, 0.3), color: toneText(accent), whiteSpace: "nowrap" }}
     >
       <ProviderLogo family={bodyLogoFamily(harness)} size={11} />
       <span className="max-w-24 truncate">{label}</span>
@@ -836,7 +837,7 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
   "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
   "font-sans text-[length:calc(var(--chat-font-size)*9/14)] leading-none transition-colors duration-150",
-  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
@@ -956,7 +957,7 @@ function ComposerIdleSendButton({
               "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all",
               sendEnabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
-                : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             {icon}
@@ -982,7 +983,7 @@ function ComposerIdleSendButton({
               "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all",
               sendEnabled || backgroundEnabled
                 ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
-                : "border-white/[0.06] bg-white/[0.06] text-muted-fg/20",
+                : "border-fg/[0.06] bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             <CaretDown
@@ -1004,7 +1005,7 @@ function ComposerIdleSendButton({
                 setMenuOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {rows.map((row, index) => (
@@ -1020,8 +1021,8 @@ function ComposerIdleSendButton({
                   }}
                   className={cn(
                     "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
-                    index > 0 && "border-t border-white/[0.05]",
-                    row.enabled ? "hover:bg-white/[0.05]" : "cursor-not-allowed opacity-40",
+                    index > 0 && "border-t border-fg/[0.05]",
+                    row.enabled ? "hover:bg-fg/[0.05]" : "cursor-not-allowed opacity-40",
                   )}
                 >
                   <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45">
@@ -1116,7 +1117,7 @@ function ComposerOverflowMenu({
           onClick={only.onSelect}
           className={cn(
             "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
-            only.active ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+            only.active ? "bg-fg/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-fg/[0.05] hover:text-fg/60",
             only.disabled && "cursor-not-allowed opacity-40",
           )}
         >
@@ -1155,7 +1156,7 @@ function ComposerOverflowMenu({
           onClick={() => setOpen((current) => !current)}
           className={cn(
             "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
-            open ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+            open ? "bg-fg/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-fg/[0.05] hover:text-fg/60",
           )}
         >
           <DotsThree size={16} weight="bold" />
@@ -1177,7 +1178,7 @@ function ComposerOverflowMenu({
                 setOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="pointer-events-auto absolute flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute flex flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
                 {items.map((item) => (
@@ -1195,7 +1196,7 @@ function ComposerOverflowMenu({
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                       item.active ? "text-fg/90" : "text-fg/65",
-                      item.disabled ? "cursor-not-allowed opacity-40" : "hover:bg-white/[0.06] hover:text-fg/90",
+                      item.disabled ? "cursor-not-allowed opacity-40" : "hover:bg-fg/[0.06] hover:text-fg/90",
                     )}
                   >
                     <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
@@ -1440,7 +1441,7 @@ function PendingSteerItem({
             <button
               type="button"
               onClick={onEdit}
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-fg/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
               aria-label="Edit queued message"
             >
               <PencilSimple size={11} />
@@ -1652,7 +1653,7 @@ function ActiveTurnSendButton({
               "inline-flex h-7 items-center justify-center gap-1 rounded-l-full pl-2.5 pr-2 transition-all",
               enabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
-                : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
             )}
           >
             <ActiveTurnSendIcon mode={mode} />
@@ -1693,7 +1694,7 @@ function ActiveTurnSendButton({
               data-active-send-menu
               role="menu"
               aria-label="Send options"
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {offeredModes.map((option, index) => {
@@ -1710,8 +1711,8 @@ function ActiveTurnSendButton({
                       setMenuOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
-                      index > 0 && "border-t border-white/[0.05]",
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-fg/[0.05]",
+                      index > 0 && "border-t border-fg/[0.05]",
                       option === "interrupt" && "hover:bg-amber-500/[0.08]",
                     )}
                   >
@@ -1736,7 +1737,7 @@ function ActiveTurnSendButton({
                 );
               })}
               {inlineBlockedReason ? (
-                <div className="border-t border-white/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                <div className="border-t border-fg/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
                   {inlineBlockedReason}
                 </div>
               ) : null}
@@ -1824,7 +1825,7 @@ function ActiveTurnStopButton({
               data-active-stop-menu
               role="menu"
               aria-label="Stop options"
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {visibleModes.map((option, index) => {
@@ -1848,7 +1849,7 @@ function ActiveTurnStopButton({
                     className={cn(
                       "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
                       support.supported ? "hover:bg-red-500/[0.08]" : "cursor-not-allowed opacity-45",
-                      index > 0 && "border-t border-white/[0.05]",
+                      index > 0 && "border-t border-fg/[0.05]",
                     )}
                   >
                     <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
@@ -6013,7 +6014,7 @@ export function AgentChatComposer({
   const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
     <ViewportOverlayPortal layer="contextMenu">
       <div
-        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
+        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/10 bg-(color:--work-popover-bg) shadow-xl"
         data-issue-context-menu="true"
         role="menu"
         aria-label="Attach issue context"
@@ -6024,7 +6025,7 @@ export function AgentChatComposer({
           align: "end",
         })}
       >
-        <div className="border-b border-white/[0.04] px-3 py-2">
+        <div className="border-b border-fg/[0.04] px-3 py-2">
           <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
         </div>
         <div className="p-1">
@@ -6173,7 +6174,7 @@ export function AgentChatComposer({
           Prompt copies to clipboard on send.{" "}
           <button
             type="button"
-            className="text-fg/70 underline decoration-white/20 underline-offset-2 transition-colors hover:text-fg"
+            className="text-fg/70 underline decoration-fg/20 underline-offset-2 transition-colors hover:text-fg"
             onClick={onOpenLaunchPromptClipboardSettings}
           >
             Setting
@@ -6304,10 +6305,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedBuiltInBrowserContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-teal-100/35">
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-fg/[0.06] bg-fg/[0.03] text-teal-100/35">
                     <Globe size={20} weight="regular" />
                   </div>
                 )}
@@ -6318,7 +6319,7 @@ export function AgentChatComposer({
                     </span>
                     <span className="truncate text-teal-50/85">{builtInBrowserContextDisplayLabel(selectedBuiltInBrowserContext)}</span>
                     {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext) ? (
-                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
                         {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext)}
                       </span>
                     ) : null}
@@ -6352,10 +6353,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedAppControlContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-sky-100/35">
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-fg/[0.06] bg-fg/[0.03] text-sky-100/35">
                     <Desktop size={20} weight="regular" />
                   </div>
                 )}
@@ -6366,7 +6367,7 @@ export function AgentChatComposer({
                     </span>
                     <span className="truncate text-sky-50/85">{appControlContextDisplayLabel(selectedAppControlContext)}</span>
                     {appControlContextRoleHint(selectedAppControlContext) ? (
-                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
                         {appControlContextRoleHint(selectedAppControlContext)}
                       </span>
                     ) : null}
@@ -6386,14 +6387,14 @@ export function AgentChatComposer({
                     <div className="text-muted-fg/45">{appControlContextFrameHint(selectedAppControlContext)}</div>
                   ) : null}
                   {selectedAppControlSnippet && selectedAppControlSnippet.trim().length ? (
-                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-sky-50/70">
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-fg/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-sky-50/70">
                       {selectedAppControlSnippet}
                     </pre>
                   ) : selectedAppControlCandidates.length ? (
                     <div className="space-y-1">
                       <div className="text-sky-100/45">Best source candidates</div>
                       {selectedAppControlCandidates.map((candidate, index) => (
-                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-1">
                           <div className="truncate text-sky-50/70">
                             {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
                           </div>
@@ -6409,7 +6410,7 @@ export function AgentChatComposer({
                       <div className="text-sky-100/45">Nearby screen context</div>
                       <div className="flex flex-wrap gap-1">
                         {selectedAppControlNearby.map((element, index) => (
-                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-0.5 text-muted-fg/55">
                             {String(element.label ?? element.role ?? element.tagName ?? "element")}
                           </span>
                         ))}
@@ -6433,10 +6434,10 @@ export function AgentChatComposer({
                   <img
                     src={selectedIosContext.screenshotDataUrl}
                     alt=""
-                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                    className="h-16 w-16 rounded border border-fg/[0.06] object-cover"
                   />
                 ) : (
-                  <div className="h-16 w-16 rounded border border-white/[0.06] bg-white/[0.03]" />
+                  <div className="h-16 w-16 rounded border border-fg/[0.06] bg-fg/[0.03]" />
                 )}
                 <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
                   <div className="truncate text-cyan-50/85">{iosContextDisplayLabel(selectedIosContext)}</div>
@@ -6452,14 +6453,14 @@ export function AgentChatComposer({
                   ) : null}
                   {iosFrameLabel(selectedIosContext) ? <div>{iosFrameLabel(selectedIosContext)}</div> : null}
                   {typeof selectedIosContext.metadata.sourceSnippet === "string" && selectedIosContext.metadata.sourceSnippet.trim().length ? (
-                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-cyan-50/70">
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-fg/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-cyan-50/70">
                       {selectedIosContext.metadata.sourceSnippet}
                     </pre>
                   ) : selectedIosCandidates.length ? (
                     <div className="space-y-1">
                       <div className="text-cyan-100/45">Best source candidates</div>
                       {selectedIosCandidates.map((candidate, index) => (
-                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-1">
                           <div className="truncate text-cyan-50/70">
                             {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
                           </div>
@@ -6475,7 +6476,7 @@ export function AgentChatComposer({
                       <div className="text-cyan-100/45">Nearby screen context</div>
                       <div className="flex flex-wrap gap-1">
                         {selectedNearbyIosElements.map((element, index) => (
-                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-fg/[0.05] bg-fg/[0.025] px-1.5 py-0.5 text-muted-fg/55">
                             {String(element.label ?? element.componentId ?? element.role ?? element.elementType ?? "element")}
                           </span>
                         ))}
@@ -6597,7 +6598,7 @@ export function AgentChatComposer({
           />
           {attachmentPickerOpen ? (
             <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
-              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
+              <div className="flex items-center gap-2 border-b border-fg/[0.04] px-3 py-2.5">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
@@ -6684,7 +6685,7 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     disabled={parallelLaunchBusy}
-                    className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                    className="shrink-0 rounded-lg border border-fg/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-40"
                     onClick={() => {
                       onParallelChatModeChange?.(false);
                       onParallelConfiguringIndexChange?.(null);
@@ -6705,10 +6706,10 @@ export function AgentChatComposer({
                         "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
                         configuring
                           ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
-                          : "border-white/[0.07] bg-white/[0.02]",
+                          : "border-fg/[0.07] bg-fg/[0.02]",
                       )}
                     >
-                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-fg/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
                         {idx + 1}
                       </span>
                       <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-medium text-fg/82">
@@ -6721,7 +6722,7 @@ export function AgentChatComposer({
                             "rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
                             configuring
                               ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
-                              : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                              : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/75",
                           )}
                           disabled={parallelLaunchBusy}
                           onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
@@ -6751,7 +6752,7 @@ export function AgentChatComposer({
               <SmartTooltip content={{ label: "Add model", description: "Add another model and child lane to this parallel launch." }}>
                 <button
                   type="button"
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-fg/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-fg/[0.2] hover:bg-fg/[0.04] hover:text-fg/75 disabled:opacity-40"
                   disabled={parallelLaunchBusy}
                   onClick={() => onParallelAddModel?.()}
                 >
@@ -6760,7 +6761,7 @@ export function AgentChatComposer({
                 </button>
               </SmartTooltip>
               {parallelLaunchBusy && parallelLaunchStatus ? (
-                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                   <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
                   <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{parallelLaunchStatus}</span>
                 </div>
@@ -6791,7 +6792,7 @@ export function AgentChatComposer({
               );
             })()}
             {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
+              <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-(color:--color-surface-recessed) p-0.5">
                 {parallelSlotExecutionModeOptions.map((option) => {
                   const active = parallelSlotExecutionMode === option.value;
                   return (
@@ -6807,7 +6808,7 @@ export function AgentChatComposer({
                         type="button"
                         className={cn(
                           "rounded-[8px] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider transition-colors",
-                          active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                          active ? "bg-fg/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
                           parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
                         )}
                         disabled={parallelLaunchBusy}
@@ -7093,7 +7094,7 @@ export function AgentChatComposer({
                   <SmartTooltip forceEnabled content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
                     <button
                       type="button"
-                      className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                      className="inline-flex h-6 items-center justify-center rounded-md border border-fg/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-fg/[0.04] hover:text-fg/72"
                       onClick={onClearDraft}
                     >
                       Clear
@@ -7127,7 +7128,7 @@ export function AgentChatComposer({
                           "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all",
                           activeSteerEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+                            : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
                         )}
                         onClick={submitComposerDraft}
                         aria-label="Send steer message"
@@ -7182,7 +7183,7 @@ export function AgentChatComposer({
                           "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                           sendEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "bg-white/[0.06] text-muted-fg/20",
+                            : "bg-fg/[0.06] text-muted-fg/20",
                         )}
                         disabled={!sendEnabled}
                         onClick={submitComposerDraft}
@@ -7578,7 +7579,7 @@ export function AgentChatComposer({
           <>
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
-        <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
+        <div className="border-b border-fg/[0.06] bg-fg/[0.02] px-3 py-2 space-y-1.5">
           <div className="flex items-baseline gap-2">
             <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-fg/30">
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}

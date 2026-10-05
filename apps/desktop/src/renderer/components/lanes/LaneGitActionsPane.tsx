@@ -2219,7 +2219,7 @@ export function LaneGitActionsPane({
               disabled={busyAction != null}
               data-testid="git-pane-commit-message"
               className={cn(
-                "h-7 min-w-0 flex-1 rounded-[7px] bg-white/[0.03] px-2 font-sans text-[12px] text-fg/85",
+                "h-7 min-w-0 flex-1 rounded-[7px] bg-fg/[0.03] px-2 font-sans text-[12px] text-fg/85",
                 "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
                 "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
                 "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
@@ -2477,7 +2477,7 @@ export function LaneGitActionsPane({
               ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
               ...SKIN.cardFill,
             }}
-            headerStyle={{ background: "rgba(255,255,255,0.03)" }}
+            headerStyle={{ background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
             bodyStyle={
               diffViewActive
                 ? {

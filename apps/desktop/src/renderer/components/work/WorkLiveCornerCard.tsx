@@ -1252,7 +1252,7 @@ export function WorkLiveCornerCard({
                 className={cn(
                   "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
                   "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
-                  "hover:bg-white/[0.08] hover:text-fg",
+                  "hover:bg-fg/[0.08] hover:text-fg",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                 )}
               >

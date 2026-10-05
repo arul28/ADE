@@ -174,7 +174,7 @@ export function LaneTargeting({
             ) : null}
           </div>
 
-          <div className="rounded-md border border-white/[0.06] bg-black/[0.18] px-3 py-2">
+          <div className="rounded-md border border-fg/[0.06] bg-black/[0.18] px-3 py-2">
             <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">
               <GitBranch size={10} weight="regular" />
               Preview

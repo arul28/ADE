@@ -41,13 +41,13 @@ import {
  * The row action idiom, shared with `SessionSnoozeControl`'s trigger.
  *
  * The hover FILL is the load-bearing part: text that merely brightens reads as
- * text, not as a control you can press. `bg-white/[0.06]` is the same pill the
+ * text, not as a control you can press. `bg-fg/[0.06]` is the same pill the
  * sidebar's own bare buttons and group-header actions use, so a row action and
  * a header action feel like the same kind of thing. Focus-visible gets the same
  * fill for keyboard users, who never see hover at all.
  */
 export const SESSION_ACTION_BUTTON_CLASS =
-  "inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg focus-visible:bg-white/[0.06] focus-visible:text-fg";
+  "inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg focus-visible:bg-fg/[0.06] focus-visible:text-fg";
 
 export function SessionStatusSlot({
   session,

@@ -68,7 +68,7 @@ function WorkSurfaceTitle({ title, generating = false }: { title: string; genera
 
   return (
     <span
-      className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white", landed && "ade-title-landed")}
+      className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-fg", landed && "ade-title-landed")}
       title={generating ? "Naming chat…" : title}
       data-title-landed={landed ? "true" : undefined}
       data-title-generating={generating ? "true" : undefined}
@@ -99,7 +99,7 @@ export const WORK_SURFACE_HEADER_ACTION_BASE =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 
 export const WORK_SURFACE_HEADER_ACTION_IDLE =
-  "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
+  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
 
 /** Canonical 32px title rail shared by chat and CLI work surfaces. */
 export const WORK_SURFACE_HEADER_CLASS = "flex h-8 items-center px-2";

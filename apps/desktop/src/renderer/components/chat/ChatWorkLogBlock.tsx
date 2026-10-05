@@ -394,7 +394,7 @@ export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): Chat
 function FlatPre({ children, failed = false }: { children: React.ReactNode; failed?: boolean }) {
   return (
     <pre className={cn(
-      "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
+      "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
       failed ? "text-red-300/75" : "text-fg/55",
     )}>
       {children}
@@ -405,7 +405,7 @@ function FlatPre({ children, failed = false }: { children: React.ReactNode; fail
 function DiffBody({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
       {lines.map((line, index) => {
         let tone = "text-fg/65";
         if (line.startsWith("+")) tone = "text-emerald-400/85";
@@ -452,7 +452,7 @@ function WebSearchResultRows({ entry }: { entry: ChatWorkLogEntry }) {
   const total = typeof entry.resultsTotal === "number" ? entry.resultsTotal : results.length;
   const moreCount = Math.max(0, total - results.length);
   return (
-    <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-col gap-0.5 border-t border-white/[0.05] pt-2">
+    <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-col gap-0.5 border-t border-fg/[0.05] pt-2">
       {results.map((result, index) => {
         const display = deriveWebSearchResultDisplay(result);
         const body = (
@@ -536,7 +536,7 @@ function ToolCallRow({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+        className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.025]"
       >
         {workLogStatusGlyph(entry)}
         <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
@@ -564,7 +564,7 @@ function ToolCallRow({
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
-        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-fg/[0.05] pt-2">
           {navigationSuggestions.map((suggestion) => (
             <button
               key={`${suggestion.surface}:${suggestion.href}`}
@@ -579,7 +579,7 @@ function ToolCallRow({
       ) : null}
       {open && searchResults.length > 0 ? <WebSearchResultRows entry={entry} /> : null}
       {open && searchUrlActions.length > 0 ? (
-        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-fg/[0.05] pt-2">
           {searchUrlActions.slice(0, 6).map((action, index) => {
             const label = action.title ?? action.url ?? `Result ${index + 1}`;
             return (
@@ -783,7 +783,7 @@ function FilesChangedPanel({
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-fg/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
@@ -812,9 +812,9 @@ function FilesChangedPanel({
                     setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))
                   }
                   aria-expanded={expanded}
-                  className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+                  className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.025]"
                 >
-                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-fg/[0.06] bg-fg/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                     {fileExtBadge(file.path)}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65">
@@ -838,7 +838,7 @@ function FilesChangedPanel({
                 </button>
                 {expanded && file.diff.trim().length ? <DiffBody diff={file.diff} /> : null}
                 {expanded && !file.diff.trim().length ? (
-                  <div className="mt-1 ml-[18px] border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
+                  <div className="mt-1 ml-[18px] border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
                     No diff payload available.
                   </div>
                 ) : null}
@@ -925,7 +925,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
             setOpen((value) => !value);
           }}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-fg/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
@@ -964,7 +964,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
               <div
                 className={cn(
                   "group/file relative flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1",
-                  hasDiff && "hover:bg-white/[0.025]",
+                  hasDiff && "hover:bg-fg/[0.025]",
                 )}
               >
                 {/* The diff payload rides on the work-log entry, so it is the
@@ -981,7 +981,7 @@ export const ChatTurnFilesChangedSummary = React.memo(function ChatTurnFilesChan
                     className="absolute inset-0 rounded-[6px]"
                   />
                 ) : null}
-                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
+                <span className="pointer-events-none inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-fg/[0.06] bg-fg/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                   {fileExtBadge(file.path)}
                 </span>
                 {onOpenPath ? (
@@ -1173,7 +1173,7 @@ export function ChatTurnWorkSummary({
         </div>
       </div>
       {open === "tools" ? (
-        <div className="mb-2 min-w-0 overflow-hidden border-l border-white/[0.08] pl-4">
+        <div className="mb-2 min-w-0 overflow-hidden border-l border-fg/[0.08] pl-4">
           <ChatToolActivityDetails
             entries={tools}
             onNavigateSuggestion={onNavigateSuggestion}
@@ -1289,7 +1289,7 @@ function LocalhostServersStrip({
         disabled={busy}
         title={logsTitle}
         aria-label="Open terminal logs or ask the agent to run this server in the chat terminal"
-        className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-white/[0.07] bg-white/[0.03] px-2 text-fg/45 transition-colors hover:border-white/[0.13] hover:bg-white/[0.06] hover:text-fg/75 disabled:cursor-progress disabled:opacity-50"
+        className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-fg/[0.07] bg-fg/[0.03] px-2 text-fg/45 transition-colors hover:border-fg/[0.13] hover:bg-fg/[0.06] hover:text-fg/75 disabled:cursor-progress disabled:opacity-50"
       >
         <Terminal size={12} weight="bold" aria-hidden />
         <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-semibold">Logs</span>

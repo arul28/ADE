@@ -204,7 +204,7 @@ export function CheckRow({
 }) {
   const Icon = state === "ok" ? CheckCircle : state === "pending" ? CircleNotch : Warning;
   return (
-    <div className="flex items-start gap-2.5 rounded-lg border border-white/[0.055] bg-white/[0.025] px-3 py-2.5">
+    <div className="flex items-start gap-2.5 rounded-lg border border-fg/[0.055] bg-fg/[0.025] px-3 py-2.5">
       <Icon
         size={16}
         weight={state === "ok" ? "fill" : "regular"}

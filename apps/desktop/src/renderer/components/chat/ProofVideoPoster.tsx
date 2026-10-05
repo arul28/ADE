@@ -44,7 +44,7 @@ export function ProofVideoPoster({
       <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
         <span
           className={cn(
-            "inline-flex items-center justify-center rounded-full border border-white/[0.16] bg-black/58 text-white/88 shadow-[0_6px_20px_rgba(0,0,0,0.55)] backdrop-blur-sm transition-transform duration-200 group-hover:scale-105 group-hover/tile:scale-105",
+            "inline-flex items-center justify-center rounded-full border border-fg/[0.16] bg-black/58 text-white/88 shadow-[0_6px_20px_rgba(0,0,0,0.55)] backdrop-blur-sm transition-transform duration-200 group-hover:scale-105 group-hover/tile:scale-105",
             badgeSize === "sm" ? "h-6 w-6" : "h-10 w-10",
           )}
         >

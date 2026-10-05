@@ -64,7 +64,7 @@ export function LaneMachineSelector({
           )}
         >
           <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-muted-fg"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fg/[0.06] text-muted-fg"
             aria-hidden="true"
           >
             <Scales size={14} weight="duotone" />
@@ -133,7 +133,7 @@ function LaneMachineCard({
     >
       <div className="flex items-start gap-2">
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-muted-fg"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fg/[0.06] text-muted-fg"
           aria-hidden="true"
         >
           <Icon size={14} weight="duotone" />

@@ -179,7 +179,7 @@ function LinearIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "rgba(255,255,255,0.08)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
+        style={{ background: "color-mix(in srgb, var(--color-fg) 8%, transparent)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
       >
         {attachment.issue.identifier}
       </span>
@@ -189,7 +189,7 @@ function LinearIssueContextChip({
       {projectLabel ? (
         <span
           className="hidden shrink-0 rounded font-mono text-[9px] sm:inline"
-          style={{ background: "rgba(255,255,255,0.05)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
+          style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
         >
           {projectLabel}
         </span>
@@ -197,7 +197,7 @@ function LinearIssueContextChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/55 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${attachment.issue.identifier}`}
           aria-label={`Remove ${attachment.issue.identifier}`}
           onClick={(event) => {
@@ -248,7 +248,7 @@ function GitHubIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "rgba(255,255,255,0.08)", color: GITHUB_BRAND.text, padding: "1px 4px" }}
+        style={{ background: "color-mix(in srgb, var(--color-fg) 8%, transparent)", color: GITHUB_BRAND.text, padding: "1px 4px" }}
       >
         {identifier}
       </span>
@@ -258,7 +258,7 @@ function GitHubIssueContextChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/55 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${identifier}`}
           aria-label={`Remove ${identifier}`}
           onClick={(event) => {
@@ -389,7 +389,7 @@ function ImageAttachmentPreview({
         <span className="pointer-events-none absolute inset-0 flex items-start justify-end gap-1 bg-black/0 p-1 opacity-0 transition-opacity group-hover/image:bg-black/35 group-hover/image:opacity-100 group-focus-within/image:bg-black/35 group-focus-within/image:opacity-100">
           <button
             type="button"
-            className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+            className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
             title={copyTitle}
             aria-label={`Copy ${name}`}
             onClick={copyImage}
@@ -399,7 +399,7 @@ function ImageAttachmentPreview({
           {onRemove ? (
             <button
               type="button"
-              className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+              className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
               title={`Remove ${name}`}
               aria-label={`Remove ${name}`}
               onClick={(event) => {
@@ -462,7 +462,7 @@ function PendingImageAttachmentPreview({
       {onRemove ? (
         <button
           type="button"
-          className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+          className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-fg/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
           title={`Cancel ${attachment.name}`}
           aria-label={`Cancel ${attachment.name}`}
           onClick={() => onRemove(attachment.id)}
@@ -544,7 +544,7 @@ function FileAttachmentChip({
       {onRemove ? (
         <button
           type="button"
-          className="shrink-0 rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="shrink-0 rounded-full text-current/45 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${name}`}
           aria-label={`Remove ${name}`}
           onClick={(event) => {
@@ -600,7 +600,7 @@ function ImageUrlAttachmentChip({
           loading="lazy"
           draggable={false}
           onError={() => setImageFailed(true)}
-          className="h-8 w-8 shrink-0 rounded-sm border border-white/10 bg-black/30 object-cover"
+          className="h-8 w-8 shrink-0 rounded-sm border border-fg/10 bg-black/30 object-cover"
         />
       )}
       <span className="flex min-w-0 flex-col leading-tight">
@@ -609,7 +609,7 @@ function ImageUrlAttachmentChip({
       {onRemove ? (
         <button
           type="button"
-          className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          className="rounded-full text-current/45 transition-colors hover:bg-fg/[0.06] hover:text-current"
           title={`Remove ${label}`}
           aria-label={`Remove ${label}`}
           onClick={() => onRemove(path)}

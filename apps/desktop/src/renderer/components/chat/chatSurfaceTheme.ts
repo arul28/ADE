@@ -70,7 +70,7 @@ const CHIP_TONE_STYLES: Record<ChatSurfaceChipTone, string> = {
   warning: "border-amber-400/15 bg-amber-500/6 text-amber-300",
   danger: "border-red-400/15 bg-red-500/6 text-red-300",
   info: "border-sky-400/15 bg-sky-500/6 text-sky-300",
-  muted: "border-white/[0.06] bg-white/[0.03] text-fg/50",
+  muted: "border-fg/[0.06] bg-fg/[0.03] text-fg/50",
 };
 
 function hexChannel(segment: string): number {

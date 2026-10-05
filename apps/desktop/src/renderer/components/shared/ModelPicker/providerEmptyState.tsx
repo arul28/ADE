@@ -293,9 +293,9 @@ export function ProviderEmptyState(props: ProviderEmptyStateProps) {
             type="button"
             onClick={() => dispatchAction(copy.secondary!.action, onOpenSignIn)}
             className={cn(
-              "inline-flex h-6 items-center rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5",
+              "inline-flex h-6 items-center rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5",
               "text-[10px] font-semibold uppercase tracking-wide text-fg/75",
-              "transition-colors hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-fg/90",
+              "transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.06] hover:text-fg/90",
             )}
           >
             {copy.secondary.label}

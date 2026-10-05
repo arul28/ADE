@@ -88,7 +88,7 @@ export function ProviderFailureRecoveryCard({
         <button
           type="button"
           disabled={disabled || retryPending || !onChooseModel}
-          className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40"
+          className="rounded-md border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40"
           onClick={() => {
             setRetryError(null);
             onChooseModel?.();

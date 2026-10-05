@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toneText } from "../lanes/laneDesignTokens";
 import { useNavigate } from "react-router-dom";
 import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
@@ -504,7 +505,7 @@ export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = DEFAULT_ATTACHMENT_ONLY_PROMP
 const chatToolbarActionBase =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 const chatToolbarActionIdle =
-  "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
+  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
 
 function handoffProviderDisplayName(provider: string | null | undefined): string {
   return providerDisplayLabel(provider, "this provider");
@@ -2204,7 +2205,7 @@ const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: s
 ];
 
 const handoffSelectCls = cn(
-  "h-8 w-full min-w-0 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-sans text-[10px] text-fg/70",
+  "h-8 w-full min-w-0 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 font-sans text-[10px] text-fg/70",
   "outline-none transition-colors duration-150 focus:border-violet-400/30",
 );
 
@@ -14627,7 +14628,7 @@ export function AgentChatPane({
                 "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
                 handoffFastMode
                   ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
-                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
+                  : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/62 hover:bg-fg/[0.06] hover:text-fg/78",
               )}
               aria-pressed={handoffFastMode}
               aria-label="Fast mode for handoff"
@@ -14698,7 +14699,7 @@ export function AgentChatPane({
           rows={3}
           maxLength={4000}
           placeholder="What should the new chat pick up from here?"
-          className="min-h-[68px] w-full resize-y rounded-md border border-white/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
+          className="min-h-[68px] w-full resize-y rounded-md border border-fg/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
         />
       </label>
       <span className="block text-[10px] leading-4 text-fg/38">{caption}</span>
@@ -14709,7 +14710,7 @@ export function AgentChatPane({
   const handoffLocalModeEffective = handoffLocalMode === "fork" && !handoffForkTabDisabled ? "fork" : "brief";
   const handoffLocalView = (
     <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-fg/[0.06] px-4 py-3">
         <div className="min-w-0">
           <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
           <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">
@@ -14722,7 +14723,7 @@ export function AgentChatPane({
           type="button"
           aria-label="Close local handoff"
           onClick={() => setLocalHandoffOpen(false)}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
         >
           <X size={13} />
         </button>
@@ -14739,7 +14740,7 @@ export function AgentChatPane({
             style={{ marginBottom: 12 }}
           />
         ) : null}
-        <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
+        <div className="inline-flex w-full rounded-lg border border-fg/[0.07] bg-fg/[0.02] p-0.5">
           {([
             { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
             { mode: "brief" as const, label: "Brief", disabled: false },
@@ -14853,11 +14854,11 @@ export function AgentChatPane({
           />
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/[0.06] px-4 py-3">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-fg/[0.06] px-4 py-3">
         <button
           type="button"
           onClick={() => setLocalHandoffOpen(false)}
-          className="rounded-md border border-white/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/65 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+          className="rounded-md border border-fg/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/65 transition-colors hover:border-fg/[0.14] hover:text-fg/85"
         >
           Cancel
         </button>
@@ -14939,11 +14940,11 @@ export function AgentChatPane({
   ) : null;
   const iosSimulatorPanelContent = (
     <>
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-fg/[0.06] px-4 py-2.5">
         <span className="font-sans text-[12px] font-medium text-fg/80">iOS Simulator</span>
         <button
           type="button"
-          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
+          className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
           onClick={() => setIosSimulatorOpen(false)}
           title="Close iOS simulator panel"
         >
@@ -14974,11 +14975,11 @@ export function AgentChatPane({
   );
   const appControlPanelContent = (
     <>
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-fg/[0.06] px-4 py-2.5">
         <span className="font-sans text-[12px] font-medium text-fg/80">App Control</span>
         <button
           type="button"
-          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
+          className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
           onClick={() => setAppControlOpen(false)}
           title="Close App Control panel"
         >
@@ -15206,7 +15207,7 @@ export function AgentChatPane({
           {proofArtifactCount}
         </span>
       ) : runningSubagentCount > 0 ? (
-        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)">
           {runningSubagentCount}
         </span>
       ) : selectedTaskProgress && selectedTaskProgress.total > 0 && selectedTaskProgress.done < selectedTaskProgress.total ? (
@@ -15214,7 +15215,7 @@ export function AgentChatPane({
         // badge answers "how much is happening now". A finished list shows none.
         <span
           data-testid="chat-actions-task-badge"
-          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black"
+          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)"
         >
           {selectedTaskProgress.done}/{selectedTaskProgress.total}
         </span>
@@ -15320,7 +15321,7 @@ export function AgentChatPane({
                     "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[11px] transition-all",
                     isActive
                       ? "border-violet-400/15 bg-violet-500/[0.06] font-semibold text-fg/90 shadow-[inset_0_-2px_0_rgba(167,139,250,0.6),0_0_12px_rgba(167,139,250,0.06)]"
-                      : "border-transparent text-muted-fg/40 hover:text-fg/60 hover:bg-white/[0.03]",
+                      : "border-transparent text-muted-fg/40 hover:text-fg/60 hover:bg-fg/[0.03]",
                   )}
                   onClick={() => {
                     pendingSelectedSessionIdRef.current = null;
@@ -15375,7 +15376,7 @@ export function AgentChatPane({
           </button>
           {archivedSessions.length ? (
             <select
-              className="h-7 max-w-[160px] shrink-0 rounded-md border border-white/[0.06] bg-black/20 px-2 font-sans text-[11px] text-muted-fg/60 outline-none transition-colors hover:border-white/[0.1] hover:text-fg"
+              className="h-7 max-w-[160px] shrink-0 rounded-md border border-fg/[0.06] bg-black/20 px-2 font-sans text-[11px] text-muted-fg/60 outline-none transition-colors hover:border-fg/[0.1] hover:text-fg"
               title="Restore archived chat"
               defaultValue=""
               onChange={(event) => {
@@ -16106,7 +16107,7 @@ export function AgentChatPane({
                 : "mx-3 max-w-[var(--chat-column,52rem)]",
               isFailed && "border-rose-300/20 bg-rose-500/[0.07] text-rose-100/90",
               isReady && "border-emerald-300/18 bg-emerald-500/[0.06] text-emerald-100/85",
-              isActiveJob && "border-white/10 bg-white/[0.04] text-fg/70",
+              isActiveJob && "border-fg/10 bg-fg/[0.04] text-fg/70",
             )}
           >
             <div className="flex min-w-0 items-center gap-2">
@@ -16138,7 +16139,7 @@ export function AgentChatPane({
               {isActiveJob && job.status === "naming-lane" ? (
                 <button
                   type="button"
-                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-fg/10 hover:text-fg/85"
                   onClick={() => navigate(settingsRouteFor("agents.scheduled-work"))}
                 >
                   Settings
@@ -16163,7 +16164,7 @@ export function AgentChatPane({
                 <button
                   type="button"
                   aria-label={isFailed ? "Dismiss failed launch" : "Dismiss launch status"}
-                  className="grid h-5 w-5 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/10 hover:text-fg/75"
+                  className="grid h-5 w-5 place-items-center rounded-md text-fg/45 transition-colors hover:bg-fg/10 hover:text-fg/75"
                   onClick={() => dismissDraftLaunchJob(job.id)}
                 >
                   <X size={11} weight="bold" aria-hidden />
@@ -16242,7 +16243,7 @@ export function AgentChatPane({
       role="separator"
       aria-orientation="vertical"
       onMouseDown={handleRightPaneDividerDown}
-      className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+      className="relative w-[5px] shrink-0 cursor-col-resize bg-fg/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
     />
   ) : null;
   // Wrap a right-side panel for either grid-tile (overlay) or standard
@@ -16254,7 +16255,7 @@ export function AgentChatPane({
     layoutVariant === "grid-tile" ? (
       <ChatComposerOverlayClear
         basePx={12}
-        className="absolute inset-x-3 top-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl"
+        className="absolute inset-x-3 top-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl"
       >
         {content}
       </ChatComposerOverlayClear>
@@ -16274,7 +16275,7 @@ export function AgentChatPane({
     // `min-h-0` lets the card shrink below its content inside the box that
     // stops above the composer, so the inner overflow-auto engages instead of
     // the content clipping at the box's edge.
-    "ade-floating-side-pane flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+    "ade-floating-side-pane flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-fg/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
@@ -16530,7 +16531,7 @@ export function AgentChatPane({
                         {[72, 54, 38].map((widthPct) => (
                           <div
                             key={widthPct}
-                            className="h-3 rounded-full bg-white/[0.05]"
+                            className="h-3 rounded-full bg-fg/[0.05]"
                             style={{ width: `${widthPct}%` }}
                           />
                         ))}
@@ -16619,7 +16620,7 @@ export function AgentChatPane({
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}
                     {appPanelOpen ? (
-                      <div className="shrink-0 border-t border-white/[0.06]">
+                      <div className="shrink-0 border-t border-fg/[0.06]">
                         {authStickyBar}
                         {composerStatusStrip}
                         {takeoverBanner}
@@ -16778,7 +16779,7 @@ export function AgentChatPane({
                                     </select>
                                   </label>
                                   <label
-                                    className="relative flex h-7 items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] pl-2.5 pr-6 font-sans text-[11px] text-fg/75 transition-colors hover:border-white/20"
+                                    className="relative flex h-7 items-center gap-1 rounded-full border border-fg/[0.08] bg-fg/[0.03] pl-2.5 pr-6 font-sans text-[11px] text-fg/75 transition-colors hover:border-fg/20"
                                     title="The operating system of Devin's VM"
                                   >
                                     <span className="text-fg/45">VM</span>
@@ -16812,7 +16813,7 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
                                         data-draft-open-shell
                                         aria-label="Open shell in selected lane"
@@ -16834,7 +16835,7 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
+                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!importTargetLane}
                                         data-draft-import-session
                                         aria-label="Import an external CLI session"
@@ -16854,7 +16855,7 @@ export function AgentChatPane({
                             className={cn(
                               "flex shrink-0 items-center gap-2",
                               appPanelOpen
-                                ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5"
+                                ? "rounded-full border border-fg/[0.08] bg-fg/[0.04] px-4 py-1.5"
                                 : cn("ade-chat-launch-shelf", DRAFT_SHELF_WIDTH_CLASS),
                             )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
@@ -16866,7 +16867,7 @@ export function AgentChatPane({
                             )}
                             <span
                               className="text-[11px] font-medium"
-                              style={laneAccentColor ? { color: laneAccentColor } : { color: "rgba(255,255,255,0.6)" }}
+                              style={laneAccentColor ? { color: toneText(laneAccentColor) } : { color: "color-mix(in srgb, var(--color-fg) 60%, transparent)" }}
                             >
                               {laneDisplayLabel}
                             </span>
@@ -16902,7 +16903,7 @@ export function AgentChatPane({
                       </div>
                     </div>
                     {appPanelOpen ? (
-                      <div className="shrink-0 border-t border-white/[0.06]">
+                      <div className="shrink-0 border-t border-fg/[0.06]">
                         {composerWithTypographyRoot}
                       </div>
                     ) : null}

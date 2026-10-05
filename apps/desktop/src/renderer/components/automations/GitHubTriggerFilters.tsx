@@ -245,7 +245,7 @@ function ChipRow({
       {items.map((item) => (
         <span
           key={item}
-          className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[11px] text-fg/85"
+          className="inline-flex items-center gap-1 rounded-md border border-fg/[0.08] bg-fg/[0.04] px-2 py-0.5 text-[11px] text-fg/85"
         >
           {item}
           <button

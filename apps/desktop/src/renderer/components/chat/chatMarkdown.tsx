@@ -123,8 +123,8 @@ function toneAccents(tone: Tone) {
   if (tone === "neutral") {
     return {
       headerText: "text-zinc-200/95",
-      blockquoteBorder: "border-white/18",
-      hr: "border-white/10",
+      blockquoteBorder: "border-fg/18",
+      hr: "border-fg/10",
       link: "text-zinc-200/90 underline underline-offset-2 transition-colors hover:text-white",
     };
   }

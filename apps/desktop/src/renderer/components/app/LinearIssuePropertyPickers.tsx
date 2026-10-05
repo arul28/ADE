@@ -115,7 +115,7 @@ function PickerMenu({
             if (option) onPick(option.id);
           }
         }}
-        className="mb-1 h-7 w-full rounded-[var(--radius-sm)] border border-white/[0.07] bg-black/20 px-2 text-[11.5px] text-fg outline-none placeholder:text-muted-fg/40 focus:border-white/18"
+        className="mb-1 h-7 w-full rounded-[var(--radius-sm)] border border-fg/[0.07] bg-black/20 px-2 text-[11.5px] text-fg outline-none placeholder:text-muted-fg/40 focus:border-fg/18"
       />
       <div className="max-h-[260px] overflow-y-auto overscroll-contain" role="listbox" aria-multiselectable={multi || undefined}>
         {filtered.length === 0 ? (
@@ -170,8 +170,8 @@ function PropertyChip({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors",
-        disabled ? "cursor-default" : "hover:border-white/[0.14] hover:bg-white/[0.05]",
+        "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors",
+        disabled ? "cursor-default" : "hover:border-fg/[0.14] hover:bg-fg/[0.05]",
         pending && "opacity-70",
       )}
     >

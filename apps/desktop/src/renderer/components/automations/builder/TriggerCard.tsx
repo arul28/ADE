@@ -245,7 +245,7 @@ export function TriggerCard({
                 "flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10.5px] font-medium transition-colors",
                 active
                   ? "text-fg"
-                  : "border-white/[0.06] bg-white/[0.02] text-muted-fg/75 hover:border-white/[0.14] hover:text-fg",
+                  : "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/75 hover:border-fg/[0.14] hover:text-fg",
               )}
               style={active ? { borderColor: accentTint(s.value, 0.45), background: accentTint(s.value, 0.1) } : undefined}
             >

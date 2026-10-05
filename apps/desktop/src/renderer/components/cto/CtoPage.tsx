@@ -711,7 +711,7 @@ function WakingState({
           <button
             type="button"
             onClick={action.onClick}
-            className="mt-4 rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05]"
+            className="mt-4 rounded-lg border border-fg/[0.1] px-3 py-1.5 text-[12px] font-medium text-fg/85 transition-colors hover:bg-fg/[0.05]"
           >
             {action.label}
           </button>
@@ -750,7 +750,7 @@ function CtoRotationPrompt({
         "flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2",
         blocked
           ? "border-amber-500/15 bg-amber-500/[0.06]"
-          : "border-white/[0.05] bg-white/[0.02]",
+          : "border-fg/[0.05] bg-fg/[0.02]",
       )}
     >
       <div className="min-w-0 flex-1">
@@ -771,7 +771,7 @@ function CtoRotationPrompt({
           data-testid="cto-rotation-start"
           disabled={busy}
           onClick={onStart}
-          className="rounded-lg border border-white/[0.1] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05] disabled:opacity-60"
+          className="rounded-lg border border-fg/[0.1] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:bg-fg/[0.05] disabled:opacity-60"
         >
           {busy ? "Starting…" : "Start a fresh session"}
         </button>

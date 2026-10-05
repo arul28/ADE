@@ -174,7 +174,7 @@ function InspectCard({
 
 const CARD_BUTTON = cn(
   "inline-flex h-6 min-w-0 shrink-0 items-center gap-1 rounded-md border border-border bg-bg px-1.5",
-  "font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-40",
+  "font-sans text-[11px] text-fg/85 hover:bg-fg/[0.07] disabled:cursor-not-allowed disabled:opacity-40",
 );
 
 function AppleInspectOverlayInner({

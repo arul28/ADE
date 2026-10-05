@@ -124,25 +124,25 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5" style={{ borderColor: COLORS.border }}>
-        <button type="button" onClick={() => applyZoom(1 / 1.2)} title="Zoom out" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => applyZoom(1 / 1.2)} title="Zoom out" className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassMinus size={15} />
         </button>
         <span className="w-12 text-center text-xs tabular-nums" style={{ color: COLORS.textMuted }}>
           {Math.round(scale * 100)}%
         </span>
-        <button type="button" onClick={() => applyZoom(1.2)} title="Zoom in" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => applyZoom(1.2)} title="Zoom in" className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassPlus size={15} />
         </button>
-        <button type="button" onClick={resetFit} title="Fit to window" className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={resetFit} title="Fit to window" className="rounded p-1 hover:bg-fg/5">
           <ArrowsOut size={15} />
         </button>
         <span className="ml-auto text-xs" style={{ color: COLORS.textDim }}>
           {formatBytes(content.size)}
         </span>
-        <button type="button" disabled={!src} onClick={() => void copy()} title={copied ? "Copied" : "Copy picture"} aria-label={copied ? "Copied" : "Copy picture"} className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+        <button type="button" disabled={!src} onClick={() => void copy()} title={copied ? "Copied" : "Copy picture"} aria-label={copied ? "Copied" : "Copy picture"} className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
           {copied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
         </button>
-        <button type="button" disabled={!src} onClick={() => src && saveMediaAs(src, fileName)} title="Download" aria-label="Download" className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+        <button type="button" disabled={!src} onClick={() => src && saveMediaAs(src, fileName)} title="Download" aria-label="Download" className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
           <DownloadSimple size={15} />
         </button>
       </div>

@@ -24,7 +24,7 @@ export function LaneAccentDot({ lane, color, fallbackIndex = 0, size = 8, classN
         height: size,
         borderRadius: 9999,
         background: resolved,
-        boxShadow: ringed ? "inset 0 0 0 1px rgba(255,255,255,0.12)" : undefined,
+        boxShadow: ringed ? "inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent)" : undefined,
         flexShrink: 0,
         ...style,
       }}

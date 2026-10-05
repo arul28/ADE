@@ -66,7 +66,7 @@ function lifecycleSourceLabel(source: TerminalSessionSummary["attentionSource"] 
 
 function sectionShell({ title, icon: Icon, children }: { title: string; icon: typeof Info; children: ReactNode }) {
   return (
-    <div className="rounded-[12px] border border-white/[0.06] bg-white/[0.02] p-3 backdrop-blur-sm">
+    <div className="rounded-[12px] border border-fg/[0.06] bg-fg/[0.02] p-3 backdrop-blur-sm">
       <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium text-muted-fg/55">
         <Icon size={12} weight="regular" className="shrink-0 opacity-80" />
         {title}
@@ -212,7 +212,7 @@ export function SessionInfoPopover({
   const shell = (
     <div
       ref={ref}
-      className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] max-h-[min(80dvh,720px)] w-[min(100vw-1rem,22.5rem)] overflow-hidden rounded-2xl border border-white/[0.08] shadow-2xl"
+      className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] max-h-[min(80dvh,720px)] w-[min(100vw-1rem,22.5rem)] overflow-hidden rounded-2xl border border-fg/[0.08] shadow-2xl"
       /* `position` inline, not from the `fixed` utility above: this element also
          carries `.ade-liquid-glass`, which declares `position: relative` at the
          same specificity as Tailwind's `.fixed` and wins on source order. The
@@ -220,14 +220,14 @@ export function SessionInfoPopover({
          fold before it was caught. Inline beats both. */
       style={{ position: "fixed", left, top, width: popoverWidth }}
     >
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/[0.06] bg-[color:color-mix(in_srgb,var(--color-card)_88%,transparent)] px-3 py-2.5 backdrop-blur-md">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-fg/[0.06] bg-[color:color-mix(in_srgb,var(--color-card)_88%,transparent)] px-3 py-2.5 backdrop-blur-md">
         <span className="min-w-0 text-[13px] font-semibold leading-tight text-fg/90">
           {(session.goal ?? session.title).trim() || "Session"}
         </span>
         <button
           type="button"
           onClick={onClose}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg transition-colors hover:bg-fg/[0.06] hover:text-fg"
           aria-label="Close"
         >
           <X size={14} weight="bold" />
@@ -269,7 +269,7 @@ export function SessionInfoPopover({
                 .map(([label, value, valueClassName]) => (
                   <div
                     key={label}
-                    className="flex min-h-[1.75rem] items-start justify-between gap-2 rounded-lg px-1.5 py-0.5 text-xs transition-colors hover:bg-white/[0.04]"
+                    className="flex min-h-[1.75rem] items-start justify-between gap-2 rounded-lg px-1.5 py-0.5 text-xs transition-colors hover:bg-fg/[0.04]"
                   >
                     <span className="shrink-0 text-muted-fg/65">{label}</span>
                     {label === "Session id" ? (
@@ -310,7 +310,7 @@ export function SessionInfoPopover({
           })
           : null}
 
-        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} className="border-0 bg-white/[0.02]" /> : null}
+        {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} className="border-0 bg-fg/[0.02]" /> : null}
 
         {health && !isChat
           ? sectionShell({
@@ -329,7 +329,7 @@ export function SessionInfoPopover({
           })
           : null}
 
-        <div className="flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2.5">
+        <div className="flex flex-wrap gap-1.5 border-t border-fg/[0.06] pt-2.5">
           {session.status === "running" && session.ptyId && !isChat ? (
             <SmartTooltip content={{ label: "Stop runtime", description: "End this running terminal process." }}>
               <Button

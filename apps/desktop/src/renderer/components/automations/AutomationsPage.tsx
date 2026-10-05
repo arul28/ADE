@@ -50,7 +50,7 @@ export function AutomationsProductionGate({ children }: { children: ReactElement
     return (
       <div className="flex h-full min-w-0 flex-col bg-bg">
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <div className="h-4 w-48 animate-pulse rounded-md bg-white/[0.06]" />
+          <div className="h-4 w-48 animate-pulse rounded-md bg-fg/[0.06]" />
           <div className="text-[11px] font-medium text-muted-fg/60">Checking automation availability…</div>
         </div>
       </div>

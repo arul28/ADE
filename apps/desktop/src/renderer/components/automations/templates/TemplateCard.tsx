@@ -23,7 +23,7 @@ export function TemplateCard({
       onClick={onUse}
       className={cn(
         cardCls,
-        "group flex flex-col gap-3 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]",
+        "group flex flex-col gap-3 text-left transition-colors hover:border-accent/30 hover:bg-fg/[0.05]",
         className,
       )}
     >
@@ -48,7 +48,7 @@ export function TemplateCard({
         <TemplateSourceChip triggerType={template.triggerType} />
         {/* Decorative affordance: the whole card is the button; a nested
             <button> would be invalid HTML. */}
-        <span className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-1 text-[10.5px] font-medium text-fg/85 transition-colors group-hover:border-accent/40 group-hover:text-accent">
+        <span className="inline-flex items-center gap-1 rounded-md border border-fg/[0.12] px-2 py-1 text-[10.5px] font-medium text-fg/85 transition-colors group-hover:border-accent/40 group-hover:text-accent">
           Use template
           <ArrowRight size={11} weight="bold" />
         </span>

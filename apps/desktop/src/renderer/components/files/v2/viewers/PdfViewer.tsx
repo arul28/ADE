@@ -98,21 +98,21 @@ export function PdfViewer({ files, workspaceId, tab }: ViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5" style={{ borderColor: COLORS.border }}>
-        <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+        <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
           <CaretLeft size={14} />
         </button>
         <span className="text-xs tabular-nums" style={{ color: COLORS.textMuted }}>
           {pageCount ? `${page} / ${pageCount}` : "—"}
         </span>
-        <button type="button" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount} className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+        <button type="button" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount} className="rounded p-1 hover:bg-fg/5 disabled:opacity-40">
           <CaretRight size={14} />
         </button>
         <div className="mx-2 h-4 w-px" style={{ background: COLORS.border }} />
-        <button type="button" onClick={() => setScale((s) => Math.max(0.3, s / 1.2))} className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => setScale((s) => Math.max(0.3, s / 1.2))} className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassMinus size={14} />
         </button>
         <span className="w-10 text-center text-xs tabular-nums" style={{ color: COLORS.textMuted }}>{Math.round(scale * 100)}%</span>
-        <button type="button" onClick={() => setScale((s) => Math.min(5, s * 1.2))} className="rounded p-1 hover:bg-white/5">
+        <button type="button" onClick={() => setScale((s) => Math.min(5, s * 1.2))} className="rounded p-1 hover:bg-fg/5">
           <MagnifyingGlassPlus size={14} />
         </button>
       </div>

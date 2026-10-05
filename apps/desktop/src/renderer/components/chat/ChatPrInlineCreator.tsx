@@ -12,6 +12,7 @@ import {
 import { BranchIcon } from "../ui/vcsIcons";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
+import { toneText } from "../lanes/laneDesignTokens";
 import { useAppStore } from "../../state/appStore";
 import type { PrSummary } from "../../../shared/types";
 import { branchNameFromRef, resolveLaneBaseBranch } from "../prs/shared/laneBranchTargets";
@@ -42,7 +43,7 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
 // /opacity focus modifier resolves (Tailwind can't apply opacity to a var() color).
 /** Shared with the pane's "Link a PR" row so the two inputs cannot drift apart. */
 export const inputBase =
-  "w-full rounded-lg border border-white/[0.07] bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-fg/85 outline-none transition-colors placeholder:text-fg/30 focus:border-violet-400/55 focus:bg-white/[0.05]";
+  "w-full rounded-lg border border-fg/[0.07] bg-fg/[0.03] px-2.5 py-1.5 text-[12px] text-fg/85 outline-none transition-colors placeholder:text-fg/30 focus:border-violet-400/55 focus:bg-fg/[0.05]";
 
 export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   laneId,
@@ -215,7 +216,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         <LaneLogoMark color={sourceColor} size={12} />
         <span
           className="min-w-0 shrink truncate text-[12px] font-semibold"
-          style={{ color: sourceColor }}
+          style={{ color: toneText(sourceColor) }}
           title={laneName}
         >
           {laneName}
@@ -334,7 +335,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         type="button"
         onClick={openFullComposer}
         disabled={busy}
-        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-transparent px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85 disabled:opacity-50"
+        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-fg/[0.08] bg-transparent px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:border-fg/[0.14] hover:text-fg/85 disabled:opacity-50"
       >
         Open in PRs tab
         <ArrowSquareOut size={11} weight="bold" className="opacity-60" />

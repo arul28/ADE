@@ -666,7 +666,7 @@ export function AutomationsWorkspace({
   const draftMachineBlocked = blockedReason(draftTarget);
   const machineNotes = Object.keys(foreignLoads).length > 0 ? (
     <div
-      className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 border-b border-white/[0.04] px-3 py-1 text-[10.5px] text-muted-fg/50"
+      className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 border-b border-fg/[0.04] px-3 py-1 text-[10.5px] text-muted-fg/50"
       data-testid="automations-machine-notes"
     >
       {Object.entries(foreignLoads).map(([key, load]) => (
@@ -748,7 +748,7 @@ export function AutomationsWorkspace({
       {hasProjectSidebar ? (
         <ProjectSidebarSlot active={active}>{ruleList}</ProjectSidebarSlot>
       ) : (
-        <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
+        <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-fg/[0.06] bg-fg/[0.01]">
           {ruleList}
         </div>
       )}
@@ -760,7 +760,7 @@ export function AutomationsWorkspace({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {selectedRule ? (
-            <div className="flex shrink-0 items-center gap-0 border-b border-white/[0.06] bg-white/[0.01] px-3" style={{ minHeight: 34 }}>
+            <div className="flex shrink-0 items-center gap-0 border-b border-fg/[0.06] bg-fg/[0.01] px-3" style={{ minHeight: 34 }}>
               <DetailTab active={detailView === "builder"} label="Builder" icon={PencilSimple} onClick={() => setDetailView("builder")} />
               <DetailTab
                 active={detailView === "history"}
@@ -897,7 +897,7 @@ function DetailTab({
 function EmptyDetail({ onNew, onOpenTemplates }: { onNew: () => void; onOpenTemplates: () => void }) {
   return (
     <div className="flex h-full items-center justify-center px-6">
-      <div className="max-w-md rounded-xl border border-white/[0.07] bg-white/[0.03] p-6 text-center shadow-card">
+      <div className="max-w-md rounded-xl border border-fg/[0.07] bg-fg/[0.03] p-6 text-center shadow-card">
         <div className="text-[16px] font-semibold text-fg">Build an automation</div>
         <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
           Pick a trigger and a workflow, then let ADE run it — on a schedule or when a product event fires.

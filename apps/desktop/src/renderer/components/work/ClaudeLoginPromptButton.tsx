@@ -183,7 +183,7 @@ export function ClaudeLoginPromptButton({
           type="button"
           onClick={handleLogin}
           disabled={opening || !window.ade?.pty?.create}
-          className="inline-flex h-full items-center gap-1.5 px-2 font-sans text-[10px] font-semibold text-[#ffd7c2] transition-colors hover:bg-[#d97757]/18 disabled:cursor-not-allowed disabled:opacity-55"
+          className="inline-flex h-full items-center gap-1.5 px-2 font-sans text-[10px] font-semibold text-[color:color-mix(in_srgb,#ffd7c2_var(--ade-tone-text-strength,100%),var(--color-fg))] transition-colors hover:bg-[#d97757]/18 disabled:cursor-not-allowed disabled:opacity-55"
           title={error ?? "Open a terminal here and run claude auth login"}
           aria-label="Login to Claude"
         >
@@ -194,7 +194,7 @@ export function ClaudeLoginPromptButton({
           <button
             type="button"
             onClick={dismiss}
-            className="inline-flex h-full w-5 items-center justify-center border-l border-[#d97757]/25 text-[#ffd7c2]/65 transition-colors hover:bg-[#d97757]/18 hover:text-[#ffe4d5]"
+            className="inline-flex h-full w-5 items-center justify-center border-l border-[#d97757]/25 text-[color:color-mix(in_srgb,#ffd7c2_var(--ade-tone-text-strength,100%),var(--color-fg))]/65 transition-colors hover:bg-[#d97757]/18 hover:text-[color:color-mix(in_srgb,#ffe4d5_var(--ade-tone-text-strength,100%),var(--color-fg))]"
             aria-label="Dismiss Claude login prompt"
             title="Dismiss"
           >

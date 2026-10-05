@@ -130,7 +130,7 @@ export function PrLaneCleanupBanner({
                       padding: "8px 10px",
                       fontSize: textSize,
                       fontFamily: SANS_FONT,
-                      background: deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 14%, transparent)" : "rgba(255,255,255,0.03)",
+                      background: deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 14%, transparent)" : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
                       border: `1px solid ${deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 40%, transparent)" : COLORS.border}`,
                       borderRadius: 6,
                       cursor: "pointer",

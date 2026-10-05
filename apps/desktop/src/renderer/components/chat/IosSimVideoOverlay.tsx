@@ -183,7 +183,7 @@ const TONE_ICON_CLASS: Record<IosSimBlocker["tone"], string> = {
 const TONE_BUTTON_CLASS: Record<IosSimBlocker["tone"], string> = {
   permission: "border-violet-300/28 bg-violet-400/15 text-violet-50/92 hover:bg-violet-400/24",
   warn: "border-amber-300/28 bg-amber-400/15 text-amber-50/92 hover:bg-amber-400/24",
-  info: "border-white/[0.10] bg-white/[0.05] text-fg/85 hover:bg-white/[0.09]",
+  info: "border-fg/[0.10] bg-fg/[0.05] text-fg/85 hover:bg-fg/[0.09]",
 };
 
 function BlockerIcon({ blocker }: { blocker: IosSimBlocker }) {
@@ -213,7 +213,7 @@ export function IosSimVideoOverlay({ blocker, busy = false, onAction }: IosSimVi
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/45 px-4">
       <div
-        className="pointer-events-auto flex max-w-[320px] items-center gap-2.5 rounded-md border border-white/[0.10] bg-black/78 px-3 py-2.5 shadow-xl backdrop-blur"
+        className="pointer-events-auto flex max-w-[320px] items-center gap-2.5 rounded-md border border-fg/[0.10] bg-black/78 px-3 py-2.5 shadow-xl backdrop-blur"
         data-ios-blocker={blocker.kind}
         onPointerDown={(event) => event.stopPropagation()}
         onPointerUp={(event) => event.stopPropagation()}

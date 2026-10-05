@@ -105,34 +105,34 @@ export const MosaicCard = React.memo(function MosaicCard({
   const controlsDisabled = disabled || submitted || busy;
 
   const accentBorder = neu
-    ? "border-white/14"
+    ? "border-(color:--chat-ink)/14"
     : "border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]";
   const accentBorderStrong = neu
-    ? "border-white/32"
+    ? "border-(color:--chat-ink)/32"
     : "border-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]";
   const accentBg = neu
-    ? "bg-white/[0.1]"
+    ? "bg-(color:--chat-ink)/[0.1]"
     : "bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)]";
   const accentBgHover = neu
-    ? "hover:border-white/22 hover:bg-white/[0.06]"
+    ? "hover:border-(color:--chat-ink)/22 hover:bg-(color:--chat-ink)/[0.06]"
     : "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)]";
   const accentText = neu
-    ? "text-white/88"
+    ? "text-(color:--chat-ink)/88"
     : "text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]";
-  const labelText = neu ? "text-white/62" : "text-fg/58";
-  const mutedText = neu ? "text-white/45" : "text-fg/45";
-  const bodyText = neu ? "text-white/85" : "text-fg/85";
+  const labelText = neu ? "text-(color:--chat-ink)/62" : "text-fg/58";
+  const mutedText = neu ? "text-(color:--chat-ink)/45" : "text-fg/45";
+  const bodyText = neu ? "text-(color:--chat-ink)/85" : "text-fg/85";
   const indicatorActive = neu
     ? "border-white/70 bg-white/85 text-black"
     : "border-[color:color-mix(in_srgb,var(--chat-accent)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_85%,transparent)] text-black";
   const indicatorIdle = neu
-    ? "border-white/30 bg-transparent text-transparent"
+    ? "border-(color:--chat-ink)/30 bg-transparent text-transparent"
     : "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-transparent text-transparent";
   const fieldClass = cn(
     "w-full rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border bg-black/20 px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] outline-none transition-colors disabled:pointer-events-none disabled:opacity-50",
     "border-[color:var(--chat-block-border)]",
     neu
-      ? "text-white/90 placeholder:text-white/35 focus:border-white/25"
+      ? "text-(color:--chat-ink)/90 placeholder:text-(color:--chat-ink)/35 focus:border-(color:--chat-ink)/25"
       : "text-fg/90 placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]",
   );
   const optionRowClass = (active: boolean) =>
@@ -230,7 +230,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                           <span
                             className={cn(
                               "flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium",
-                              neu ? "text-white/90" : "text-fg/90",
+                              neu ? "text-(color:--chat-ink)/90" : "text-fg/90",
                             )}
                           >
                             {option.label ?? option.value}
@@ -272,7 +272,7 @@ export const MosaicCard = React.memo(function MosaicCard({
                           <span
                             className={cn(
                               "flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium",
-                              neu ? "text-white/90" : "text-fg/90",
+                              neu ? "text-(color:--chat-ink)/90" : "text-fg/90",
                             )}
                           >
                             {option.label ?? option.value}
@@ -375,8 +375,8 @@ export const MosaicCard = React.memo(function MosaicCard({
                         "border-[color:var(--chat-block-border)]",
                         denyActive
                           ? neu
-                            ? "bg-white/[0.08] text-white/85"
-                            : "bg-white/[0.05] text-fg/85"
+                            ? "bg-(color:--chat-ink)/[0.08] text-(color:--chat-ink)/85"
+                            : "bg-(color:--chat-ink)/[0.05] text-fg/85"
                           : cn(mutedText, "hover:bg-black/20"),
                       )}
                       onClick={() => setValue(element.id, "deny")}
@@ -410,7 +410,7 @@ export const MosaicCard = React.memo(function MosaicCard({
               accentBg,
               accentText,
               neu
-                ? "hover:bg-white/[0.16]"
+                ? "hover:bg-(color:--chat-ink)/[0.16]"
                 : "hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]",
             )}
           >

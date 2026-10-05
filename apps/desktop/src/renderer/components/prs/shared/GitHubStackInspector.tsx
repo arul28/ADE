@@ -112,7 +112,7 @@ export function GitHubStackInspector({
       <div style={{
         ...cardStyle({ padding: 0, overflow: "hidden" }),
         borderColor: "rgba(167,139,250,0.22)",
-        background: "linear-gradient(135deg, rgba(139,92,246,0.08), rgba(255,255,255,0.015))",
+        background: "linear-gradient(135deg, rgba(139,92,246,0.08), color-mix(in srgb, var(--color-fg) 1.5%, transparent))",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px" }}>
           <span style={{
@@ -166,7 +166,7 @@ export function GitHubStackInspector({
         </div>
 
         {expanded ? (
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "10px 12px 12px" }}>
+          <div style={{ borderTop: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)", padding: "10px 12px 12px" }}>
             {stack.lastError ? (
               <div style={{ display: "flex", gap: 7, marginBottom: 10, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11 }}>
                 <Warning size={13} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
@@ -221,7 +221,7 @@ export function GitHubStackInspector({
               </div>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid color-mix(in srgb, var(--color-fg) 5%, transparent)" }}>
               <button
                 type="button"
                 onClick={() => {
@@ -239,7 +239,7 @@ export function GitHubStackInspector({
             </div>
 
             {manageOpen ? (
-              <div style={{ display: "grid", gap: 8, marginTop: 10, padding: 10, borderRadius: 8, background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div style={{ display: "grid", gap: 8, marginTop: 10, padding: 10, borderRadius: 8, background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)", border: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
                 <label style={{ display: "grid", gap: 5 }}>
                   <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textSecondary }}>
                     Add pull requests above the current top
@@ -256,7 +256,7 @@ export function GitHubStackInspector({
                         height: 30,
                         padding: "0 9px",
                         borderRadius: 7,
-                        border: "1px solid rgba(255,255,255,0.09)",
+                        border: "1px solid color-mix(in srgb, var(--color-fg) 9%, transparent)",
                         background: "rgba(0,0,0,0.18)",
                         color: COLORS.textPrimary,
                         fontFamily: MONO_FONT,

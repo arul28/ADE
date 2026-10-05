@@ -44,7 +44,7 @@ export function PrSwitcherMenu({ switcher, className }: { switcher: PrSwitcher; 
             return (
               <DropdownMenu.Item
                 key={entry.id}
-                className={cn(MENU_ITEM_CLASS, "gap-2", selected && "bg-white/[0.06]")}
+                className={cn(MENU_ITEM_CLASS, "gap-2", selected && "bg-fg/[0.06]")}
                 data-testid="pr-switcher-item"
                 onSelect={() => switcher.onSelect(entry.id)}
               >

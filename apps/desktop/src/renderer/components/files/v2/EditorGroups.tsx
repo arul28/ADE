@@ -81,7 +81,7 @@ export function EditorGroups(props: EditorGroupsProps) {
       onClick={() => props.onTabScopeChange(props.tabScope === "all" ? "lane" : "all")}
       title={scopeTitle}
       aria-label={scopeTitle}
-      className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-white/5"
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-fg/5"
       style={{ color: "var(--color-fg-muted, rgba(255,255,255,0.55))" }}
     >
       {props.tabScope === "all" ? <Stack size={12} weight="fill" /> : <Funnel size={12} weight="fill" />}

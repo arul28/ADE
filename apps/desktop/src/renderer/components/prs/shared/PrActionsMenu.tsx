@@ -413,7 +413,7 @@ export function PrActionsDropdown(props: PrActionsContext & { triggerClassName?:
           aria-label="More pull request actions"
           data-testid="pr-actions-trigger"
           className={cn(
-            "inline-flex h-7 w-7 items-center justify-center rounded-md text-fg/80 transition-colors hover:bg-white/[0.07] hover:text-fg",
+            "inline-flex h-7 w-7 items-center justify-center rounded-md text-fg/80 transition-colors hover:bg-fg/[0.07] hover:text-fg",
             props.triggerClassName,
           )}
         >

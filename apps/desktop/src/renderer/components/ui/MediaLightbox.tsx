@@ -173,7 +173,7 @@ export function MediaLightbox({
               <button
                 key={`${index}:${chapter.t}`}
                 type="button"
-                className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-white/[0.12] bg-black/60 px-2 font-sans text-[11px] text-white/80 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
+                className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-fg/[0.12] bg-black/60 px-2 font-sans text-[11px] text-white/80 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
                 onClick={() => seekVideoAndPlay(videoRef.current, chapter.t)}
               >
                 <span className="tabular-nums text-white/55">{formatProofDuration(chapter.t * 1000)}</span>
@@ -185,7 +185,7 @@ export function MediaLightbox({
         <div
           // Hidden until the pointer is over the media or a tool has keyboard focus, so
           // the picture shows whole and unobstructed.
-          className="absolute right-2.5 top-2.5 flex items-center gap-0.5 rounded-lg border border-white/[0.12] bg-black/60 p-0.5 text-white/80 opacity-0 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150 has-[:focus-visible]:opacity-100 group-hover/lightbox:opacity-100"
+          className="absolute right-2.5 top-2.5 flex items-center gap-0.5 rounded-lg border border-fg/[0.12] bg-black/60 p-0.5 text-white/80 opacity-0 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150 has-[:focus-visible]:opacity-100 group-hover/lightbox:opacity-100"
         >
           {kind === "image" && canReadBytes && !failureText ? (
             <LightboxTool
@@ -233,7 +233,7 @@ const LightboxTool = React.forwardRef<HTMLButtonElement, {
       onClick={onClick}
       className={cn(
         "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-        "hover:bg-white/[0.12] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40",
+        "hover:bg-fg/[0.12] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40",
         "disabled:opacity-50",
       )}
     >

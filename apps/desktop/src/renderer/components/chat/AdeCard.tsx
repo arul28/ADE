@@ -536,7 +536,7 @@ export function AdeCard({
       ) : null}
 
       {actions.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2">
+        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-fg/[0.06] pt-2">
           {actions.map((action) => (
             <ChatCardButton
               key={action.id}
@@ -579,7 +579,7 @@ export function AdeCard({
           }
         }}
         title={deeplink ?? "Open"}
-        className="cursor-pointer text-left transition-colors hover:bg-white/[0.045]"
+        className="cursor-pointer text-left transition-colors hover:bg-fg/[0.045]"
       >
         {inner}
       </ChatCard>

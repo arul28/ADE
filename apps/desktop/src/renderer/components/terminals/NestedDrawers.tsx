@@ -99,7 +99,7 @@ export function NestedDrawers({
           // these rows hang off their own rail, so a left bleed would cross it.
           <div
             key={kind}
-            className={cn("ml-3 border-l border-white/[0.06] pl-1.5", collapsed ? "mt-0.5" : "mt-1")}
+            className={cn("ml-3 border-l border-fg/[0.06] pl-1.5", collapsed ? "mt-0.5" : "mt-1")}
             data-indented="true"
             data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
           >
@@ -107,7 +107,7 @@ export function NestedDrawers({
               type="button"
               onClick={() => onToggle(nestedDrawerOpenMarker(sectionId))}
               className={cn(
-                "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
+                "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-fg/[0.03] hover:text-muted-fg/70",
                 QUIET_LABEL_CLASS,
               )}
               aria-expanded={!collapsed}

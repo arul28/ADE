@@ -37,8 +37,8 @@ const ImportSessionRow = memo(function ImportSessionRow({
       className={cn(
         "group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors duration-75",
         active
-          ? "bg-white/[0.07] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
-          : "hover:bg-white/[0.035] focus-visible:bg-white/[0.035]",
+          ? "bg-fg/[0.07] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
+          : "hover:bg-fg/[0.035] focus-visible:bg-fg/[0.035]",
       )}
     >
       <ToolLogo
@@ -73,10 +73,10 @@ function SkeletonRows({ count }: { count: number }) {
     <div className="flex flex-col gap-1 px-2 pt-1" aria-hidden="true">
       {Array.from({ length: count }, (_, index) => (
         <div key={index} className="flex items-start gap-2.5 px-2.5 py-2">
-          <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-white/[0.05]" />
+          <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-fg/[0.05]" />
           <div className="min-w-0 flex-1">
-            <div className="h-3 animate-pulse rounded bg-white/[0.05]" style={{ width: `${78 - index * 9}%` }} />
-            <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-white/[0.035]" />
+            <div className="h-3 animate-pulse rounded bg-fg/[0.05]" style={{ width: `${78 - index * 9}%` }} />
+            <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-fg/[0.035]" />
           </div>
         </div>
       ))}

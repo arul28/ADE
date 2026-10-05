@@ -144,7 +144,7 @@ export function CtoHomeChooser({
                   "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
                   isSelected
                     ? "border-cyan-400/40 bg-cyan-400/[0.07]"
-                    : "border-white/[0.08] hover:bg-white/[0.03]",
+                    : "border-fg/[0.08] hover:bg-fg/[0.03]",
                   reason != null && "cursor-default opacity-45 hover:bg-transparent",
                 )}
               >
@@ -172,7 +172,7 @@ export function CtoHomeChooser({
             data-testid="cto-home-confirm"
             disabled={!canConfirm}
             onClick={() => void confirm()}
-            className="rounded-lg border border-white/[0.12] bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-white/[0.1] disabled:cursor-default disabled:opacity-50"
+            className="rounded-lg border border-fg/[0.12] bg-fg/[0.06] px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-fg/[0.1] disabled:cursor-default disabled:opacity-50"
           >
             {saving ? "Saving…" : selected ? `Run the CTO on ${selected.machineName}` : "Pick a machine"}
           </button>

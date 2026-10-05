@@ -44,8 +44,8 @@ export function LaneDriftPill({ lane, stale = false }: { lane: LaneSummary | nul
         type="button"
         onClick={() => navigate(`/lanes?${new URLSearchParams({ laneId: lane.id }).toString()}`)}
         className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-2 rounded-full bg-white/[0.05] px-2.5 text-[11.5px] font-medium tabular-nums text-fg/75",
-          "transition-[color,background-color,opacity] duration-150 hover:bg-white/[0.09] hover:text-fg",
+          "inline-flex h-6 shrink-0 items-center gap-2 rounded-full bg-fg/[0.05] px-2.5 text-[11.5px] font-medium tabular-nums text-fg/75",
+          "transition-[color,background-color,opacity] duration-150 hover:bg-fg/[0.09] hover:text-fg",
           stale && "opacity-50",
           held && "invisible",
           WORK_TOOL_CHROME_FOCUS,
@@ -87,7 +87,7 @@ export function CommitSearchField() {
   }
   return (
     <label
-      className="flex h-7 w-[min(260px,32vw)] shrink items-center gap-1.5 rounded-[7px] bg-white/[0.05] px-2 focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
+      className="flex h-7 w-[min(260px,32vw)] shrink items-center gap-1.5 rounded-[7px] bg-fg/[0.05] px-2 focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_55%,transparent)]"
     >
       <MagnifyingGlass size={13} className="shrink-0 text-muted-fg" aria-hidden />
       <input
@@ -136,7 +136,7 @@ export function CommitScopeToggle() {
     { value: "lanes" as const, label: "All lanes", tip: "Every lane's branch on one graph" },
   ];
   return (
-    <div role="radiogroup" aria-label="Commits shown" className="flex h-7 shrink-0 items-center rounded-[8px] bg-white/[0.04] p-0.5">
+    <div role="radiogroup" aria-label="Commits shown" className="flex h-7 shrink-0 items-center rounded-[8px] bg-fg/[0.04] p-0.5">
       {options.map((option) => (
         <PaneTooltip key={option.value} label={option.tip}>
           <button
@@ -147,7 +147,7 @@ export function CommitScopeToggle() {
             onClick={() => setScope(option.value)}
             className={cn(
               "h-6 rounded-[6px] px-2 text-[12px] font-medium transition-colors duration-100",
-              scope === option.value ? "bg-white/[0.09] text-fg" : "text-muted-fg hover:text-fg",
+              scope === option.value ? "bg-fg/[0.09] text-fg" : "text-muted-fg hover:text-fg",
               WORK_TOOL_CHROME_FOCUS,
             )}
             data-testid={`history-scope-${option.value}`}
@@ -199,7 +199,7 @@ export function CommitColumnsMenu() {
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="min-w-[160px] rounded-[9px] border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
+          className="min-w-[160px] rounded-[9px] border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
           style={{ zIndex: Z_LAYERS.popover }}
         >
           {COLUMN_LABELS.map((column) => (
@@ -208,13 +208,13 @@ export function CommitColumnsMenu() {
               checked={columns[column.id]}
               onCheckedChange={() => toggleColumn(column.id)}
               onSelect={(event) => event.preventDefault()}
-              className="flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12px] text-fg outline-none data-[highlighted]:bg-white/[0.07]"
+              className="flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12px] text-fg outline-none data-[highlighted]:bg-fg/[0.07]"
             >
               <span
                 aria-hidden
                 className={cn(
                   "inline-flex h-3.5 w-3.5 items-center justify-center rounded-[4px] border text-[9px]",
-                  columns[column.id] ? "border-transparent bg-[var(--color-accent)] text-white" : "border-white/20",
+                  columns[column.id] ? "border-transparent bg-[var(--color-accent)] text-white" : "border-fg/20",
                 )}
               >
                 {columns[column.id] ? "✓" : null}

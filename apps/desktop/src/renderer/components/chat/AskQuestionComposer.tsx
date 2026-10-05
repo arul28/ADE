@@ -142,9 +142,9 @@ function OptionRow({
         onClick={onToggle}
         className={cn(
           "grid w-full grid-cols-[26px_minmax(0,1fr)_auto] items-baseline gap-2.5 px-3.5 py-2.5 text-left transition-colors",
-          "hover:bg-white/[0.028] focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]",
+          "hover:bg-fg/[0.028] focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]",
           "disabled:pointer-events-none disabled:opacity-45",
-          checked ? "bg-white/[0.038]" : null,
+          checked ? "bg-fg/[0.038]" : null,
         )}
       >
         <span
@@ -195,7 +195,7 @@ function OptionRow({
               event.stopPropagation();
               onTogglePreview();
             }}
-            className="rounded px-1.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.12em] text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-45"
+            className="rounded px-1.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.12em] text-fg/26 transition-colors hover:bg-fg/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-45"
           >
             {expanded ? "▾ hide preview" : "▸ preview"}
           </button>
@@ -466,7 +466,7 @@ export function AskQuestionComposer({
         <button
           type="button"
           onClick={() => setFolded(false)}
-          className="grid w-full grid-cols-[17px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-white/[0.03]"
+          className="grid w-full grid-cols-[17px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-fg/[0.03]"
         >
           <span className="inline-flex h-[17px] w-[17px] items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
             <ProviderLogo family={request.source} size={10} />
@@ -558,7 +558,7 @@ export function AskQuestionComposer({
           aria-label="Minimize question"
           data-testid="ask-question-minimize"
           onClick={() => setFolded(true)}
-          className="rounded px-1 py-0.5 text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62"
+          className="rounded px-1 py-0.5 text-fg/26 transition-colors hover:bg-fg/[0.05] hover:text-fg/62"
         >
           <CaretDown size={13} weight="bold" />
         </button>
@@ -569,7 +569,7 @@ export function AskQuestionComposer({
           disabled={responding}
           data-testid={onDismiss ? "ask-question-dismiss-x" : "ask-question-decline-x"}
           onClick={onDismiss ?? onDecline}
-          className="rounded px-1 py-0.5 text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
+          className="rounded px-1 py-0.5 text-fg/26 transition-colors hover:bg-fg/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
         >
           <X size={13} weight="bold" />
         </button>
@@ -664,7 +664,7 @@ export function AskQuestionComposer({
                 top: optionsRef.current.clientHeight - 40,
                 behavior: "smooth",
               })}
-              className={cn("block w-full flex-none border-t py-1.5 pl-[50px] pr-3.5 text-left font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-[0.14em] text-fg/26 transition-colors hover:bg-white/[0.03] hover:text-fg/62", HAIRLINE)}
+              className={cn("block w-full flex-none border-t py-1.5 pl-[50px] pr-3.5 text-left font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-[0.14em] text-fg/26 transition-colors hover:bg-fg/[0.03] hover:text-fg/62", HAIRLINE)}
             >
               ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
             </button>
@@ -766,7 +766,7 @@ export function AskQuestionComposer({
                 title={attachBlockedReason ?? "Attach a file — it rides your next message"}
                 aria-label="Attach a file"
                 onClick={onAttachFiles}
-                className="mt-[7px] inline-flex h-6 w-6 items-center justify-center rounded-lg text-fg/26 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
+                className="mt-[7px] inline-flex h-6 w-6 items-center justify-center rounded-lg text-fg/26 transition-colors hover:bg-fg/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
               >
                 <Paperclip size={13} weight="bold" />
               </button>
@@ -781,7 +781,7 @@ export function AskQuestionComposer({
           disabled={responding}
           data-testid="ask-question-decline"
           onClick={onDecline}
-          className="rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] text-fg/40 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
+          className="rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] text-fg/40 transition-colors hover:bg-fg/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
         >
           Decline
         </button>
@@ -791,7 +791,7 @@ export function AskQuestionComposer({
             disabled={responding}
             data-testid="ask-question-compare-toggle"
             onClick={() => setComparing((prev) => !prev)}
-            className="rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] text-fg/40 transition-colors hover:bg-white/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
+            className="rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] text-fg/40 transition-colors hover:bg-fg/[0.05] hover:text-fg/62 disabled:pointer-events-none disabled:opacity-40"
           >
             {comparing ? "⇄ Single" : "⇄ Compare"}
           </button>
@@ -814,7 +814,7 @@ export function AskQuestionComposer({
             "rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] transition-colors",
             "bg-[color:color-mix(in_srgb,var(--chat-accent)_92%,black_8%)] text-black",
             "hover:bg-[color:var(--chat-accent)]",
-            "disabled:pointer-events-none disabled:bg-white/[0.055] disabled:text-fg/26",
+            "disabled:pointer-events-none disabled:bg-fg/[0.055] disabled:text-fg/26",
           )}
         >
           {responding ? "Sending…" : sendLabel({

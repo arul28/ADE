@@ -3,9 +3,11 @@ import type { CSSProperties } from "react";
 /** Semantic palette — resolves against `[data-theme]` / `:root` in `index.css`. */
 export const COLORS = {
   pageBg: "var(--color-bg)",
-  cardBg: "rgba(255,255,255,0.03)",
-  cardBgSolid: "#181423",
-  recessedBg: "rgba(255,255,255,0.02)",
+  // Tints of the theme text colour rather than of white, so cards still read
+  // as cards on a light page.
+  cardBg: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+  cardBgSolid: "var(--color-card)",
+  recessedBg: "color-mix(in srgb, var(--color-fg) 2%, transparent)",
   hoverBg: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
   border: "var(--color-border)",
   outlineBorder: "color-mix(in srgb, var(--color-border) 88%, var(--color-fg) 12%)",
@@ -90,6 +92,17 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
 }
 
 /**
+ * A lane, provider or status colour used as text. Those colours are picked to
+ * glow on a dark page, so on a light theme the pale ones (amber, teal, mint)
+ * fall to 1.5 : 1. `--ade-tone-text-strength` is 100% on dark pages, which
+ * returns the colour untouched, and lower on light pages, which pulls it
+ * toward the theme's text colour until it reads.
+ */
+export function toneText(color: string): string {
+  return `color-mix(in srgb, ${color} var(--ade-tone-text-strength, 100%), var(--color-fg))`;
+}
+
+/**
  * Fills, borders, and text for elements that should reflect a lane’s chosen
  * color (from the Lanes tab) with a consistent shaded treatment.
  */
@@ -114,8 +127,8 @@ export function laneSurfaceTint(
   const c = String(color).trim();
   if (strength === "pastel") {
     return {
-      background: `color-mix(in srgb, ${c} 8%, rgba(255, 255, 255, 0.035))`,
-      border: `1px solid color-mix(in srgb, ${c} 14%, rgba(255, 255, 255, 0.05))`,
+      background: `color-mix(in srgb, ${c} 8%, color-mix(in srgb, var(--color-fg) 3.5%, transparent))`,
+      border: `1px solid color-mix(in srgb, ${c} 14%, color-mix(in srgb, var(--color-fg) 5%, transparent))`,
       borderLeftAccent: `2px solid color-mix(in srgb, ${c} 40%, transparent)`,
       text: `color-mix(in srgb, ${c} 52%, var(--color-muted-fg))`,
     };
@@ -124,10 +137,10 @@ export function laneSurfaceTint(
     ? Math.max(0, Math.min(100, Math.round(alpha * 100)))
     : strength === "soft" ? 10 : 16;
   return {
-    background: `color-mix(in srgb, ${c} ${p}%, rgba(10, 10, 12, 0.65))`,
-    border: `1px solid color-mix(in srgb, ${c} 28%, rgba(255, 255, 255, 0.06))`,
+    background: `color-mix(in srgb, ${c} ${p}%, color-mix(in srgb, var(--color-bg) 65%, transparent))`,
+    border: `1px solid color-mix(in srgb, ${c} 28%, color-mix(in srgb, var(--color-fg) 6%, transparent))`,
     borderLeftAccent: `2px solid ${c}`,
-    text: c,
+    text: toneText(c),
   };
 }
 
@@ -142,7 +155,7 @@ export function laneSurfaceTint(
  */
 export function laneRailTint(color: string | null | undefined, percent = 25): string {
   const c = typeof color === "string" ? color.trim() : "";
-  if (!c) return "rgba(255,255,255,0.07)";
+  if (!c) return "color-mix(in srgb, var(--color-fg) 7%, transparent)";
   // Every lane colour ADE assigns is a hex literal, and resolving it to `rgba`
   // here rather than leaning on `color-mix` keeps the value a real colour any
   // engine can parse — jsdom included, so the rail is assertable in tests.

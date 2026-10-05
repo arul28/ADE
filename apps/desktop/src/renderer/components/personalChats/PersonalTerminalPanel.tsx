@@ -234,13 +234,13 @@ export function PersonalTerminalPanel({
   }, [terminalPreferences]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-[#0c0e16]" aria-label="Personal terminal">
-      <header className="flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.07] px-2.5 text-white/55">
+    <section className="flex h-full min-h-0 flex-col bg-(color:--chat-canvas-bg)" aria-label="Personal terminal">
+      <header className="flex h-9 shrink-0 items-center gap-2 border-b border-fg/[0.07] px-2.5 text-white/55">
         <TerminalWindow size={14} />
         <span className="flex-1 font-sans text-[10px] font-medium text-white/65">Terminal</span>
         {status === "starting" ? <SpinnerGap size={12} className="animate-spin" /> : null}
         {status === "exited" ? <span className="font-mono text-[8px] uppercase tracking-wide text-white/35">Exited</span> : null}
-        <button type="button" onClick={onClose} className="flex h-6 w-6 items-center justify-center rounded text-white/45 hover:bg-white/[0.07] hover:text-white" aria-label="Close terminal">
+        <button type="button" onClick={onClose} className="flex h-6 w-6 items-center justify-center rounded text-white/45 hover:bg-fg/[0.07] hover:text-white" aria-label="Close terminal">
           <X size={12} />
         </button>
       </header>

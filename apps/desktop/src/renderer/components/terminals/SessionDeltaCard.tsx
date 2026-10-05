@@ -30,7 +30,7 @@ export function SessionDeltaCard({ sessionId, className }: { sessionId: string; 
   return (
     <div
       className={cn(
-        "rounded-[12px] border border-white/[0.06] bg-white/[0.02] p-3 text-xs backdrop-blur-sm",
+        "rounded-[12px] border border-fg/[0.06] bg-fg/[0.02] p-3 text-xs backdrop-blur-sm",
         className,
       )}
     >

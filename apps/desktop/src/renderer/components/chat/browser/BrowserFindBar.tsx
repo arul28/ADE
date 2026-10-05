@@ -116,7 +116,7 @@ export function BrowserFindBar({
               disabled={!findText.trim()}
               title="Previous match"
               aria-label="Previous match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
               <CaretLeft size={12} />
             </button>
@@ -126,7 +126,7 @@ export function BrowserFindBar({
               disabled={!findText.trim()}
               title="Next match"
               aria-label="Next match"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-35", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
               <CaretRight size={12} />
             </button>
@@ -135,7 +135,7 @@ export function BrowserFindBar({
               onClick={closeFind}
               title="Close find bar"
               aria-label="Close find bar"
-              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-white/[0.06] hover:text-fg", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+              className={cn("inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg", TOOLBAR_MOTION, TOOLBAR_FOCUS)}
             >
               <X size={12} />
             </button>

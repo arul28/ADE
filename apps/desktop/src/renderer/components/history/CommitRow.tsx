@@ -35,7 +35,7 @@ function AuthorAvatar({ name, email }: { name: string; email?: string }) {
   return (
     <span
       aria-hidden
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-[9px] font-semibold text-fg/70"
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-fg/[0.08] text-[9px] font-semibold text-fg/70"
     >
       {letter}
     </span>
@@ -60,7 +60,7 @@ function ShaCell({ commit }: { commit: GitCommitSummary }) {
       onDoubleClick={(event) => event.stopPropagation()}
       className={cn(
         "w-[64px] shrink-0 rounded-[5px] px-1 text-left font-mono text-[11px] tabular-nums transition-colors duration-100",
-        copied ? "text-[var(--color-success)]" : "text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg",
+        copied ? "text-[var(--color-success)]" : "text-muted-fg/70 hover:bg-fg/[0.06] hover:text-fg",
       )}
     >
       {copied ? "copied" : commit.shortSha}
@@ -162,7 +162,7 @@ export const CommitRow = React.memo(function CommitRow({
         "chv-row absolute left-0 right-0 flex cursor-default items-center gap-2 pr-2",
         selected
           ? "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)]"
-          : "hover:bg-white/[0.035]",
+          : "hover:bg-fg/[0.035]",
       )}
       style={{ height: COMMIT_ROW_HEIGHT, transform: `translateY(${start}px)` }}
     >
@@ -202,7 +202,7 @@ export const CommitRow = React.memo(function CommitRow({
                 onOpenPrNumber(pr);
               }}
               onDoubleClick={(event) => event.stopPropagation()}
-              className="inline-flex shrink-0 items-center gap-0.5 rounded-[5px] px-1 text-[11px] tabular-nums text-muted-fg/80 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
+              className="inline-flex shrink-0 items-center gap-0.5 rounded-[5px] px-1 text-[11px] tabular-nums text-muted-fg/80 transition-colors duration-100 hover:bg-fg/[0.06] hover:text-fg"
             >
               <GitPullRequest size={11} aria-hidden />
               {pr}

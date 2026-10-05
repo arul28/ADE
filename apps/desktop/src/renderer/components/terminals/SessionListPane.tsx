@@ -97,7 +97,7 @@ import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getEffectiveBinding } from "../../lib/keybindings";
-import { laneRailTint, laneSurfaceTint } from "../lanes/laneDesignTokens";
+import { laneRailTint, laneSurfaceTint, toneText } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
@@ -141,9 +141,9 @@ const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
  * the group headers between them.
  */
 const SIDEBAR_BARE_BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg";
+  "inline-flex items-center gap-1.5 rounded-md text-muted-fg transition-colors hover:bg-fg/[0.04] hover:text-fg";
 const BULK_ACTION_BUTTON_CLASS =
-  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg";
+  "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-muted-fg transition-colors hover:bg-fg/[0.04] hover:text-fg";
 const BULK_DESTRUCTIVE_BUTTON_CLASS =
   "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-red-300/75 transition-colors hover:bg-red-500/10 hover:text-red-200";
 
@@ -162,7 +162,7 @@ const BULK_DESTRUCTIVE_BUTTON_CLASS =
 const GROUP_STACK_CLASS = "flex flex-col gap-[18px]";
 const ROW_STACK_CLASS = "flex flex-col gap-1";
 /** Hairline around two-or-more worktree lanes that share a feature branch. */
-const SHARED_BRANCH_CLUSTER_CLASS = "rounded-lg border border-dashed border-white/[0.18] py-1";
+const SHARED_BRANCH_CLUSTER_CLASS = "rounded-lg border border-dashed border-fg/[0.18] py-1";
 /**
  * A card's hover fill bleeds past the pane's gutter so the row reaches the edge;
  * it defaults to 12px, which is the by-lane inset (scroll `px-1` + stack `px-2`).
@@ -426,8 +426,8 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
       <div
         className="relative w-full overflow-hidden rounded-lg text-left"
         style={{
-          border: "1px solid rgba(255,255,255,0.08)",
-          background: "rgba(255,255,255,0.035)",
+          border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)",
+          background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)",
         }}
         aria-label={`${title}: ${status}`}
       >
@@ -437,7 +437,7 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
           animate={{ opacity: [0.2, 0.42, 0.2] }}
           transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
           style={{
-            background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent)",
+            background: "linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-fg) 8%, transparent), transparent)",
           }}
         />
         <div className="relative flex items-stretch gap-2.5 px-2.5 py-2">
@@ -494,10 +494,10 @@ const SHELF_TONE_LABEL_CLASS: Record<GroupShelfTone, string> = {
  * ever painting a surface.
  */
 const SHELF_TONE_RULE_CLASS: Record<GroupShelfTone, string> = {
-  default: "bg-white/[0.06]",
-  working: "bg-white/[0.06]",
+  default: "bg-fg/[0.06]",
+  working: "bg-fg/[0.06]",
   snoozed: "bg-blue-400/15",
-  settled: "bg-white/[0.06]",
+  settled: "bg-fg/[0.06]",
 };
 
 /**
@@ -670,7 +670,7 @@ function StickyGroupHeader({
       aria-hidden
       tabIndex={-1}
       data-testid={`section-chevron-${sectionId}`}
-      className="flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed"
+      className="flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 transition-colors hover:bg-fg/[0.06] disabled:cursor-not-allowed"
       onClick={onToggleCollapsed}
       disabled={Boolean(busyLabel)}
     >
@@ -758,7 +758,7 @@ function StickyGroupHeader({
             ? { role: "heading" as const, "aria-level": 3, "aria-label": `${resolvedLabel} (${count})` }
             : {})}
         >
-          <div className="relative flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-white/[0.03]">
+          <div className="relative flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-fg/[0.03]">
             <button
               type="button"
               // `overflow-hidden` is load-bearing: without it, unshrinkable
@@ -2840,7 +2840,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           type="button"
           onClick={() => toggleWorkSectionCollapsed(openMarker)}
           className={cn(
-            "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
+            "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-fg/[0.03] hover:text-muted-fg/70",
             QUIET_LABEL_CLASS,
           )}
           aria-expanded={!collapsed}
@@ -2962,7 +2962,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const renderQuietZone = (present: boolean, children: React.ReactNode) => (present ? (
     <div className={QUIET_ZONE_STACK_CLASS} data-testid="work-quiet-zone">
-      <div aria-hidden data-testid="work-quiet-zone-separator" className="h-px bg-white/[0.13]" />
+      <div aria-hidden data-testid="work-quiet-zone-separator" className="h-px bg-fg/[0.13]" />
       {children}
     </div>
   ) : null);
@@ -3026,7 +3026,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         headerAction={quietlyAwaitingSessions.length > 0 ? (
           <button
             type="button"
-            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
+            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
               void settleSessions(quietlyAwaitingSessions.map((session) => session.id));
@@ -3048,7 +3048,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         headerAction={(
           <button
             type="button"
-            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
+            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
               void settleSessions(endedFiltered.map((session) => session.id));
@@ -3097,7 +3097,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneIcon = (
       <span
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-        style={{ color: laneHeaderTint.text ?? laneAccent ?? "var(--color-muted-fg)" }}
+        style={{ color: laneHeaderTint.text ?? (laneAccent ? toneText(laneAccent) : "var(--color-muted-fg)") }}
       >
         {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
       </span>
@@ -3595,7 +3595,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               >
                 <button
                   type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
                   aria-label={`Refresh lane and session records for ${label}`}
                   disabled={!canRefreshRecords}
                   onClick={(event) => {
@@ -3610,7 +3610,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
             <div
-              className="mx-1.5 mb-1.5 border-l border-white/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
+              className="mx-1.5 mb-1.5 border-l border-fg/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
               data-testid="orphan-session-explanation"
             >
               The lane record is missing from the latest runtime snapshot. Refresh to reconcile this group with its
@@ -3780,7 +3780,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       style={{ background: "var(--work-session-sidebar-bg, var(--work-sidebar-bg))" }}
     >
       {/* Compact toolbar */}
-      <div className="ade-session-list-toolbar shrink-0 border-b border-white/[0.06]">
+      <div className="ade-session-list-toolbar shrink-0 border-b border-fg/[0.06]">
         {/* Three borderless controls and no rule beneath them. The strip used to
             spend four boundaries — input, funnel, outlined button, divider —
             before the first chat, which left hover nothing to say. */}
@@ -3807,7 +3807,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               <MagnifyingGlass size={12} aria-hidden />
               <span className="min-w-0 flex-1 truncate text-left">Search</span>
               {commandPaletteShortcut ? (
-                <kbd className="shrink-0 rounded-sm bg-white/[0.05] px-1 py-px text-[9px] font-medium text-muted-fg/60">
+                <kbd className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px text-[9px] font-medium text-muted-fg/60">
                   {commandPaletteShortcut}
                 </kbd>
               ) : null}
@@ -3853,7 +3853,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 SIDEBAR_BARE_BUTTON_CLASS,
                 "ade-session-list-toolbar-filter relative h-6 w-6 shrink-0 justify-center",
                 WORK_FILTER_FOCUS_CLASS,
-                (filterOpen || laneFilterActive) && "bg-white/[0.04] text-fg",
+                (filterOpen || laneFilterActive) && "bg-fg/[0.04] text-fg",
               )}
               onClick={() => setFilterOpen(!filterOpen)}
               aria-label={laneFilterActive ? "Filters, lane filter active" : "Filters"}
@@ -3914,7 +3914,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
         {selectedCount > 0 ? (
           <div
-            className="mx-2 mt-1.5 mb-1.5 flex min-h-8 flex-wrap items-center gap-0.5 border-t border-white/[0.06] px-1 py-0.5"
+            className="mx-2 mt-1.5 mb-1.5 flex min-h-8 flex-wrap items-center gap-0.5 border-t border-fg/[0.06] px-1 py-0.5"
             data-testid="work-session-selection-toolbar"
           >
             <span className="min-w-0 flex-1 truncate px-1 text-[10px] font-medium tabular-nums text-muted-fg/70">
@@ -3971,7 +3971,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             ) : null}
             <button
               type="button"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/50 transition-colors hover:bg-white/[0.04] hover:text-fg"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/50 transition-colors hover:bg-fg/[0.04] hover:text-fg"
               onClick={onClearSelection}
               aria-label="Clear selected sessions"
               title="Clear selection"
@@ -4015,7 +4015,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             </div>
             <button
               type="button"
-              className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg"
+              className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
               onClick={() => setWorkSessionFilters?.(EMPTY_WORK_SESSION_FILTERS)}
             >
               Clear filters

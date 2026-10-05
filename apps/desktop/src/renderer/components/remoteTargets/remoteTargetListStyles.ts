@@ -12,7 +12,7 @@ export const machineRowStyle: CSSProperties = {
   padding: "12px 14px",
   borderRadius: 8,
   border: `1px solid ${COLORS.border}`,
-  background: "rgba(255,255,255,0.02)",
+  background: "color-mix(in srgb, var(--color-fg) 2%, transparent)",
 };
 
 export const inlineDetailStyle: CSSProperties = {

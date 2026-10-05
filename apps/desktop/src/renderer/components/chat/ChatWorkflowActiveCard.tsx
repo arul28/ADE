@@ -273,7 +273,7 @@ function WorkflowStatusIcon({ status }: { status: WorkflowStatus | WorkflowAgent
 
 function WorkflowMetric({ icon: Icon, label, value }: { icon: typeof UsersThree; label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-white/[0.055] bg-white/[0.025] px-2 py-1.5">
+    <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-fg/[0.055] bg-fg/[0.025] px-2 py-1.5">
       <Icon aria-hidden size={13} className="shrink-0 text-fg/35" />
       <div className="min-w-0">
         <div className="truncate text-[9px] uppercase tracking-[0.08em] text-fg/30">{label}</div>
@@ -310,7 +310,7 @@ export function ChatWorkflowActiveCard({
 
   return (
     <section
-      className="border-b border-white/[0.055] px-3 pb-3 pt-2"
+      className="border-b border-fg/[0.055] px-3 pb-3 pt-2"
       aria-label="Workflow activity"
       data-testid="chat-workflow-active-card-list"
     >
@@ -378,7 +378,7 @@ export function ChatWorkflowActiveCard({
                   </span>
                 </span>
               </span>
-              <span className="relative mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.07] pt-2 text-[10px] tabular-nums text-fg/42">
+              <span className="relative mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-fg/[0.07] pt-2 text-[10px] tabular-nums text-fg/42">
                 <span className="inline-flex items-center gap-1"><UsersThree aria-hidden size={11} />{counts.completed}/{total || "–"} agents</span>
                 {totals.tokens !== null ? <span>{totals.tokens.toLocaleString()} tok</span> : null}
                 {totals.tools !== null ? <span>{totals.tools} {totals.tools === 1 ? "tool" : "tools"}</span> : null}
@@ -437,9 +437,9 @@ function ChatWorkflowDetailsModal({
             closeButtonRef.current?.focus();
           }}
           data-testid="chat-workflow-details-dialog"
-          className="fixed left-1/2 top-1/2 z-[211] grid max-h-[min(860px,calc(100vh-24px))] w-[min(980px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-amber-100/[0.13] bg-[#11131b] shadow-[0_32px_140px_rgba(0,0,0,0.70)] focus:outline-none"
+          className="fixed left-1/2 top-1/2 z-[211] grid max-h-[min(860px,calc(100vh-24px))] w-[min(980px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-amber-100/[0.13] bg-(color:--color-modal-bg) shadow-[0_32px_140px_rgba(0,0,0,0.70)] focus:outline-none"
         >
-        <header className="flex items-start justify-between gap-4 border-b border-white/[0.07] px-4 py-4 sm:px-5">
+        <header className="flex items-start justify-between gap-4 border-b border-fg/[0.07] px-4 py-4 sm:px-5">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-amber-200/20 bg-[linear-gradient(145deg,rgba(245,158,11,0.16),rgba(139,92,246,0.12))] text-amber-100/90">
               <TreeStructure aria-hidden size={21} weight="duotone" />
@@ -447,7 +447,7 @@ function ChatWorkflowDetailsModal({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Dialog.Title className="truncate text-[15px] font-semibold text-fg/92">{run.name}</Dialog.Title>
-                <span className={cn("rounded-full border border-white/[0.08] bg-white/[0.035] px-2 py-0.5 text-[10px] font-medium", statusTone(run.parent.status))}>
+                <span className={cn("rounded-full border border-fg/[0.08] bg-fg/[0.035] px-2 py-0.5 text-[10px] font-medium", statusTone(run.parent.status))}>
                   {statusLabel(run.parent.status)}
                 </span>
               </div>
@@ -462,14 +462,14 @@ function ChatWorkflowDetailsModal({
               type="button"
               aria-label="Close workflow details"
               title="Close"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-white/[0.06] hover:text-fg/80"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-fg/[0.06] hover:text-fg/80"
             >
               <X aria-hidden size={15} />
             </button>
           </Dialog.Close>
         </header>
 
-        <div className="grid grid-cols-2 gap-1.5 border-b border-white/[0.07] p-3 sm:grid-cols-5 sm:gap-2 sm:px-5">
+        <div className="grid grid-cols-2 gap-1.5 border-b border-fg/[0.07] p-3 sm:grid-cols-5 sm:gap-2 sm:px-5">
           <WorkflowMetric icon={ListNumbers} label="Phases" value={`${progress.phases.length || "–"}`} />
           <WorkflowMetric icon={UsersThree} label="Agents" value={`${agentCounts.completed}/${totalAgents || "–"}`} />
           <WorkflowMetric icon={Lightning} label="Running" value={`${agentCounts.running}`} />
@@ -479,7 +479,7 @@ function ChatWorkflowDetailsModal({
 
         <div className="min-h-0 overflow-y-auto p-3 sm:p-5">
           <div className="grid gap-4 md:grid-cols-[minmax(190px,0.34fr)_minmax(0,1fr)]">
-            <aside className="rounded-xl border border-white/[0.07] bg-white/[0.018] p-3">
+            <aside className="rounded-xl border border-fg/[0.07] bg-fg/[0.018] p-3">
               <div className="mb-3 flex items-center justify-between">
                 <div className="text-[10px] font-medium uppercase tracking-[0.11em] text-fg/38">Phases</div>
                 <span className="text-[10px] tabular-nums text-fg/28">{progress.phases.length}</span>
@@ -495,7 +495,7 @@ function ChatWorkflowDetailsModal({
                         state === "active" && "bg-violet-300/[0.08]",
                         state === "failed" && "bg-rose-300/[0.06]",
                       )}>
-                        <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/20 text-[10px] tabular-nums text-fg/48">
+                        <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-fg/[0.09] bg-black/20 text-[10px] tabular-nums text-fg/48">
                           {state === "completed" ? <Check aria-hidden size={12} weight="bold" className="text-emerald-300/90" /> : state === "active" ? <CircleHalf aria-hidden size={12} weight="fill" className="text-violet-200/90" /> : state === "failed" ? <X aria-hidden size={11} weight="bold" className="text-rose-300/90" /> : index + 1}
                         </span>
                         <span className="min-w-0 flex-1">
@@ -515,7 +515,7 @@ function ChatWorkflowDetailsModal({
                   })}
                 </div>
               ) : (
-                <div className="rounded-lg border border-dashed border-white/[0.08] px-2.5 py-3 text-[10.5px] leading-4 text-fg/36">
+                <div className="rounded-lg border border-dashed border-fg/[0.08] px-2.5 py-3 text-[10.5px] leading-4 text-fg/36">
                   This run predates phase labels, but its agent activity is still available below.
                 </div>
               )}
@@ -531,7 +531,7 @@ function ChatWorkflowDetailsModal({
               ) : null}
             </aside>
 
-            <section className="min-w-0 rounded-xl border border-white/[0.07] bg-white/[0.018] p-3">
+            <section className="min-w-0 rounded-xl border border-fg/[0.07] bg-fg/[0.018] p-3">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <div className="text-[10px] font-medium uppercase tracking-[0.11em] text-fg/38">Agent roster</div>
@@ -545,7 +545,7 @@ function ChatWorkflowDetailsModal({
                           : "Run settled"}
                   </div>
                 </div>
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/[0.07] bg-black/15 px-2 py-1 text-[10px] tabular-nums text-fg/42">
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/[0.07] bg-black/15 px-2 py-1 text-[10px] tabular-nums text-fg/42">
                   <UsersThree aria-hidden size={11} />
                   {progress.agents.length}/{totalAgents || "–"}
                 </span>
@@ -576,7 +576,7 @@ function ChatWorkflowDetailsModal({
                     <button
                       key={`${agent.key}-${agent.index}`}
                       type="button"
-                      className="group w-full rounded-lg px-2 py-2 text-left transition-colors hover:bg-white/[0.045]"
+                      className="group w-full rounded-lg px-2 py-2 text-left transition-colors hover:bg-fg/[0.045]"
                       onClick={() => {
                         onClose();
                         onSelectSubagent(member);
@@ -591,13 +591,13 @@ function ChatWorkflowDetailsModal({
                   );
                 })}
                 {progress.queuedCount > 0 ? (
-                  <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-white/[0.08] px-2 py-2 text-[10.5px] text-fg/36">
+                  <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-fg/[0.08] px-2 py-2 text-[10.5px] text-fg/36">
                     <Circle aria-hidden size={14} className="text-fg/25" />
                     {progress.queuedCount} agent{progress.queuedCount === 1 ? "" : "s"} queued behind the current phase
                   </div>
                 ) : null}
                 {progress.agents.length === 0 && progress.queuedCount === 0 ? (
-                  <div className="rounded-lg border border-dashed border-white/[0.08] px-2.5 py-4 text-center text-[10.5px] leading-4 text-fg/35">
+                  <div className="rounded-lg border border-dashed border-fg/[0.08] px-2.5 py-4 text-center text-[10.5px] leading-4 text-fg/35">
                     The provider has not published individual agent rows yet.
                   </div>
                 ) : null}

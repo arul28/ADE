@@ -196,7 +196,7 @@ function StashImageThumbnail({
   }, [attachment, composerMachineBinding, directUrl]);
 
   return (
-    <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/[0.08] bg-black/25 text-muted-fg/35">
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-fg/[0.08] bg-black/25 text-muted-fg/35">
       {src && !failed ? (
         <img
           src={src}
@@ -677,17 +677,17 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
           data-prompt-stash-menu=""
           role="dialog"
           aria-label="Stashed prompts"
-          className="fixed z-[120] flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-white/[0.09] bg-[#111116]/96 shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
+          className="fixed z-[120] flex max-h-[calc(100vh-32px)] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-fg/[0.09] bg-(color:--work-popover-bg) shadow-[0_24px_72px_-28px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
           style={{ left: menuPosition.left, top: menuPosition.top }}
         >
-          <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-3.5 py-2.5">
+          <div className="flex items-center justify-between gap-3 border-b border-fg/[0.06] px-3.5 py-2.5">
             <div className="min-w-0">
               <div className="font-sans text-[11px] font-semibold text-fg/82">Stashed prompts</div>
               <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">Shared through this project’s ADE runtime</div>
             </div>
             <button
               type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-white/[0.05] hover:text-fg/70"
+              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/70"
               onClick={() => setMenuOpen(false)}
             >
               Close
@@ -709,7 +709,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
                   key={entry.id}
                   className={cn(
                     "group flex cursor-default items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors",
-                    highlighted ? "bg-white/[0.075]" : "hover:bg-white/[0.04]",
+                    highlighted ? "bg-fg/[0.075]" : "hover:bg-fg/[0.04]",
                   )}
                   onMouseMove={() => setHighlightedId(entry.id)}
                 >
@@ -719,7 +719,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
                       composerMachineBinding={entriesOwnerBinding}
                     />
                   ) : attachmentCount ? (
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-black/25 text-muted-fg/35">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-fg/[0.08] bg-black/25 text-muted-fg/35">
                       {attachmentsUnavailable ? <Image size={15} aria-hidden /> : <File size={15} aria-hidden />}
                     </span>
                   ) : null}

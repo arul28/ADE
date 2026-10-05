@@ -22,7 +22,7 @@ import { cn } from "./cn";
  * the same string and layers its own `hover:` state on top.
  */
 export const MENU_SURFACE_CLASS = cn(
-  "select-none rounded-[var(--radius-lg)] border border-white/[0.08]",
+  "select-none rounded-[var(--radius-lg)] border border-fg/[0.08]",
   "bg-[var(--color-popup-bg,var(--color-card))] p-1 font-sans text-[11.5px] text-fg/82",
   "shadow-[var(--shadow-popup,0_24px_64px_-24px_rgba(0,0,0,0.8))]",
 );
@@ -68,11 +68,11 @@ export const MENU_CONTENT_CLASS = cn(
 
 export const MENU_ITEM_CLASS = cn(
   "flex cursor-pointer select-none items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 outline-none",
-  "transition-colors duration-[120ms] ease-out data-[highlighted]:bg-white/[0.07] data-[highlighted]:text-fg",
+  "transition-colors duration-[120ms] ease-out data-[highlighted]:bg-fg/[0.07] data-[highlighted]:text-fg",
   "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40",
 );
 
 export const MENU_LABEL_CLASS =
   "px-2 pb-1 pt-1.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/60";
 
-export const MENU_SEPARATOR_CLASS = "my-1 h-px bg-white/[0.06]";
+export const MENU_SEPARATOR_CLASS = "my-1 h-px bg-fg/[0.06]";

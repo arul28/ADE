@@ -204,7 +204,7 @@ function buildComponents({
       <ol className="mb-2.5 list-decimal space-y-1 pl-5 text-[12.5px] text-fg/75 last:mb-0">{children}</ol>
     ),
     li: ({ children }) => <li className="leading-[1.5]">{children}</li>,
-    hr: () => <hr className="my-3 border-white/[0.06]" />,
+    hr: () => <hr className="my-3 border-fg/[0.06]" />,
     blockquote: ({ children }) => (
       <blockquote className="mb-3 border-l-2 border-violet-300/30 bg-violet-300/[0.04] py-1 pl-3 text-[12px] text-fg/70 last:mb-0">
         {children}
@@ -220,7 +220,7 @@ function buildComponents({
     th: ({ children }) => (
       <th
         className="break-words px-2 py-1 font-semibold text-fg/80"
-        style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+        style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)" }}
       >
         {children}
       </th>
@@ -228,7 +228,7 @@ function buildComponents({
     td: ({ children }) => (
       <td
         className="break-words px-2 py-1 align-top text-fg/70"
-        style={{ border: "1px solid rgba(255,255,255,0.06)" }}
+        style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)" }}
       >
         {children}
       </td>
@@ -268,8 +268,8 @@ function buildComponents({
         <pre
           className="mb-3 overflow-auto rounded-md p-3 font-mono text-[11px] leading-[1.55]"
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.06)",
+            background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)",
           }}
         >
           {children}
@@ -283,7 +283,7 @@ function buildComponents({
       return (
         <code
           className="rounded-sm px-1 py-0.5 font-mono text-[11px] text-fg/80"
-          style={{ background: "rgba(255,255,255,0.05)" }}
+          style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}
         >
           {children}
         </code>
@@ -313,7 +313,7 @@ function buildComponents({
         <img
           src={srcStr}
           alt={alt ?? ""}
-          className="my-3 max-w-full rounded-md border border-white/[0.06] bg-black/30"
+          className="my-3 max-w-full rounded-md border border-fg/[0.06] bg-black/30"
           style={{ height: "auto", maxHeight: 360 }}
         />
       );

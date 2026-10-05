@@ -43,7 +43,7 @@ export const PERMISSION_TRIGGER_CLASS = cn(
   // 14px as the fallback the expression is always valid: chat-scaled inside a
   // chat, and the original fixed 10.5px everywhere else.
   "font-sans text-[length:calc(var(--chat-font-size,14px)*9/14)] leading-none transition-colors duration-150",
-  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
   "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
 );
 
@@ -118,9 +118,9 @@ const PERMISSION_MODE_TONE_STYLES: Record<
   slate: {
     dot: "bg-slate-300",
     trigger: "",
-    iconSurface: "border-white/[0.08] bg-white/[0.06] text-fg/72",
-    rowActive: "bg-white/[0.08] text-fg/90",
-    rowHover: "hover:bg-white/[0.055] hover:text-fg/90",
+    iconSurface: "border-fg/[0.08] bg-fg/[0.06] text-fg/72",
+    rowActive: "bg-fg/[0.08] text-fg/90",
+    rowHover: "hover:bg-fg/[0.055] hover:text-fg/90",
   },
 };
 
@@ -215,8 +215,8 @@ export function PermissionModePicker<Value extends string>({
         className={cn(
           PERMISSION_TRIGGER_CLASS,
           selectedTone.trigger,
-          open && "ring-1 ring-white/[0.06]",
-          (disabled || !onSelect) && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+          open && "ring-1 ring-fg/[0.06]",
+          (disabled || !onSelect) && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
         )}
         title={triggerTitle}
       >
@@ -247,7 +247,7 @@ export function PermissionModePicker<Value extends string>({
                 aria-label={ariaLabel}
                 data-permission-mode-picker-dropdown
                 className={cn(
-                  "absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+                  "absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
                 )}
                 style={{
                   ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),

@@ -236,7 +236,7 @@ export function PrMarkdownEditor({
                 disabled={disabled}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => runAction(action)}
-                className="inline-flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-white/[0.06]"
+                className="inline-flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-fg/[0.06]"
                 style={{ color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }}
               >
                 <Icon size={14} />

@@ -71,7 +71,7 @@ function readSceneTheme(): SceneTheme {
     };
     return {
       bg: read("--color-bg", SCENE_FALLBACK_THEME.bg),
-      surface: "rgba(255,255,255,0.035)",
+      surface: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)",
       border: read("--color-border", SCENE_FALLBACK_THEME.border),
       fg: read("--color-fg", SCENE_FALLBACK_THEME.fg),
       fgMuted: read("--color-muted-fg", SCENE_FALLBACK_THEME.fgMuted),

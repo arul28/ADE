@@ -75,7 +75,7 @@ function ItemMark({ item }: { item: ArchivedItem }) {
     );
   }
   return (
-    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.04] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]">
+    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-fg/[0.04] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]">
       <ToolLogo toolType={(item.toolType ?? "shell") as TerminalToolType} size={15} />
     </span>
   );
@@ -119,7 +119,7 @@ function MarkOrSelect({
           className={cn(
             "flex size-4 items-center justify-center rounded-[5px] border",
             checked
-              ? "border-violet-400 bg-violet-400 text-[#0F0D14]"
+              ? "border-violet-400 bg-violet-400 text-(color:--ade-on-tone-ink)"
               : "border-white/25 text-transparent hover:border-white/50",
           )}
         >
@@ -152,7 +152,7 @@ function IconAction({
       onClick={onClick}
       className={cn(
         "flex size-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors disabled:pointer-events-none disabled:opacity-40",
-        danger ? "hover:bg-red-500/10 hover:text-red-300" : "hover:bg-white/[0.06] hover:text-fg",
+        danger ? "hover:bg-red-500/10 hover:text-red-300" : "hover:bg-fg/[0.06] hover:text-fg",
       )}
     >
       {children}
@@ -189,7 +189,7 @@ function ArchiveRow({
       data-testid="archive-row"
       className={cn(
         "group flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors",
-        selected ? "bg-violet-400/[0.07]" : "hover:bg-white/[0.03]",
+        selected ? "bg-violet-400/[0.07]" : "hover:bg-fg/[0.03]",
       )}
     >
       <MarkOrSelect item={item} checked={selected} selecting={selecting} onToggle={onToggle} />
@@ -425,7 +425,7 @@ export function ArchiveSection() {
               type="button"
               aria-label="Clear selection"
               onClick={() => setSelected(new Set())}
-              className="flex size-7 items-center justify-center rounded-md text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg"
+              className="flex size-7 items-center justify-center rounded-md text-muted-fg/70 hover:bg-fg/[0.06] hover:text-fg"
             >
               <X size={13} />
             </button>
@@ -435,7 +435,7 @@ export function ArchiveSection() {
               type="button"
               disabled={busy}
               onClick={() => void restore(selectedRefs)}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-white/[0.06] disabled:opacity-40"
+              className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-fg/[0.06] disabled:opacity-40"
             >
               <ArrowCounterClockwise size={13} /> Restore
             </button>
@@ -462,7 +462,7 @@ export function ArchiveSection() {
                   onClick={() => setFilter(option.value)}
                   className={cn(
                     "flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors",
-                    active ? "bg-white/[0.08] text-fg" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg",
+                    active ? "bg-fg/[0.08] text-fg" : "text-muted-fg/70 hover:bg-fg/[0.04] hover:text-fg",
                   )}
                 >
                   {option.label}
@@ -482,7 +482,7 @@ export function ArchiveSection() {
             <button
               type="button"
               onClick={() => void load()}
-              className="h-7 rounded-md px-3 text-[12px] font-medium text-fg hover:bg-white/[0.06]"
+              className="h-7 rounded-md px-3 text-[12px] font-medium text-fg hover:bg-fg/[0.06]"
             >
               Try again
             </button>

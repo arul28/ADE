@@ -493,7 +493,7 @@ export function BatchLaunchModal({
               disabled={!defaultConfig.modelId.trim()}
               onClick={() => applyDefaultConfigToAll(defaultConfig)}
               title="Reset every issue to these defaults"
-              className="ml-auto inline-flex h-6 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10.5px] font-medium text-fg/75 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+              className="ml-auto inline-flex h-6 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10.5px] font-medium text-fg/75 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
             >
               Reset all
             </button>
@@ -519,7 +519,7 @@ export function BatchLaunchModal({
             <div
               key={issue.id}
               className={cn(
-                "rounded-lg border border-white/[0.07] bg-white/[0.02] transition-opacity",
+                "rounded-lg border border-fg/[0.07] bg-fg/[0.02] transition-opacity",
                 skipped && "opacity-45",
               )}
             >
@@ -529,7 +529,7 @@ export function BatchLaunchModal({
                     type="button"
                     aria-label={isExpanded ? "Collapse" : "Expand"}
                     onClick={() => setExpanded((current) => ({ ...current, [issue.id]: !isExpanded }))}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg/80"
+                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg/80"
                   >
                     <CaretRight
                       size={12}
@@ -539,7 +539,7 @@ export function BatchLaunchModal({
                   </button>
                   <LinearPriorityIcon priority={issue.priority} size={11} />
                   <LinearStateIcon stateType={issue.stateType} size={11} />
-                  <span className="shrink-0 rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
+                  <span className="shrink-0 rounded bg-fg/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
                     {issue.identifier}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[12px] text-fg/85" title={issue.title}>
@@ -570,7 +570,7 @@ export function BatchLaunchModal({
                   <button
                     type="button"
                     onClick={() => patchIssue(issue.id, { include: skipped })}
-                    className="shrink-0 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-white/[0.2] hover:text-fg/90"
+                    className="shrink-0 rounded-md border border-fg/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-fg/[0.2] hover:text-fg/90"
                   >
                     {skipped ? "Launch anyway" : "Skip"}
                   </button>
@@ -578,7 +578,7 @@ export function BatchLaunchModal({
               </div>
 
               {isExpanded && !skipped ? (
-                <div className="space-y-3 border-t border-white/[0.05] px-3 py-3">
+                <div className="space-y-3 border-t border-fg/[0.05] px-3 py-3">
                   {!laneOnly ? (
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
@@ -590,7 +590,7 @@ export function BatchLaunchModal({
                             type="button"
                             onClick={() => savePromptAsDefault(state.kickoffPrompt)}
                             disabled={!projectRoot?.trim() || !state.kickoffPrompt.trim()}
-                            className="inline-flex h-5 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                            className="inline-flex h-5 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
                             title={
                               projectRoot?.trim()
                                 ? "Use this prompt as the default for future Linear launches in this project"
@@ -603,7 +603,7 @@ export function BatchLaunchModal({
                             <button
                               type="button"
                               onClick={() => applyPromptToAll(state.kickoffPrompt)}
-                              className="inline-flex h-5 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg"
+                              className="inline-flex h-5 items-center rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-fg/[0.18] hover:bg-fg/[0.08] hover:text-fg"
                               title="Use this prompt for every issue"
                             >
                               Apply to all
@@ -616,10 +616,10 @@ export function BatchLaunchModal({
                           value={state.kickoffPrompt}
                           onChange={(event) => patchIssue(issue.id, { kickoffPrompt: event.target.value })}
                           rows={5}
-                          className="w-full resize-y rounded-md border border-white/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-white/[0.18] focus:outline-none"
+                          className="w-full resize-y rounded-md border border-fg/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-fg/[0.18] focus:outline-none"
                         />
                       ) : (
-                        <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-3 py-2">
+                        <div className="flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-black/25 px-3 py-2">
                           <span
                             className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/70"
                             title={state.kickoffPrompt}
@@ -629,7 +629,7 @@ export function BatchLaunchModal({
                           <button
                             type="button"
                             onClick={() => setPromptExpanded((current) => ({ ...current, [issue.id]: true }))}
-                            className="shrink-0 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-white/[0.2] hover:text-fg/90"
+                            className="shrink-0 rounded-md border border-fg/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-fg/[0.2] hover:text-fg/90"
                           >
                             Expand
                           </button>
@@ -647,7 +647,7 @@ export function BatchLaunchModal({
                         <div
                           role="group"
                           aria-label="Lane target"
-                          className="inline-flex h-7 shrink-0 items-center rounded-md border border-white/[0.08] bg-white/[0.02] p-0.5"
+                          className="inline-flex h-7 shrink-0 items-center rounded-md border border-fg/[0.08] bg-fg/[0.02] p-0.5"
                         >
                           {([
                             { key: "new", label: "New lane" },
@@ -665,7 +665,7 @@ export function BatchLaunchModal({
                                 onClick={() => patchIssue(issue.id, { laneTarget: key })}
                                 className={cn(
                                   "inline-flex h-6 items-center rounded px-2.5 text-[10.5px] font-medium leading-none transition-colors",
-                                  active ? "bg-white/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
+                                  active ? "bg-fg/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
                                   disabled && "cursor-not-allowed opacity-40 hover:text-muted-fg/60",
                                 )}
                               >
@@ -700,7 +700,7 @@ export function BatchLaunchModal({
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Branch
                       </span>
-                      <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-3">
+                      <div className="flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-black/25 px-3">
                         <GitBranch size={12} className="shrink-0 text-muted-fg/50" />
                         <input
                           value={state.branchOverride}
@@ -737,7 +737,7 @@ export function BatchLaunchModal({
         </div>
       ) : null}
 
-      <div className="mt-4 flex items-center justify-end gap-2 border-t border-white/[0.06] pt-4">
+      <div className="mt-4 flex items-center justify-end gap-2 border-t border-fg/[0.06] pt-4">
         {!selectedMachineId ? (
           <span className="mr-auto text-[11px] text-muted-fg/70" data-testid="batch-launch-machine-hint">
             {machineChoice.machines.length > 1

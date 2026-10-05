@@ -175,7 +175,7 @@ export function BrowserOverflowMenu({
             // actually open. App Control's ⋯ already paints its open state
             // this way, and a permanently boxed ⋯ next to five borderless
             // glyphs reads as the only control that is somehow switched on.
-            "data-[state=open]:bg-white/[0.06] data-[state=open]:text-fg",
+            "data-[state=open]:bg-fg/[0.06] data-[state=open]:text-fg",
           )}
         >
           <DotsThree size={CHROME_ICON_SIZE} weight="bold" />

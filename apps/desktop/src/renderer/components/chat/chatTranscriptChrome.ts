@@ -9,7 +9,7 @@ export const CHAT_WORK_LOG_CARD_CLASS =
 
 export const CHAT_USER_MESSAGE_CARD_STYLE: CSSProperties = {
   borderColor:
-    "color-mix(in srgb, var(--chat-accent) var(--chat-user-border-accent-mix, 28%), rgba(255,255,255,0.14))",
+    "color-mix(in srgb, var(--chat-accent) var(--chat-user-border-accent-mix, 28%), color-mix(in srgb, var(--color-fg) 14%, transparent))",
   boxShadow:
     "0 18px 28px -24px color-mix(in srgb, var(--chat-accent) var(--chat-user-shadow-accent-mix, 34%), transparent), 0 10px 26px -22px rgba(0,0,0,0.52)",
 };

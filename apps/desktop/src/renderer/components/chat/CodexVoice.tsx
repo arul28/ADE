@@ -465,7 +465,7 @@ export function CodexVoiceBar({ voice }: { voice: CodexVoiceController }) {
             "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
             voice.muted
               ? "bg-amber-400/15 text-amber-300"
-              : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/80",
+              : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/80",
             connecting ? "cursor-not-allowed opacity-40" : "",
           )}
           aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}

@@ -2,7 +2,7 @@ import React from "react";
 import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneChip } from "../../terminals/LaneChip";
 import { useAppStore } from "../../../state/appStore";
@@ -30,13 +30,13 @@ import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineL
 function stateColor(state: string): { bg: string; border: string; text: string } {
   switch (state) {
     case "open":
-      return { bg: "rgba(59,130,246,0.10)", border: "rgba(59,130,246,0.20)", text: "#60A5FA" };
+      return { bg: "rgba(59,130,246,0.10)", border: "rgba(59,130,246,0.20)", text: toneText("#60A5FA") };
     case "draft":
-      return { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.20)", text: "#FBBF24" };
+      return { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.20)", text: toneText("#FBBF24") };
     case "merged":
-      return { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.20)", text: "#4ADE80" };
+      return { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.20)", text: toneText("#4ADE80") };
     default:
-      return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "#A1A1AA" };
+      return { bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.15)", text: "var(--color-secondary-fg)" };
   }
 }
 
@@ -126,7 +126,7 @@ function reviewIndicator(linkedPr: PrSummary | null): { color: string; label: st
 /* -- adeKind badge with distinctive styling -- */
 const ADE_KIND_STYLES: Record<string, { color: string; background: string; border: string }> = {
   integration: {
-    color: "#FBBF24",
+    color: toneText("#FBBF24"),
     background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
     border: "1px solid rgba(245,158,11,0.22)",
   },
@@ -337,8 +337,8 @@ function PrRowAuthorAvatar({ item, accentBg }: { item: GitHubPrListItem; accentB
       className="ade-pr-row-avatar"
       style={{
         ...base,
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.08)",
+        background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)",
       }}
     />
   );
@@ -442,14 +442,14 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           textAlign: "left",
           border: "none",
           borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          borderBottom: "1px solid color-mix(in srgb, var(--color-fg) 4%, transparent)",
           background: selected
-            ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
+            ? `linear-gradient(90deg, ${sc.bg} 0%, color-mix(in srgb, var(--color-fg) 2%, transparent) 100%)`
             : "transparent",
           cursor: "pointer",
           transition: "background 150ms ease",
         }}
-        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
+        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "color-mix(in srgb, var(--color-fg) 2.5%, transparent)"; }}
         onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
       >
       {/* The author, pinned to the card's top-right gutter and out of the headline's
@@ -481,7 +481,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
               padding: "1px 5px",
               marginRight: 5,
               borderRadius: 3,
-              background: "rgba(255,255,255,0.06)",
+              background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
               color: COLORS.textDim,
               letterSpacing: "0.3px",
               whiteSpace: "nowrap",
@@ -620,7 +620,7 @@ export function PrListGroupHeaderRow({ header }: { header: PrListGroupHeaderMode
         gap: 8,
         padding: "6px 14px",
         background: COLORS.prSurface,
-        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        borderBottom: "1px solid color-mix(in srgb, var(--color-fg) 5%, transparent)",
         fontFamily: SANS_FONT,
         fontSize: 10,
         fontWeight: 600,

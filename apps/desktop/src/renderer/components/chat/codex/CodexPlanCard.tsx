@@ -106,8 +106,8 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
         // `[glyph | content | meta]` grid and same width token as every other
         // transcript card.
         CHAT_CARD_WIDTH_CLASS,
-        "relative overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] bg-white/[0.03] px-3 py-2.5",
-        onOpenInfo && "cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
+        "relative overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] bg-fg/[0.03] px-3 py-2.5",
+        onOpenInfo && "cursor-pointer transition-colors hover:bg-fg/[0.05] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
       )}
     >
       <ChatPlanChecklist name={event.explanation} steps={steps} />
@@ -119,13 +119,13 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
       ) : null}
 
       {showCompletedMarkdownInline ? (
-        <div className="mt-2 border-t border-white/[0.06] pt-2">
+        <div className="mt-2 border-t border-fg/[0.06] pt-2">
           <PlanMarkdown markdown={streamingTrimmed} />
         </div>
       ) : null}
 
       {showMarkdownToggle ? (
-        <div className="mt-2 flex items-center justify-end gap-2 border-t border-white/[0.06] pt-1.5">
+        <div className="mt-2 flex items-center justify-end gap-2 border-t border-fg/[0.06] pt-1.5">
           <button
             type="button"
             onClick={(clickEvent) => {

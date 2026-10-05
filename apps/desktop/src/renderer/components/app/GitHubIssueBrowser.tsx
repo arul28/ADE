@@ -127,7 +127,7 @@ export function GitHubIssueBrowser({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2">
+      <div className="flex shrink-0 items-center gap-2 border-b border-fg/10 px-3 py-2">
         <div className="relative min-w-0 flex-1">
           <MagnifyingGlass
             size={12}
@@ -137,17 +137,17 @@ export function GitHubIssueBrowser({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={repo ? `Search ${repo.owner}/${repo.name} issues` : "Search GitHub issues"}
-            className="h-8 w-full rounded-md border border-white/10 bg-white/[0.04] pl-7 pr-3 text-[12px] text-fg outline-none placeholder:text-muted-fg/35"
+            className="h-8 w-full rounded-md border border-fg/10 bg-fg/[0.04] pl-7 pr-3 text-[12px] text-fg outline-none placeholder:text-muted-fg/35"
           />
         </div>
-        <div className="flex shrink-0 rounded-md border border-white/10 p-0.5">
+        <div className="flex shrink-0 rounded-md border border-fg/10 p-0.5">
           {(["open", "closed", "all"] as const).map((value) => (
             <button
               key={value}
               type="button"
               className={cn(
                 "rounded px-2 py-1 text-[11px] capitalize",
-                stateFilter === value ? "bg-white/10 text-fg" : "text-muted-fg/60",
+                stateFilter === value ? "bg-fg/10 text-fg" : "text-muted-fg/60",
               )}
               onClick={() => setStateFilter(value)}
             >
@@ -183,7 +183,7 @@ export function GitHubIssueBrowser({
                   type="button"
                   className={cn(
                     "flex w-full items-start gap-2 px-3 py-2 text-left",
-                    active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
+                    active ? "bg-fg/[0.06]" : "hover:bg-fg/[0.03]",
                   )}
                   onClick={() => setFocusedIssueId(issue.id)}
                   onDoubleClick={() => {
@@ -199,7 +199,7 @@ export function GitHubIssueBrowser({
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
                       <span className="font-mono text-[11px] text-fg/80">{githubIssueIdentifier(issue)}</span>
-                      <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "rgba(255,255,255,0.06)" }}>
+                      <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
                         {issue.state}
                       </span>
                     </span>
@@ -211,7 +211,7 @@ export function GitHubIssueBrowser({
           )}
         </div>
       )}
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/10 px-3 py-2">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-fg/10 px-3 py-2">
         <button
           type="button"
           className="ade-shell-control inline-flex h-7 items-center rounded-md px-2.5 text-[12px]"
@@ -245,7 +245,7 @@ function IssueDetails({
             <GithubLogo size={13} weight="fill" />
           </span>
           <span className="font-mono text-[12px] text-fg/80">{githubIssueIdentifier(issue)}</span>
-          <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "rgba(255,255,255,0.06)" }}>
+          <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
             {issue.state}
           </span>
         </div>
@@ -253,7 +253,7 @@ function IssueDetails({
         {issue.labels.length ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {issue.labels.map((label) => (
-              <span key={label} className="rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-fg/80" style={{ background: "rgba(255,255,255,0.06)" }}>
+              <span key={label} className="rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-fg/80" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
                 {label}
               </span>
             ))}
@@ -265,7 +265,7 @@ function IssueDetails({
           <p className="mt-4 text-[13px] text-muted-fg/50">No description.</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/10 px-3 py-2">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-fg/10 px-3 py-2">
         <button
           type="button"
           className="ade-shell-control inline-flex h-7 items-center rounded-md px-2.5 text-[12px]"

@@ -77,7 +77,7 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
         {anyFailed && onDismiss ? (
           <button
             type="button"
-            className="ml-auto inline-flex h-6 items-center rounded border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] text-muted-fg/70 transition-colors hover:text-fg/90"
+            className="ml-auto inline-flex h-6 items-center rounded border border-fg/[0.08] bg-fg/[0.03] px-2 font-sans text-[10px] text-muted-fg/70 transition-colors hover:text-fg/90"
             onClick={onDismiss}
           >
             Close
@@ -109,7 +109,7 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
                   <Circle size={13} className="mt-1 shrink-0 text-muted-fg/30" />
                 )}
                 {index < steps.length - 1 ? (
-                  <div className={cn("w-px flex-1", done ? "bg-emerald-300/25" : "bg-white/[0.07]")} />
+                  <div className={cn("w-px flex-1", done ? "bg-emerald-300/25" : "bg-fg/[0.07]")} />
                 ) : null}
               </div>
               <div className="min-w-0 flex-1 pb-2">

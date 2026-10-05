@@ -20,7 +20,7 @@ export function ViewerModeToggleButton({
       className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
       style={{
         color: active ? COLORS.textPrimary : COLORS.textMuted,
-        background: active ? "rgba(255,255,255,0.07)" : "transparent",
+        background: active ? "color-mix(in srgb, var(--color-fg) 7%, transparent)" : "transparent",
       }}
     >
       {icon} {label}

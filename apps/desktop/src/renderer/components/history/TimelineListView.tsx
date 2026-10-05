@@ -127,7 +127,7 @@ export function TimelineListView({
           {/* Sticky group header */}
           <div
             className={cn(
-              "sticky top-0 z-10 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5 backdrop-blur-xl",
+              "sticky top-0 z-10 border-b border-fg/[0.06] bg-fg/[0.02] px-3 py-1.5 backdrop-blur-xl",
               "font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/50",
             )}
           >
@@ -153,8 +153,8 @@ export function TimelineListView({
                   "flex w-full items-center gap-2 border-l-2 border-l-transparent px-2 py-1.5",
                   "transition-colors duration-75",
                   selected
-                    ? "border-l-accent bg-white/[0.05]"
-                    : "hover:bg-white/[0.03]",
+                    ? "border-l-accent bg-fg/[0.05]"
+                    : "hover:bg-fg/[0.03]",
                   isEventMachineOffline(ev) && "opacity-50",
                 )}
               >

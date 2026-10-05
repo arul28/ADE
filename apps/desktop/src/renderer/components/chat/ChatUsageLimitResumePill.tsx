@@ -32,7 +32,7 @@ import { cn } from "../ui/cn";
  */
 
 const PILL_CLASS =
-  "pointer-events-auto inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-white/[0.10] bg-[#17161c]/92 px-2.5 py-1 font-sans shadow-[0_10px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl transition-colors hover:border-white/[0.18] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25";
+  "pointer-events-auto inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-fg/[0.10] bg-(color:--work-popover-bg) px-2.5 py-1 font-sans shadow-[0_10px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl transition-colors hover:border-fg/[0.18] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25";
 
 const POPOVER_BUTTON_CLASS =
   "inline-flex items-center justify-center rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40";
@@ -253,7 +253,7 @@ export function ChatUsageLimitResumePill({
           data-testid="usage-limit-resume-popover"
           /* Absolute + bottom-full: the popover grows upward over the
              transcript, so opening it cannot move the composer by a pixel. */
-          className="absolute bottom-full left-0 z-40 mb-2 w-[min(22rem,calc(100vw-2rem))] rounded-[var(--chat-radius-card)] border border-white/[0.10] bg-[#17161c]/97 p-3 shadow-[0_18px_44px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="absolute bottom-full left-0 z-40 mb-2 w-[min(22rem,calc(100vw-2rem))] rounded-[var(--chat-radius-card)] border border-fg/[0.10] bg-(color:--work-popover-bg) p-3 shadow-[0_18px_44px_rgba(0,0,0,0.45)] backdrop-blur-xl"
         >
           <div className="font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] font-semibold text-fg/90">
             {popover.title}
@@ -276,7 +276,7 @@ export function ChatUsageLimitResumePill({
               }}
               className={cn(
                 POPOVER_BUTTON_CLASS,
-                "border border-white/[0.14] bg-white/[0.09] text-fg/90 hover:bg-white/[0.14] focus-visible:bg-white/[0.14]",
+                "border border-fg/[0.14] bg-fg/[0.09] text-fg/90 hover:bg-fg/[0.14] focus-visible:bg-fg/[0.14]",
               )}
             >
               {popover.primary.label}
@@ -289,7 +289,7 @@ export function ChatUsageLimitResumePill({
                 onClick={() => { void continueOnAccount(); }}
                 className={cn(
                   POPOVER_BUTTON_CLASS,
-                  "border border-white/[0.14] bg-white/[0.09] text-fg/90 hover:bg-white/[0.14] focus-visible:bg-white/[0.14]",
+                  "border border-fg/[0.14] bg-fg/[0.09] text-fg/90 hover:bg-fg/[0.14] focus-visible:bg-fg/[0.14]",
                 )}
               >
                 {`Continue on ${popover.continueOnAccount.label}`}
@@ -302,7 +302,7 @@ export function ChatUsageLimitResumePill({
               onClick={fork}
               className={cn(
                 POPOVER_BUTTON_CLASS,
-                "border border-white/[0.08] bg-white/[0.03] text-fg/70 hover:bg-white/[0.08] hover:text-fg/85 focus-visible:bg-white/[0.08]",
+                "border border-fg/[0.08] bg-fg/[0.03] text-fg/70 hover:bg-fg/[0.08] hover:text-fg/85 focus-visible:bg-fg/[0.08]",
               )}
             >
               Fork in this lane
@@ -313,7 +313,7 @@ export function ChatUsageLimitResumePill({
                 data-testid="usage-limit-resume-opt-out"
                 disabled={busy}
                 onClick={() => setAutoContinue(false)}
-                className={cn(POPOVER_BUTTON_CLASS, "text-fg/50 hover:bg-white/[0.06] hover:text-fg/75")}
+                className={cn(POPOVER_BUTTON_CLASS, "text-fg/50 hover:bg-fg/[0.06] hover:text-fg/75")}
               >
                 Don&apos;t continue
               </button>
@@ -344,7 +344,7 @@ export function ChatUsageLimitResumePill({
 function ProviderDetail({ detail }: { detail: string }) {
   const [open, setOpen] = React.useState(false);
   return (
-    <div className="mt-2 border-t border-white/[0.06] pt-2">
+    <div className="mt-2 border-t border-fg/[0.06] pt-2">
       <button
         type="button"
         data-testid="usage-limit-resume-details-toggle"

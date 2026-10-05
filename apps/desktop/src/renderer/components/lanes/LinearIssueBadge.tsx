@@ -93,7 +93,7 @@ export function LinearIssueBadge({
         tabIndex={0}
         role="button"
         aria-label={`${issue.identifier}: ${issue.title}`}
-        className="inline-flex items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+        className="inline-flex items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
         style={{
           borderColor: LINEAR_BRAND.borderSubtle,
           background: LINEAR_BRAND.surface,
@@ -125,7 +125,7 @@ export function LinearIssueBadge({
         <span
           className="flex items-center gap-2 border-b px-3 py-2"
           style={{
-            borderColor: "rgba(255,255,255,0.05)",
+            borderColor: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
             background: LINEAR_BRAND.surface,
           }}
         >
@@ -190,7 +190,7 @@ export function LinearIssueBadge({
                 <span
                   key={label}
                   className="rounded-full px-2 py-0.5 text-[9.5px] text-muted-fg/80"
-                  style={{ background: "rgba(255,255,255,0.04)" }}
+                  style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
                 >
                   {label}
                 </span>
@@ -202,7 +202,7 @@ export function LinearIssueBadge({
         {(onStartChatWithIssue || issue.url) ? (
           <span
             className="flex items-center gap-1.5 border-t px-3 py-2"
-            style={{ borderColor: "rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.20)" }}
+            style={{ borderColor: "color-mix(in srgb, var(--color-fg) 5%, transparent)", background: "rgba(0,0,0,0.20)" }}
           >
             {onStartChatWithIssue ? (
               <button
@@ -228,7 +228,7 @@ export function LinearIssueBadge({
               <>
                 <button
                   type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded px-2 text-[10.5px] font-medium transition-colors hover:bg-white/[0.06]"
+                  className="inline-flex h-6 items-center gap-1 rounded px-2 text-[10.5px] font-medium transition-colors hover:bg-fg/[0.06]"
                   style={{
                     color: copyButtonColor(copyState),
                     background: copyState === "copied" ? "rgba(34,197,94,0.10)" : "transparent",
@@ -245,7 +245,7 @@ export function LinearIssueBadge({
                 </button>
                 <button
                   type="button"
-                  className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-fg/65 transition-colors hover:bg-white/[0.06] hover:text-fg"
+                  className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-fg/65 transition-colors hover:bg-fg/[0.06] hover:text-fg"
                   title="Open in Linear"
                   onMouseDown={(event) => {
                     event.preventDefault();

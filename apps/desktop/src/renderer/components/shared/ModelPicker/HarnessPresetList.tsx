@@ -106,7 +106,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
         "mx-0.5 mb-0.5 rounded-md border transition-colors",
         isActive
           ? "border-violet-400/30 bg-violet-500/[0.08]"
-          : "border-transparent hover:border-white/[0.08] hover:bg-white/[0.03]",
+          : "border-transparent hover:border-fg/[0.08] hover:bg-fg/[0.03]",
       )}
     >
       {/* Same geometry as `ModelListRow`: gap-2, px-2.5 py-1.5, a 13px mark, a
@@ -133,7 +133,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
               </span>
               {/* The harness is the chip, because it is the fact that changes
                   what pressing this row actually launches. */}
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-white/[0.06] px-1 py-px text-[9px] font-semibold uppercase leading-none text-fg/70">
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg/[0.06] px-1 py-px text-[9px] font-semibold uppercase leading-none text-fg/70">
                 <ProviderLogo family={bodyLogoFamily(preset.harness)} size={9} />
                 {harnessBodyLabel(preset.harness)}
               </span>
@@ -149,7 +149,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
           aria-label={`${expanded ? "Hide" : "Show"} details for ${presetLabel(preset)}`}
           data-harness-preset-expand={preset.id}
           onClick={() => setExpanded((current) => !current)}
-          className="mt-0.5 shrink-0 rounded p-1 text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg"
+          className="mt-0.5 shrink-0 rounded p-1 text-muted-fg/60 hover:bg-fg/[0.06] hover:text-fg"
         >
           <CaretRight size={12} className={cn("transition-transform", expanded && "rotate-90")} />
         </button>
@@ -158,7 +158,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
       {expanded ? (
         <dl
           data-harness-preset-details={preset.id}
-          className="grid grid-cols-[62px_1fr] items-center gap-x-2 gap-y-1 border-t border-white/[0.06] px-3 py-2 text-[10.5px]"
+          className="grid grid-cols-[62px_1fr] items-center gap-x-2 gap-y-1 border-t border-fg/[0.06] px-3 py-2 text-[10.5px]"
         >
           <DetailRow label="Harness" value={<PresetAgent harness={preset.harness} size={12} />} />
           <DetailRow

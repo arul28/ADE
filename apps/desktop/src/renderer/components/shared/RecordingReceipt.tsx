@@ -125,7 +125,7 @@ export function RecordingSavedRow({
       </span>
       <button
         type="button"
-        className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-accent hover:bg-white/[0.07]"
+        className="ml-auto shrink-0 rounded px-2 py-0.5 font-medium text-accent hover:bg-fg/[0.07]"
         onClick={onOpen}
       >
         Open
@@ -133,7 +133,7 @@ export function RecordingSavedRow({
       <button
         type="button"
         aria-label="Dismiss"
-        className="shrink-0 rounded p-0.5 text-muted-fg hover:bg-white/[0.07] hover:text-fg"
+        className="shrink-0 rounded p-0.5 text-muted-fg hover:bg-fg/[0.07] hover:text-fg"
         onClick={onDismiss}
       >
         <X size={12} />
