@@ -61,7 +61,7 @@ import type { ComputerUseArtifactIngestionRequest, ComputerUseArtifactIngestionR
 import { killWindowsProcessTreeAsync } from "../shared/processExecution";
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
-import { imageDimensions } from "../shared/imageDimensions";
+import { base64ImageDimensions, imageDimensions } from "../shared/imageDimensions";
 import {
   commandForwardsAppControlDebug,
   commandLooksLikeDirectElectronLaunch,
@@ -1776,8 +1776,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       const data = typeof record.data === "string" ? record.data : "";
       if (!data) return;
       const meta = record.metadata ?? {};
-      const buffer = Buffer.from(data, "base64");
-      const encodedDimensions = imageDimensions(buffer);
+      const encodedDimensions = base64ImageDimensions(data);
       const viewportWidth = typeof meta.deviceWidth === "number" && meta.deviceWidth > 0
         ? meta.deviceWidth
         : encodedDimensions?.width ?? 0;
@@ -2553,7 +2552,7 @@ export function createAppControlLaneController(context: AppControlLaneController
           if (activeSession?.id !== connected.id || activeSession.cdpTargetId !== connected.cdpTargetId) return null;
           const data = typeof response?.data === "string" ? response.data : "";
           if (!data) return null;
-          const dimensions = imageDimensions(Buffer.from(data, "base64"));
+          const dimensions = base64ImageDimensions(data);
           if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) return null;
           const cssWidth = metrics?.cssVisualViewport?.clientWidth;
           const cssHeight = metrics?.cssVisualViewport?.clientHeight;
