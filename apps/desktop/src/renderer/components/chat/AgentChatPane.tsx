@@ -289,6 +289,7 @@ import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../wor
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -2616,6 +2617,22 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
+/**
+ * The composer's model id for an existing chat. A chat on a harness preset or
+ * an ad-hoc route (`--via opencode-go`) runs a model the registry may not know
+ * (a DeepSeek model in Claude Code), so its id comes from the preset, the same
+ * value the model picker passes when that route is chosen there.
+ */
+function resolveSessionComposerModelId(
+  session: Pick<AgentChatSessionSummary, "modelId" | "model" | "presetId">,
+  harnessPresets: readonly HarnessPreset[],
+): string | null {
+  return session.modelId
+    ?? resolveRegistryModelId(session.model)
+    ?? resolveHarnessLaunchTarget(session.presetId, harnessPresets)?.launchModelId
+    ?? null;
+}
+
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
 const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
 const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "never"];
@@ -4041,6 +4058,8 @@ export function AgentChatPane({
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
   // Root store: the preset list is account-scoped (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((s) => s.harnessPresets);
+  const harnessPresetsRef = useRef(harnessPresets);
+  harnessPresetsRef.current = harnessPresets;
   /* The harness a draft's Custom pick runs in. A saved preset or an ad-hoc
      Run-in route names its own harness, and that — not the family the model id
      happens to belong to — decides the provider the chat or CLI launches. */
@@ -4786,8 +4805,9 @@ export function AgentChatPane({
   }, [laneId, laneLabel]);
   const selectedSessionModelId = useMemo(() => {
     if (!selectedSession) return null;
-    return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
-  }, [selectedSession]);
+    return resolveSessionComposerModelId(selectedSession, harnessPresets);
+  }, [selectedSession, harnessPresets]);
+  const selectedSessionPresetId = selectedSession?.presetId ?? null;
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
   const selectedSessionModelIdRef = useRef(selectedSessionModelId);
@@ -6493,7 +6513,7 @@ export function AgentChatPane({
     ) {
       deferredComposerSessionIdRef.current = null;
     }
-    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current);
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       nextModelId,
@@ -8142,6 +8162,9 @@ export function AgentChatPane({
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
+    // A chat on a preset or route runs the preset's model, which discovery and
+    // the registry may not list (DeepSeek in Claude Code). Keep it.
+    if (selectedSessionPresetId && modelId === selectedSessionModelId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -8150,7 +8173,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId, selectedSessionPresetId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;

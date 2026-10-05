@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
+import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -5410,6 +5411,43 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry after the failure.");
     });
+  });
+
+  it("sends from the composer in a chat started on an ad-hoc route the model registry does not know", async () => {
+    // `ade chat create --provider claude --via opencode-go --model deepseek-v4.1-flash`
+    const presetId = encodeRoutePresetId({
+      harness: "claude",
+      source: { kind: "opencode", providerId: "opencode-go" },
+      model: "deepseek-v4.1-flash",
+    });
+    const session = buildSession("session-routed", {
+      status: "idle",
+      provider: "claude",
+      model: "deepseek-v4.1-flash",
+      modelId: undefined,
+      presetId,
+    });
+    const { send } = installAdeMocks({ includeClaudeModel: true, sessions: [session] });
+    const updateSession = vi.fn();
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+    // Model discovery finds other models but not the route's raw DeepSeek id.
+    await waitFor(() => expect(window.ade.agentChat.models).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude" })));
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reply with two." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-routed",
+        text: "Reply with two.",
+      }), null);
+    });
+    expect(screen.queryByText("Select a model first")).toBeNull();
+    // The chat keeps its route: sending is not a model switch.
+    expect(updateSession.mock.calls.map(([args]) => args?.modelId).filter(Boolean)).toEqual([]);
   });
 
   it("sends the selected Claude interaction mode with the next turn", async () => {

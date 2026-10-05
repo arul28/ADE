@@ -3718,6 +3718,12 @@ For chat, three things matter.
   before launch, so the session row, the Work provider filter, provider notices,
   and permission labels all name the harness that actually runs instead of the
   caller's default.
+- **The composer keeps the preset's model.** A chat on a preset or an ad-hoc
+  route (`--via opencode-go`) can run a model that the registry and model
+  discovery do not list, such as DeepSeek in Claude Code. `AgentChatPane` reads
+  that chat's composer model from the preset's launch model id, and the model
+  check does not replace it with a fallback. So a send from the composer does
+  not show "Select a model first" and does not move the chat to another model.
 
 ### Capability gate
 
