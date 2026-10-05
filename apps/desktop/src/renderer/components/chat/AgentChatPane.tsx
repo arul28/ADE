@@ -184,7 +184,6 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
-import { setChatGoal } from "../terminals/sessionLifecycleActions";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
@@ -14491,11 +14490,6 @@ export function AgentChatPane({
           : undefined
       }
       claudeGoalLocked={selectedSession?.provider === "claude" && turnActive}
-      onSetGoal={
-        selectedSessionId && (selectedSession?.provider === "claude" || selectedSession?.provider === "codex")
-          ? () => { void setChatGoal({ id: selectedSessionId, toolType: selectedSession.provider === "codex" ? "codex-chat" : "claude-chat" }, chatRuntimePinRef.current); }
-          : undefined
-      }
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId

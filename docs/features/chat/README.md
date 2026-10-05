@@ -1026,13 +1026,13 @@ come):
   clears it. An interrupted or failed turn leaves it; a bare `/goal` turn only
   showed it.
 
-- **Goal section (desktop).** The chat actions drawer opens with a Goal
-  section (`ChatSubagentsPanel` → `GoalCard`). With no goal, a Claude or Codex
-  chat shows one quiet "Set a goal" row (`GoalEmptyRow`). A Claude goal shows
-  its condition and iteration, with Edit (inline; Enter saves, Esc cancels)
-  and Clear icons. Both send `/goal …` as a typed command, and both are
-  disabled mid-turn ("Changes apply between turns"). Codex keeps its full
-  card (Edit, Pause/Resume, Clear).
+- **Goal section (desktop).** A goal shows only while one is set (with
+  `/goal …`). It is the first section of the chat actions drawer
+  (`ChatSubagentsPanel` → `GoalCard`), laid out like Tasks and Schedule: an
+  uppercase "Goal" header with the check count, then the condition and the
+  last check reason. A Claude goal has Edit (inline; Enter saves, Esc cancels)
+  and Clear icons on hover. Both send `/goal …` as a typed command and are
+  disabled mid-turn. Codex keeps its full card (Edit, Pause/Resume, Clear).
 - **Goal chip (iOS).** The phone has no drawer, so a small "Goal" chip with
   the target icon sits above the composer; tapping it opens the details and
   controls.
