@@ -1800,7 +1800,8 @@ function ActiveTurnStopButton({
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
+        {/* Off while the menu is open: it would sit on top of the menu's last rows. */}
+        <SmartTooltip forceEnabled={!menuOpen} content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
           <button
             ref={caretRef}
             type="button"

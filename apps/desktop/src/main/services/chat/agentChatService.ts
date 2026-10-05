@@ -4268,6 +4268,12 @@ type ManagedChatSession = {
   pendingRestartNote: string | null;
   /** This process already ran restart recovery for this chat; never twice. */
   restartRecoveryDone?: boolean;
+  /**
+   * When its parent's "+ child chats" Stop stopped this chat. Its stopped
+   * report then lands as a quiet notice instead of waking the parent the user
+   * just stopped.
+   */
+  stoppedByParentStopAt?: number;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
@@ -19865,6 +19871,7 @@ export function createAgentChatService(args: {
   ): void => {
     managed.lastActivityTimestamp = Date.now();
     signalChatStateChanged(managed.session.id);
+    if (event.type === "done") settleClaudeGoalOnTurnEnd(managed, event.status);
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -22089,7 +22096,16 @@ export function createAgentChatService(args: {
     outcome: "reached" | "blocked",
   ): void => {
     const text = objective?.trim();
-    if (!text || !onGoalEnded) return;
+    if (!text) return;
+    // In the transcript on every client (the brain has no OS notifications of
+    // its own); the in-process desktop host also raises one via onGoalEnded.
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: outcome === "reached" ? "info" : "warning",
+      message: outcome === "reached" ? `Goal reached: ${text}` : `Goal blocked: ${text}`,
+    });
+    logger.info("agent_chat.goal_ended", { sessionId: managed.session.id, outcome });
+    if (!onGoalEnded) return;
     try {
       onGoalEnded({
         sessionId: managed.session.id,
@@ -24065,6 +24081,27 @@ export function createAgentChatService(args: {
    * is the goal: record it now; Claude's own `active_goal` updates refine or
    * clear it from here.
    */
+  /**
+   * Claude's `/goal` Stop hook keeps a turn going until the goal is met, so a
+   * Claude turn that COMPLETES with a goal set has met it — Claude clears it
+   * then. Claude's CLI does not always send the `active_goal` message that
+   * says so, so ADE draws the same conclusion here (an interrupted or failed
+   * turn leaves the goal in place). A bare `/goal` turn only showed the goal.
+   */
+  function settleClaudeGoalOnTurnEnd(managed: ManagedChatSession, status: string | undefined): void {
+    if (managed.session.provider !== "claude" || !managed.session.claudeGoal) return;
+    if (status !== "completed") return;
+    const lastUserText = [...managed.recentConversationEntries]
+      .reverse()
+      .find((entry) => entry.role === "user")?.text?.trim() ?? "";
+    if (/^\/goal\s*$/.test(lastUserText)) return;
+    setTimeout(() => {
+      // Claude's own message, when it does arrive, has already settled it.
+      if (!managed.session.claudeGoal) return;
+      applyClaudeActiveGoal(managed, null);
+    }, 0);
+  }
+
   function noteClaudeGoalCommand(managed: ManagedChatSession, text: string): void {
     if (managed.session.provider !== "claude") return;
     const match = /^\/goal(?:\s+([\s\S]*))?$/.exec(text.trim());
@@ -40499,6 +40536,13 @@ export function createAgentChatService(args: {
       ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
+    // Stopped as part of the parent's own Stop: say so quietly; waking the
+    // parent would restart the work the user just stopped. The mark lasts its
+    // whole window, not one report: Claude closes an interrupted turn and then
+    // its idle reader's turn, and each reports.
+    const stoppedByParent = resultStatus === "stopped"
+      && child.stoppedByParentStopAt !== undefined
+      && Date.now() - child.stoppedByParentStopAt < 2 * 60_000;
     deliverChildCompletionToParent({
       parentSessionId,
       childSessionId,
@@ -40508,6 +40552,7 @@ export function createAgentChatService(args: {
       resultStatus,
       summary,
       spawnCompletion,
+      ...(stoppedByParent ? { routeQuietly: true } : {}),
       ctoPrNumber: readChildPullRequestNumber(child.session.completion, summary),
       wakeText: `Your subagent "${childTitle}" finished a turn — ${summary}`,
       onParentGone: (reason) => noteUnreachableParent(child, parentSessionId, reason),
@@ -52883,6 +52928,7 @@ export function createAgentChatService(args: {
         || child.session.status === "active"
         || totalBackgroundWork(runtimeBackgroundWork(child.runtime ?? null)) > 0;
       try {
+        child.stoppedByParentStopAt = Date.now();
         const childResult = await interrupt({ sessionId: child.session.id, mode }, {}, visited);
         if (busy) stoppedChildChatCount += 1;
         stoppedChildChatCount += childResult.stoppedChildChatCount ?? 0;

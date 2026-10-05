@@ -1013,8 +1013,18 @@ Three rules are specific to the schedule itself:
 A goal keeps the agent working across turns until a condition is true. Codex
 goals run on the app-server's `thread/goal/*` API; Claude goals are Claude
 Code's native `/goal <condition>` (cleared with `/goal clear`; Claude has no
-pause), mirrored read-only from the SDK's `active_goal` messages
-(`applyClaudeActiveGoal`).
+pause). Claude reports goal state only through `active_goal` messages after its
+Stop-hook check, and its CLI does not always send them, so ADE tracks a Claude
+goal itself (`applyClaudeActiveGoal` still takes the SDK's messages when they
+come):
+
+- `noteClaudeGoalCommand` records the goal the moment a `/goal <condition>`
+  message is sent, and clears it on `/goal clear` (or stop/off/reset/none/
+  cancel) — so the goal shows during its first turn.
+- `settleClaudeGoalOnTurnEnd`: the Stop hook keeps a turn going until the goal
+  is met, so a Claude turn that completes with a goal set has met it, and ADE
+  clears it. An interrupted or failed turn leaves it; a bare `/goal` turn only
+  showed it.
 
 - **Goal chip.** While a goal is in play, a one-line chip sits above the prompt
   box (`GoalChip.tsx`, next to the usage-limit pill): status dot, objective,
@@ -1030,9 +1040,10 @@ pause), mirrored read-only from the SDK's `active_goal` messages
   row (`activeGoal`), and the row shows a goal glyph in its quiet indicator
   cluster, with the objective in the hover card.
 - **Alert.** When a Codex goal turns `complete` or `blocked`, or a Claude goal
-  clears without the user having typed `/goal clear`, the chat service calls
-  `onGoalEnded` and the desktop shows a "Goal reached" / "Goal blocked" OS
-  notification that opens the chat (skipped while an ADE window is focused).
+  is met (not cleared by the user), the chat records a "Goal reached: …" /
+  "Goal blocked: …" notice that every client shows, and an in-process desktop
+  host (`onGoalEnded`) also raises an OS notification that opens the chat
+  (skipped while an ADE window is focused).
 
 ### Waits
 

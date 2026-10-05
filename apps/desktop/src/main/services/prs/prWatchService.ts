@@ -8,7 +8,7 @@ import {
   type PrWatchRemark,
 } from "../../../shared/prWatch";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types/chat";
-import type { PrCheck, PrComment, PrReview, PrSummary } from "../../../shared/types/prs";
+import type { PrActionRun, PrCheck, PrComment, PrReview, PrSummary } from "../../../shared/types/prs";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, nowIso } from "../shared/utils";
 import { prChatWatchSummary, type PrChatWatchRecord, type PrChatWatchStore } from "./prChatWatchStore";
@@ -38,6 +38,8 @@ export type PrWatchServiceDeps = {
     getChecks: (prId: string) => Promise<PrCheck[]>;
     getComments: (prId: string) => Promise<PrComment[]>;
     getReviews: (prId: string) => Promise<PrReview[]>;
+    /** Ship reads the head from the newest run when the PR row lags a push. */
+    getActionRuns?: (prId: string) => Promise<PrActionRun[]>;
     chatWatchStore: PrChatWatchStore;
   };
   /** Null when the chat no longer exists. */
@@ -62,7 +64,18 @@ function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ign
 } {
   if (comments === null && reviews === null) return { remarks: null, ignored };
   const out: PrWatchRemark[] = [];
+  const ignoredWithReviews = new Set(ignored);
   for (const comment of comments ?? []) {
+    // ADE records a comment it posted by the id GitHub answered with; the
+    // comment list keys the same comment as `issue:<node id>` /
+    // `review:<node id>`. Any of the forms marks it as ADE's own.
+    const keys = [
+      comment.id,
+      comment.id.replace(/^(?:issue|review):/, ""),
+      comment.nodeId ?? "",
+      comment.githubId != null ? String(comment.githubId) : "",
+    ].filter(Boolean);
+    if (keys.some((key) => ignored.has(key))) ignoredWithReviews.add(comment.id);
     out.push({
       id: comment.id,
       author: comment.author,
@@ -75,7 +88,6 @@ function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ign
       kind: comment.source === "review" ? "review_comment" : "comment",
     });
   }
-  const ignoredWithReviews = new Set(ignored);
   for (const review of reviews ?? []) {
     if (!review.submittedAt || review.state === "pending") continue;
     const id = `review:${review.submittedAt}:${review.reviewer}`;
@@ -178,6 +190,18 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     mem.lastDetailAtMs = nowMs;
     mem.lastPrUpdatedAt = pr.updatedAt;
     mem.lastHeadSha = pr.headSha ?? null;
+
+    // Ship's review-bot grace counts from the head's first sighting, and the
+    // PR row can lag a push that the check results already reflect. The newest
+    // Actions run names the head those checks ran on.
+    if (record.mode === "ship" && checks && prService.getActionRuns) {
+      const runs = await prService.getActionRuns(pr.id).catch(() => null);
+      const newest = (runs ?? []).reduce<PrActionRun | null>(
+        (latest, run) => (!latest || run.createdAt > latest.createdAt ? run : latest),
+        null,
+      );
+      if (newest?.headSha && newest.headSha !== pr.headSha) pr = { ...pr, headSha: newest.headSha };
+    }
 
     const { remarks, ignored } = toRemarks(comments, reviews, store.adeCommentIds(pr.id));
     const evaluation = evaluatePrWatch({

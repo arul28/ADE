@@ -7,6 +7,7 @@ import {
   GitMerge,
   GitPullRequest,
   Stack,
+  Eye,
   Warning,
   XCircle,
   type Icon as PhosphorIcon,
@@ -99,6 +100,7 @@ function toneOf(value: string | null | undefined): ChatCardTone {
 function variantIcon(variant: string): PhosphorIcon | undefined {
   if (variant === "pr_merged" || variant === "pr_merge_ready") return GitMerge;
   if (variant === "pr_stack_land") return Stack;
+  if (variant === "pr_watch_wake") return Eye;
   if (variant === "pr_conflict") return Warning;
   if (variant === "proof_artifact") return Cube;
   if (variant === "claude_session_quota") return Warning;
