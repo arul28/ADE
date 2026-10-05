@@ -4,6 +4,27 @@ Locked by /plan deliberation in ADE session `1504018b-e2c5-4fd4-a954-f86c9f9c67e
 Four new Work providers over one shared ACP host: **qwen**, **kimi**, **grok**, **copilot**.
 Full Settings → Models redesign for all providers. Research record lives in that chat.
 
+## Version policy
+
+ADE runs whatever version of these CLIs is installed; it does not pin one. Every
+install command fetches the latest release. What a given CLI can do is read from
+the `initialize` handshake at runtime, not from a version number, so a newer or
+older CLI degrades rather than failing: unknown `session/update` kinds, content
+blocks, tool kinds/statuses, stop reasons, and agent-to-client methods are
+ignored or answered as unsupported. If an agent advertises an ACP protocol
+version this build of ADE does not speak, the launch fails at the handshake with
+a message naming the CLI and telling the user to update ADE or the CLI.
+
+### Last verified versions
+
+| Provider | Version | Date |
+|---|---|---|
+| copilot | TBD | TBD |
+| grok | TBD | TBD |
+| qwen | TBD | TBD |
+| kimi | 2.1.1 (baseline 0.39.1) | 2026-10-05 |
+| devin | TBD | TBD |
+
 ## 1. Architecture
 
 One shared ACP host module + four thin dialects. The host owns: process spawn +
@@ -116,14 +137,26 @@ providers identically.
 - Windows: npm `.cmd` shim → prompt rides PTY (`promptRidesInArgv = platform
   !== "win32"`), same rule as Claude.
 
-### Kimi (`kimi acp`, compatibility target **2.0.0**, captured baseline **0.39.1**,
+### Kimi (`kimi acp`, latest verified **2.1.1**, baseline **0.39.1**,
 repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
-- Caps: loadSession, list, resume, **`session/close` (implemented; dummy id
-  returns `{}`)**, plus delete/fork/additionalDirectories. Image prompts yes,
-  audio no. MCP http/sse. `agentCapabilities.auth.logout` is advertised; ADE
-  has no ACP logout yet.
-- Usage (code-verified in the 0.39.1 binary; **not live-verified**, Kimi login
-  is not active on the capture Mac): after every settled turn Kimi's
+- Caps (live-verified identical on 0.39.1 and 2.1.1, 2026-10-05): loadSession,
+  list, resume, **`session/close` (implemented; a dummy id returns `{}`)**,
+  plus delete/fork/additionalDirectories. Image prompts yes, audio no. MCP
+  http/sse. `agentCapabilities.auth.logout` is advertised; ADE has no ACP
+  logout yet. `fixtures/kimi.initialize.json` is captured from 2.1.1; the only
+  difference from 0.39.1 is `agentInfo.version`.
+- Cancel: `session_cancel` is a notification in both binaries. A
+  `session/cancel` REQUEST answers `-32601` on both (verified live), so the
+  dialect sends the spec notification directly. `stopReason: "cancelled"` maps
+  to ADE's interrupted turn.
+- MCP: both versions convert ACP `session/new` `mcpServers` and pin
+  `runtime_id: "local"` on stdio entries (`acpMcpServersToConfigRecord`), which
+  satisfies the engine's stdio runtime-id requirement (MoonshotAI/kimi-code
+  #3167). Live confirmation of an injected server is blocked by the missing
+  login.
+- Usage (code-verified in the 0.39.1 binary; **not live-verified on either
+  version**, this machine has no usable Kimi login): after every settled turn
+  Kimi's
   `emitUsageUpdate()` pushes one `usage_update { used, size }` (context token
   count against the bound model's catalog window), skipped while the bound
   model is not in Kimi's catalog. It arrives AFTER the `session/prompt`
@@ -135,14 +168,14 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
   option's `currentValue` names the served model. Account: a
   `$KIMI_CODE_HOME/credentials/kimi-code.json` login is a subscription,
   `MOONSHOT_API_KEY` alone an API key.
-- ACP v1 config: Kimi Code 2.0.0 documents `session/set_config_option` for the
-  `mode`, `model`, and `thinking` options. ADE forwards those options to the
-  native ACP session and surfaces the agent's returned values in the generic
-  ACP composer controls. The captured 0.39.1 fixture remains the compatibility
-  baseline; a live authenticated 2.0.0 turn is still required to validate
-  usage and cancellation behavior end to end.
-- Model and thinking (code review of the 0.39.1 binary, 2026-09-23; this
-  machine has no Kimi account). `set_config_option` `model` and
+- ACP v1 config: both 0.39.1 and 2.1.1 implement `session/set_config_option`
+  for the `mode`, `model`, and `thinking` options (verified live: an unknown
+  session answers `-32602`, so the method exists). ADE forwards those options
+  to the native ACP session and surfaces the agent's returned values in the
+  generic ACP composer controls. A live authenticated turn is still required to
+  validate usage and cancellation behavior end to end.
+- Model and thinking (code review of the 0.39.1 and 2.1.1 binaries; this
+  machine has no usable Kimi login). `set_config_option` `model` and
   `session/set_model` run the same `setModel`. The `model` values are the
   catalog aliases (`kimi-code/k3`), which match ADE's `providerModelId`. The
   `thinking` option lists `off` and the model's declared effort levels. Kimi
@@ -155,7 +188,7 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
   `mainland-cn` (kimi.com) or `global` (kimi.ai). ADE does **not** write
   `~/.kimi-code/config.toml`. `authenticate` method id
   `login`, type `terminal`. Unauthenticated `session/new` is `-32000
-  Authentication required`.
+  Authentication required` on both 0.39.1 and 2.1.1.
 - Config home: `KIMI_CODE_HOME` (dir itself, default `~/.kimi-code`),
   `config.toml`. Live probe: `kimi doctor` and ACP both honour it. Installer
   default bin is `$HOME/.kimi-code/bin` — ADE's known-dir lookup includes that

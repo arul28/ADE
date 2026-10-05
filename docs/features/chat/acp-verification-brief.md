@@ -70,14 +70,19 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   `~/.claude/settings.json` `defaultMode` leaks into Grok; confirm ADE defeats
   it. This is the single most important Grok check.
 - Grok: cancel must be a notification, not a request.
-- Kimi compatibility baseline 0.39.1: `session/close` is advertised and
-  implemented. Kimi Code 2.0.0's ACP reference also documents
-  `session/set_config_option` for mode/model/thinking, now enabled by ADE.
-  Usage is wired from the binary's code: one `usage_update` after each settled
-  turn (skipped for a model outside Kimi's catalog) and the ACP prompt-result
-  `usage` block, both read when present. The fixtures are shaped after the
-  0.39.1 binary; an authenticated turn has not confirmed them yet, and that is
-  the check to run. Interactive TUI still has no argv prompt.
+- Kimi 0.39.1 (baseline) and 2.1.1 (latest), live-verified 2026-10-05: the
+  `initialize` handshake is byte-identical apart from `agentInfo.version`;
+  `session/close` is advertised and a dummy id returns `{}`; the
+  mode/model/thinking `session/set_config_option` exists; unauthenticated
+  `session/new` is `-32000 Authentication required`; and `session/cancel` is a
+  notification, not a request (a request answers `-32601` on both). Usage is
+  wired from the binary's code: one `usage_update` after each settled turn
+  (skipped for a model outside Kimi's catalog) and the ACP prompt-result
+  `usage` block, both read when present. `fixtures/kimi.initialize.json` is now
+  captured from 2.1.1. An authenticated turn is still unconfirmed — this
+  machine has no usable Kimi login (the stored subscription credential reports
+  "no provider configured") — and that is the check to run. Interactive TUI
+  still has no argv prompt.
 - Grok 1.0.40 and Copilot 1.0.88 usage: `acpTelemetry.test.ts` replays real
   one-turn captures (`fixtures/grok.live-turn.jsonl`,
   `fixtures/copilot.usage-turn.jsonl`) and the ledger row Copilot wrote for

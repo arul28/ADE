@@ -3,16 +3,20 @@
  *
  * This is NOT the deprecated Python `kimi-cli`.
  *
- * Captured 0.39.1 handshake (the compatibility baseline): `loadSession`, list,
- * resume, **and `session/close`** (also delete/fork/additionalDirectories).
- * A dummy `session/close` returns `{}`. Kimi Code 2.0.0's ACP v1 reference
- * retains that lifecycle surface and adds the documented mode/model/thinking
+ * Captured handshake, verified live 2026-10-05 on both the installed 0.39.1
+ * baseline and the latest 2.1.1: `loadSession`, list, resume, **and
+ * `session/close`** (also delete/fork/additionalDirectories). A dummy
+ * `session/close` returns `{}` on both. Both implement the mode/model/thinking
  * `session/set_config_option` dispatcher, which ADE exposes below. Image
- * prompts yes. Audio no.
+ * prompts yes. Audio no. The two `initialize` responses are identical apart
+ * from `agentInfo.version`, so `fixtures/kimi.initialize.json` is captured
+ * from 2.1.1 and also describes 0.39.1.
  *
- * Usage (code-verified in the 0.39.1 binary, not live-verified): after every
- * settled turn Kimi pushes one `usage_update { used, size }`, where `used` is
- * the agent's context token count and `size` the bound model's window. It is
+ * Usage (code-verified in the 0.39.1 binary; an authenticated turn is not
+ * live-verified on either version, because this machine has no usable Kimi
+ * login): after every settled turn Kimi pushes one `usage_update { used,
+ * size }`, where `used` is the agent's context token count and `size` the bound
+ * model's window. It is
  * skipped while the bound model is not in Kimi's catalog, and it arrives AFTER
  * the `session/prompt` result, so the host waits briefly for it. The prompt
  * result may also carry the ACP `usage` block (`inputTokens`, `outputTokens`,
@@ -31,7 +35,12 @@
  * Auth: `authenticate` method id `login`, type `terminal` (`kimi login` /
  * `kimi acp --login`). Region is `--region global` (kimi.ai) or
  * `mainland-cn` (kimi.com). Unauthenticated `session/new` is `-32000
- * Authentication required`.
+ * Authentication required` on both 0.39.1 and 2.1.1.
+ *
+ * MCP: both versions' ACP `mcpServers` conversion
+ * (`acpMcpServersToConfigRecord`) pins `runtime_id: "local"` on stdio entries,
+ * which satisfies the engine's stdio runtime-id requirement. Live confirmation
+ * of an injected server is blocked by the missing login.
  *
  * On Windows the native binary needs Git for Windows, because Git Bash is its
  * shell. W4 runs that preflight check and reports a clear error.
@@ -90,10 +99,13 @@ export const kimiDialect = defineAcpDialect({
   binaryNames: ["kimi"],
   buildSpawnPlan,
 
-  cancelStyle: "request",
+  // 0.39.1 and 2.1.1 both answer a `session/cancel` REQUEST with -32601:
+  // `session_cancel` is registered as a notification, not a request, in both
+  // binaries. The spec-form notification is the method they implement.
+  cancelStyle: "notification",
   poolEnvKeys: ["KIMI_CODE_HOME", "MOONSHOT_API_KEY"],
-  // The 0.39.1 baseline and Kimi Code 2.0.0 both implement `session/close`.
-  // Two chats in the same lane may share.
+  // The 0.39.1 baseline and 2.1.1 both implement `session/close`. Two chats in
+  // the same lane may share.
   oneProcessPerSession: false,
   advertiseFsCapability: false,
   // Kimi has no terminal reverse RPC, so advertising the capability would be a
@@ -136,17 +148,18 @@ export const kimiDialect = defineAcpDialect({
   resumeSession: capability(standardResume),
   loadSession: capability(standardLoad),
 
-  // Kimi Code 2.0.0 documents this ACP v1 dispatcher for mode, model, and
-  // thinking. Older supported binaries that omit a given option simply return
-  // their normal ACP error, which the runtime already logs and degrades.
+  // 0.39.1 and 2.1.1 both implement this ACP v1 dispatcher for the `mode`,
+  // `model`, and `thinking` options (`buildSessionConfigOptions`). A build that
+  // omits a given option returns its normal ACP error, which the runtime
+  // already logs and degrades.
   sessionConfig: capability(standardSetConfigOption),
   modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   imagePrompts: capability(inlineImagePrompt),
   configOptionIds: KIMI_CONFIG_OPTION_IDS,
   // The `thinking` option lists `off` plus the model's declared effort levels
-  // (0.39.1 source; not live-verified, there is no Kimi account). ADE's levels
-  // go through unchanged, and only a level the session offers is sent. A
+  // (0.39.1 and 2.1.1 sources; not live-verified, no usable Kimi login). ADE's
+  // levels go through unchanged, and only a level the session offers is sent. A
   // clear puts back the level the session opened with. A failed set is
   // logged, and the session keeps running on its own level.
   reasoningEffortOption: { configId: "thinking", toAgentValue: (effort) => effort },
