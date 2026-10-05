@@ -93,8 +93,14 @@ try {
   )
   $env:NODE_PATH = $nodePathEntries -join [IO.Path]::PathSeparator
 
+  # Windows PowerShell 5.1 turns a native command's stderr line into a
+  # terminating error when stderr is redirected under "Stop". A warning the
+  # CLI prints must not fail the install; the exit code decides.
+  $ErrorActionPreference = "Continue"
   $serviceStatusJson = (& $cliWrapper serve --service-status --json 2>$null | Out-String)
-  if ($LASTEXITCODE -ne 0) {
+  $serviceStatusExit = $LASTEXITCODE
+  $ErrorActionPreference = "Stop"
+  if ($serviceStatusExit -ne 0) {
     throw "The ADE per-user brain startup state could not be read before setup."
   }
   try {
@@ -132,10 +138,13 @@ try {
     # Restoring an installed service goes through `brain start` for the same
     # `cto` reason as the install step above.
     if ($previousServiceInstalled) {
+      $ErrorActionPreference = "Continue"
       & $cliWrapper brain start 2>$null | Out-Null
     } else {
+      $ErrorActionPreference = "Continue"
       & $cliWrapper serve --uninstall-service 2>$null | Out-Null
     }
+    $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE -ne 0) {
       $rollbackErrors.Add("could not restore the previous brain startup state (exit $LASTEXITCODE)")
     } elseif ($previousServiceInstalled -and -not $previousServiceRunning) {

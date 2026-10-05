@@ -426,7 +426,7 @@ import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
 // TEMP(wd-followup): name synchronous child processes that block the brain. Removed before merge.
-if (process.argv.includes("serve")) {
+if (process.argv.includes("serve") && !process.argv.some((arg) => /^--(service-status|install-service|uninstall-service)$/.test(arg))) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const tempCp = require("node:child_process") as Record<string, (...a: unknown[]) => unknown>;
   for (const fn of ["spawnSync", "execFileSync", "execSync"]) {
