@@ -166,7 +166,6 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
-import { ChatComposerStatusStrip } from "./ChatComposerStatusStrip";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -218,7 +217,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { Banner, NoticeChip } from "../ui/notice";
+import { Banner, NoticeChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -303,7 +302,7 @@ import {
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
+import { armLaneBranchDriftWarning, LaneBranchComposerChip } from "../lanes/LaneBranchDrift";
 import {
   CreateLaneDialogHost,
   type NewLaneDraftConfig,
@@ -5088,7 +5087,7 @@ export function AgentChatPane({
   );
   // When this chat was last on screen here, read once per open: the thread
   // draws a `New since …` divider above what arrived after it.
-  const [wakeAwayWindow, setWakeAwayWindow] = useState<{
+  const [unreadWindow, setUnreadWindow] = useState<{
     sessionId: string;
     lastViewedAtMs: number;
     openedAtMs: number;
@@ -5111,7 +5110,7 @@ export function AgentChatPane({
   }, []);
   useEffect(() => {
     if (!selectedSessionId) {
-      setWakeAwayWindow(null);
+      setUnreadWindow(null);
       return;
     }
     const storageKey = `ade.chat.lastViewed.v1:${selectedSessionId}`;
@@ -5126,7 +5125,7 @@ export function AgentChatPane({
     } catch {
       // Renderer storage is best-effort; a blocked localStorage must not hide chat.
     }
-    setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs });
+    setUnreadWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs });
     try {
       window.localStorage.setItem(storageKey, String(openedAtMs));
     } catch {
@@ -5140,9 +5139,13 @@ export function AgentChatPane({
       }
     };
   }, [selectedSessionId]);
-  const unreadSince = wakeAwayWindow && wakeAwayWindow.sessionId === selectedSessionId
-    ? { sinceMs: wakeAwayWindow.lastViewedAtMs, openedAtMs: wakeAwayWindow.openedAtMs }
-    : null;
+  // Memoized: the message list is memoized and a fresh object would re-render it on every keystroke.
+  const unreadSince = useMemo(
+    () => (unreadWindow && unreadWindow.sessionId === selectedSessionId
+      ? { sinceMs: unreadWindow.lastViewedAtMs, openedAtMs: unreadWindow.openedAtMs }
+      : null),
+    [selectedSessionId, unreadWindow],
+  );
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -15946,12 +15949,12 @@ export function AgentChatPane({
   // Settled / snoozed and branch drift, side by side on the composer's top
   // edge instead of stacked cards over the thread.
   const composerStatusStrip = (
-    <ChatComposerStatusStrip
+    <StatusStrip
       className={layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]"}
     >
       {lifecyclePill}
-      <LaneBranchDriftStrip laneId={laneId} />
-    </ChatComposerStatusStrip>
+      <LaneBranchComposerChip laneId={laneId} />
+    </StatusStrip>
   );
   /**
    * The turn's time-lapse of the lane's macOS screen, when there was one.

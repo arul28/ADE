@@ -141,7 +141,7 @@ Renderer components:
 | `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |
 | `renderer/components/lanes/LaneColorPicker.tsx` | Reusable grouped swatch picker used inside `CreateLaneDialog` and `ManageLaneDialog`. Shows Rainbow above Classic, disables swatches already in use by other lanes (passed in as `usedColors`), and offers a clear button. |
 | `renderer/components/lanes/LaneContextMenu.tsx`, `laneContextMenuItems.tsx` | Right-click menu on the lane list. `buildLaneMenuGroups` is the single action inventory shared with the Work sidebar's singleton-session **Lane** submenu; both render the same start-chat/pin, navigation, copy, **Open in**, split, appearance, and manage/batch groups. Copy, split, and appearance open as pointer-safe keyboard submenus; color swatches call `lanes.updateAppearance` directly. **Open in** is an `open-in` entry (`OpenInTarget`: worktree `rootPath` plus optional SSH `remote`) rendered by `OpenInSubmenu`; callers pass `openIn` from `resolveOpenInTarget({ worktreePath, binding })`. Paired remotes and empty worktree paths omit the group. Work callers may pass their own Work-sidebar pin toggle and pin ids, deliberately separate from the Lanes tab's pins. |
-| `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchDriftStrip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`); `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`. See [Branch drift](#branch-drift). |
+| `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchComposerChip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`); `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`. See [Branch drift](#branch-drift). |
 | `renderer/components/lanes/sidebar/LaneSidebarList.tsx`, `LaneSidebarRow.tsx`, `LaneSidebarGroupHeader.tsx`, `laneSidebarModel.ts` | The project-sidebar lane manager. Lanes are grouped by **State** (Needs you / Active / Behind main / Done / Stale, older than 14 days / Quiet), with Primary pinned at the top, or by **Stack** via a State \| Stack toggle. Rows match the Work lane cards: branch glyph and lane name in the lane color, agent logos, status, time; line 2 is branch, PR chip (`LaneSidebarPrChip.tsx`), and parent. |
 | `renderer/components/lanes/sidebar/LaneSidebarContextMenu.tsx`, `LaneSidebarBulkRebaseDialog.tsx` | Group "…" menus with bulk actions, always confirmed and never including Primary: Done → Archive all, Behind main → Rebase all, Stale → Archive all / Delete all. |
 | `renderer/components/lanes/laneIconGlyph.tsx` | `iconGlyph(icon)`: the glyph for a lane's chosen icon (star, flag, bolt, shield, tag). The Work session list uses it for lane group headers, with the generic lane icon when a lane has no icon. |
@@ -1073,9 +1073,12 @@ runs `keep-head` with `adoptedByAgent: true`, so the lifecycle event carries
 - the lane is the primary checkout (`primary_lane`);
 - the lane was already off its branch when the turn began
   (`branch_moved_before_turn`), so the switch may not be the agent's;
-- the old branch has commits the new HEAD lacks
-  (`old_branch_has_commits`, from `git rev-list --count new..old`), since
-  adopting would drop them out of the lane's view unseen;
+- the old branch has commits that are on neither the new branch nor any
+  remote (`old_branch_has_unpushed_commits`, from
+  `git rev-list --count <old> --not HEAD --remotes`), since adopting would
+  drop that local work out of the lane's view unseen. Pushed work, such as
+  a squash-merged PR branch, does not block; a deleted old branch has
+  nothing to lose;
 - another lane owns the new branch (`branch_owned_by_other_lane`).
 
 The chat keeps every PR it already tracks: PR links live in
@@ -1090,8 +1093,8 @@ asks. The result is logged as `lane.agent_branch_adopted` or
 
 - `LaneBranchDriftChip` — compact, rendered in `WorkSurfaceHeader` next to
   the lane chip, always visible while a lane is drifted.
-- `LaneBranchDriftStrip` — a chip in the composer status strip
-  (`ChatComposerStatusStrip`): `⎇ On <branch> · Switch back · Keep`, with the
+- `LaneBranchComposerChip` — a chip in the composer status strip
+  (`StatusStrip` (`ui/notice/StatusChip.tsx`)): `⎇ On <branch> · Switch back · Keep`, with the
   explanation in its tooltip. When armed it reads HEAD fresh through
   `getBranchDrift`, because the lane list's status can be minutes old. After
   ADE adopts an agent's branch, the same slot shows

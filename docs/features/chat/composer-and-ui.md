@@ -316,7 +316,7 @@ that could not work without it.
   to `WorkSurfaceHeader` as `snoozeSessionId`, which mounts the optional
   `SessionSnoozeChip` from `renderer/components/work/SessionLifecycleChips.tsx`.
   Settled and snoozed state is one chip (`ChatLifecyclePill`) in the
-  composer status strip, `ChatComposerStatusStrip`: a single row of 22px
+  composer status strip, `StatusStrip` (`ui/notice/StatusChip.tsx`): a single row of 22px
   chips on the composer's top edge that sit side by side and scroll sideways
   instead of stacking over the thread. Settled reads only `Settled ·
   Un-settle`; what sending does is in the tooltip. It is not duplicated in
@@ -326,7 +326,7 @@ that could not work without it.
   with a root cross-machine snapshot fallback for a foreign chat, and the same
   canonical helpers as the Work sidebar, so the visible state stays consistent.
   The branch-drift chip shares that strip: `AgentChatPane` renders
-  `<LaneBranchDriftStrip laneId={laneId} />` inside it and arms it
+  `<LaneBranchComposerChip laneId={laneId} />` inside it and arms it
   (`armLaneBranchDriftWarning`) on submit so a turn about to run against a
   worktree whose HEAD wandered off the lane's branch warns first. See
   [Terminals and sessions](../terminals-and-sessions/README.md) and

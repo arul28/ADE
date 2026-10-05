@@ -4,44 +4,8 @@ import type {
   WakeChainRenderEvent,
 } from "./chatTranscriptRows";
 import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
-
-type ScheduledWorkEvent = ChatActivityBundleItem["event"];
-
-const PENDING_STATUSES: ReadonlySet<string> = new Set(["scheduled", "paused", "running"]);
-
-/**
- * A one-shot cancelled at or after its fire time was delivered, not dropped:
- * older brains reconciled a fired wake-up against the provider's inventory and
- * wrote `cancelled`. Read those as fired so old transcripts tell the truth.
- */
-const LATE_CANCEL_TOLERANCE_MS = 30_000;
-
-function definedFields(event: ScheduledWorkEvent): Partial<ScheduledWorkEvent> {
-  return Object.fromEntries(
-    Object.entries(event).filter(([, value]) => value !== undefined),
-  ) as Partial<ScheduledWorkEvent>;
-}
-
-function patchScheduledWork(
-  previous: ScheduledWorkEvent,
-  next: ScheduledWorkEvent,
-  nextTimestamp: string,
-): ScheduledWorkEvent {
-  const patched = { ...previous, ...definedFields(next) } as ScheduledWorkEvent;
-  if (
-    (patched.kind === "wakeup" || patched.kind === "loop")
-    && next.status === "cancelled"
-    && previous.nextRunAt
-  ) {
-    const dueAt = Date.parse(previous.nextRunAt);
-    const cancelledAt = Date.parse(nextTimestamp);
-    if (Number.isFinite(dueAt) && Number.isFinite(cancelledAt) && cancelledAt >= dueAt - LATE_CANCEL_TOLERANCE_MS) {
-      patched.status = "completed";
-      patched.firedAt = patched.firedAt ?? previous.nextRunAt;
-    }
-  }
-  return patched;
-}
+import { mergeScheduledWorkEvent } from "../../../shared/chatScheduledWork";
+import { isForeignTurnEnd, type TurnFold } from "../../../shared/chatTurnFold";
 
 function itemsChanged(left: readonly ChatActivityBundleItem[], right: readonly ChatActivityBundleItem[]): boolean {
   if (left.length !== right.length) return true;
@@ -74,12 +38,13 @@ export function foldScheduledWorkRows(
         kept.push(item);
         continue;
       }
-      const ownerItems = owner.rowIndex === rowIndex ? kept : itemsByRow.get(owner.rowIndex)!;
-      const ownerItem = ownerItems[owner.itemIndex]!;
+      const ownerItems = owner.rowIndex === rowIndex ? kept : itemsByRow.get(owner.rowIndex);
+      const ownerItem = ownerItems?.[owner.itemIndex];
+      if (!ownerItems || !ownerItem) continue;
       ownerItems[owner.itemIndex] = {
         ...ownerItem,
         timestamp: item.timestamp,
-        event: patchScheduledWork(ownerItem.event, item.event, item.timestamp),
+        event: mergeScheduledWorkEvent(ownerItem.event, item.event, item.timestamp),
       };
       changed = true;
     }
@@ -122,12 +87,18 @@ export function moveScheduledWorkToTurnEnds(
   const byTurnEndKey = new Map<string, ChatActivityBundleItem[]>();
   const moved = new Set<number>();
   let pending: number[] = [];
+  let windowTurnIds = new Set<string>();
   rows.forEach((row, index) => {
-    if (row.event.type === "activity_bundle") {
-      pending.push(index);
+    const turnId = groupedEnvelopeTurnId(row);
+    if (row.event.type !== "done") {
+      if (turnId) windowTurnIds.add(turnId);
+      if (row.event.type === "activity_bundle") pending.push(index);
       return;
     }
-    if (row.event.type !== "done" || !pending.length) return;
+    // A subagent's `done` inside the parent turn does not end it.
+    if (isForeignTurnEnd(turnId, windowTurnIds)) return;
+    windowTurnIds = new Set();
+    if (!pending.length) return;
     const items: ChatActivityBundleItem[] = [];
     for (const bundleIndex of pending) {
       const bundle = rows[bundleIndex]!.event;
@@ -196,10 +167,21 @@ function splitTurnSegments(
   rows: readonly ChatTranscriptGroupedEnvelope[],
   scheduledByTurnEndKey: ReadonlyMap<string, readonly ChatActivityBundleItem[]>,
 ): TurnSegment[] {
+  // A queued message keeps its place in the earlier turn when it is delivered,
+  // so "a person started this turn" is read by turn id, not by row position.
+  const promptedTurnIds = new Set<string>();
+  for (const row of rows) {
+    if (row.event.type === "user_message" && !row.event.metadata?.scheduledWake) {
+      const turnId = groupedEnvelopeTurnId(row);
+      if (turnId) promptedTurnIds.add(turnId);
+    }
+  }
   const segments: TurnSegment[] = [];
   let current: TurnSegment | null = null;
+  let windowTurnIds = new Set<string>();
   for (const row of rows) {
     const turnId = groupedEnvelopeTurnId(row);
+    const foreignEnd = row.event.type === "done" && isForeignTurnEnd(turnId, windowTurnIds);
     const last = segments[segments.length - 1];
     let segment: TurnSegment;
     if (!current && last?.closed && turnId && last.turnId === turnId) {
@@ -216,6 +198,7 @@ function splitTurnSegments(
     segment.keys.push(row.key);
     segment.lastTimestamp = row.timestamp;
     if (turnId && !segment.turnId) segment.turnId = turnId;
+    if (turnId && row.event.type !== "done") windowTurnIds.add(turnId);
     const event = row.event;
     if (event.type === "user_message" && !event.metadata?.scheduledWake) segment.prompted = true;
     if (event.type === "scheduled_wake_divider") segment.wakeDivider = true;
@@ -225,25 +208,45 @@ function splitTurnSegments(
     ) {
       segment.schedulesWake = true;
     }
-    if (event.type === "done" && segment === current) {
+    if (event.type === "done" && segment === current && !foreignEnd) {
       current.closed = true;
       current.doneKey = row.key;
       current = null;
+      windowTurnIds = new Set();
     }
+  }
+  for (const segment of segments) {
+    if (segment.turnId && promptedTurnIds.has(segment.turnId)) segment.prompted = true;
   }
   return segments;
 }
 
-/**
- * Runs of turns the agent started for itself from its own wake-ups (a self-paced
- * watch loop). Every check but the latest folds into one chain row; the latest
- * check stays in the thread. A turn a person started ends the run.
- */
-export function deriveWakeChains(
+/** Started by the agent's own wake-up: no person started it, and it follows a wake-up or opens with one. */
+function isWakeTriggered(segment: TurnSegment, previous: TurnSegment | null): boolean {
+  return !segment.prompted && (segment.wakeDivider || previous?.schedulesWake === true);
+}
+
+export type WakeTurns = {
+  /**
+   * Turns the agent started from its own wake-ups. Their work folds onto their
+   * turn-end line instead of a `Worked for …` row: a check is one reply and
+   * one line.
+   */
+  turnIds: ReadonlySet<string>;
+  /**
+   * Runs of those turns (a self-paced watch loop). Every check but the latest
+   * folds into one chain; the latest stays in the thread. A turn a person
+   * started ends the run.
+   */
+  chains: WakeChain[];
+};
+
+export function deriveWakeTurns(
   rows: readonly ChatTranscriptGroupedEnvelope[],
   scheduledByTurnEndKey: ReadonlyMap<string, readonly ChatActivityBundleItem[]> = EMPTY_TURN_END_ITEMS,
-): WakeChain[] {
+): WakeTurns {
   const segments = splitTurnSegments(rows, scheduledByTurnEndKey);
+  const turnIds = new Set<string>();
   const chains: WakeChain[] = [];
   let run: TurnSegment[] = [];
   let beforeRun: TurnSegment | null = null;
@@ -271,37 +274,66 @@ export function deriveWakeChains(
   };
   segments.forEach((segment, index) => {
     const previous = index > 0 ? segments[index - 1]! : null;
-    const wakeTriggered = !segment.prompted
-      && (segment.wakeDivider || previous?.schedulesWake === true);
-    if (wakeTriggered) {
-      if (!run.length) beforeRun = previous;
-      run.push(segment);
-    } else {
+    if (!isWakeTriggered(segment, previous)) {
       flush();
+      return;
     }
+    if (segment.turnId) turnIds.add(segment.turnId);
+    if (!run.length) beforeRun = previous;
+    run.push(segment);
   });
   flush();
-  return chains;
+  return { turnIds, chains };
 }
 
 /**
- * Turns the agent started from its own wake-ups. Their work folds onto their
- * turn-end line instead of a `Worked for …` row: a check is one reply and one
- * line.
+ * The fold each hidden row answers to, for jumps and reveals. A closed chain
+ * hides whole turns, so it wins over the turn fold inside it until it opens.
  */
-export function deriveWakeTurnIds(
-  rows: readonly ChatTranscriptGroupedEnvelope[],
-  scheduledByTurnEndKey: ReadonlyMap<string, readonly ChatActivityBundleItem[]> = EMPTY_TURN_END_ITEMS,
-): Set<string> {
-  const segments = splitTurnSegments(rows, scheduledByTurnEndKey);
-  const ids = new Set<string>();
-  segments.forEach((segment, index) => {
-    const previous = index > 0 ? segments[index - 1]! : null;
-    if (segment.turnId && !segment.prompted && (segment.wakeDivider || previous?.schedulesWake === true)) {
-      ids.add(segment.turnId);
+export function foldIdsByHiddenRowKey(
+  turnFolds: readonly TurnFold[],
+  chains: readonly WakeChain[],
+  openIds: ReadonlySet<string>,
+): Map<string, string> {
+  const byKey = new Map<string, string>();
+  for (const fold of turnFolds) {
+    for (const key of fold.hiddenKeys) byKey.set(key, fold.foldId);
+  }
+  for (const chain of chains) {
+    if (openIds.has(chain.chainId)) continue;
+    for (const key of chain.hiddenKeys) byKey.set(key, chain.chainId);
+    for (const fold of turnFolds) {
+      if (!chain.hiddenTurnIds.has(fold.turnId)) continue;
+      byKey.set(fold.foldId, chain.chainId);
+      for (const key of fold.hiddenKeys) byKey.set(key, chain.chainId);
     }
+  }
+  return byKey;
+}
+
+/**
+ * `── New since 9:12 PM ──` above the first row that arrived while the reader
+ * was away. Placed once, when the chat opens; it never moves as rows stream in.
+ */
+export function insertNewSinceDivider(
+  rows: ChatTranscriptGroupedEnvelope[],
+  unreadSince: { sinceMs: number; openedAtMs: number } | null,
+): ChatTranscriptGroupedEnvelope[] {
+  if (!unreadSince) return rows;
+  const index = rows.findIndex((row) => {
+    const at = Date.parse(row.timestamp);
+    return Number.isFinite(at) && at > unreadSince.sinceMs;
   });
-  return ids;
+  // Nothing before it (a new chat) or nothing that arrived before this open.
+  if (index <= 0) return rows;
+  const firstAt = Date.parse(rows[index]!.timestamp);
+  if (firstAt > unreadSince.openedAtMs) return rows;
+  const divider: ChatTranscriptGroupedEnvelope = {
+    key: "new-since-divider",
+    timestamp: rows[index]!.timestamp,
+    event: { type: "new_since_divider", sinceMs: unreadSince.sinceMs },
+  };
+  return [...rows.slice(0, index), divider, ...rows.slice(index)];
 }
 
 export function sameWakeChains(left: readonly WakeChain[], right: readonly WakeChain[]): boolean {

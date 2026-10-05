@@ -69,8 +69,6 @@ export type ResolveLaneBranchDriftArgs = {
   expectedHeadBranchRef?: string;
   /** `switch-back` only: proceed even though sessions/processes are running. */
   acknowledgeActiveWork?: boolean;
-  /** `keep-head` only: ADE adopted a branch an agent in this lane switched to. */
-  adoptedByAgent?: boolean;
 };
 
 /** Why ADE did or did not adopt the branch an agent switched its lane to. */
@@ -82,7 +80,7 @@ export type AdoptAgentBranchSwitchResult =
         | "no_drift"
         | "primary_lane"
         | "branch_moved_before_turn"
-        | "old_branch_has_commits"
+        | "old_branch_has_unpushed_commits"
         | "branch_owned_by_other_lane"
         | "unavailable";
     };
@@ -92,8 +90,8 @@ export type ResolveLaneBranchDriftResult = {
   resolution: LaneBranchDriftResolution;
   previousBranchRef: string;
   branchRef: string;
-  /** Always null: adopting a branch never renames the lane. Kept for older callers. */
-  previousLaneName: string | null;
+  /** Always null: adopting a branch never renames the lane. Still sent for older readers. */
+  previousLaneName: null;
   laneName: string;
 };
 

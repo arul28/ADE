@@ -236,7 +236,8 @@ import {
 } from "./chatListScrollAnchoring";
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
 import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
-import { applyWakeChains, deriveWakeChains, deriveWakeTurnIds, foldScheduledWorkRows, moveScheduledWorkToTurnEnds, sameWakeChains, type WakeChain } from "./chatScheduledWorkRows";
+import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
+import { useWakeLoopFolds } from "./useWakeLoopFolds";
 
 export { deriveTranscriptToolActivity, deriveTurnStartedAtMs, stabilizeTranscriptToolActivity } from "./chatTranscriptPresentation";
 export { sameKeyList, sameMapContents, sameSetContents } from "../../lib/stableIdentity";
@@ -1533,30 +1534,6 @@ function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: 
  */
 export const ChatInfoHostContext = React.createContext(false);
 
-function activityBundleDedupeKey(item: ChatActivityBundleItem): string {
-  const event = item.event;
-  // `id` is the canonical schedule id; `sourceTaskId` is only the provider
-  // task that last reported it, so keying on it split one schedule in two.
-  return `schedule:${event.id}`;
-}
-
-// Folding collapses repeated scheduled-work updates for the same id down to the latest.
-function foldActivityBundleItems(items: ChatActivityBundleItem[]): ChatActivityBundleItem[] {
-  const folded: ChatActivityBundleItem[] = [];
-  const indexByKey = new Map<string, number>();
-  for (const item of items) {
-    const key = activityBundleDedupeKey(item);
-    const existingIndex = indexByKey.get(key);
-    if (existingIndex === undefined) {
-      indexByKey.set(key, folded.length);
-      folded.push(item);
-    } else {
-      folded[existingIndex] = item;
-    }
-  }
-  return folded;
-}
-
 function ChatActivityBundle({
   event,
   sessionId,
@@ -1564,40 +1541,16 @@ function ChatActivityBundle({
   event: ChatActivityBundleEvent;
   sessionId?: string | null;
 }) {
-  const displayItems = foldActivityBundleItems(event.items);
+  // `foldScheduledWorkRows` already left one item per schedule id.
+  const displayItems = event.items;
   const rows = displayItems.map((item) => (
     <ScheduledWorkLine
-      key={activityBundleDedupeKey(item)}
+      key={item.event.id}
       event={item.event}
       onOpen={() => openChatInfoFromActivity(sessionId, item.event.sourceTaskId ?? item.event.id)}
     />
   ));
   return displayItems.length === 1 ? rows[0]! : <div className="min-w-0 max-w-full">{rows}</div>;
-}
-
-/**
- * `── New since 9:12 PM ──` above the first row that arrived while the reader
- * was away. Placed once, when the chat opens; it never moves as rows stream in.
- */
-function insertNewSinceDivider(
-  rows: TranscriptGroupedEnvelope[],
-  unreadSince: { sinceMs: number; openedAtMs: number } | null,
-): TranscriptGroupedEnvelope[] {
-  if (!unreadSince) return rows;
-  const index = rows.findIndex((row) => {
-    const at = Date.parse(row.timestamp);
-    return Number.isFinite(at) && at > unreadSince.sinceMs;
-  });
-  // Nothing before it (a new chat) or nothing that arrived before this open.
-  if (index <= 0) return rows;
-  const firstAt = Date.parse(rows[index]!.timestamp);
-  if (firstAt > unreadSince.openedAtMs) return rows;
-  const divider: TranscriptGroupedEnvelope = {
-    key: "new-since-divider",
-    timestamp: rows[index]!.timestamp,
-    event: { type: "new_since_divider", sinceMs: unreadSince.sinceMs },
-  };
-  return [...rows.slice(0, index), divider, ...rows.slice(index)];
 }
 
 function NewSinceDivider({ sinceMs }: { sinceMs: number }) {
@@ -5643,7 +5596,7 @@ function AgentChatMessageListMain({
   onReturnToLatest?: () => void;
   /** Present only for Claude-family sessions; enables interactive mosaic cards. */
   mosaic?: MosaicRenderContext;
-  /** Imperative jump request used by the while-you-were-away wake digest. */
+  /** Imperative jump to a row key: reveals the folds hiding it, then scrolls to it. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
   /**
    * When the reader last had this chat open (`sinceMs`) and when they opened it
@@ -6141,7 +6094,13 @@ function AgentChatMessageListMain({
     ),
     sameSetContents,
   );
-  // One row per schedule (`foldScheduledWorkRows`), then an ended turn's
+  // `work_log_group` rows no longer render anything in the timeline: tool
+  // calls are shown by the working indicator / done divider, and file changes
+  // are summarized ONCE per turn at the done divider instead of once per
+  // burst. A checkpoint `turn_diff_summary` folds into that same line when
+  // the turn has a done row. Dropping the rows outright (rather than
+  // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
+  // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
@@ -6158,12 +6117,6 @@ function AgentChatMessageListMain({
   const scheduledWorkByTurnEndKey = scheduledWorkAtTurnEnd.byTurnEndKey;
   const previousPresentedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
   const presentedRows = useMemo(
-    // `work_log_group` rows no longer render anything in the timeline: tool
-    // calls are shown by the working indicator / done divider, and file changes
-    // are summarized ONCE per turn at the done divider instead of once per
-    // burst. A checkpoint `turn_diff_summary` folds into that same line when
-    // the turn has a done row. Dropping the rows outright (rather than
-    // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
     // Consecutive same-kind subagent cards then join one side-by-side grid row
     // keyed by its first card (`groupSubagentCardGrids`). That runs here, on
     // the drawn rows and before the turn fold, so hidden rows never split a
@@ -6215,52 +6168,13 @@ function AgentChatMessageListMain({
     useMemo(() => presentedRows.map((row) => row.key), [presentedRows]),
     sameKeyList,
   );
-  const turnFoldIdByHiddenRowKey = useMemo(() => {
-    const byKey = new Map<string, string>();
-    for (const fold of turnFolds) {
-      for (const key of fold.hiddenKeys) byKey.set(key, fold.foldId);
-    }
-    return byKey;
-  }, [turnFolds]);
-  // Runs of self-paced wake-up checks: every check but the latest folds into
-  // one row (`deriveWakeChains`). Open state shares the turn folds' memory.
-  const wakeChains = useStableIdentity(
-    useMemo(
-      () => deriveWakeChains(presentedRows, scheduledWorkByTurnEndKey),
-      [presentedRows, scheduledWorkByTurnEndKey],
-    ),
-    sameWakeChains,
-  );
-  // `done` rows whose tool/file counts moved up to their turn's fold row. By
-  // row key, not turn id: an id-less `done` folds under an inferred id.
-  // A turn the agent started from its own wake-up keeps no `Worked for …`
-  // row: its fold opens from the time on its turn-end line, and its tool and
-  // file counts stay on that line.
-  const wakeTurnIds = useStableIdentity(
-    useMemo(
-      () => deriveWakeTurnIds(presentedRows, scheduledWorkByTurnEndKey),
-      [presentedRows, scheduledWorkByTurnEndKey],
-    ),
-    sameSetContents,
-  );
-  const wakeTurnFoldIdByTurnEndKey = useMemo(() => {
-    const byKey = new Map<string, string>();
-    for (const fold of turnFolds) {
-      if (wakeTurnIds.has(fold.turnId)) byKey.set(fold.turnEndKey, fold.foldId);
-    }
-    return byKey;
-  }, [turnFolds, wakeTurnIds]);
-  const wakeChainByAnchorKey = useMemo(() => {
-    const byKey = new Map<string, WakeChain>();
-    for (const chain of wakeChains) {
-      if (chain.anchorTurnEndKey) byKey.set(chain.anchorTurnEndKey, chain);
-    }
-    return byKey;
-  }, [wakeChains]);
-  const foldedTurnEndKeys = useMemo(
-    () => new Set(turnFolds.filter((fold) => !wakeTurnIds.has(fold.turnId)).map((fold) => fold.turnEndKey)),
-    [turnFolds, wakeTurnIds],
-  );
+  const {
+    wakeChains,
+    wakeTurnIds,
+    wakeTurnFoldIdByTurnEndKey,
+    wakeChainByAnchorKey,
+    foldedTurnEndKeys,
+  } = useWakeLoopFolds(presentedRows, scheduledWorkByTurnEndKey, turnFolds);
   const [openTurnFoldsState, setOpenTurnFoldsState] = useState(() => ({
     viewKey: resolvedScrollMemoryKey ?? null,
     open: readOpenTurnFolds(resolvedScrollMemoryKey),
@@ -6272,22 +6186,18 @@ function AgentChatMessageListMain({
     : readOpenTurnFolds(resolvedScrollMemoryKey);
   const openTurnFoldsRef = useRef(openTurnFolds);
   openTurnFoldsRef.current = openTurnFolds;
-  // The fold a hidden row answers to: a closed wake chain hides whole turns,
-  // so it wins over the turn fold inside it until it opens.
-  const foldIdByHiddenRowKey = useMemo(() => {
-    const closedChains = wakeChains.filter((chain) => !openTurnFolds.has(chain.chainId));
-    if (!closedChains.length) return turnFoldIdByHiddenRowKey;
-    const byKey = new Map(turnFoldIdByHiddenRowKey);
-    for (const chain of closedChains) {
-      for (const key of chain.hiddenKeys) byKey.set(key, chain.chainId);
-      for (const fold of turnFolds) {
-        if (!chain.hiddenTurnIds.has(fold.turnId)) continue;
-        byKey.set(fold.foldId, chain.chainId);
-        for (const key of fold.hiddenKeys) byKey.set(key, chain.chainId);
-      }
-    }
-    return byKey;
-  }, [openTurnFolds, turnFoldIdByHiddenRowKey, turnFolds, wakeChains]);
+  // The fold a hidden row answers to (a closed wake chain wins over the turn
+  // fold inside it), and the turn fold alone, for a reveal that opens both.
+  const foldIdByHiddenRowKey = useMemo(
+    () => foldIdsByHiddenRowKey(turnFolds, wakeChains, openTurnFolds),
+    [openTurnFolds, turnFolds, wakeChains],
+  );
+  const turnFoldIdByHiddenRowKey = useMemo(
+    () => foldIdsByHiddenRowKey(turnFolds, [], EMPTY_OPEN_TURN_FOLDS),
+    [turnFolds],
+  );
+  const turnFoldIdByHiddenRowKeyRef = useRef(turnFoldIdByHiddenRowKey);
+  turnFoldIdByHiddenRowKeyRef.current = turnFoldIdByHiddenRowKey;
   const turnFoldViewKeyRef = useRef(resolvedScrollMemoryKey ?? null);
   turnFoldViewKeyRef.current = resolvedScrollMemoryKey ?? null;
   const setTurnFoldOpen = useCallback((foldId: string, open: boolean) => {
@@ -6313,12 +6223,22 @@ function AgentChatMessageListMain({
     }
     return byKey;
   }, [turnFolds]);
+  // A row in a closed wake chain is also inside its own turn's fold: open both
+  // in one update, or the jump lands on a fold that is still closed.
   const revealTurnFoldRow = useCallback((rowKey: string): boolean => {
-    const foldId = foldIdByHiddenRowKeyRef.current.get(rowKey);
-    if (!foldId || openTurnFoldsRef.current.has(foldId)) return false;
-    setTurnFoldOpen(foldId, true);
+    const current = openTurnFoldsRef.current;
+    const toOpen = [
+      foldIdByHiddenRowKeyRef.current.get(rowKey),
+      turnFoldIdByHiddenRowKeyRef.current.get(rowKey),
+    ].filter((foldId): foldId is string => Boolean(foldId) && !current.has(foldId!));
+    if (!toOpen.length) return false;
+    const next = new Set(current);
+    for (const foldId of toOpen) next.add(foldId);
+    openTurnFoldsRef.current = next;
+    rememberOpenTurnFolds(turnFoldViewKeyRef.current, next);
+    setOpenTurnFoldsState({ viewKey: turnFoldViewKeyRef.current, open: next });
     return true;
-  }, [setTurnFoldOpen]);
+  }, []);
   const previousFoldRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousWakeChainRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousThoughtRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
@@ -6397,7 +6317,7 @@ function AgentChatMessageListMain({
     const next = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
     previousThoughtRunRowsRef.current = next === withUnread ? new Map() : collectMergedThoughtRows(next);
     return next;
-  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince?.openedAtMs, unreadSince?.sinceMs, wakeChains, wakeTurnIds]);
+  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -8079,9 +7999,9 @@ function AgentChatMessageListMain({
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
           turnProof={turnProof}
-        turnScheduledWork={turnScheduledWork}
-        turnEndFold={turnEndFold}
-        turnEndWakeChain={turnEndWakeChain}
+          turnScheduledWork={turnScheduledWork}
+          turnEndFold={turnEndFold}
+          turnEndWakeChain={turnEndWakeChain}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
           onForkFromTurn={onForkFromTurn}

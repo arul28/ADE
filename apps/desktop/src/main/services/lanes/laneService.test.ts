@@ -7614,7 +7614,7 @@ describe("laneService branch drift", () => {
     repoRoot: string;
     headBranchByPath: Record<string, string>;
     dirtyPaths?: string[];
-    /** `git rev-list --count <head>..<old>`: commits the old branch has that HEAD lacks. */
+    /** `git rev-list --count <old> --not HEAD --remotes`: local-only commits HEAD lacks. */
     commitsOnlyOnOldBranch?: number;
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
@@ -7800,11 +7800,11 @@ describe("laneService branch drift", () => {
       branchRef: "hotfix-auth",
     },
     {
-      label: "asks when the old branch has commits the new one lacks",
+      label: "asks when the old branch has commits on neither the new branch nor a remote",
       laneId: "lane-child",
       branchAtTurnStart: "feature/child",
       commitsOnlyOnOldBranch: 2,
-      expected: { adopted: false, reason: "old_branch_has_commits" },
+      expected: { adopted: false, reason: "old_branch_has_unpushed_commits" },
       branchRef: "feature/child",
     },
     {

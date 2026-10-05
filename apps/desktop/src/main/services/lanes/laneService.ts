@@ -6300,12 +6300,17 @@ export function createLaneService({
      *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
      *   when the worktree is dirty, and rolls the checkout back if the DB write
      *   fails.
-     * - `keep-head` re-points `branch_ref` at the live HEAD and, when the lane
-     *   name was merely advertising the old branch, renames the lane to match —
-     *   both inside one transaction, so the lane can never end up pointing at
-     *   one branch while its name advertises another.
+     * - `keep-head` re-points `branch_ref` (and the branch profile) at the
+     *   live HEAD in one transaction. It never renames the lane.
+     *
+     * `internal` is unreachable from IPC, remote commands, and actions, which
+     * all pass one argument: only `adoptAgentBranchSwitch` marks an adoption
+     * as the agent's.
      */
-    async resolveBranchDrift(args: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> {
+    async resolveBranchDrift(
+      args: ResolveLaneBranchDriftArgs,
+      internal: { adoptedByAgent?: boolean } = {},
+    ): Promise<ResolveLaneBranchDriftResult> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required.");
       const row = getLaneRow(laneId);
@@ -6403,7 +6408,7 @@ export function createLaneService({
         color: row.color,
         previousBranchRef: drift.expectedBranchRef,
         branchRef: targetBranchRef,
-        ...(args.adoptedByAgent ? { adoptedByAgent: true } : {}),
+        ...(internal.adoptedByAgent ? { adoptedByAgent: true } : {}),
       });
 
       const refreshed = (await listLanes({ includeArchived: false, includeStatus: true }))
@@ -6424,8 +6429,10 @@ export function createLaneService({
      * without asking. `branchAtTurnStart` is the lane's recorded branch when
      * the turn began; it guards against adopting a switch someone else made
      * before the turn. Refuses, so the drift chip asks instead, when the lane
-     * is the primary checkout, or when the old branch has commits the new one
-     * lacks (adopting would drop them out of the lane's view unseen).
+     * is the primary checkout, or when the old branch has commits that are on
+     * neither the new branch nor any remote: adopting would drop that local
+     * work out of the lane's view unseen. Pushed work (a merged or open PR)
+     * stays reachable, and the chat keeps that PR linked.
      */
     async adoptAgentBranchSwitch(args: {
       laneId: string;
@@ -6442,20 +6449,28 @@ export function createLaneService({
       if (findActiveBranchOwner(drift.headBranchRef, row.id)) {
         return { adopted: false, reason: "branch_owned_by_other_lane" };
       }
-      const unique = await runGit(
-        ["rev-list", "--count", `refs/heads/${drift.headBranchRef}..refs/heads/${drift.expectedBranchRef}`],
-        { cwd: row.worktree_path, timeoutMs: 5_000 },
-      ).catch(() => null);
-      const uniqueCount = unique?.exitCode === 0 ? Number.parseInt(unique.stdout.trim(), 10) : Number.NaN;
-      if (!Number.isFinite(uniqueCount) || uniqueCount > 0) {
-        return { adopted: false, reason: "old_branch_has_commits" };
+      const oldRef = `refs/heads/${drift.expectedBranchRef}`;
+      const oldExists = await runGit(["show-ref", "--verify", "--quiet", oldRef], {
+        cwd: row.worktree_path,
+        timeoutMs: 5_000,
+      }).catch(() => null);
+      // A deleted old branch has nothing left to lose.
+      if (oldExists?.exitCode === 0) {
+        // HEAD is the checked-out commit itself, whatever its branch is called.
+        const unpushed = await runGit(
+          ["rev-list", "--count", oldRef, "--not", "HEAD", "--remotes"],
+          { cwd: row.worktree_path, timeoutMs: 5_000 },
+        ).catch(() => null);
+        const unpushedCount = unpushed?.exitCode === 0 ? Number.parseInt(unpushed.stdout.trim(), 10) : Number.NaN;
+        if (!Number.isFinite(unpushedCount)) return { adopted: false, reason: "unavailable" };
+        if (unpushedCount > 0) {
+          return { adopted: false, reason: "old_branch_has_unpushed_commits" };
+        }
       }
-      const result = await laneServiceApi.resolveBranchDrift({
-        laneId: row.id,
-        resolution: "keep-head",
-        expectedHeadBranchRef: drift.headBranchRef,
-        adoptedByAgent: true,
-      });
+      const result = await laneServiceApi.resolveBranchDrift(
+        { laneId: row.id, resolution: "keep-head", expectedHeadBranchRef: drift.headBranchRef },
+        { adoptedByAgent: true },
+      );
       return { adopted: true, previousBranchRef: result.previousBranchRef, branchRef: result.branchRef };
     },
 

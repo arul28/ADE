@@ -660,7 +660,14 @@ export function createChatScheduledWorkScheduler(
       await start();
       const schedule = schedules.get(scheduleId);
       if (!schedule) return null;
-      if (schedule.kind === "cron" || isTerminal(schedule) || inFlight.has(scheduleId)) {
+      // A fire ADE already claimed for a running turn settles when that turn
+      // finishes (`recordTurnFinished`), which also records its outcome.
+      if (
+        schedule.kind === "cron"
+        || isTerminal(schedule)
+        || inFlight.has(scheduleId)
+        || (schedule.status === "fired" && schedule.activeTurnId)
+      ) {
         return cloneSchedule(schedule);
       }
       clearTimer(scheduleId);

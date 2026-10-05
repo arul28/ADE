@@ -5,9 +5,7 @@ import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/te
 import { isSessionSnoozed, snoozeWakeDescription } from "../../lib/sessionSnooze";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { unsettleSession, wakeSessionNow } from "../terminals/sessionLifecycleActions";
-import { cn } from "../ui/cn";
-import { noticeTone, type NoticeTone } from "../ui/notice";
-import { COMPOSER_STATUS_CHIP_ACTION_CLASS, COMPOSER_STATUS_CHIP_CLASS } from "./ChatComposerStatusStrip";
+import { StatusChip, type NoticeTone } from "../ui/notice";
 
 /**
  * Settled / snoozed status as a chip in the composer status strip. Settled
@@ -56,11 +54,9 @@ export function shouldRenderChatLifecyclePill(session: TerminalSessionSummary | 
 
 export function ChatLifecyclePill({
   sessionId,
-  className,
   runtimePin = null,
 }: {
   sessionId: string | null | undefined;
-  className?: string;
   runtimePin?: OpenProjectBinding | null;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
@@ -75,39 +71,30 @@ export function ChatLifecyclePill({
   const variant: LifecycleVariant = snoozed ? "snoozed" : "settled";
   const chrome = VARIANT_CHROME[variant];
   const Icon = chrome.icon;
-  const tokens = noticeTone(chrome.tone);
 
   const title = snoozed ? "Snoozed" : "Settled";
   const detail = snoozed
     ? snoozeDetail(session.snoozedUntil)
     : "Sending reopens this chat";
-  const actionLabel = snoozed ? "Wake now" : "Un-settle";
 
   return (
-    <div
-      data-testid="chat-lifecycle-banner"
-      data-lifecycle-variant={variant}
-      data-notice-tone={chrome.tone}
-      title={detail}
-      className={cn(COMPOSER_STATUS_CHIP_CLASS, className)}
-    >
-      <Icon size={11} weight="fill" aria-hidden className="shrink-0" style={{ color: tokens.color }} />
-      <span className="shrink-0 font-medium" style={{ color: tokens.text }}>{title}</span>
-      {snoozed ? <span className="min-w-0 truncate text-fg/45">{detail}</span> : null}
-      <button
-        type="button"
-        data-testid={snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle"}
-        className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
-        title={snoozed ? undefined : "Sending a message also reopens this chat"}
-        onClick={() => {
-          // Both route through the shared Work-tab lifecycle actions rather than
-          // calling `window.ade.sessions` directly, so this chip, the snooze
-          // header chip, and the sidebar menu use the same write and failure path.
-          void (snoozed ? wakeSessionNow(session, runtimePin) : unsettleSession(session, runtimePin));
-        }}
-      >
-        {actionLabel}
-      </button>
-    </div>
+    <StatusChip
+      testId="chat-lifecycle-banner"
+      dataAttributes={{ "data-lifecycle-variant": variant }}
+      tone={chrome.tone}
+      icon={<Icon size={11} weight="fill" />}
+      label={title}
+      // Snoozed keeps its deadline in view; Settled's explanation is the tooltip.
+      detail={snoozed ? detail : undefined}
+      tooltip={detail}
+      actions={[{
+        label: snoozed ? "Wake now" : "Un-settle",
+        testId: snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle",
+        // Both route through the shared Work-tab lifecycle actions rather than
+        // calling `window.ade.sessions` directly, so this chip, the snooze
+        // header chip, and the sidebar menu use the same write and failure path.
+        onClick: () => { void (snoozed ? wakeSessionNow(session, runtimePin) : unsettleSession(session, runtimePin)); },
+      }]}
+    />
   );
 }

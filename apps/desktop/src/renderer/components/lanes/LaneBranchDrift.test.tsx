@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneLifecycleEvent, LaneSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { armLaneBranchDriftWarning, disarmLaneBranchDriftWarning, LaneBranchDriftStrip } from "./LaneBranchDrift";
+import { armLaneBranchDriftWarning, disarmLaneBranchDriftWarning, LaneBranchComposerChip } from "./LaneBranchDrift";
 
 // The IPC boundary. One object for the whole file: the strip subscribes to
 // lane lifecycle events once per app, the first time a strip mounts.
@@ -42,10 +42,10 @@ afterEach(() => {
   disarmLaneBranchDriftWarning("lane-1");
 });
 
-describe("LaneBranchDriftStrip", () => {
+describe("LaneBranchComposerChip", () => {
   it("shows where ADE moved the lane after its agent switched branches, and Switch back checks the old branch out", async () => {
     seedLane({ branchRef: "ade/follow-up" });
-    render(<LaneBranchDriftStrip laneId="lane-1" />);
+    render(<LaneBranchComposerChip laneId="lane-1" />);
     expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull();
 
     act(() => {
@@ -74,7 +74,7 @@ describe("LaneBranchDriftStrip", () => {
     // The lane list still says the lane is on its branch.
     seedLane({ branchRef: "ade/lane", branchDrift: null });
     lanesApi.getBranchDrift.mockResolvedValue({ expectedBranchRef: "ade/lane", headBranchRef: "ade/elsewhere" });
-    render(<LaneBranchDriftStrip laneId="lane-1" />);
+    render(<LaneBranchComposerChip laneId="lane-1" />);
     expect(screen.queryByTestId("lane-branch-drift-strip")).toBeNull();
     expect(lanesApi.getBranchDrift).not.toHaveBeenCalled();
 

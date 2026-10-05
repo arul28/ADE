@@ -954,6 +954,8 @@ import {
 import {
   deriveBackgroundItems,
   resolveScheduledWorkTiming,
+  mergeScheduledWorkEvent,
+  SCHEDULED_WAKE_FIRE_TOLERANCE_MS,
 } from "../../../shared/chatScheduledWork";
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
@@ -1447,10 +1449,6 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
-// Claude fires one-shots on minute boundaries and may run a little ahead of
-// the stored fire time; a one-shot gone from its inventory this close to due
-// was delivered, not dropped.
-const CLAUDE_NATIVE_FIRE_EARLY_TOLERANCE_MS = 30_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
 const PI_WORKER_EXIT_WAIT_MS = 5_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
@@ -10917,6 +10915,8 @@ export function createAgentChatService(args: {
    */
   let scheduledWorkLoaded = false;
   const durableScheduleUiStatusById = new Map<string, ChatScheduledWorkStatus>();
+  /** Schedules the user cancelled from chat actions; their cancel event names the user. */
+  const userCancelledScheduleIds = new Set<string>();
 
   const runScheduledWorkMutation = (operation: string, mutation: Promise<unknown>): void => {
     void mutation.catch((error) => {
@@ -20325,7 +20325,7 @@ export function createAgentChatService(args: {
    * when the worktree was already on another branch then. Read at turn end to
    * tell a branch switch this turn's agent made from one made before it.
    */
-  const laneBranchAtTurnStart = new Map<string, string | null>();
+  const laneBranchAtTurnStart = new Map<string, Promise<string | null>>();
 
   /**
    * An agent that checks out a new branch in its lane (a follow-up PR, `/ship`)
@@ -20338,24 +20338,28 @@ export function createAgentChatService(args: {
     event: AgentChatEvent,
   ): void => {
     const laneId = managed.session.laneId;
-    if (!laneId || typeof laneService.adoptAgentBranchSwitch !== "function") return;
+    if (!laneId) return;
     const sessionId = managed.session.id;
     if (event.type === "status" && event.turnStatus === "started") {
-      laneBranchAtTurnStart.set(sessionId, null);
-      void (async () => {
+      // Each turn owns its own pending read; `done` awaits it, so a fast turn
+      // is still judged against where it started, never a later turn's read.
+      laneBranchAtTurnStart.set(sessionId, (async () => {
         const drift = await laneService.getBranchDrift({ laneId });
-        if (drift) return;
-        const lane = (await laneService.getSummary(laneId))?.branchRef ?? null;
-        if (laneBranchAtTurnStart.has(sessionId)) laneBranchAtTurnStart.set(sessionId, lane);
-      })().catch(() => undefined);
+        if (drift) return null;
+        return (await laneService.getSummary(laneId))?.branchRef ?? null;
+      })().catch(() => null));
       return;
     }
     if (event.type !== "done") return;
-    const branchAtTurnStart = laneBranchAtTurnStart.get(sessionId) ?? null;
+    const branchRead = laneBranchAtTurnStart.get(sessionId);
     laneBranchAtTurnStart.delete(sessionId);
-    if (!branchAtTurnStart) return;
-    void laneService.adoptAgentBranchSwitch({ laneId, branchAtTurnStart })
+    if (!branchRead) return;
+    void branchRead
+      .then((branchAtTurnStart) => (branchAtTurnStart
+        ? laneService.adoptAgentBranchSwitch({ laneId, branchAtTurnStart })
+        : null))
       .then((result) => {
+        if (!result) return;
         if (result.adopted) {
           logger.info("lane.agent_branch_adopted", {
             laneId,
@@ -21242,25 +21246,6 @@ export function createAgentChatService(args: {
     return JSON.stringify(event.kind === "cron" ? { ...stable, cron, recurring } : stable);
   };
 
-  const isPendingScheduledWorkStatus = (status: ScheduledWorkEvent["status"]): boolean =>
-    status === "scheduled" || status === "paused" || status === "running";
-
-  // Inventory snapshots and cancellations carry fewer fields than the tool
-  // call that created the schedule. Patch the last event so a later update
-  // never drops the reason or fire time a reader already saw.
-  const patchScheduledWorkEvent = (
-    previous: ScheduledWorkEvent | undefined,
-    event: ScheduledWorkEvent,
-  ): ScheduledWorkEvent => {
-    if (!previous) return event;
-    const defined = Object.fromEntries(
-      Object.entries(event).filter(([, value]) => value !== undefined),
-    ) as ScheduledWorkEvent;
-    const patched: ScheduledWorkEvent = { ...previous, ...defined };
-    if (!event.turnId) delete patched.turnId;
-    if (!isPendingScheduledWorkStatus(patched.status) && event.nextRunAt === undefined) delete patched.nextRunAt;
-    return patched;
-  };
 
   const emitClaudeScheduledWorkUpdate = (
     managed: ManagedChatSession,
@@ -21269,11 +21254,13 @@ export function createAgentChatService(args: {
   ): void => {
     const id = event.id.trim();
     if (!id) return;
-    const normalized: ScheduledWorkEvent = patchScheduledWorkEvent(runtime.scheduledWorkLastEvents.get(id), {
+    // Inventory snapshots and cancels carry fewer fields than the tool call
+    // that created the schedule; patch the last event so nothing is dropped.
+    const normalized: ScheduledWorkEvent = mergeScheduledWorkEvent(runtime.scheduledWorkLastEvents.get(id), {
       ...event,
       id,
       kind: runtime.scheduledWorkKindById.get(id) ?? event.kind,
-    });
+    }, nowIso());
     runtime.scheduledWorkKindById.set(id, normalized.kind);
     if (normalized.sourceToolUseId?.trim()) {
       runtime.scheduledWorkIdByToolUseId.set(normalized.sourceToolUseId.trim(), id);
@@ -22285,7 +22272,7 @@ export function createAgentChatService(args: {
           // ended), so it settles as fired; gone before then means it was dropped.
           const deliveredByProvider = schedule.kind !== "cron"
             && schedule.fireAt != null
-            && schedule.fireAt <= Date.now() + CLAUDE_NATIVE_FIRE_EARLY_TOLERANCE_MS;
+            && schedule.fireAt <= Date.now() + SCHEDULED_WAKE_FIRE_TOLERANCE_MS;
           if (deliveredByProvider) await scheduledWorkScheduler.markFired(schedule.id);
           else await scheduledWorkScheduler.cancel(schedule.id);
         }
@@ -24034,6 +24021,7 @@ export function createAgentChatService(args: {
     managedSessions.delete(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
+    laneBranchAtTurnStart.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -55820,6 +55808,8 @@ export function createAgentChatService(args: {
     if (isAutoResumeScheduledWork(existing)) {
       autoResume.noteScheduleDismissed(normalizedSessionId);
     }
+    // The transcript must read this as the user's cancel, never as a delivery.
+    userCancelledScheduleIds.add(existing.id);
     if (existing.provider === "claude") {
       const cancellation = await requestClaudeScheduledWorkCancellation(
         [existing],
@@ -62663,6 +62653,9 @@ export function createAgentChatService(args: {
         emitTransientChatEnvelope(schedule.sessionId, { type: "session_meta_updated" });
         return;
       }
+      // The user-cancel mark is spent by this transition; a provider-side
+      // cancel already reported it, so it must not linger for a later one.
+      const cancelledByUser = status === "cancelled" && userCancelledScheduleIds.delete(schedule.id);
       if (durableScheduleUiStatusById.get(schedule.id) === status) {
         // Tool/hook events are emitted immediately for responsive Chat Info.
         // Nudge summary consumers again after the durable write completes so
@@ -62724,6 +62717,7 @@ export function createAgentChatService(args: {
             }
           : {}),
         ...(schedule.lateFlag ? { late: true } : {}),
+        ...(cancelledByUser ? { stopSource: "user" as const } : {}),
         recurring: schedule.kind === "cron",
         durable: schedule.durable === true,
       });

@@ -180,7 +180,7 @@ When an agent switches its lane to a new branch during a turn, ADE adopts
 the branch or leaves the choice to the user, and writes the local structured
 line `lane.agent_branch_adopted` (lane id, session id, previous and new branch)
 or `lane.agent_branch_not_adopted` (lane id, session id, coarse reason such as
-`old_branch_has_commits`); a failure is `lane.agent_branch_adopt_failed`.
+`old_branch_has_unpushed_commits`); a failure is `lane.agent_branch_adopt_failed`.
 Neither is a PostHog event. The adoption is an automatic outcome of an agent's
 command, not a user decision, so an event here would report engagement nobody
 generated; the user's own `Switch back` / `Keep` choice uses the existing

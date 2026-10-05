@@ -3,11 +3,12 @@ import { Alarm, ArrowsClockwise, CaretDown, CaretRight } from "@phosphor-icons/r
 import { cn } from "../ui/cn";
 import { describeCron } from "../automations/cronDescribe";
 import type { AgentChatEvent } from "../../../shared/types";
+import { SCHEDULED_WORK_PENDING_STATUSES } from "../../../shared/chatScheduledWork";
 import type { ChatActivityBundleItem, WakeChainRenderEvent } from "./chatTranscriptRows";
 
 type ScheduledWorkEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
 
-const PENDING_STATUSES: ReadonlySet<string> = new Set(["scheduled", "paused", "running"]);
+const PENDING_STATUSES = SCHEDULED_WORK_PENDING_STATUSES;
 
 /**
  * `in 20m`, `in 1h 5m`, `in 2d`, `now`, or `overdue` once the fire time is

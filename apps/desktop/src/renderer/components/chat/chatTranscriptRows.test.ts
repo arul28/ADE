@@ -6,8 +6,7 @@ import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
   applyWakeChains,
-  deriveWakeChains,
-  deriveWakeTurnIds,
+  deriveWakeTurns,
   foldScheduledWorkRows,
   moveScheduledWorkToTurnEnds,
 } from "./chatScheduledWorkRows";
@@ -5311,12 +5310,12 @@ describe("scheduled work presentation (wake loops)", () => {
   it("folds every self-paced check but the latest under the line that scheduled the first", () => {
     const { rows, byTurnEndKey } = present(wakeLoopEvents());
 
-    const chains = deriveWakeChains(rows, byTurnEndKey);
+    const { chains, turnIds } = deriveWakeTurns(rows, byTurnEndKey);
     expect(chains).toHaveLength(1);
     expect(chains[0]).toMatchObject({ checkCount: 2, anchorTurnEndKey: doneKey(rows, "A") });
     expect([...chains[0]!.hiddenTurnIds]).toEqual(["B", "C"]);
     // Wake turns lose their own fold row; the user's turns keep theirs.
-    expect([...deriveWakeTurnIds(rows, byTurnEndKey)]).toEqual(["B", "C", "D"]);
+    expect([...turnIds]).toEqual(["B", "C", "D"]);
 
     const closed = applyWakeChains(rows, chains, new Set());
     expect(textsIn(closed)).toEqual([
@@ -5348,9 +5347,10 @@ describe("scheduled work presentation (wake loops)", () => {
     const { rows, byTurnEndKey } = present(events);
 
     // B is the user's turn: it breaks the run, so C is a run of one and nothing folds.
-    expect(deriveWakeChains(rows, byTurnEndKey)).toEqual([]);
-    expect([...deriveWakeTurnIds(rows, byTurnEndKey)]).toEqual(["C"]);
-    expect(textsIn(applyWakeChains(rows, deriveWakeChains(rows, byTurnEndKey), new Set()))).toEqual([
+    const { chains, turnIds } = deriveWakeTurns(rows, byTurnEndKey);
+    expect(chains).toEqual([]);
+    expect([...turnIds]).toEqual(["C"]);
+    expect(textsIn(applyWakeChains(rows, chains, new Set()))).toEqual([
       "Checking sooner.",
       "Still queued.",
     ]);
