@@ -606,7 +606,12 @@ bool forceForeground(HWND hwnd) {
     SendInput(2, alt, sizeof(INPUT));
     ok = SetForegroundWindow(hwnd);
   }
-  return ok != FALSE;
+  if (!ok) return false;
+  // Activation away from a console window (its thread belongs to conhost, so
+  // the input attach above fails) lands a moment after SetForegroundWindow
+  // returns; callers that check the foreground right away saw the old one.
+  for (int i = 0; i < 25 && GetForegroundWindow() != hwnd; ++i) Sleep(20);
+  return true;
 }
 
 }  // namespace ade
