@@ -384,11 +384,13 @@ Rust, Apache-2.0)
   setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
 ### Copilot (`copilot --acp`, npm `@github/copilot@1.0.86`, PREVIEW)
-- The 1.0.86 compatibility baseline (ACP agent 1.0.86, captured
-  2026-09-18) advertises `loadSession`, image prompts, HTTP/SSE MCP, and
-  session list/close. It does not advertise `session/resume`. ADE checks the
-  handshake before sending lifecycle methods, and older 1.0.x binaries that
-  omit close release a shared lease without killing other chats.
+- The 1.0.89 and 1.0.91 handshakes are identical in capability terms
+  (verified 2026-10-05): `loadSession`, image prompts, HTTP/SSE MCP, and
+  session list/close. Neither advertises `session/resume`; both answer the
+  method with -32601. ADE checks the handshake before sending lifecycle
+  methods, and older 1.0.x binaries that omit close release a shared lease
+  without killing other chats. `agentInfo.version` is the ACP server's own
+  version: 1.0.91 reports `1.0.91`, while 1.0.89 still reports `1.0.86`.
 - ACP mode controls are live: `agent`, `plan`, and `autopilot`, plus the
   `allow_all` option. ADE maps its abstract permission ladder to those native
   mode ids and normalizes Copilot's `currentValue` / nested `value` shape.
@@ -398,11 +400,12 @@ Rust, Apache-2.0)
 - Slash commands arrive as ordinary prompts plus `available_commands_update`;
   TUI-only commands (`/diff`, `/resume`, `/login`, `/undo`…) are filtered from
   the picker or they hit the model.
-- KNOWN BUG: `session/cancel` as a REQUEST answers -32601 on the observed
-  compatibility path. Send it as a notification. Historical live 1.0.82
-  cancellation returned `stopReason:"end_turn"` with partial text
-  `"1\n2\n3\n4\n5"` (github/copilot-cli #4561), so client-side cancel accounting
-  remains mandatory until GitHub documents a fix.
+- KNOWN BUG: `session/cancel` as a REQUEST answers -32601 on every probed
+  path (1.0.82, 1.0.89, 1.0.91). Send it as a notification. Live 1.0.89
+  cancellation still returns `stopReason:"end_turn"` with partial text
+  (github/copilot-cli #4561), so client-side cancel accounting remains
+  mandatory on it. Live 1.0.91 returns `stopReason:"cancelled"`; ADE keeps the
+  same accounting for both because users may run either version.
 - `--model` and `--effort` are process-global ACP launch flags. ADE passes the
   selected model and effort at launch and folds both into the pool identity.
   `session/new` takes no model parameter; the `--model` value seeds the
@@ -439,7 +442,10 @@ Rust, Apache-2.0)
   a `model` option only when Copilot's model state projects one. When it
   does, ADE sends only a model from that list (see 3.6). Config options use
   `currentValue` and nested `value`, which ADE canonicalizes onto `value` /
-  `options[].id`.
+  `options[].id`. New model families need no static catalog row: they reach the
+  picker only through that projected option. Neither 1.0.89 nor 1.0.91 projected
+  one on this machine's Auto-only plan (see below), so their added models stay
+  unreachable over ACP here.
 - **On a plan that includes only Auto, no ACP mechanism selects the model**
   (verified 2026-09-23 on 1.0.88, this machine's account):
   - The CAPI `/models` list (logged with `--log-level all`) marks all 53

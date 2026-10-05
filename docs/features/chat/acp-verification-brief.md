@@ -92,14 +92,15 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   (camelCase — not the `trusted_folders` older notes claimed). ADE writes
   neither: the trust pre-seed is removed and nothing on the Copilot path may
   write `$COPILOT_HOME` again.
-- Copilot 1.0.86 ACP: `loadSession`, image prompts, HTTP/SSE MCP, and
-  `session/close` are advertised; `session/resume` is absent. `config.json` is
-  JSONC; older live 1.0.82 persisted `trustedFolders` (camelCase — not the
-  `trusted_folders` older notes claimed). ADE writes neither: the trust
-  pre-seed is removed and nothing on the Copilot path may write `$COPILOT_HOME`
-  again. ACP mode options include agent, plan, and autopilot.
-  Headless ACP `session/new` did not deadlock without a seed or `--add-dir`.
-  Cwd writes emit 0 `session/request_permission` with `allow_all` off.
+- Copilot 1.0.89/1.0.91 ACP: both advertise `loadSession`, image prompts,
+  HTTP/SSE MCP, and `session/close`; `session/resume` stays absent and answers
+  -32601 on both (verified live 2026-10-05). `config.json` is JSONC; older live
+  1.0.82 persisted `trustedFolders` (camelCase — not the `trusted_folders`
+  older notes claimed). ADE writes neither: the trust pre-seed is removed and
+  nothing on the Copilot path may write `$COPILOT_HOME` again. ACP mode options
+  include agent, plan, and autopilot. Headless ACP `session/new` did not
+  deadlock without a seed or `--add-dir` on either version, and a cancel
+  notification returns `end_turn` on 1.0.89 but `cancelled` on 1.0.91.
 
 ### 3. Hunt the classes of bug a mock hides
 

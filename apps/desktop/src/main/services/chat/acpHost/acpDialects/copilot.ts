@@ -6,16 +6,21 @@
  *
  * ## Verified rules
  *
- * - The 1.0.86 compatibility baseline advertises `loadSession`, image prompts,
- *   HTTP/SSE MCP, and session list/close. It does not advertise
- *   `session/resume`. Config options arrive as `currentValue` / nested `value`,
- *   not ADE's `value` / `options[].id`. Older 1.0.x binaries may omit close;
- *   the host gates lifecycle calls against the handshake and keeps a shared
- *   process alive when it has to degrade.
- * - **Known bug.** Cancel may report `stopReason: "end_turn"`
- *   (github/copilot-cli issue 4561). ADE records its own cancel and marks the
- *   turn interrupted whatever the agent says. That accounting lives in the
- *   host, and it applies to every dialect.
+ * - The 1.0.89 and 1.0.91 handshakes are identical in capability terms
+ *   (verified live 2026-10-05): `loadSession`, image prompts, HTTP/SSE MCP, and
+ *   session list/close, with `session/resume` absent on both. The 1.0.91 ACP
+ *   server reports its own version in `agentInfo.version`, while the 1.0.89
+ *   build still reports `1.0.86`. Config options arrive as `currentValue` /
+ *   nested `value`, not ADE's `value` / `options[].id`, and are still `mode`
+ *   and `allow_all`. Older 1.0.x binaries may omit close; the host gates
+ *   lifecycle calls against the handshake and keeps a shared process alive when
+ *   it has to degrade.
+ * - **Known bug (fixed in 1.0.91, still present in 1.0.89).** Cancel may report
+ *   `stopReason: "end_turn"` (github/copilot-cli issue 4561). 1.0.91 answers
+ *   the same cancel notification with `stopReason: "cancelled"`; 1.0.89 still
+ *   answers `end_turn`. ADE records its own cancel and marks the turn
+ *   interrupted whatever the agent says, so both versions read correctly. That
+ *   accounting lives in the host, and it applies to every dialect.
  * - Slash commands arrive as ordinary prompts plus an
  *   `available_commands_update`. Some of the advertised commands only work in
  *   Copilot's own terminal UI. If a user picks one of those in ADE, the text
@@ -54,7 +59,11 @@
  * `session/set_config_option { configId: "model" }` run the same code
  * (`validateSelection`, then `model.switchTo`). The `session/new` result
  * lists a `model` option only when Copilot's model state projects one. When
- * it does, the coordinator sends only a model from that list.
+ * it does, the coordinator sends only a model from that list. New model
+ * families need no static ADE catalog: they reach the picker through that
+ * projected option alone. 1.0.89 and 1.0.91 added no `model` option on this
+ * machine's Auto-only plan, so their new models remain unreachable over ACP
+ * until the plan projects one.
  *
  * On a plan that includes only Auto, Copilot ignores all of it. Verified on
  * this machine (1.0.88): the CAPI `/models` list marks every model
@@ -184,8 +193,9 @@ export const copilotDialect = defineAcpDialect({
   binaryNames: ["copilot"],
   buildSpawnPlan,
 
-  // Copilot 1.0.82 answered a `session/cancel` REQUEST with -32601. The
-  // notification form is the compatibility-safe path, same as Grok.
+  // Copilot answers a `session/cancel` REQUEST with -32601 on every version
+  // probed: 1.0.82, 1.0.89, and 1.0.91. The notification form is the
+  // compatibility-safe path, same as Grok.
   cancelStyle: "notification",
   // `--model` and `--effort` are process global, so two chats with different
   // values must not share a process. Those values are part of the pool key.
@@ -233,8 +243,11 @@ export const copilotDialect = defineAcpDialect({
   closeStyle: "close_request",
   closeSession: capability(standardClose),
 
-  // `session/load` is verified. `session/resume` is not, so ADE does not claim
-  // it. W5 can promote this to `resume_preferred` after a live probe.
+  // `session/load` is verified. `session/resume` stays absent on 1.0.89 and
+  // 1.0.91 (both answer the method with -32601), so ADE does not claim it. If a
+  // future version advertises it, promote this to `resume_preferred` with
+  // `standardResume`: the host already prefers resume only when the handshake
+  // lists it, so a version without it keeps this load path.
   loadPolicy: "load_only",
   resumeSession: capabilityAbsent,
   loadSession: capability(standardLoad),
