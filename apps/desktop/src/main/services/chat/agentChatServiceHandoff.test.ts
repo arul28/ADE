@@ -445,6 +445,53 @@ describe("createAgentChatService", () => {
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("forks a Codex chat in a process that has closed before the forked chat resumes", async () => {
+      // Codex holds a thread's writer lock in whichever app-server loaded it.
+      // A fork run on the source chat's process stays locked there, and the
+      // forked chat's own process is refused ("already has an active writer").
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-lock";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({ thread: { id: "forked-thread-lock" } }));
+      const spawned = vi.mocked(spawn).mock.results.length;
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      type FakeProc = { stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> } };
+      const procs = vi.mocked(spawn).mock.results.map((entry) => entry.value as FakeProc);
+      const writesTo = (proc: FakeProc) => proc.stdin.write.mock.calls.map((call, index) => ({
+        payload: JSON.parse(String(call[0])) as { method?: string; params?: { threadId?: string } },
+        order: proc.stdin.write.mock.invocationCallOrder[index]!,
+      }));
+      const procFor = (method: string, threadId: string) => procs.find((proc) => writesTo(proc).some(
+        ({ payload }) => payload.method === method && payload.params?.threadId === threadId,
+      ));
+      const forkProc = procFor("thread/fork", "source-thread-lock");
+      const sourceProc = procFor("thread/goal/clear", "source-thread-lock");
+      const forkedChatProc = procFor("thread/goal/clear", "forked-thread-lock");
+
+      expect(result.session.threadId).toBe("forked-thread-lock");
+      expect(forkProc, "a process received the fork").toBeDefined();
+      expect(procs.indexOf(forkProc!)).toBeGreaterThanOrEqual(spawned);
+      expect(forkProc).not.toBe(sourceProc);
+      expect(forkProc).not.toBe(forkedChatProc);
+      expect(forkProc!.stdin.end).toHaveBeenCalled();
+      const forkProcClosedAt = forkProc!.stdin.end.mock.invocationCallOrder[0]!;
+      const firstForkedChatRequestAt = Math.min(
+        ...writesTo(forkedChatProc!).map(({ order }) => order),
+      );
+      expect(forkProcClosedAt).toBeLessThan(firstForkedChatRequestAt);
+    });
+
     it("runs a native fork as the source chat's account, whatever the default is", async () => {
       // The forked thread lives in the source account's config home, so a
       // fork launched as the default account would resume nothing.

@@ -121,6 +121,7 @@ import {
   renderClaudeSlashCommandEntries,
 } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
+import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
 import {
   CODEX_COMPACTION_STALL_MS,
   type CodexCompactionFailReason,
@@ -4770,6 +4771,8 @@ const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
+/** A fork runs in its own app-server, so this also covers that process starting. */
+const CODEX_EPHEMERAL_FORK_TIMEOUT_MS = 30_000;
 const CODEX_STALL_RECONCILE_TIMEOUT_MS = 10_000;
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
@@ -42228,15 +42231,25 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
-        threadId: sourceThreadId,
-        excludeTurns: true,
-        ...(codexForkBeforeTurnId ? { beforeTurnId: codexForkBeforeTurnId } : {}),
-        ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion)
-          ? { deferGoalContinuation: true }
-          : {}),
-      }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
-      const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
+      // Not on `runtime`: the process that forks keeps the new thread's writer
+      // lock, and the forked chat resumes it from its own app-server.
+      const forkEnv = buildAgentRuntimeEnv(managed);
+      const forkedThreadId = await forkCodexThreadInEphemeralAppServer({
+        executable: resolveCodexExecutable({ env: forkEnv }).path,
+        env: forkEnv,
+        cwd: managed.laneWorktreePath,
+        forkParams: {
+          threadId: sourceThreadId,
+          excludeTurns: true,
+          ...(codexForkBeforeTurnId ? { beforeTurnId: codexForkBeforeTurnId } : {}),
+          ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion)
+            ? { deferGoalContinuation: true }
+            : {}),
+        },
+        timeoutMs: CODEX_EPHEMERAL_FORK_TIMEOUT_MS,
+        logger,
+        sessionId: managed.session.id,
+      });
       if (!forkedThreadId) {
         throw new Error(`Codex thread/fork did not return a new thread id for '${sourceThreadId}'.`);
       }
