@@ -491,6 +491,18 @@ samp {
   font-family: var(--font-mono);
 }
 
+/* lib/xtermCursorBlink.ts drives a focused cursor's blink: xterm's own
+   `step-end` keyframes stay, held paused at 25% (on) or 75% (off) and flipped
+   every 500 ms, so the cursor looks the same without a running animation
+   re-styling it every display frame. */
+.ade-xterm-blink-clock .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-play-state: paused !important;
+  animation-delay: -250ms !important;
+}
+.ade-xterm-blink-clock.ade-xterm-blink-off .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink {
+  animation-delay: -750ms !important;
+}
+
 /* Keep xterm glyph metrics isolated from global typography rules. */
 .xterm,
 .xterm .xterm-helper-textarea,

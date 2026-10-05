@@ -25,6 +25,7 @@ import {
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
@@ -165,6 +166,7 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   linkProviderSub: { dispose: () => void } | null;
+  cursorBlinkClock: { dispose: () => void };
   rendererInitStarted: boolean;
   inputEnabled: boolean;
   active: boolean;
@@ -1493,6 +1495,11 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.linkProviderSub?.dispose();
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.cursorBlinkClock.dispose();
   } catch {
     // ignore
   }
@@ -2884,6 +2891,7 @@ function createRuntime(args: {
   const linkProviderSub = typeof term.registerLinkProvider === "function"
     ? term.registerLinkProvider(createTerminalLinkProvider(term, args.runtimePin))
     : null;
+  const cursorBlinkClock = attachCursorBlinkClock(term, host);
 
   const runtime: CachedRuntime = {
     key: terminalRuntimeKey(args),
@@ -2953,6 +2961,7 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     linkProviderSub,
+    cursorBlinkClock,
     rendererInitStarted: false,
     inputEnabled: true,
     active: true,

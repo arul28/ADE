@@ -128,6 +128,7 @@ vi.mock("@xterm/xterm", () => ({
     getSelection = vi.fn(() => "");
     attachCustomKeyEventHandler = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
+    onRender = vi.fn(() => ({ dispose: vi.fn() }));
     loadAddon = vi.fn((addon: { activate?: (term: unknown) => void }) => {
       addon.activate?.(this);
     });
