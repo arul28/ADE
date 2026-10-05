@@ -22,6 +22,17 @@ const ADE_PRECOMPACT_WINDOWS_COMMAND_NAME = "ade-precompact.cmd";
  * not connect, so an older build's socket never reads the report as a tool call.
  */
 export const CURSOR_SDK_PRECOMPACT_ENV = "ADE_CURSOR_SDK_PRECOMPACT";
+/**
+ * How long a tool call may wait on ADE's approval card, in seconds.
+ *
+ * Other providers wait on an approval indefinitely. Cursor cannot: it kills a
+ * command hook after its `hooks.json` `timeout` (60 seconds when unset), and
+ * its timer overflows past ~24.8 days, so "forever" has to be a number. A day
+ * is that number. The gate script stops waiting a little earlier and denies
+ * with a reason the model can relay, instead of being killed mid-wait.
+ */
+export const CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS = 24 * 60 * 60;
+const CURSOR_SDK_TOOL_GATE_RESPONSE_TIMEOUT_MS = (CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS - 15) * 1000;
 const ADE_HOOK_FILE_NAMES = [
   ADE_HOOK_SCRIPT_NAME,
   ADE_HOOK_SHELL_COMMAND_NAME,
@@ -252,14 +263,20 @@ async function main() {
     sessionId: process.env.ADE_CURSOR_SDK_SESSION_ID || null,
     laneRoot: process.env.ADE_CURSOR_SDK_LANE_ROOT || null,
   }) + "\\n");
-  const responseTimeoutMs = Number(process.env.ADE_CURSOR_SDK_RESPONSE_TIMEOUT_MS) || 5000;
+  // ADE may be waiting on the user's approval card, so this is the time the
+  // user has to answer, not a transport timeout.
+  const responseTimeoutMs = Number(process.env.ADE_CURSOR_SDK_RESPONSE_TIMEOUT_MS) || ${CURSOR_SDK_TOOL_GATE_RESPONSE_TIMEOUT_MS};
   const decision = await new Promise((resolve, reject) => {
     let responseText = "";
     let settled = false;
     const timeout = setTimeout(() => {
       settled = true;
       client.destroy();
-      reject(new Error("Timed out waiting for ADE Cursor policy decision."));
+      const minutes = Math.max(1, Math.round(responseTimeoutMs / 60000));
+      const waited = minutes < 120
+        ? minutes + " minute" + (minutes === 1 ? "" : "s")
+        : Math.round(minutes / 60) + " hours";
+      reject(new Error("No answer to ADE's approval request for this tool call within " + waited + ", so it was not run."));
     }, responseTimeoutMs);
     function settle(fn, value) {
       if (settled) return;
@@ -598,7 +615,7 @@ export function ensureCursorSdkUserHook(args: {
   const config = readHooksFile(hooksPath);
   const hooks = readObject(config.hooks) ?? {};
   const existingPreToolUse = Array.isArray(hooks.preToolUse) ? hooks.preToolUse : [];
-  const adeEntry = { command, failClosed: true };
+  const adeEntry = { command, failClosed: true, timeout: CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS };
   const nextPreToolUse = [
     adeEntry,
     ...existingPreToolUse.filter((entry) => !isAdeHookEntry(entry)),
