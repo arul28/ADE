@@ -4805,7 +4805,7 @@ export function AgentChatPane({
   }, [laneId, laneLabel]);
   const selectedSessionModelId = useMemo(() => {
     if (!selectedSession) return null;
-    return resolveSessionComposerModelId(selectedSession, harnessPresetsRef.current);
+    return resolveSessionComposerModelId(selectedSession, harnessPresets);
   }, [selectedSession, harnessPresets]);
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
