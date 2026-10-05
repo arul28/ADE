@@ -3639,8 +3639,8 @@ describe("calls from another machine's agents", () => {
     desktop.handler.dispose();
   });
 
-  it("makes a remote caller the parent of the child it starts here, at the level it claimed", async () => {
-    const { configureExternalChatStore, externalChatContext } = await import(
+  it("makes a remote caller the parent of the child it starts here, keeps its token, and refuses any other parent", async () => {
+    const { childWakeToken, configureExternalChatStore, externalChatContext } = await import(
       "../../desktop/src/main/services/chat/externalChats"
     );
     configureExternalChatStore(null);
@@ -3654,7 +3654,13 @@ describe("calls from another machine's agents", () => {
       method: "ade/actions/call",
       params: {
         projectId: remote.project.projectId,
-        remoteCaller: { chatSessionId: "chat-1", machineKey: "machine-a", machineName: "MacBook Pro", permissionLevel: "auto-edit" },
+        remoteCaller: {
+          chatSessionId: "chat-1",
+          machineKey: "machine-a",
+          machineName: "MacBook Pro",
+          permissionLevel: "auto-edit",
+          wakeToken: "token-for-child-1",
+        },
         name: "run_ade_action",
         arguments: {
           domain: "chat",
@@ -3663,15 +3669,21 @@ describe("calls from another machine's agents", () => {
         },
       },
     });
-    await create("chat-1", 1).catch(() => undefined);
-    await create("someone-else", 2).catch(() => undefined);
-    const parents = createSession.mock.calls.map((call) => call[0]?.orchestrationParentSessionId);
-    expect(parents).toEqual(["remote:device-a:chat-1", "someone-else"]);
+
+    await create("chat-1", 1);
+    // A chat here (or another machine's) can't be made the one a remote
+    // caller's child reports to.
+    await expect(create("someone-else", 2)).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+
+    expect(createSession.mock.calls.map((call) => call[0]?.orchestrationParentSessionId)).toEqual([
+      "remote:device-a:chat-1",
+    ]);
     expect(externalChatContext("remote:device-a:chat-1")).toMatchObject({
       machineKey: "machine-a",
       machineName: "MacBook Pro",
       permissionLevel: "auto-edit",
     });
+    expect(childWakeToken("child-1")).toBe("token-for-child-1");
     remote.handler.dispose();
   });
 

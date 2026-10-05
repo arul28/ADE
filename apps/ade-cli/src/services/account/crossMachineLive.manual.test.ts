@@ -195,6 +195,10 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
           try { return await bridge.deliverWake(machineKey, payload); } finally { net.dialingFrom = null; }
         },
         stateDir: path.join(root, `cross-${brain}`),
+        logger: {
+          info: (event, meta) => console.log(`[xm-log ${brain}] ${event} ${JSON.stringify(meta ?? {}).slice(0, 300)}`),
+          warn: (event, meta) => console.log(`[xm-log ${brain}] WARN ${event} ${JSON.stringify(meta ?? {}).slice(0, 300)}`),
+        },
       });
       const handlerFor = (peerDeviceId: string | null) => createMultiProjectRpcRequestHandler({
         serverVersion: "test",
@@ -297,7 +301,6 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
         },
       },
     });
-    console.log("[xm] create raw", JSON.stringify(created).slice(0, 600));
     const child = created.result.result;
     console.log("[xm] child", child.id, "parent on B =", child.orchestrationParentSessionId, "machine:", created.machine.name);
     expect(child.orchestrationParentSessionId).toMatch(/^remote:agent-pool-of-A:/);
@@ -370,12 +373,19 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
         params: { name: "run_ade_action", arguments: { domain: "chat", action: "messageSession", args: { sessionId: child.id, text: "Reply with exactly the word: ping", kind: "auto" } } },
       },
     });
-    await waitFor("the second completion to queue on B", async () => B.cross.pendingCount() > 0);
-    console.log("[xm] queued on B while A offline:", B.cross.pendingCount());
+    const queuedOnB = (): number => {
+      try {
+        return (JSON.parse(fs.readFileSync(path.join(root, "cross-B", "external-parent-wakes.json"), "utf8")) as unknown[]).length;
+      } catch {
+        return 0;
+      }
+    };
+    await waitFor("the second completion to queue on B", async () => queuedOnB() > 0);
+    console.log("[xm] queued on B while A offline:", queuedOnB());
     net.online.A = true;
     await new Promise((resolve) => setTimeout(resolve, 31_000));
     await B.cross.pump();
-    expect(B.cross.pendingCount()).toBe(0);
+    expect(queuedOnB()).toBe(0);
     const after = await A.runtime.agentChatService.getChatEventHistory(parent.id);
     const afterList = Array.isArray(after) ? after : after?.events ?? [];
     const completions = afterList.filter((envelope: any) => envelope?.event?.metadata?.spawnCompletion?.childSessionId === child.id);

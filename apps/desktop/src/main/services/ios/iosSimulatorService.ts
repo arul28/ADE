@@ -5200,7 +5200,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // alone and the caller is told nothing was released.
     const expected = shutdownArgs.expectedChatSessionId?.trim();
     if (expected && runtime.activeSession?.chatSessionId !== expected) {
-      return { released: false, previousSession: null };
+      // `previousSession` here is who holds it now (null: nobody), so the
+      // caller can say which of the two happened.
+      return { released: false, previousSession: runtime.activeSession };
     }
     const previousSession = runtime.activeSession;
     try {

@@ -279,6 +279,9 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       machineKey: local?.machineKey ?? localListed?.machineKey ?? null,
       machineName: localListed ? machineName(localListed) : os.hostname(),
       permissionLevel: input.caller.permissionLevel ?? null,
+      // Only on a request that starts the caller's own child: the target keeps
+      // it with that child and hands it back with every report.
+      ...(input.caller.wakeToken ? { wakeToken: input.caller.wakeToken } : {}),
     } satisfies RemoteCallerClaim;
 
     const label = method === "ade/actions/call" && isRecord(params.arguments)

@@ -985,7 +985,12 @@ export function AppleDevicePane({
         runtimePinRef.current,
       );
       if (!result.released) {
-        showToast({ tone: "info", title: "The device changed hands first; nothing was freed." });
+        showToast({
+          tone: "info",
+          title: result.previousSession
+            ? "Another session took the device first; nothing was freed."
+            : "The agent already let go of this device.",
+        });
       }
       refreshList();
     } catch (cause: unknown) {
