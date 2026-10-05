@@ -10409,7 +10409,7 @@ const adeBridge = {
         "write",
         { args: runtimeArg },
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, arg);
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, runtimeArg);
     },
     resize: async (
       arg: {

@@ -4808,6 +4808,18 @@ describe("adeRpcServer", () => {
       });
     }
     expect(getSessionInputOrigin("chat-1")).toBeNull();
+    // An ordinary agent's send is rebuilt by the chat scoping; the stamp must
+    // not survive that either.
+    const plainFixture = createRuntime();
+    const plainHandler = createAdeRpcRequestHandler({ runtime: plainFixture.runtime, serverVersion: "test" });
+    await initialize(plainHandler, { callerId: "agent-2", role: "agent", chatSessionId: "chat-1" });
+    await callTool(plainHandler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-1", text: "hello", inputOrigin: desktopStamp },
+    });
+    expect(plainFixture.runtime.agentChatService.sendMessage).toHaveBeenCalled();
+    expect(getSessionInputOrigin("chat-1")).toBeNull();
     expect(agentFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
       expect.not.objectContaining({ includeThreadComments: true }),
     );

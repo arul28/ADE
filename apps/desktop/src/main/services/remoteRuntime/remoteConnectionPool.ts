@@ -241,6 +241,9 @@ function normalizeForwardRemoteHost(value: string | null | undefined): string {
   return trimmed || "127.0.0.1";
 }
 
+/** How long a refused SSH forward waits for the browser's first bytes. */
+const SSH_FAILURE_PAGE_WAIT_MS = 2_000;
+
 function isIpv4LoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "127.0.0.1" || normalized === "localhost";
@@ -761,19 +764,37 @@ export class RemoteConnectionPool {
               return;
             }
             if (error) {
-              // The browser's request is already buffered on this paused
-              // socket; when it is HTTP, answer with a readable page rather
-              // than an empty response.
-              const firstBytes = socket.read() as Buffer | null;
-              if (looksLikeHttpRequest(firstBytes)) {
-                socket.end(buildForwardFailureResponse({
-                  remotePort,
-                  machineLabel: activeEntry.result.target.name?.trim() || null,
-                  reason: loopbackDialFailureReason(error, remotePort),
-                }));
+              // The browser's request is buffered on this paused socket, or
+              // about to be; when it is HTTP, answer with a readable page
+              // rather than an empty response.
+              const answer = (firstBytes: Buffer | null): void => {
+                if (looksLikeHttpRequest(firstBytes)) {
+                  socket.end(buildForwardFailureResponse({
+                    remotePort,
+                    machineLabel: activeEntry.result.target.name?.trim() || null,
+                    reason: loopbackDialFailureReason(error, remotePort),
+                  }));
+                  return;
+                }
+                destroyAcceptedSocket(socket, error);
+              };
+              const buffered = socket.read() as Buffer | null;
+              if (buffered || socket.destroyed) {
+                answer(buffered);
                 return;
               }
-              destroyAcceptedSocket(socket, error);
+              // A client that has not spoken yet gets as long as the paired
+              // transport gives it, then a plain close.
+              const timer = setTimeout(() => {
+                socket.off("readable", onReadable);
+                answer(null);
+              }, SSH_FAILURE_PAGE_WAIT_MS);
+              timer.unref?.();
+              const onReadable = (): void => {
+                clearTimeout(timer);
+                answer(socket.read() as Buffer | null);
+              };
+              socket.once("readable", onReadable);
               return;
             }
             const closeBoth = () => {

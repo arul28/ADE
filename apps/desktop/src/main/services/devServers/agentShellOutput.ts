@@ -79,7 +79,7 @@ function announceFinished(activity: AgentShellActivity): void {
  */
 export function createAgentShellOutputObserver(projectRoot: string | null) {
   /**
-   * Item id → the unfinished last line of a running command's output. A
+   * Session and item → the unfinished last line of a running command's output. A
    * running command streams only its new output per event, so a ready line can
    * be split across two events, exactly like a terminal's PTY chunks.
    */
@@ -99,17 +99,19 @@ export function createAgentShellOutputObserver(projectRoot: string | null) {
       const sessionId = session.sessionId.trim();
       if (!sessionId) return;
       const source = { sessionId, laneId: session.laneId, projectRoot };
+      // Item ids are only unique within a session.
+      const carryKey = `${sessionId}\u0000${event.itemId}`;
       try {
         if (finished) {
           // A finished event carries the whole output; the carry is moot.
-          carryByItem.delete(event.itemId);
+          carryByItem.delete(carryKey);
           if (output) record(source, detectDevServersInChunk(`${output}\n`).detections);
           announceFinished({ ...source, finished: true });
           return;
         }
-        const scan = detectDevServersInChunk(output, carryByItem.get(event.itemId) ?? "");
-        carryByItem.delete(event.itemId);
-        carryByItem.set(event.itemId, scan.carry);
+        const scan = detectDevServersInChunk(output, carryByItem.get(carryKey) ?? "");
+        carryByItem.delete(carryKey);
+        carryByItem.set(carryKey, scan.carry);
         if (carryByItem.size > MAX_TRACKED_ITEMS) {
           const oldest = carryByItem.keys().next().value;
           if (oldest) carryByItem.delete(oldest);

@@ -140,6 +140,8 @@ describe("dev servers outside ADE terminals", () => {
     // line can be cut anywhere: `…localhost:51` + `73/`.
     observer.observe(session, { type: "command", command: "npm run dev", cwd: "", output: "> vite\n  ➜  Local:   http://localhost:51", itemId: "cmd-1", status: "running" } as never);
     expect(devServerRegistry.list()).toEqual([]);
+    // Another chat whose command happens to share the item id streams in between.
+    observer.observe({ sessionId: "chat-2", laneId: "lane-b" }, { type: "command", command: "make", cwd: "", output: "building", itemId: "cmd-1", status: "running" } as never);
     observer.observe(session, { type: "command", command: "npm run dev", cwd: "", output: "73/\n", itemId: "cmd-1", status: "running" } as never);
     // Claude's Bash tool hands back its output as text parts.
     observer.observe(session, { type: "tool_result", tool: "Bash", result: [{ type: "text", text: "Server running at http://localhost:8080/" }], itemId: "bash-1" } as never);

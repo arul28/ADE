@@ -136,8 +136,9 @@ for the handoff; re-arm them explicitly after hand-back if still needed.
 
 The user may be on another machine (a MacBook connected to this Mac Studio).
 To show them a page, use `ade --socket browser open <url> --panel`. ADE opens
-it on the screen they last messaged this chat from, through a tunnel, and you
-keep driving this machine's copy. Writing `http://localhost:<port>` in a reply
+it on the screen they last messaged this chat from, through a tunnel. When
+this machine runs ADE Desktop, you keep driving this machine's copy; without
+it, page actions are not available (see below). Writing `http://localhost:<port>` in a reply
 is fine too: their click opens this machine's port in their ADE browser.
 Dev servers you start are found on their own, even in the background:
 `ade --socket browser dev-servers --text` lists them.

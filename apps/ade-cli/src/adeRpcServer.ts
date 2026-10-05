@@ -5289,9 +5289,14 @@ async function runTool(args: {
     }
     // Stripped here, at the source, because the chat scoping below rebuilds
     // its arguments from these raw ones.
-    const baseObjectArgs = stampedChatAction
+    const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
+    // `inputOrigin` names the desktop a person is talking from, and show
+    // requests follow it. Only a user client may say where that person is.
+    const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs
+      ? (({ inputOrigin: _notADesktop, ...agentArgs }) => agentArgs)(providedObjectArgs)
+      : providedObjectArgs;
     const rawObjectArgs = domain === "chat" && agentCaller && THREAD_COMMENT_SEND_ACTIONS.has(action)
       ? withoutIncludeThreadComments(baseObjectArgs)
       : baseObjectArgs;
@@ -5302,12 +5307,6 @@ async function runTool(args: {
     if (domain === "terminal" && action === "write" && "fromUser" in scopedObjectArgs && !isUserClientSession(session)) {
       const { fromUser: _notTheUser, ...agentWrite } = scopedObjectArgs;
       scopedObjectArgs = agentWrite;
-    }
-    // `inputOrigin` names the desktop a person is talking from, and show
-    // requests follow it. Only a user client may say where that person is.
-    if ("inputOrigin" in scopedObjectArgs && !isUserClientSession(session)) {
-      const { inputOrigin: _notADesktop, ...agentArgs } = scopedObjectArgs;
-      scopedObjectArgs = agentArgs;
     }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;

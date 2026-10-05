@@ -125,7 +125,9 @@ const WINDOWS_LISTENER_QUERY = [
   `  for ($i = 0; $i -lt ${WINDOWS_ANCESTOR_DEPTH} -and $parent; $i++) { $chain += [ordered]@{ pid = [int]$parent.ProcessId; commandLine = [string]$parent.CommandLine }; $parent = $procs[[int]$parent.ParentProcessId] }`,
   "  [ordered]@{ pid = [int]$_.Name; ports = $ports; name = [string]$proc.Name; commandLine = [string]$proc.CommandLine; ancestors = $chain }",
   "})",
-  "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress -Depth 3))",
+  // rows → row → ancestors → ancestor: anything shallower turns the ancestor
+  // objects into type-name strings on Windows PowerShell 5.1.
+  "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress -Depth 5))",
 ].join("; ");
 
 type WindowsListenerRow = {
