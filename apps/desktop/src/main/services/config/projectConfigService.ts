@@ -3201,7 +3201,40 @@ export function createProjectConfigService({
     });
   };
 
+  /**
+   * The last snapshot read from disk, keyed by what the files looked like.
+   * `get()` runs per session row when a chat list is summarized; each read
+   * re-parsed the YAML and rewrote `test_suites` in a write transaction on the
+   * shared project database. An unchanged file now costs two `stat`s.
+   */
+  let cachedSnapshot: { key: string; snapshot: ProjectConfigSnapshot } | null = null;
+
+  const fileIdentity = (filePath: string): string => {
+    try {
+      const stat = fs.statSync(filePath);
+      return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch {
+      return "missing";
+    }
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
+    const key = `${fileIdentity(localPath)}|${fileIdentity(sharedPath)}`;
+    if (cachedSnapshot?.key === key) {
+      try {
+        return structuredClone(cachedSnapshot.snapshot);
+      } catch {
+        cachedSnapshot = null;
+      }
+    }
+    const snapshot = readSnapshotFromDiskUncached();
+    // Keyed by the identity seen before the read: a write racing the read
+    // changes the files again, so the next call misses and reads afresh.
+    cachedSnapshot = { key, snapshot };
+    return structuredClone(snapshot);
+  };
+
+  const readSnapshotFromDiskUncached = (): ProjectConfigSnapshot => {
     fs.mkdirSync(adeDir, { recursive: true });
 
     carryOverLegacySharedConfig();
@@ -3237,6 +3270,7 @@ export function createProjectConfigService({
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
+    cachedSnapshot = null;
 
     logger.info("projectConfig.save", {
       localPath,
