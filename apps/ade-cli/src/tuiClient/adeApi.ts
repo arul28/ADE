@@ -23,6 +23,7 @@ import type {
   AgentChatResolveUnprocessedMessageResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -1318,6 +1319,22 @@ export async function continueUsageLimitOnAlternate(
     "chat",
     "continueUsageLimitOnAlternate",
     { sessionId },
+  );
+}
+
+/**
+ * Move a Claude or Codex chat to another signed-in account of its provider.
+ * Same chat and thread; the host refuses while a turn runs.
+ */
+export async function switchChatAccount(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  instanceId: string,
+): Promise<AgentChatSwitchAccountResult> {
+  return await connection.action<AgentChatSwitchAccountResult>(
+    "chat",
+    "switchAccount",
+    { sessionId, instanceId },
   );
 }
 

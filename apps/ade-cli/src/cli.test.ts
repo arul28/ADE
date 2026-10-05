@@ -6606,6 +6606,22 @@ describe("ADE CLI", () => {
     expect(plan.exitCodeFromResult?.({ ok: false, reason: "no_alternate_account" })).toBe(1);
   });
 
+  it.each([
+    [["chat", "switch-account", "chat-9", "--account", "work"]],
+    [["chat", "switch-account", "--account", "work", "chat-9"]],
+  ])("builds chat switch-account as chat.switchAccount whatever the argument order (%j)", (argv) => {
+    const plan = buildCliPlan(argv);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(inferFormatter(plan)).toBe("chat-switch-account");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "chat", action: "switchAccount", args: { sessionId: "chat-9", instanceId: "work" } },
+    });
+    expect(plan.exitCodeFromResult?.({ ok: true, instanceId: "work" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ ok: false, reason: "busy", message: "Wait for this turn to finish." })).toBe(1);
+  });
+
   it("formats chat continue-on-account as the new chat, or the host's refusal", () => {
     expect(formatChatContinueOnAccount({ ok: true, sessionId: "chat-10" }))
       .toBe("Continuing on the other account · chat chat-10");

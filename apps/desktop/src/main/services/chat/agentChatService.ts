@@ -9869,6 +9869,8 @@ export function createAgentChatService(args: {
   onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
   /** Content-free hook fired after a user dismisses a pending question. */
   onPendingInputDismissed?: (event: { provider: AgentChatProvider }) => void;
+  /** Content-free hook fired after a user moves a chat to another account. */
+  onAccountSwitched?: (event: { provider: AgentChatProvider }) => void;
   onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
   /** A chat's goal finished (`reached`) or got stuck (`blocked`); the host may alert the user. */
   onGoalEnded?: (args: {
@@ -9961,6 +9963,7 @@ export function createAgentChatService(args: {
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
+    onAccountSwitched,
     onUsageLimitAutoResumed,
     onGoalEnded,
     onSessionEnded,
@@ -10261,7 +10264,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     provider: ProviderInstanceProvider,
   ): ProviderInstance | null | undefined => {
-    const threadId = providerThreadIdForMove(managed);
+    const threadId = providerThreadIdsForMove(managed)[0];
     if (!threadId) return null;
     try {
       return findInstanceHoldingThread(provider, threadId, getMachineProviderInstanceStore().list(provider));
@@ -18825,23 +18828,24 @@ export function createAgentChatService(args: {
    */
   const accountSwitchesInFlight = new Map<string, Promise<AgentChatSwitchAccountResult>>();
 
-  /** The provider thread id a relaunched runtime resumes, from memory or disk. */
-  const providerThreadIdForMove = (managed: ManagedChatSession): string | null => {
+  /**
+   * The provider threads a relaunched runtime may read, from memory or disk.
+   * A Claude fork that has not run its first turn also reads the source thread
+   * it forks from, and its own id may not be on disk yet.
+   */
+  const providerThreadIdsForMove = (managed: ManagedChatSession): string[] => {
     const persisted = readPersistedState(managed.session.id);
     if (managed.session.provider === "claude") {
       const runtime = managed.runtime?.kind === "claude" ? managed.runtime : null;
-      // A fork that has not run its first turn has no thread of its own yet;
-      // its first turn forks the source thread, so that is the file to move.
-      return runtime?.sdkSessionId?.trim()
-        || persisted?.sdkSessionId?.trim()
-        || runtime?.forkFromSdkSessionId?.trim()
-        || persisted?.forkFromSdkSessionId?.trim()
-        || null;
+      const own = runtime?.sdkSessionId?.trim() || persisted?.sdkSessionId?.trim();
+      const forkSource = runtime?.forkFromSdkSessionId?.trim() || persisted?.forkFromSdkSessionId?.trim();
+      return [...new Set([own, forkSource].filter((id): id is string => Boolean(id)))];
     }
     if (managed.session.provider === "codex") {
-      return managed.session.threadId?.trim() || persisted?.threadId?.trim() || null;
+      const threadId = managed.session.threadId?.trim() || persisted?.threadId?.trim();
+      return threadId ? [threadId] : [];
     }
-    return null;
+    return [];
   };
 
   /**
@@ -18858,8 +18862,8 @@ export function createAgentChatService(args: {
     const rawProvider = managed.session.provider;
     const provider = rawProvider === "claude" ? "claude" : rawProvider === "codex" ? "codex" : null;
     if (!provider) return { ok: false, message: "Only Claude and Codex chats can switch accounts." };
-    const threadId = providerThreadIdForMove(managed);
-    if (!threadId && options.requireThread) return { ok: false, message: "This chat has no provider thread to move yet." };
+    const threadIds = providerThreadIdsForMove(managed);
+    if (!threadIds.length && options.requireThread) return { ok: false, message: "This chat has no provider thread to move yet." };
     const from = resolveSessionInstance(managed);
     let to: ProviderInstance | null = null;
     try {
@@ -18875,14 +18879,19 @@ export function createAgentChatService(args: {
     // A chat with no thread yet still stops: a warmed runtime holds the old
     // account's config home.
     teardownRuntime(managed, "paused_run");
-    if (threadId) {
-      const moved = await moveProviderThread({
-        provider,
-        threadId,
-        fromConfigHome: from.configHome,
-        toConfigHome: to.configHome,
-      });
-      if (!moved.ok) return { ok: false, message: moved.message };
+    if (threadIds.length) {
+      const moves = [];
+      for (const threadId of threadIds) {
+        moves.push(await moveProviderThread({
+          provider,
+          threadId,
+          fromConfigHome: from.configHome,
+          toConfigHome: to.configHome,
+        }));
+      }
+      const failed = moves.find((moved) => !moved.ok);
+      // One readable thread is enough; a fork's own id can predate its file.
+      if (!moves.some((moved) => moved.ok) && failed && !failed.ok) return { ok: false, message: failed.message };
     }
     managed.session.instanceId = to.id;
     persistChatState(managed);
@@ -19300,6 +19309,7 @@ export function createAgentChatService(args: {
         severity: "info",
         message: `Switched to ${to.account?.email?.trim() || to.label || to.id}.`,
       });
+      onAccountSwitched?.({ provider: to.provider });
       return { ok: true, instanceId: to.id };
     })();
     accountSwitchesInFlight.set(normalizedSessionId, switching);

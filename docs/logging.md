@@ -487,6 +487,16 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
+When a user moves a chat to another Claude or Codex account
+(`chat.switchAccount`), the chat service emits `chat/account_switched` with
+`outcome: "completed"` after the thread copy and the account change succeed,
+through its `onAccountSwitched` hook. It carries only the Claude/Codex family:
+never the account ids, labels, emails, config-home paths, or the session. A
+refused switch (a turn running, a signed-out account) emits nothing. The
+one-hour action/outcome/family key admits at most 2 × 24 = 48 events per day
+before the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling; no ceiling was raised.
+
 A chat started in a new lane (the brain-owned launch in
 `chatLaunchService`) records `chat/new_lane_launch` once per outcome per
 launch, captured at the brain (surface `api`) through the service's outcome

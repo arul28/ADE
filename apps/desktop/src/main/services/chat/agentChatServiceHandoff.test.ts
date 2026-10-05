@@ -2553,6 +2553,129 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("switchAccount", () => {
+    /** Signs an account in the way the provider CLI does: a login file in its config home. */
+    async function signIn(provider: "codex" | "claude", configHome: string, email: string): Promise<void> {
+      fs.mkdirSync(configHome, { recursive: true });
+      if (provider === "codex") {
+        const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+        fs.writeFileSync(path.join(configHome, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+      } else {
+        fs.writeFileSync(path.join(configHome, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: email } }));
+      }
+      await getMachineProviderInstanceStore().refreshAccounts(provider);
+    }
+
+    function writeCodexRollout(configHome: string, threadId: string): string {
+      const relative = path.join("sessions", "2026", "10", "05", `rollout-2026-10-05T00-00-00-${threadId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(configHome, relative)), { recursive: true });
+      fs.writeFileSync(path.join(configHome, relative), '{"type":"session_meta"}\n', "utf8");
+      return relative;
+    }
+
+    async function codexChatOnWorkAccount(overrides: Record<string, unknown> = {}) {
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "codex", label: "Work" }).instance;
+      const personal = store.create({ provider: "codex", label: "Personal" }).instance;
+      const events: AgentChatEventEnvelope[] = [];
+      const onAccountSwitched = vi.fn();
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event), onAccountSwitched, ...overrides });
+      const chat = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      chat.threadId = "thread-to-switch";
+      const rollout = writeCodexRollout(work.configHome, "thread-to-switch");
+      return { service, chat, work, personal, rollout, events, onAccountSwitched };
+    }
+
+    it("moves an idle chat to another account in place, keeping its thread", async () => {
+      const { service, chat, work, personal, rollout, events, onAccountSwitched } = await codexChatOnWorkAccount();
+      await signIn("codex", personal.configHome, "personal@example.com");
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(personal.id);
+      // The new account can resume the same thread id; the old one keeps its copy.
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(true);
+      expect(fs.existsSync(path.join(work.configHome, rollout))).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: chat.id,
+        event: expect.objectContaining({ type: "session_meta_updated", instanceId: personal.id }),
+      }));
+      expect(onAccountSwitched).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { name: "a turn is running", reason: "busy", signedIn: true, arrange: (chat: { status: string }) => { chat.status = "active"; } },
+      { name: "the account is signed out", reason: "signed_out", signedIn: false, arrange: () => {} },
+      { name: "a saved key pays for the chat", reason: "failed", signedIn: true, arrange: (chat: { credentialId?: string }) => { chat.credentialId = "cred-1"; } },
+    ])("refuses the switch when $name and leaves the chat where it was", async ({ reason, signedIn, arrange }) => {
+      const { service, chat, work, personal, rollout, onAccountSwitched } = await codexChatOnWorkAccount();
+      if (signedIn) await signIn("codex", personal.configHome, "personal@example.com");
+      arrange(chat as never);
+
+      const result = await service.switchAccount({ sessionId: chat.id, instanceId: personal.id });
+
+      expect(result).toMatchObject({ ok: false, reason });
+      expect((await service.getSessionSummary(chat.id))?.instanceId).toBe(work.id);
+      expect(fs.existsSync(path.join(personal.configHome, rollout))).toBe(false);
+      expect(onAccountSwitched).not.toHaveBeenCalled();
+    });
+
+    it("moves a fresh Claude fork with the source thread its first turn forks", async () => {
+      const makeWarmHandle = (sdkSessionId: string) => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(claudeSdkCreateSessionCompat)
+        .mockReturnValueOnce(makeWarmHandle("fork-source-sdk") as any)
+        .mockReturnValueOnce(makeWarmHandle("fork-target-warmup-sdk") as any);
+      // The fork's own id exists before any file for it does.
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(makeWarmHandle("fork-own-sdk") as any);
+      const store = getMachineProviderInstanceStore();
+      const work = store.create({ provider: "claude", label: "Work" }).instance;
+      const personal = store.create({ provider: "claude", label: "Personal" }).instance;
+      await signIn("claude", personal.configHome, "personal@example.com");
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        instanceId: work.id,
+      });
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy();
+      });
+      const sourceSdkSessionId = readPersistedChatState(source.id).sdkSessionId as string;
+      const sourceThread = path.join("projects", "-lane-1", `${sourceSdkSessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(path.join(work.configHome, sourceThread)), { recursive: true });
+      fs.writeFileSync(path.join(work.configHome, sourceThread), '{"type":"user"}\n', "utf8");
+      const fork = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(fork.session.id).forkFromSdkSessionId).toBe(sourceSdkSessionId);
+
+      const result = await service.switchAccount({ sessionId: fork.session.id, instanceId: personal.id });
+
+      expect(result).toEqual({ ok: true, instanceId: personal.id });
+      expect(fs.existsSync(path.join(personal.configHome, sourceThread))).toBe(true);
+      expect((await service.getSessionSummary(fork.session.id))?.instanceId).toBe(personal.id);
+    });
+  });
+
   describe("cross-machine handoff", () => {
     const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");
 

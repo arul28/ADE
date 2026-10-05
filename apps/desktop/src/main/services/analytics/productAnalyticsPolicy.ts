@@ -207,6 +207,8 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "model_price_changed",
   "model_mapping_changed",
   "pending_input_dismissed",
+  // A user moved a chat to another Claude/Codex account. Never the accounts.
+  "account_switched",
   "new_lane_launch",
   // One event after Codex realtime answers a chat's voice offer. It is scoped
   // to a chat session locally; no audio, transcript, or voice preferences.

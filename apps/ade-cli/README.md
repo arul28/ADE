@@ -625,6 +625,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
 ade chat resume-now session-id --text                        # alias `resume`: send the usage-limit continue prompt now instead of waiting for the reset
+ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
 ade chat message session-id --kind auto --text "status/context"

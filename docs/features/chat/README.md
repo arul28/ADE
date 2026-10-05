@@ -3644,11 +3644,17 @@ represented by a synthetic single entry.
   `chat.switchAccount`: same chat, same thread. The runtime stops, the thread
   file is copied into the other account's config home (`moveChatToAccount`,
   shared with the usage-limit move), and the chat's `instanceId` changes, so
-  the next turn resumes the same thread id there. The old account keeps its
-  copy. The first turn after a switch has no prompt cache. A switch is refused
+  the next turn resumes the same thread id there. A native Claude fork that
+  has not run its first turn also carries the source thread it forks from;
+  one readable thread is enough, since the fork's own id can predate its file.
+  The old account keeps its copy. Every viewer learns the new account from a
+  `session_meta_updated` event carrying `instanceId`, and a send that arrives
+  mid-switch waits for it, so it never relaunches on the old account. The first turn after a switch has no prompt cache. A switch is refused
   while a turn runs ("Wait for this turn to finish."), and it cancels any armed
   usage-limit resume, since that limit belonged to the old account. CLI:
-  `ade chat switch-account <session> --account <id>`.
+  `ade chat switch-account <session> --account <id>`; TUI: `/switch-account
+  <account-id>`. Chats on a saved key or custom provider have no account to
+  switch, and the switch is refused for them.
 - **Launch injection happens once, in `buildAgentRuntimeEnv`.** Every process a
   chat starts — the Claude SDK query, the Claude background CLI, the Codex
   app-server, slash-command discovery, rollout lookup — inherits the same

@@ -281,7 +281,9 @@ Inside the TUI the same host actions are reachable as slash commands:
 `/resume-now` and its alias `/chat resume-now` call `chat.resumeUsageLimitNow`
 (and print the host's refusal sentence when it declines),
 `/continue-on-account` and `/chat continue-on-account` call
-`chat.continueUsageLimitOnAlternate` when another account still has room, while
+`chat.continueUsageLimitOnAlternate` when another account still has room,
+`/switch-account <account-id>` calls `chat.switchAccount` to move the active
+chat to another account (same thread; refused while a turn runs), while
 `/chat auto-resume on|off` writes the per-chat switch through
 `chat.updateSession` (`autoContinueAtUsageLimit`) — the bare `/chat auto-resume`
 with no argument explains itself instead of guessing a direction.

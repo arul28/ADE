@@ -89,7 +89,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
+import { captureChatAccountSwitchedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -4376,6 +4376,11 @@ app.whenReady().then(async () => {
         properties,
       }),
       onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        provider,
+      }),
+      onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
         analytics: productAnalyticsService,
         surface: "api",
         provider,
