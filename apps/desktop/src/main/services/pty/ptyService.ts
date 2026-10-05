@@ -304,7 +304,13 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
-const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
+// How often a running terminal's on-disk snapshot catches up with its output.
+// Every live reader (terminal preview, screen hydrate) serializes the live
+// mirror or flushes first, and exit flushes, so this cadence only bounds how
+// stale the file is if the brain dies. Each write serializes the whole
+// scrollback (~0.5 MB), so 500 ms cost ~1.3% of a brain core and ~1 MB/s of
+// disk writes per busy terminal.
+const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
