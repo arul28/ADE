@@ -23,7 +23,7 @@
  */
 import type { AdeTurnUsageRecord } from "../../../shared/types/turnUsage";
 import { findReferenceRoute, routeBillingFor, routeHarnessOf, type ModelRoute, type RouteBilling } from "./routeCatalog";
-import { pickRoute, type PlanState, type RouterDecision, type RouterTaskKind } from "./routerCore";
+import { pickRoute, quotaProviderForPlan, type PlanState, type RouterDecision, type RouterTaskKind } from "./routerCore";
 
 export type RouterSwitchPoint = "thread_start" | "compaction" | "cache_expired" | "route_changed";
 
@@ -121,11 +121,6 @@ function costRatio(pick: RouterDecision | null, reference: RouterDecision | null
   const refUsd = reference?.route.costPerIndexTaskUsd;
   if (pickUsd != null && refUsd != null && refUsd > 0) return pickUsd / refUsd;
   return pick.savingShare != null ? 1 - pick.savingShare : 1;
-}
-
-/** Quota providers are named after the harness; OpenCode's windows are the Go plan's. */
-function planQuotaProvider(plan: string): string {
-  return plan === "opencode-go" ? "opencode" : plan;
 }
 
 const cents = (usd: number): number => Math.round(usd * 100) / 100;
@@ -306,11 +301,13 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
   const accountFor = (route: RouteBilling | null, actual: RouteBilling | null, segmentAccount: string | null): string | null => {
     if (route?.kind !== "plan") return null;
     const best = plans.get(route.plan)?.accountId ?? null;
-    // The segment's own login, when it is a login of this plan's provider
-    // (a Claude chat running OpenCode Go's DeepSeek bills the Go account) and
-    // has a name (`opencode:local` is the one named Go account without it).
+    // The segment's own login, when it is a login of this plan's provider (a
+    // Claude chat running OpenCode Go's DeepSeek bills the Go account). A
+    // `<provider>:local` key is a login whose name the poller missed: it has no
+    // window of its own, so its spend lands on the plan's best account, the one
+    // the burn rate also pairs it with.
     const own = actual?.kind === "plan" && actual.plan === route.plan
-      && segmentAccount?.startsWith(`${planQuotaProvider(route.plan)}:`)
+      && segmentAccount?.startsWith(`${quotaProviderForPlan(route.plan)}:`)
       && !segmentAccount.endsWith(":local")
       ? segmentAccount
       : null;

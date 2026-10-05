@@ -22,6 +22,7 @@ import path from "node:path";
 import type { AgentChatEvent, AgentChatModelInfo, AgentChatProvider } from "../../../shared/types/chat";
 import type { AdeQuotaSample, AdeTurnUsageRecord } from "../../../shared/types/turnUsage";
 import type { Logger } from "../logging/logger";
+import { isSubagentSpawnToolName } from "../chat/sessionActivityDetector";
 import { getErrorMessage } from "../shared/utils";
 import { estimateQuotaBurnRates } from "../usage/quotaBurnRate";
 import type { ModelRegistryStatus, ModelRegistryStore } from "./modelRegistryStore";
@@ -36,7 +37,7 @@ import {
   classifyRouterTaskDetailed,
   pickRoute,
   accountStatesFromBurnRates,
-  planStatesFromBurnRates,
+  planStatesFromAccountStates,
   ROUTER_TRUST_MIN_TURNS,
   trustKey,
   type PlanState,
@@ -62,8 +63,8 @@ const STALE_SWEEP_MS = 60_000;
 /** Briefs kept for classification; only the opening matters. */
 const PROMPT_KEEP_CHARS = 4_000;
 const MAX_PROMPTS = 200;
-/** Tool names whose call starts a native subagent and carries its brief. */
-const AGENT_TOOLS = new Set(["Agent", "Task"]);
+/** Argument names a subagent-spawning tool carries its brief in, by provider. */
+const BRIEF_ARGS = ["prompt", "message", "instructions", "task"] as const;
 /** The catalog harnesses the router covers today. */
 const ROUTED_PROVIDERS: AgentChatProvider[] = ["claude", "codex", "opencode", "cursor"];
 
@@ -253,7 +254,7 @@ export function createModelRouterService(args: {
   let plans: { atMs: number; states: Map<string, PlanState>; accounts: Map<string, PlanState>; trusted: Set<string> } | null = null;
   /** Subagents that started and have not been logged yet, by `sessionId:taskId`. */
   const pending = new Map<string, PendingSubagent>();
-  /** Agent-tool briefs by `sessionId:toolUseId`; a subagent's start names its tool use. */
+  /** Subagent-tool briefs by `sessionId:toolUseId`; a subagent's start names its tool use. */
   const promptsByToolUse = new Map<string, string>();
   /** ADE child chats by child session id, so the child's first message becomes its brief. */
   const childKeys = new Map<string, string>();
@@ -317,8 +318,8 @@ export function createModelRouterService(args: {
     const sinceMs = nowMs - 30 * 86_400_000;
     const [turns, samples] = await Promise.all([args.readTurns(sinceMs), args.readQuotaSamples(sinceMs)]);
     const rates = estimateQuotaBurnRates({ samples, turns, nowMs, lookbackMs: 30 * 86_400_000 });
-    const states = planStatesFromBurnRates(rates, nowMs);
     const accounts = accountStatesFromBurnRates(rates, nowMs);
+    const states = planStatesFromAccountStates(accounts);
     const counts = new Map<string, number>();
     for (const turn of turns) {
       const harness = routeHarnessOf(turn.provider);
@@ -506,9 +507,10 @@ export function createModelRouterService(args: {
 
   /** Agent-tool calls carry the brief; the subagent's start arrives right after. */
   const onToolCall = (sessionId: string, event: Extract<AgentChatEvent, { type: "tool_call" }>): void => {
-    if (!AGENT_TOOLS.has(event.tool)) return;
+    if (!isSubagentSpawnToolName(event.tool)) return;
     const args = event.args && typeof event.args === "object" ? event.args as Record<string, unknown> : null;
-    const prompt = typeof args?.prompt === "string" ? args.prompt.slice(0, PROMPT_KEEP_CHARS) : "";
+    const brief = BRIEF_ARGS.map((name) => args?.[name]).find((value): value is string => typeof value === "string" && value.trim().length > 0);
+    const prompt = brief ? brief.slice(0, PROMPT_KEEP_CHARS) : "";
     if (!prompt) return;
     for (const entry of pending.values()) {
       // The start can win the race; fill the brief in place.
@@ -617,25 +619,33 @@ export function createModelRouterService(args: {
       const days = reportDays(input.days);
       const rows = await readShadowRows(now() - days * 86_400_000);
       const { decisions, outcomes, legacyDecisions } = splitShadowRows(rows);
-      const byKind: RouterShadowSummary["byKind"] = {};
-      const moves = { same: new Map<string, number>(), sameModel: new Map<string, number>(), any: new Map<string, number>() };
+      type KindBucket = RouterShadowSummary["byKind"][string];
+      const kinds = new Map<string, { bucket: KindBucket; saved: { sameModel: number[]; same: number[]; any: number[] } }>();
+      type Move = { from: string; to: string; count: number };
+      const moves = { same: new Map<string, Move>(), sameModel: new Map<string, Move>(), any: new Map<string, Move>() };
       const kept = new Map<string, number>();
       const ran = new Map<string, number>();
       const sources: RouterShadowSummary["sources"] = { kind: {}, effort: {}, model: {} };
-      const savings: Record<string, { sameModel: number[]; same: number[]; any: number[] }> = {};
       const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
       const count = (record: Record<string, number>, key: string) => { record[key] = (record[key] ?? 0) + 1; };
       for (const row of decisions) {
-        const bucket = byKind[row.kind] ??= {
-          decisions: 0,
-          sameModelPicks: 0,
-          sameHarnessPicks: 0,
-          anyHarnessPicks: 0,
-          meanSameModelSaving: null,
-          meanSameHarnessSaving: null,
-          meanAnyHarnessSaving: null,
-        };
-        const saved = savings[row.kind] ??= { sameModel: [], same: [], any: [] };
+        let kindEntry = kinds.get(row.kind);
+        if (!kindEntry) {
+          kindEntry = {
+            bucket: {
+              decisions: 0,
+              sameModelPicks: 0,
+              sameHarnessPicks: 0,
+              anyHarnessPicks: 0,
+              meanSameModelSaving: null,
+              meanSameHarnessSaving: null,
+              meanAnyHarnessSaving: null,
+            },
+            saved: { sameModel: [], same: [], any: [] },
+          };
+          kinds.set(row.kind, kindEntry);
+        }
+        const { bucket, saved } = kindEntry;
         bucket.decisions += 1;
         count(sources.kind, row.kindSource ?? "none");
         count(sources.effort, row.requested?.effortSource ?? "unknown");
@@ -643,9 +653,12 @@ export function createModelRouterService(args: {
         const req = row.requested;
         if (req) bump(ran, `${req.harness}|${req.model ?? "?"}|${req.effort ?? "?"}`);
         const from = row.reference?.routeId ?? "(not in catalog)";
-        const note = (pickSummary: DecisionSummary | null | undefined, map: Map<string, number>, list: number[]): boolean => {
+        const note = (pickSummary: DecisionSummary | null | undefined, map: Map<string, Move>, list: number[]): boolean => {
           if (!pickSummary) return false;
-          bump(map, `${from} → ${pickSummary.routeId}`);
+          const moveKey = `${from} → ${pickSummary.routeId}`;
+          const move = map.get(moveKey) ?? { from, to: pickSummary.routeId, count: 0 };
+          move.count += 1;
+          map.set(moveKey, move);
           if (pickSummary.savingShare != null) list.push(pickSummary.savingShare);
           return true;
         };
@@ -657,18 +670,14 @@ export function createModelRouterService(args: {
       const mean = (values: number[]): number | null => values.length
         ? Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 1000) / 1000
         : null;
-      for (const [kind, bucket] of Object.entries(byKind)) {
-        bucket.meanSameModelSaving = mean(savings[kind]!.sameModel);
-        bucket.meanSameHarnessSaving = mean(savings[kind]!.same);
-        bucket.meanAnyHarnessSaving = mean(savings[kind]!.any);
+      const byKind: RouterShadowSummary["byKind"] = {};
+      for (const [kind, { bucket, saved }] of kinds) {
+        bucket.meanSameModelSaving = mean(saved.sameModel);
+        bucket.meanSameHarnessSaving = mean(saved.same);
+        bucket.meanAnyHarnessSaving = mean(saved.any);
+        byKind[kind] = bucket;
       }
-      const top = (map: Map<string, number>) => [...map]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8)
-        .map(([move, moveCount]) => {
-          const [from, to] = move.split(" → ");
-          return { from: from!, to: to!, count: moveCount };
-        });
+      const top = (map: Map<string, Move>) => [...map.values()].sort((a, b) => b.count - a.count).slice(0, 8);
       const outcomeCounts: Record<string, number> = {};
       for (const row of decisions) count(outcomeCounts, outcomes.get(row.key)?.status ?? "open");
       const planInfo = await loadPlans();

@@ -52,6 +52,9 @@ export const ROUTER_TRUST_MIN_TURNS = 30;
  * a percent of a $10 monthly plan cost the same as a percent of a $200 weekly
  * one, so the router moved DeepSeek work on OpenCode Go onto Claude.
  */
+/** The plans the router prices. */
+const ROUTER_PLANS = ["claude", "codex", "cursor", "opencode-go"] as const;
+
 export const ROUTER_PLAN_MONTHLY_USD: Record<string, number> = {
   claude: 200,
   codex: 200,
@@ -66,16 +69,17 @@ export function planPercentUsd(state: Pick<PlanState, "plan" | "rateWindow">): n
   const monthly = ROUTER_PLAN_MONTHLY_USD[state.plan];
   const windowMs = state.rateWindow ? WINDOW_MS[state.rateWindow] : undefined;
   if (monthly == null || !windowMs) return FALLBACK_PERCENT_USD;
-  const windowsPerMonth = WINDOW_MS.monthly! / windowMs;
+  const windowsPerMonth = MONTH_MS / windowMs;
   return monthly / (100 * windowsPerMonth);
 }
 /** A window at or above this share used blocks its plan. */
 const WINDOW_BLOCK_SHARE = 0.95;
 
+const MONTH_MS = 30 * 86_400_000;
 const WINDOW_MS: Record<string, number> = {
   five_hour: 5 * 3_600_000,
   weekly: 7 * 86_400_000,
-  monthly: 30 * 86_400_000,
+  monthly: MONTH_MS,
 };
 
 const EDIT_WORDS = /\b(fix(es)?|implement|edit|write|refactor|add|change|update|build|create|migrate|rename|remove|delete|port|wire|patch|apply|split|extract|move|replace|convert|upgrade|bump|redesign|polish)\b/i;
@@ -91,6 +95,7 @@ const TEST_WORDS = /\b(run (the )?(tests?|suite|ci)|typecheck|lint|test shard|fl
 const NO_EDIT_WORDS = /\b(read[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])|report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
 /** "Read-only" in a brief's opening lines is a whole-task rule; later it is about one command or file. */
 const OPENING_READ_ONLY = /^[\s\S]{0,160}\bread[- ]only\b/i;
+const OPENING_READ_ONLY_WORD = /\bread[- ]only\b/i;
 /** Boilerplate every ADE brief carries; it says nothing about the task. */
 const BRIEF_BOILERPLATE = /do not start subagents or parallel reviewers; do all the work yourself\.?/gi;
 /** "Read /tmp/brief.md and follow it": an instruction to load the brief, not a read task. */
@@ -128,9 +133,15 @@ export function classifyRouterTaskDetailed(
     const heavy = !LIGHT_EDIT_WORDS.test(label) && (HEAVY_WORDS.test(label) || (HEAVY_WORDS.test(head) && brief.length >= 4_000));
     return heavy ? "heavy_edit" : "light_edit";
   };
-  // The opening sentence states the job; a later "read-only" is usually about one command or file.
-  if (brief && (EDIT_BRIEF_WORDS.test(opening) || OPENING_EDIT_VERB.test(opening))) return { kind: editKind(), source: "prompt" };
-  if (EDIT_WORDS.test(labelVerb) && !OPENING_READ_ONLY.test(head)) return { kind: editKind(), source: "description" };
+  // The opening sentence states the job, so the earlier of an edit clause and a
+  // no-edit rule wins: "READ-ONLY: … Work only in the worktree" is a review, and
+  // "Task: write read-only log extractors" is an edit. A later "read-only" is
+  // usually about one command or file.
+  const editAt = firstIndex(opening, [EDIT_BRIEF_WORDS, OPENING_EDIT_VERB]);
+  const noEditAt = firstIndex(head, [NO_EDIT_WORDS, OPENING_READ_ONLY_WORD]);
+  const readOnlyOpening = OPENING_READ_ONLY.test(head);
+  if (brief && editAt != null && (noEditAt == null || editAt < noEditAt)) return { kind: editKind(), source: "prompt" };
+  if (EDIT_WORDS.test(labelVerb) && !readOnlyOpening) return { kind: editKind(), source: "description" };
   if (brief && (NO_EDIT_WORDS.test(head) || OPENING_READ_ONLY.test(head))) {
     return { kind: REVIEW_WORDS.test(label) || REVIEW_WORDS.test(head) ? "review" : "read_only", source: "prompt" };
   }
@@ -150,15 +161,26 @@ export function classifyRouterTaskDetailed(
 /** Keyword rules over one short text. The first word decides a tie: a label is an imperative. */
 function classifyText(text: string): RouterTaskKind {
   const firstWord = /^\W*([a-z-]+)/i.exec(text)?.[1] ?? "";
-  if (REVIEW_WORDS.test(firstWord)) return "review";
-  if (READ_WORDS.test(firstWord)) return "read_only";
-  if (TEST_WORDS.test(text) && !HEAVY_WORDS.test(text)) return "test_run";
   const edits = EDIT_WORDS.test(text);
+  if (REVIEW_WORDS.test(firstWord)) return "review";
+  // "Read the file and fix the parser" is an edit that starts by reading.
+  if (READ_WORDS.test(firstWord) && !edits) return "read_only";
+  if (TEST_WORDS.test(text) && !HEAVY_WORDS.test(text)) return "test_run";
   if (EDIT_WORDS.test(firstWord)) return HEAVY_WORDS.test(text) ? "heavy_edit" : "light_edit";
   if (REVIEW_WORDS.test(text)) return "review";
   if (READ_WORDS.test(text) && !edits) return "read_only";
   if (edits) return HEAVY_WORDS.test(text) ? "heavy_edit" : "light_edit";
   return "unknown";
+}
+
+/** Where the earliest of the patterns matches, or null when none does. */
+function firstIndex(text: string, patterns: readonly RegExp[]): number | null {
+  let first: number | null = null;
+  for (const pattern of patterns) {
+    const at = pattern.exec(text)?.index;
+    if (at != null && (first == null || at < first)) first = at;
+  }
+  return first;
 }
 
 /** A task's kind; see `classifyRouterTaskDetailed`. */
@@ -188,7 +210,7 @@ export type PlanState = {
 };
 
 /** Quota providers are named after the harness; OpenCode's windows are the Go plan's. */
-function quotaProviderForPlan(plan: string): string {
+export function quotaProviderForPlan(plan: string): string {
   return plan === "opencode-go" ? "opencode" : plan;
 }
 
@@ -240,7 +262,7 @@ function accountState(plan: string, accountId: string, windows: readonly AdeQuot
  */
 export function accountStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
   const states = new Map<string, PlanState>();
-  for (const plan of ["claude", "codex", "cursor", "opencode-go"]) {
+  for (const plan of ROUTER_PLANS) {
     const byAccount = new Map<string, AdeQuotaBurnRate[]>();
     for (const rate of rates) {
       if (rate.provider !== quotaProviderForPlan(plan)) continue;
@@ -248,34 +270,38 @@ export function accountStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], n
       list.push(rate);
       byAccount.set(rate.accountId, list);
     }
-    const accounts = [...byAccount].map(([accountId, windows]) => accountState(plan, accountId, windows, nowMs));
-    const shared = accounts.find((state) => state.usdPerPercent != null);
-    for (const state of accounts) {
-      if (state.usdPerPercent != null || !shared) continue;
-      state.usdPerPercent = shared.usdPerPercent;
-      state.rateWindow = shared.rateWindow;
-      state.burnConfidence = shared.burnConfidence;
+    const accounts = [...byAccount].map(([accountId, windows]) => [accountId, accountState(plan, accountId, windows, nowMs)] as const);
+    const shared = accounts.find(([, state]) => state.usdPerPercent != null)?.[1];
+    for (const [accountId, state] of accounts) {
+      if (state.usdPerPercent == null && shared) {
+        state.usdPerPercent = shared.usdPerPercent;
+        state.rateWindow = shared.rateWindow;
+        state.burnConfidence = shared.burnConfidence;
+      }
+      states.set(accountId, state);
     }
-    for (const state of accounts) states.set(state.accountId!, state);
   }
   return states;
 }
 
 /**
- * The live state of each plan, from the quota ledger's burn rates. A plan with
- * several accounts is as good as its best account: unblocked first, then the
- * lowest pressure.
+ * The live state of each plan. A plan with several accounts is as good as its
+ * best account: unblocked first, then the lowest pressure.
  */
-export function planStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
-  const accounts = [...accountStatesFromBurnRates(rates, nowMs).values()];
+export function planStatesFromAccountStates(accounts: ReadonlyMap<string, PlanState>): Map<string, PlanState> {
   const states = new Map<string, PlanState>();
-  for (const plan of ["claude", "codex", "cursor", "opencode-go"]) {
-    const own = accounts
+  for (const plan of ROUTER_PLANS) {
+    const own = [...accounts.values()]
       .filter((state) => state.plan === plan)
       .sort((a, b) => Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason)) || a.pressure - b.pressure);
     states.set(plan, own[0] ?? { plan, accountId: null, usdPerPercent: null, rateWindow: null, burnConfidence: "none", pressure: 1, blockedReason: null, windows: [] });
   }
   return states;
+}
+
+/** The live state of each plan, from the quota ledger's burn rates. */
+export function planStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], nowMs: number): Map<string, PlanState> {
+  return planStatesFromAccountStates(accountStatesFromBurnRates(rates, nowMs));
 }
 
 export type RouteCost = {

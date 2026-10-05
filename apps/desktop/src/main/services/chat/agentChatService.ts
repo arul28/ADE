@@ -1812,6 +1812,8 @@ type PersistedChatState = {
   claudeBackgroundJobShort?: string;
   claudeBackgroundResumeSessionId?: string;
   claudeBackgroundLogText?: string;
+  /** Claude's last `total_cost_usd` for this transcript; see `ClaudeRuntime.resultCostBaseline`. */
+  claudeResultCostTotalUsd?: number;
   /** Cursor SDK agent/run ids for resume across app restarts. */
   cursorSdkAgentProtocolVersion?: number;
   cursorSdkAgentId?: string;
@@ -2480,11 +2482,12 @@ type ClaudeRuntime = {
   idleReaderGeneration: number;
   queryGeneration: number;
   /**
-   * The last `total_cost_usd` this query reported. Claude's figure is the
-   * query process's running total, so one result's own cost is the step from
-   * the previous result of the same query generation.
+   * The last `total_cost_usd` Claude reported for this transcript. The figure
+   * is a running total, and a resumed or forked session continues from the
+   * total its transcript saved, so it is persisted with the chat and one
+   * result's own cost is the step from it.
    */
-  resultCostBaseline: { generation: number; totalUsd: number } | null;
+  resultCostBaseline: number | null;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -5292,16 +5295,18 @@ function isCodexRpcMethodNotFound(error: unknown): boolean {
 }
 
 /**
- * One Claude result's own list-price cost. `total_cost_usd` is the running
- * total of the query process, so a ledger row that stored it as the turn's
- * cost counted every earlier turn again. A new query generation (a restart or
- * a resume) starts its total from zero.
+ * One Claude result's own list-price cost. `total_cost_usd` is a running
+ * total, and a resumed or forked session continues from the total its
+ * transcript saved, so a ledger row that stored it counted every earlier turn
+ * again. The step from the last total is this result's cost. A lower total
+ * means a `/clear` reset it, so the whole total is new. A zero is a crash or
+ * startup-error result: it says nothing and leaves the baseline alone.
  */
-function claudeResultCostUsd(runtime: Pick<ClaudeRuntime, "queryGeneration" | "resultCostBaseline">, totalUsd: number): number {
+function claudeResultCostUsd(runtime: Pick<ClaudeRuntime, "resultCostBaseline">, totalUsd: number): number {
+  if (!(totalUsd > 0)) return 0;
   const baseline = runtime.resultCostBaseline;
-  runtime.resultCostBaseline = { generation: runtime.queryGeneration, totalUsd };
-  if (!baseline || baseline.generation !== runtime.queryGeneration || totalUsd < baseline.totalUsd) return totalUsd;
-  return totalUsd - baseline.totalUsd;
+  runtime.resultCostBaseline = totalUsd;
+  return baseline != null && totalUsd >= baseline ? totalUsd - baseline : totalUsd;
 }
 
 /** The live effort a Claude hook reports, when the model takes an effort. */
@@ -17047,6 +17052,11 @@ export function createAgentChatService(args: {
       ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
         ? { claudeBackgroundResumeSessionId }
         : {}),
+      ...(managed.runtime?.kind === "claude" && managed.runtime.resultCostBaseline != null
+        ? { claudeResultCostTotalUsd: managed.runtime.resultCostBaseline }
+        : managed.session.provider === "claude" && prevPersisted?.claudeResultCostTotalUsd != null
+          ? { claudeResultCostTotalUsd: prevPersisted.claudeResultCostTotalUsd }
+          : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundLogText
         ? { claudeBackgroundLogText: managed.claudeBackgroundLogText.slice(-64_000) }
         : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: prevPersisted.claudeBackgroundLogText.slice(-64_000) } : {}),
@@ -17633,6 +17643,10 @@ export function createAgentChatService(args: {
         ...(claudeBackgroundJobShort ? { claudeBackgroundJobShort } : {}),
         ...(claudeBackgroundResumeSessionId ? { claudeBackgroundResumeSessionId } : {}),
         ...(claudeBackgroundLogText ? { claudeBackgroundLogText } : {}),
+        ...(provider === "claude" && typeof record.claudeResultCostTotalUsd === "number"
+          && Number.isFinite(record.claudeResultCostTotalUsd) && record.claudeResultCostTotalUsd >= 0
+          ? { claudeResultCostTotalUsd: record.claudeResultCostTotalUsd }
+          : {}),
         ...(cursorSdkAgentProtocolVersion ? { cursorSdkAgentProtocolVersion } : {}),
         ...(cursorSdkAgentId ? { cursorSdkAgentId } : {}),
         ...(cursorSdkRunId ? { cursorSdkRunId } : {}),
@@ -39422,7 +39436,7 @@ export function createAgentChatService(args: {
         idleReaderPromise: null,
         idleReaderGeneration: 0,
         queryGeneration: 0,
-        resultCostBaseline: null,
+        resultCostBaseline: persisted?.claudeResultCostTotalUsd ?? null,
         warmQuery: null,
       warmupDone: null,
       warmupCancel: null,

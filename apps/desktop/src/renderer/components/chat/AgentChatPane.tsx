@@ -6047,22 +6047,6 @@ export function AgentChatPane({
       reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
-  /**
-   * The composer under a subagent's thread shows THAT agent's model and effort,
-   * locked, not the parent's. A model the catalog cannot name keeps the
-   * parent's chip; the lock line still names the child's model.
-   */
-  const subagentComposerModel = useMemo(() => {
-    if (!subagentView) return null;
-    const reported = subagentViewSnapshot?.model ?? subagentMetadata?.model ?? null;
-    const descriptor = reported && reported !== "inherit"
-      ? resolveScopedModelDescriptor(reported, modelCatalogScopeKey) ?? resolveModelDescriptor(reported)
-      : null;
-    return {
-      modelId: descriptor?.id ?? (reported && reported !== "inherit" ? null : modelId),
-      effort: subagentViewSnapshot?.reasoningEffort ?? null,
-    };
-  }, [modelCatalogScopeKey, modelId, subagentMetadata?.model, subagentView, subagentViewSnapshot?.model, subagentViewSnapshot?.reasoningEffort]);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
@@ -6153,6 +6137,35 @@ export function AgentChatPane({
       message: `${localRuntimeState.label} is connected with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
     };
   }, [localRuntimeState, modelId, selectedModelDesc?.displayName]);
+  /**
+   * The composer under a subagent's thread shows THAT agent's model and effort,
+   * locked, not the parent's. A model the catalog cannot name keeps the
+   * parent's chip; the lock line still names the child's model.
+   */
+  const subagentComposerModel = useMemo(() => {
+    if (!subagentView) return null;
+    const reported = subagentViewSnapshot?.model ?? subagentMetadata?.model ?? null;
+    const descriptor = reported && reported !== "inherit"
+      ? resolveScopedModelDescriptor(reported, modelCatalogScopeKey) ?? resolveModelDescriptor(reported)
+      : null;
+    // A Claude subagent runs at the session's effort whatever model it names;
+    // a spawned chat or another runtime's child shows only what it reported.
+    const sharesSessionEffort = selectedSession?.provider === "claude" && !subagentViewSnapshot?.childSessionId;
+    return {
+      modelId: descriptor?.id ?? (reported && reported !== "inherit" ? null : modelId),
+      effort: subagentViewSnapshot?.reasoningEffort ?? (sharesSessionEffort ? effectiveReasoningEffort ?? null : null),
+    };
+  }, [
+    effectiveReasoningEffort,
+    modelCatalogScopeKey,
+    modelId,
+    selectedSession?.provider,
+    subagentMetadata?.model,
+    subagentView,
+    subagentViewSnapshot?.childSessionId,
+    subagentViewSnapshot?.model,
+    subagentViewSnapshot?.reasoningEffort,
+  ]);
 
   const cliRuntimeBlocked = Boolean(
     selectedSessionId

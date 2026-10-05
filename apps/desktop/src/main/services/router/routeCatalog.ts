@@ -254,7 +254,10 @@ export function findReferenceRoute(
     : registryFamilyForModelId(model);
   let candidates = exact.length ? exact : inHarness.filter((route) => registryFamilyForModelId(route.modelId) === family);
   if (!candidates.length && !alias.includes("/")) {
-    candidates = routes.filter((route) => route.modelId.toLowerCase().endsWith(`/${alias}`));
+    // A plan gateway (OpenCode Go) before a metered one (Zen): presets bill a plan.
+    candidates = routes
+      .filter((route) => route.modelId.toLowerCase().endsWith(`/${alias}`))
+      .sort((a, b) => Number(a.billing.kind !== "plan") - Number(b.billing.kind !== "plan"));
   }
   if (!candidates.length) return null;
   return (effort != null ? candidates.find((route) => route.effort === effort) : undefined)
