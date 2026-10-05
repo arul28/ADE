@@ -39,6 +39,7 @@ import type {
   IntegrationStepResolution,
   IntegrationCleanupState,
   IntegrationWorkflowDisplayState,
+  LandHeadChange,
   LandResult,
   LandPrArgs,
   MergeMethod,
@@ -178,7 +179,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
-import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { formatHeadChangeMessage, formatMergeError as formatMergeErrorMessage, isHeadModifiedMergeError, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -1134,6 +1135,8 @@ export const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
+/** How many of a moved head's new commits a refused merge reports back. */
+const LAND_HEAD_CHANGE_COMMIT_LIMIT = 10;
 
 // reconcile-on-focus throttle constants. The min-interval collapses a burst of
 // focus events into at most one catch-up per window; the merged-heal cap bounds
@@ -8386,6 +8389,77 @@ export function createPrService({
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
 
+  /**
+   * Describe how a PR head moved from `expectedHeadSha` to `currentHeadSha`:
+   * the commits the reviewer has not seen, and whether history was rewritten.
+   * Best effort — a garbage-collected old head still yields a usable result.
+   */
+  const describeHeadChange = async (
+    repo: GitHubRepoRef,
+    expectedHeadSha: string,
+    currentHeadSha: string,
+  ): Promise<LandHeadChange> => {
+    const base: LandHeadChange = {
+      expectedHeadSha,
+      currentHeadSha,
+      rewritten: false,
+      newCommits: [],
+      totalNewCommits: 0,
+    };
+    try {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/compare/${expectedHeadSha}...${currentHeadSha}`,
+      });
+      const commits: any[] = Array.isArray(data?.commits) ? data.commits : [];
+      return {
+        ...base,
+        rewritten: asString(data?.status) === "diverged" || asString(data?.status) === "behind",
+        totalNewCommits: Number(data?.ahead_by ?? commits.length) || commits.length,
+        newCommits: commits.slice(-LAND_HEAD_CHANGE_COMMIT_LIMIT).map((commit) => ({
+          sha: asString(commit?.sha),
+          title: asString(commit?.commit?.message).split("\n")[0] ?? "",
+          author: asString(commit?.author?.login) || asString(commit?.commit?.author?.name) || null,
+          committedAt: asString(commit?.commit?.committer?.date) || null,
+        })),
+      };
+    } catch (error) {
+      logger.warn("prs.land_head_change_compare_failed", {
+        repo: `${repo.owner}/${repo.name}`,
+        error: getErrorMessage(error),
+      });
+      return base;
+    }
+  };
+
+  /**
+   * Whether a PR's head moved past `expectedHeadSha`, and if so what landed.
+   * Pass `knownHeadSha` when the caller just read the PR; otherwise this reads
+   * it fresh. A moved head also refreshes ADE's copy of the PR, so the next
+   * merge click carries the new head.
+   */
+  const detectHeadChange = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    expectedHeadSha: string | null | undefined,
+    knownHeadSha?: string | null,
+  ): Promise<LandHeadChange | null> => {
+    const expected = asString(expectedHeadSha).trim();
+    if (!expected) return null;
+    const currentHeadSha = knownHeadSha !== undefined
+      ? asString(knownHeadSha).trim()
+      : asString((await fetchPr(repo, prNumber, { fresh: true }).catch(() => null))?.head?.sha).trim();
+    if (!currentHeadSha || currentHeadSha === expected) return null;
+    const change = await describeHeadChange(repo, expected, currentHeadSha);
+    const row = getRowForRepoPr(repo.owner, repo.name, prNumber);
+    if (row) {
+      await refreshOne(row.id).catch((error) => {
+        logger.warn("prs.land_head_change_refresh_failed", { prId: row.id, error: getErrorMessage(error) });
+      });
+    }
+    return change;
+  };
+
   const githubStackMerge = createGithubStackMerge({
     githubService,
     // Declared further down; read at call time.
@@ -8404,6 +8478,7 @@ export function createPrService({
     refreshOne,
     invalidateGithubSnapshotCache,
     delay,
+    detectHeadChange: (repo, prNumber, expectedHeadSha) => detectHeadChange(repo, prNumber, expectedHeadSha),
   });
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -8446,6 +8521,12 @@ export function createPrService({
     }
 
     const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
+    // The head moved past what the user looked at: nothing merges, and the
+    // result says what landed so the user can merge again against it.
+    const finishHeadChanged = (rawMsg: string, headChanged: LandHeadChange): LandResult => ({
+      ...finishFailure(rawMsg, formatHeadChangeMessage(headChanged)),
+      headChanged,
+    });
 
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
@@ -8460,12 +8541,24 @@ export function createPrService({
       if (latestState !== "open") {
         return finishFailure(`PR is ${latestState}`, `PR is ${latestState}; only open PRs can be merged.`);
       }
+      const headChanged = await detectHeadChange(repo, prNumber, args.expectedHeadSha, asString(latestPull?.head?.sha));
+      if (headChanged) {
+        return finishHeadChanged(`PR head is ${headChanged.currentHeadSha}, expected ${headChanged.expectedHeadSha}`, headChanged);
+      }
       if (mergeConflictsFromPull(latestPull) === true) {
         return finishFailure("PR has merge conflicts", "PR has merge conflicts. Rebase or resolve conflicts before merging.");
       }
     } catch (error) {
       return finishFailure(getErrorMessage(error), `Unable to verify mergeability before merging: ${getErrorMessage(error)}`);
     }
+
+    // The head can still move between the check above and the merge call;
+    // GitHub then refuses with "Head branch was modified".
+    const headMovedDuringMerge = async (rawMsg: string): Promise<LandResult | null> => {
+      if (!isHeadModifiedMergeError(rawMsg)) return null;
+      const headChanged = await detectHeadChange(repo, prNumber, args.expectedHeadSha);
+      return headChanged ? finishHeadChanged(rawMsg, headChanged) : null;
+    };
 
     try {
       // `commit_title`/`commit_message` only apply to merge/squash commits, not
@@ -8502,6 +8595,8 @@ export function createPrService({
       };
     } catch (error) {
       const rawMsg = error instanceof Error ? error.message : String(error);
+      const headMoved = await headMovedDuringMerge(rawMsg);
+      if (headMoved) return headMoved;
       const userMsg = formatMergeError(rawMsg);
 
       if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
@@ -8529,6 +8624,8 @@ export function createPrService({
             error: null,
           };
         }
+        const adminHeadMoved = await headMovedDuringMerge(adminAttempt.error);
+        if (adminHeadMoved) return adminHeadMoved;
         return finishFailure(adminAttempt.error, formatMergeError(adminAttempt.error));
       }
 
