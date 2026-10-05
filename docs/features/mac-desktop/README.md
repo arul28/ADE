@@ -664,6 +664,12 @@ and the reviewer-facing capture is the one that matters, so a turn that overlaps
 a real recording produces no clip. Action frames are still counted, capped at
 one a second and 120 total, and that count is what `frameCount` reports.
 
+Only the newest clip of each lane and chat is kept, because the thread card
+shows only that one: publishing a clip deletes the one before it, a clip closed
+without being published (a recording took the recorder, the stop failed, the
+lane's screen went away) is deleted at once, and the first clip after a start
+sweeps clips over an hour old that an earlier run left.
+
 **Where the files live.** Observation frames and element maps go to
 `.ade/cache/mac-desktop-observations/<laneId>/`, with a `<name>.json` sidecar
 carrying `ownerLaneId` — that is the one root `workToolsStateService.readObservationPreview`

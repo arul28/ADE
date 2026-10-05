@@ -231,7 +231,8 @@ export function macDesktopFloatState(args: {
   );
   return {
     present: wanted || args.decoding,
-    visible: wanted && args.paneTool !== "mac-desktop" && !args.paneMounted,
+    // Either desktop tool: a host offers exactly one, and both show this screen.
+    visible: wanted && args.paneTool !== "mac-desktop" && args.paneTool !== "windows-desktop" && !args.paneMounted,
   };
 }
 

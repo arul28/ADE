@@ -20,6 +20,7 @@ import type {
   MacDesktopLeaseRequestArgs,
   MacDesktopLeaseRequestResult,
   MacDesktopLeaseState,
+  WindowsDesktopSeatMode,
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
@@ -49,6 +50,10 @@ export type MacDesktopLeaseFlowDeps = {
   /** The backend only if it is already up. */
   activeProvider: () => DesktopSeatProvider | null;
   requestChatInput?: MacDesktopRequestChatInput | null;
+  /** The seat host. Defaults to a Mac. */
+  platform?: NodeJS.Platform;
+  /** Windows: which seat the lane's screen is, or null. */
+  seatModeOf?: ((laneId: string) => WindowsDesktopSeatMode | null) | null;
 };
 
 export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
@@ -105,6 +110,19 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         lease: null,
       });
       if (!chatSessionId) return refuse();
+      const windowsHost = deps.platform === "win32";
+      const seatMode = windowsHost ? deps.seatModeOf?.(laneId) ?? null : null;
+      // A Windows private seat is its own session with its own pointer and
+      // keyboard: there is nothing of the user's to ask about.
+      if (seatMode === "private") {
+        return {
+          granted: true,
+          code: null,
+          lease: deps.leases.get(laneId),
+          notRequired: true,
+          message: "This lane's private Windows screen has its own pointer and keyboard; real input needs no lease here.",
+        };
+      }
       const grantNow = (): MacDesktopLeaseRequestResult => {
         const decision = deps.leases.grantToAgent({
           laneId,
@@ -121,6 +139,12 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       // Asked once per chat, for the chat's whole life. A second request is a
       // silent re-grant rather than a second card in the user's face.
       if (deps.leases.isChatApproved(laneId, chatSessionId)) return grantNow();
+      // A shared seat exists only after the user consented to it for this lane,
+      // and that consent is the permission this card would ask for again.
+      if (seatMode === "shared") {
+        deps.leases.approveChat(laneId, chatSessionId);
+        return grantNow();
+      }
 
       // An automation's synthetic holder (`automation:<ruleId>`) is not a chat,
       // so there is nobody to show a card to: asking would throw "chat not
@@ -137,11 +161,11 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         response = await deps.requestChatInput({
           chatSessionId,
           title: "Real input on the lane's display",
-          body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this Mac.`,
+          body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this ${windowsHost ? "PC" : "Mac"}.`,
           questions: [{
             id: "mac_desktop_input_lease",
             header: "Real input",
-            question: `Allow this chat to use real pointer and keyboard input on its Mac Desktop display? (${reason})`,
+            question: `Allow this chat to use real pointer and keyboard input on its ${windowsHost ? "Windows" : "Mac"} Desktop display? (${reason})`,
             options: [
               { label: "Allow", value: "allow", recommended: true },
               { label: "Don't allow", value: "deny" },
@@ -149,7 +173,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
             allowsFreeform: true,
           }],
           providerMetadata: { macDesktopInputLease: true, laneId },
-          eventDescription: `Allow real input on the Mac Desktop display for ${reason}?`,
+          eventDescription: `Allow real input on the ${windowsHost ? "Windows" : "Mac"} Desktop display for ${reason}?`,
           eventDetail: { macDesktopInputLease: true, laneId },
         });
       } catch (error) {

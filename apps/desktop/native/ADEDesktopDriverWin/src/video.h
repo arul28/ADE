@@ -69,6 +69,12 @@ class H264Encoder {
 std::string avcCodecString(const std::vector<uint8_t>& annexB);
 
 // The loopback byte server a lane's viewers read from (through Node).
+//
+// Writes never block the media thread. A reader that stops reading (the brain's
+// event loop stalls for seconds at a turn start) keeps its connection: the
+// unsent tail of the current record waits in its queue, later frames are
+// skipped for it, and once it drains it resumes at the next keyframe. Only a
+// reader stalled past kStalledReaderDropMs, or a socket error, is disconnected.
 class StreamByteServer {
  public:
   ~StreamByteServer();
@@ -81,13 +87,23 @@ class StreamByteServer {
   int port() const { return port_; }
 
  private:
+  struct Client {
+    uintptr_t socket = ~static_cast<uintptr_t>(0);
+    std::vector<uint8_t> pending;  // the unsent tail of one whole record
+    size_t offset = 0;
+    bool needKeyframe = false;     // frames were skipped; resume at a keyframe
+    bool needConfig = false;       // config changed while a record was pending
+    int64_t stalledSinceMs = 0;
+  };
+  // Sends what the socket takes, waiting at most `waitMs`. False on a socket error.
+  static bool flush(Client& client, int64_t waitMs);
   void acceptLoop();
   static std::vector<uint8_t> record(uint8_t type, bool keyframe, const uint8_t* data, size_t size);
   uintptr_t listen_ = ~static_cast<uintptr_t>(0);
   int port_ = 0;
   std::thread acceptThread_;
   std::mutex mutex_;
-  std::vector<uintptr_t> clients_;
+  std::vector<Client> clients_;
   std::vector<uint8_t> configRecord_;
   std::function<void()> onClientAttached_;
   std::atomic<bool> running_{false};

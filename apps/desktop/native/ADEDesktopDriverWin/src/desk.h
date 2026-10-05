@@ -46,6 +46,11 @@ struct LaunchResult {
 // Opens an app name, an exe path, a file, a URL, or `shell:AppsFolder\<AUMID>`.
 LaunchResult launchTarget(const std::wstring& target, const std::vector<std::wstring>& args);
 
+// A bare app name ("chrome", "msedge.exe") resolved through the App Paths
+// registry (HKCU, then HKLM), the way Run resolves it. Empty when the target is
+// a path, a URL, or not registered.
+std::wstring resolveAppPath(const std::wstring& target);
+
 // Asks a window to close; returns false when it did not go within the wait.
 bool closeWindowGracefully(HWND hwnd, DWORD waitMs);
 bool terminatePid(DWORD pid, const FILETIME& expectedCreation);

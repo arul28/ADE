@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
-import { killWindowsProcessTree, resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { killWindowsProcessTree, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;
@@ -537,6 +537,42 @@ export function createClaudeSubprocessReaper(args: {
     return child;
   };
 
+  /**
+   * Windows tree kill for a live child, off the event loop.
+   *
+   * `terminateProcessTree` runs `taskkill /T /F` through `spawnSync` with no
+   * timeout, and this runs on the turn path (a query reset, an interrupt, a
+   * failed turn): a Claude tree with its MCP servers can take seconds to walk,
+   * and every one of them was a brain that answered nothing. The order is
+   * kept — the tree first, then the leader — because once the leader is gone
+   * `taskkill /T` can no longer find its children. The exit guard is checked
+   * again before the leader is killed (PID reuse).
+   */
+  const killWindowsTreeThenLeader = (
+    child: ClaudeChildProcess | SpawnedProcess,
+    signal: NodeJS.Signals,
+    sessionId: string,
+  ): void => {
+    const exited = (): boolean => (child as { exitCode?: number | null }).exitCode != null
+      || (child as { signalCode?: string | null }).signalCode != null;
+    const killLeader = (): void => {
+      if (exited()) return;
+      try {
+        child.kill(signal);
+      } catch {
+        // Already gone.
+      }
+    };
+    const pid = (child as { pid?: number }).pid;
+    if (typeof pid !== "number" || exited()) {
+      killLeader();
+      return;
+    }
+    void killWindowsProcessTreeAsync(pid, (detail) => {
+      logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId });
+    }).then(killLeader, killLeader);
+  };
+
   const terminateLiveEntry = (
     pid: number,
     entry: LiveClaudeSubprocess,
@@ -558,9 +594,7 @@ export function createClaudeSubprocessReaper(args: {
         // children (ripgrep, MCP servers, and the cmd.exe that fronts a `.cmd`
         // shim) down with it — `child.kill("SIGTERM")` on Windows terminates
         // this one PID and orphans the rest.
-        terminateProcessTree(child as unknown as Parameters<typeof terminateProcessTree>[0], "SIGTERM", (detail) => {
-          logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId: entry.record.sessionId });
-        });
+        killWindowsTreeThenLeader(child, "SIGTERM", entry.record.sessionId);
       } else {
         // Same reasoning as the Windows branch, one platform over: a bare
         // `child.kill` signals the leader and leaves its MCP servers running.
@@ -581,9 +615,7 @@ export function createClaudeSubprocessReaper(args: {
             // The escalation has to walk the tree too. `child.kill("SIGKILL")`
             // here is a `TerminateProcess` on the leader alone, which is what
             // turns a surviving tree into a permanently orphaned one.
-            terminateProcessTree(child as unknown as Parameters<typeof terminateProcessTree>[0], "SIGKILL", (detail) => {
-              logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId: entry.record.sessionId });
-            });
+            killWindowsTreeThenLeader(child, "SIGKILL", entry.record.sessionId);
           } else {
             signalPosixTree(pid, "SIGKILL", child, entry.groupLeader);
           }

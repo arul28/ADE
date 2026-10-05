@@ -237,6 +237,23 @@ FILETIME processCreationTime(DWORD pid) {
   return created;
 }
 
+std::wstring resolveAppPath(const std::wstring& target) {
+  if (target.empty() || target.find_first_of(L"\\/:") != std::wstring::npos) return L"";
+  std::wstring name = target;
+  if (lower(name).size() < 4 || lower(name).substr(name.size() - 4) != L".exe") name += L".exe";
+  const std::wstring key = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + name;
+  for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+    wchar_t value[MAX_PATH * 2] = {};
+    DWORD bytes = sizeof(value);
+    // RRF_RT_REG_SZ | REG_EXPAND_SZ, expanded.
+    if (RegGetValueW(root, key.c_str(), nullptr, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, value, &bytes) != ERROR_SUCCESS) continue;
+    std::wstring path = value;
+    if (path.size() >= 2 && path.front() == L'"' && path.back() == L'"') path = path.substr(1, path.size() - 2);
+    if (!path.empty() && fileExists(path)) return path;
+  }
+  return L"";
+}
+
 LaunchResult launchTarget(const std::wstring& target, const std::vector<std::wstring>& args) {
   LaunchResult result;
   std::wstring params;

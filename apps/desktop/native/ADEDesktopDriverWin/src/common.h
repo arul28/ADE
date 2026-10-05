@@ -55,6 +55,12 @@ constexpr const char* kInvalidArgument = "invalid_argument";
 constexpr const char* kInternalError = "internal_error";
 }  // namespace code
 
+// Exit code of a driver that retires itself on purpose (a wedged UI thread, an
+// operation past its hard deadline) after replying. The brain starts a fresh
+// driver at once and does not count it as a crash
+// (`MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE` in macDesktopDriverClient.ts).
+constexpr unsigned int kRetireExitCode = 75;
+
 // What a handler throws when it refuses. The dispatcher turns it into
 // `{"ok":false,"error":{"code","message"}}`.
 struct DriverError {

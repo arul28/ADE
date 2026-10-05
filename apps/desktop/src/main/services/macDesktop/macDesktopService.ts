@@ -27,6 +27,11 @@ import {
   WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
   WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
   WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
+  MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
+  WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE,
+  AUTOMATION_CHAT_SESSION_PREFIX,
+  describeDesktopSeat,
+  desktopProductName,
   macDesktopDisplayName,
   type MacDesktopInputResult,
   type MacDesktopMoveArgs,
@@ -75,9 +80,15 @@ import {
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
   type MacDesktopWindow,
+  type MacDesktopWindowActionArgs,
+  type MacDesktopWindowActionResult,
+  type WindowsDesktopRequestSharedArgs,
   type WindowsDesktopSeatMode,
   type WindowsDesktopSetupArgs,
   type WindowsDesktopSetupResult,
+  type WindowsDesktopOperation,
+  type WindowsDesktopOperationKind,
+  type WindowsDesktopOperationResult,
   type WindowsDesktopStatus,
   type WindowsDesktopTakeoverArgs,
 } from "../../../shared/types/macDesktop";
@@ -87,6 +98,7 @@ import type {
 } from "../../../shared/types/computerUseArtifacts";
 import { resolveAdeSigningState, resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
+  MAC_DESKTOP_DRIVER_RETIRED_REASON,
   MacDesktopDriverError,
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
@@ -435,6 +447,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    */
   let lastWindowsDesktopStatus: WindowsDesktopStatus | null = null;
   let windowsLongOperationInFlight = 0;
+  /**
+   * The interactive Windows operation running now, and how the last one ended.
+   *
+   * Carried on every Windows status so a pane closed and reopened mid-sign-in
+   * shows the same progress (and, after, the same outcome) instead of an empty
+   * card and a second request. In memory only: a restarted brain has no
+   * operation to report.
+   */
+  let windowsOperation: WindowsDesktopOperation | null = null;
+  let windowsLastOperation: WindowsDesktopOperationResult | null = null;
+  const withWindowsOperation = (status: WindowsDesktopStatus | null): WindowsDesktopStatus | null => (
+    status ? { ...status, operation: windowsOperation, lastOperation: windowsLastOperation } : status
+  );
 
   /**
    * The persistent record of what happened to each lane's display.
@@ -575,7 +600,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (!display) {
       throw new MacDesktopError(
         "MAC_DESKTOP_NO_DISPLAY",
-        `Lane ${laneId} has no Mac Desktop display. Start one first.`,
+        `Lane ${laneId} has no ${productName} screen. Start one first.`,
       );
     }
     return display;
@@ -631,11 +656,62 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     ),
     onRecordingFiled: () => captureOutcome("recorded"),
     demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: deps.logger }),
+    seatPlatform: seatAdapter.platform,
   });
   const recordings = recording.recordings;
 
+  /**
+   * Windows: chats whose user allowed the shared seat for a lane, through the
+   * ask card. Not cleared when the screen stops, so the same chat is not asked
+   * twice; cleared when the chat closes. In memory only.
+   */
+  const sharedConsentChats = new Map<string, Set<string>>();
+
+  /** focus/minimize/close are Windows-only: the Mac helper has no such op. */
+  const assertWindowVerbsSupported = (verb: string): void => {
+    assertSupported();
+    if (seatAdapter.platform !== "win32") {
+      throw new MacDesktopError(
+        "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+        `\`ade screen ${verb}\` is Windows-only; this Mac's screen driver has no window ${verb}. Use \`ade screen release\` or \`ade screen quit\` for a lane app instead.`,
+      );
+    }
+  };
+
+  /** "Mac Desktop" / "Windows Desktop", for the sentences this file writes. */
+  const productName = desktopProductName(seatAdapter.platform);
+
+  /**
+   * Windows shared seat: the acting chat takes the lane's lease on the
+   * strength of the user's shared-seat consent. Two shared lanes drive one
+   * main desktop, one pointer and one foreground, so a live lease on any other
+   * shared lane refuses this one until it lapses.
+   */
+  const takeSharedSeatLease = async (laneId: string, holderId: string): Promise<void> => {
+    for (const other of ownership.listDisplays()) {
+      if (other.laneId === laneId || other.seatMode !== "shared") continue;
+      const otherLease = leases.get(other.laneId);
+      if (!otherLease) continue;
+      const name = ownership.laneName(other.laneId) ?? other.laneId;
+      throw new MacDesktopError(
+        MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
+        `Lane ${name} is driving the main Windows desktop right now (until ${otherLease.expiresAt} unless it keeps acting). Wait and retry; two lanes cannot drive the user's one pointer at once.`,
+      );
+    }
+    const current = leases.get(laneId);
+    // A person who took control, or another chat, keeps it; the check after
+    // this call refuses with the right code.
+    if (current && current.holderId !== holderId) return;
+    const decision = leases.grantToAgent({ laneId, holder: "agent", holderId, holderLabel: null });
+    if (!decision.ok) return;
+    await leaseFlow.pushLease(laneId, decision.lease);
+    if (!current) emit({ type: "lease-changed", laneId, lease: decision.lease });
+  };
+
   const input = createMacDesktopInput({
     now,
+    platform: seatAdapter.platform,
+    takeSharedSeatLease: seatAdapter.platform === "win32" ? takeSharedSeatLease : null,
     emit,
     ensureProvider,
     requireDisplay,
@@ -677,6 +753,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     },
     activeProvider,
     ...(deps.requestChatInput ? { requestChatInput: deps.requestChatInput } : {}),
+    platform: seatAdapter.platform,
+    seatModeOf: (laneId) => ownership.getDisplay(laneId)?.seatMode ?? null,
   });
   const pushLease = leaseFlow.pushLease;
 
@@ -762,7 +840,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         if (!provider?.windowsStatus) return;
         void provider.windowsStatus().then((status) => {
           lastWindowsDesktopStatus = status;
-          emit({ type: "windows-desktop-changed", status });
+          const merged = withWindowsOperation(status);
+          if (merged) emit({ type: "windows-desktop-changed", status: merged });
         }).catch((error: unknown) => {
           deps.logger.debug("mac_desktop.windows_state_refresh_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -812,7 +891,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         status: {
           ...liveRecording,
           running: false,
-          lastError: "The lane's Mac Desktop display was lost before the recording stopped.",
+          lastError: `The lane's ${productName} screen was lost before the recording stopped.`,
         },
       });
     }
@@ -824,6 +903,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   const onDriverLost = (reason: string): void => {
+    // A Windows driver that retired itself after a wedged teardown took no
+    // screen with it when no lane had one: keep the just-finished recording
+    // and stream state, and say nothing to the pane.
+    if (reason === MAC_DESKTOP_DRIVER_RETIRED_REASON && ownership.laneIds().length === 0) {
+      deps.logger.info("mac_desktop.driver_retired_idle", {});
+      return;
+    }
     deps.logger.warn("mac_desktop.driver_lost", { reason, lanes: ownership.laneIds() });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
@@ -883,7 +969,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     // while that read is in flight, and a status must not report it anyway.
     const display = laneId ? ownership.getDisplay(laneId) : null;
     const streamStatus = laneId ? streaming.buildStreamStatus(laneId, { redacted: true }) : null;
-    return {
+    const base: MacDesktopStatus = {
       platform,
       supported,
       unsupportedReason: supported
@@ -909,8 +995,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       hostIsLocal: deps.hostIsLocal ? deps.hostIsLocal() : true,
       responsibleAppName: responsibleAppName(),
       signing: signingState(),
-      windowsDesktop: await readWindowsDesktopStatus(),
+      windowsDesktop: withWindowsOperation(await readWindowsDesktopStatus()),
     };
+    return { ...base, seat: describeDesktopSeat(base) };
   };
 
   /**
@@ -932,6 +1019,44 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     );
     if (next) lastWindowsDesktopStatus = next;
     return next;
+  };
+
+  /** Tells every pane the operation state moved, from the last real status. */
+  const publishWindowsOperation = (): void => {
+    const merged = withWindowsOperation(lastWindowsDesktopStatus);
+    if (merged) emit({ type: "windows-desktop-changed", status: merged });
+  };
+
+  /**
+   * Runs one interactive Windows operation with its progress and outcome on
+   * the status. Nested calls (a takeover's start) keep the outer record.
+   */
+  const runWindowsOperation = async <T>(
+    kind: WindowsDesktopOperationKind,
+    laneId: string | null,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    if (windowsOperation) return await work();
+    const operation: WindowsDesktopOperation = { kind, laneId, startedAt: new Date().toISOString() };
+    windowsOperation = operation;
+    windowsLastOperation = null;
+    publishWindowsOperation();
+    try {
+      const result = await work();
+      windowsLastOperation = { ...operation, outcome: "succeeded", endedAt: new Date().toISOString(), error: null };
+      return result;
+    } catch (error) {
+      windowsLastOperation = {
+        ...operation,
+        outcome: "failed",
+        endedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    } finally {
+      windowsOperation = null;
+      publishWindowsOperation();
+    }
   };
 
   // -------------------------------------------------------------------------
@@ -1010,9 +1135,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
             if (windows?.heldByLaneId && windows.heldByLaneId !== laneId) {
               throw new MacDesktopError(
                 WINDOWS_DESKTOP_HELD_CODE,
-                windows.heldByLaneName
-                  ? `Lane ${windows.heldByLaneName} is using the private Windows screen.`
-                  : "Another lane is using the private Windows screen.",
+                `${windows.heldByLaneName
+                  ? `Lane ${windows.heldByLaneName} (${windows.heldByLaneId}) is using the private Windows screen.`
+                  : `Lane ${windows.heldByLaneId} is using the private Windows screen.`} `
+                  + "Ask the user to take it over from the Windows Desktop pane, or run `ade screen start --shared` to ask the user to let this lane use their main desktop.",
               );
             }
             break;
@@ -1025,7 +1151,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         if (args.sharedDesktopConsent !== true) {
           throw new MacDesktopError(
             WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
-            "Using your main Windows desktop needs the user's consent first.",
+            "Using the main Windows desktop needs the user's consent first. Run `ade screen start --shared` to ask the user in this chat.",
           );
         }
       }
@@ -1050,7 +1176,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (longWindowsCreate) windowsLongOperationInFlight += 1;
     let reply: DriverDisplayReply;
     try {
-      reply = await seat.create(createArgs) as DriverDisplayReply;
+      reply = longWindowsCreate
+        ? await runWindowsOperation("start_private", laneId, async () => await seat.create(createArgs) as DriverDisplayReply)
+        : await seat.create(createArgs) as DriverDisplayReply;
     } finally {
       if (longWindowsCreate) windowsLongOperationInFlight -= 1;
     }
@@ -1073,6 +1201,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       createdAt: asNullableString(reply.createdAt) ?? new Date(now()).toISOString(),
       windowCount: 0,
       lastActivityAt: new Date(now()).toISOString(),
+      // Windows only: which seat, so every surface can say private or shared.
+      ...(seatMode ? { seatMode } : {}),
     };
     driverLifecycle.setDisplayMode(display.mode);
     const stored = ownership.setDisplay(display, laneName);
@@ -1274,11 +1404,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           "This Windows Desktop driver build does not answer setup.",
         );
       }
+      const setupWindows = provider.setupWindows.bind(provider);
+      const kind: WindowsDesktopOperationKind = args.forgetPassword === true
+        ? "forget_password"
+        : args.savePassword === true ? "save_password" : "setup";
       windowsLongOperationInFlight += 1;
       try {
-        const result = await provider.setupWindows({ allowPrompt, savePassword: args.savePassword === true, forgetPassword: args.forgetPassword === true });
+        const result = await runWindowsOperation(kind, null, async () => {
+          const reply = await setupWindows({ allowPrompt, savePassword: args.savePassword === true, forgetPassword: args.forgetPassword === true });
+          lastWindowsDesktopStatus = reply.status;
+          return reply;
+        });
         await driverLifecycle.refreshDriverHealth();
-        return result;
+        return { ...result, status: withWindowsOperation(result.status) ?? result.status };
       } finally {
         windowsLongOperationInFlight -= 1;
       }
@@ -1359,6 +1497,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async open(args: MacDesktopOpenArgs): Promise<MacDesktopOpenResult> {
       assertSupported();
+      // A launch on the shared seat takes the user's foreground.
+      await input.claimSharedSeatForeground(args.laneId.trim(), args);
       return await windowLifecycle.open(args);
     },
 
@@ -1375,6 +1515,107 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult> {
       assertSupported();
       return await windowLifecycle.quitApp(args);
+    },
+
+    async focusWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult> {
+      assertWindowVerbsSupported("focus");
+      return await windowLifecycle.windowAction(args, "focus");
+    },
+
+    async minimizeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult> {
+      assertWindowVerbsSupported("minimize");
+      return await windowLifecycle.windowAction(args, "minimize");
+    },
+
+    async closeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult> {
+      assertWindowVerbsSupported("close");
+      // Focus and minimize never activate on the shared seat (the driver
+      // raises without activating); a close can put the app's save prompt in
+      // front of the user, so it takes the shared seat's lease like input.
+      await input.claimSharedSeatForeground(args.laneId.trim(), args);
+      return await windowLifecycle.windowAction(args, "close");
+    },
+
+    /**
+     * Windows: the agent's way to the shared seat. The user's answer on a card
+     * in the calling chat is the consent; the agent cannot supply it.
+     */
+    async requestSharedDesktop(args: WindowsDesktopRequestSharedArgs): Promise<MacDesktopStatus> {
+      assertSupported();
+      if (seatAdapter.platform !== "win32") {
+        throw new MacDesktopError(
+          "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+          "The shared seat is a Windows Desktop feature. On a Mac, the lane screen is always private: run `ade screen start`.",
+        );
+      }
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new MacDesktopError("MAC_DESKTOP_NO_DISPLAY", "requestSharedDesktop needs a laneId.");
+      const existing = ownership.getDisplay(laneId);
+      if (existing?.seatMode === "shared") return await buildStatus({ laneId });
+      if (existing) {
+        throw new MacDesktopError(
+          WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+          "This lane already has a private Windows screen. Stop it first (`ade screen stop`) if you need the main desktop instead.",
+        );
+      }
+      const chatSessionId = args.chatSessionId?.trim() || "";
+      const startShared = () => api.start({
+        laneId,
+        seatMode: "shared",
+        sharedDesktopConsent: true,
+        ...(chatSessionId ? { chatSessionId } : {}),
+      });
+      if (chatSessionId && sharedConsentChats.get(laneId)?.has(chatSessionId)) return await startShared();
+      if (!chatSessionId || chatSessionId.startsWith(AUTOMATION_CHAT_SESSION_PREFIX) || !deps.requestChatInput) {
+        throw new MacDesktopError(
+          WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+          "Using the main Windows desktop needs the user's consent, and there is no chat to ask in. Ask the user to choose \"Use my main desktop\" in the Windows Desktop pane.",
+        );
+      }
+      const reason = args.reason?.trim() || null;
+      let answer: Awaited<ReturnType<NonNullable<MacDesktopServiceDeps["requestChatInput"]>>>;
+      try {
+        answer = await deps.requestChatInput({
+          chatSessionId,
+          title: "Use your main Windows desktop?",
+          body: `${WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE}${reason ? ` The agent wants to: ${reason}.` : ""} You can stop it at any time from the Windows Desktop pane.`,
+          questions: [{
+            id: "windows_desktop_shared_consent",
+            header: "Main desktop",
+            question: "Allow this chat's lane to use your main Windows desktop?",
+            options: [
+              { label: "Allow", value: "allow", recommended: false },
+              { label: "Don't allow", value: "deny" },
+            ],
+            allowsFreeform: true,
+          }],
+          providerMetadata: { windowsDesktopSharedConsent: true, laneId },
+          eventDescription: "Allow this lane to use your main Windows desktop?",
+          eventDetail: { windowsDesktopSharedConsent: true, laneId },
+        });
+      } catch (error) {
+        deps.logger.warn("mac_desktop.shared_consent_prompt_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new MacDesktopError(WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE, "The user was not asked: the chat could not show the card.");
+      }
+      const text = [...(answer.answers?.windows_desktop_shared_consent ?? []), answer.responseText ?? ""].join(" ").toLowerCase();
+      const denied = answer.decision === "decline"
+        || answer.decision === "cancel"
+        || text.includes("deny")
+        || text.includes("don't allow")
+        || text.includes("do not allow");
+      if (denied || (!text.includes("allow") && answer.decision !== "accept")) {
+        throw new MacDesktopError(
+          WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+          "The user did not allow the main Windows desktop. Do not ask again in this turn; tell the user what you could not do.",
+        );
+      }
+      const chats = sharedConsentChats.get(laneId) ?? new Set<string>();
+      chats.add(chatSessionId);
+      sharedConsentChats.set(laneId, chats);
+      return await startShared();
     },
 
     async observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation> {
@@ -1546,6 +1787,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async releaseIfOwnedBy(chatSessionId: string | null | undefined): Promise<{ released: boolean }> {
       const trimmed = chatSessionId?.trim();
       if (!trimmed) return { released: false };
+      // A closed chat's shared-seat consent goes with it.
+      for (const [laneId, chats] of [...sharedConsentChats]) {
+        if (chats.delete(trimmed) && chats.size === 0) sharedConsentChats.delete(laneId);
+      }
       const dropped = leases.releaseHolder(trimmed);
       for (const lease of dropped) {
         emit({ type: "lease-changed", laneId: lease.laneId, lease: null });

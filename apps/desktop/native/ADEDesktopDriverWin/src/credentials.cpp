@@ -55,9 +55,46 @@ bool credentialSaved(const std::wstring& target) {
 }
 
 namespace {
-struct PromptWait { HWND owner; int64_t deadline; const std::atomic<bool>* stopping; bool cancelled = false; };
+struct PromptWait { HWND owner; int64_t deadline; const std::atomic<bool>* stopping; bool cancelled = false; int raised = 0; };
 thread_local PromptWait* promptWait = nullptr;
+
+// The dialog CredUI opened for our owner window, if it exists yet.
+HWND promptDialog(HWND owner) {
+  struct Find { HWND owner; HWND found; } find{owner, nullptr};
+  EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM context) -> BOOL {
+    auto* f = reinterpret_cast<Find*>(context);
+    if (window != f->owner && IsWindowVisible(window) && GetWindow(window, GW_OWNER) == f->owner) { f->found = window; return FALSE; }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&find));
+  return find.found;
+}
+
+// A background helper may not take the foreground outright. Topmost puts the
+// dialog above ADE regardless; attaching to the foreground thread's input
+// lets SetForegroundWindow give it the keyboard; a flash is the last resort.
+void raisePrompt(HWND dialog) {
+  SetWindowPos(dialog, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  const HWND foreground = GetForegroundWindow();
+  if (foreground == dialog) return;
+  const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+  const DWORD self = GetCurrentThreadId();
+  const bool attached = foregroundThread && foregroundThread != self && AttachThreadInput(self, foregroundThread, TRUE);
+  BringWindowToTop(dialog);
+  const bool activated = SetForegroundWindow(dialog) != FALSE;
+  SetActiveWindow(dialog);
+  if (attached) AttachThreadInput(self, foregroundThread, FALSE);
+  if (!activated) {
+    FLASHWINFO flash{sizeof(flash), dialog, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0};
+    FlashWindowEx(&flash);
+  }
+  logLine(std::string("save: prompt raised activated=") + (activated ? "1" : "0"));
+}
+
 void CALLBACK cancelPrompt(HWND, UINT, UINT_PTR, DWORD) {
+  if (promptWait && promptWait->raised < 3) {
+    // Raise on first sight, and twice more while CredUI finishes showing.
+    if (HWND dialog = promptDialog(promptWait->owner)) { raisePrompt(dialog); ++promptWait->raised; }
+  }
   if (!promptWait || (!promptWait->stopping->load() && nowMs() < promptWait->deadline)) return;
   if (!promptWait->cancelled) logLine("save: prompt deadline/cancellation; closing owned dialog");
   promptWait->cancelled = true;
@@ -70,7 +107,29 @@ void CALLBACK cancelPrompt(HWND, UINT, UINT_PTR, DWORD) {
   }, reinterpret_cast<LPARAM>(promptWait->owner));
 }
 }
-std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping, int64_t deadline) {
+namespace {
+LRESULT CALLBACK promptOwnerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcW(hwnd, msg, wp, lp); }
+
+// An invisible, topmost, unowned window on the prompting thread, centred on
+// the primary monitor's work area. The CredUI dialog is modal to it, centres
+// on it, and inherits its place above ADE.
+HWND createPromptOwner() {
+  static const wchar_t* kClass = L"ADEWindowsPasswordPromptOwner";
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = promptOwnerProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = kClass;
+  RegisterClassW(&wc);  // A second registration fails harmlessly.
+  RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  const int x = (work.left + work.right) / 2, y = (work.top + work.bottom) / 2 - 120;
+  HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kClass, L"ADE", WS_POPUP, x, y, 1, 1, nullptr, nullptr, wc.hInstance, nullptr);
+  if (owner) {
+    ShowWindow(owner, SW_SHOWNOACTIVATE);
+    SetWindowPos(owner, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
+  return owner;
+}
+}  // namespace
+
+std::unique_ptr<WindowsCredential> promptCredential(const std::atomic<bool>& stopping, int64_t deadline) {
   wchar_t username[CREDUI_MAX_USERNAME_LENGTH + 1] = {};
   ULONG size = ARRAYSIZE(username);
   if (!GetUserNameExW(NameSamCompatible, username, &size)) username[0] = 0;
@@ -109,6 +168,8 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   auto credential = std::make_unique<WindowsCredential>();
   credential->password.resize(CREDUI_MAX_PASSWORD_LENGTH + 1);
   CREDUI_INFOW info = {sizeof(info)};
+  HWND owner = createPromptOwner();
+  struct Owner { HWND value; ~Owner() { if (value) DestroyWindow(value); } } ownedOwner{owner};
   info.hwndParent = owner;
   info.pszCaptionText = L"Save your Windows password for ADE";
   info.pszMessageText = L"Enter your Windows password, not your PIN. ADE checks it before saving it on this PC.";

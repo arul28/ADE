@@ -303,6 +303,11 @@ bool sendRecord(SOCKET socket, const std::vector<uint8_t>& bytes, int64_t deadli
   return offset == bytes.size();
 }
 
+// A reader that has not taken a whole record for this long is gone.
+constexpr int64_t kStalledReaderDropMs = 20'000;
+// How long one broadcast may wait for a healthy reader's socket.
+constexpr int64_t kHealthyWriteWaitMs = 20;
+
 bool ensureWinsock() {
   static std::once_flag once;
   static bool ok = false;
@@ -366,6 +371,9 @@ void StreamByteServer::acceptLoop() {
     }
     int one = 1;
     setsockopt(c, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
+    // Room for several 1440p keyframes, so a healthy reader never sees a partial record.
+    int sendBuffer = 8 * 1024 * 1024;
+    setsockopt(c, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&sendBuffer), sizeof(sendBuffer));
     u_long nonblocking = 1;
     if (ioctlsocket(c, FIONBIO, &nonblocking) != 0) { closesocket(c); continue; }
     {
@@ -376,7 +384,10 @@ void StreamByteServer::acceptLoop() {
       }
       // Publish only after the complete config record. All record writers use
       // this same lock, so no frame can precede or interleave with config.
-      clients_.push_back(static_cast<uintptr_t>(c));
+      Client client;
+      client.socket = static_cast<uintptr_t>(c);
+      client.needKeyframe = true;  // never start a reader on a delta frame
+      clients_.push_back(std::move(client));
     }
     if (onClientAttached_) onClientAttached_();
   }
@@ -387,8 +398,29 @@ void StreamByteServer::stop() {
   closesocket(static_cast<SOCKET>(listen_));
   if (acceptThread_.joinable()) acceptThread_.join();
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto c : clients_) closesocket(static_cast<SOCKET>(c));
+  for (auto& c : clients_) closesocket(static_cast<SOCKET>(c.socket));
   clients_.clear();
+}
+
+bool StreamByteServer::flush(Client& client, int64_t waitMs) {
+  if (client.pending.empty()) return true;
+  const int64_t deadline = nowMs() + std::max<int64_t>(0, waitMs);
+  const SOCKET socket = static_cast<SOCKET>(client.socket);
+  for (;;) {
+    while (client.offset < client.pending.size()) {
+      const int sent = send(socket, reinterpret_cast<const char*>(client.pending.data() + client.offset),
+                            static_cast<int>(client.pending.size() - client.offset), 0);
+      if (sent > 0) { client.offset += static_cast<size_t>(sent); continue; }
+      if (sent == 0 || WSAGetLastError() != WSAEWOULDBLOCK) return false;
+      break;
+    }
+    if (client.offset >= client.pending.size()) { client.pending.clear(); client.offset = 0; return true; }
+    const int64_t remaining = deadline - nowMs();
+    if (remaining <= 0) return true;  // still pending; not an error
+    fd_set writable; FD_ZERO(&writable); FD_SET(socket, &writable);
+    timeval timeout{0, static_cast<long>(std::min<int64_t>(remaining, 10) * 1000)};
+    if (select(0, nullptr, &writable, nullptr, &timeout) == SOCKET_ERROR) return false;
+  }
 }
 
 void StreamByteServer::setConfig(const std::string& codec) {
@@ -397,20 +429,64 @@ void StreamByteServer::setConfig(const std::string& codec) {
   if (rec == configRecord_) return;
   configRecord_ = rec;
   for (auto it = clients_.begin(); it != clients_.end();) {
-    if (!sendRecord(static_cast<SOCKET>(*it), rec, nowMs() + 250)) {
-      closesocket(static_cast<SOCKET>(*it)); it = clients_.erase(it);
-    } else ++it;
+    bool ok = flush(*it, 0);
+    if (ok && it->pending.empty()) {
+      it->pending = rec; it->offset = 0;
+      ok = flush(*it, kHealthyWriteWaitMs);
+    } else if (ok) {
+      it->needConfig = true;  // sent ahead of its next record
+    }
+    if (!ok) { closesocket(static_cast<SOCKET>(it->socket)); it = clients_.erase(it); }
+    else ++it;
   }
 }
 
 void StreamByteServer::broadcast(uint8_t type, bool keyframe, const std::vector<uint8_t>& payload) {
   auto rec = record(type, keyframe, payload.data(), payload.size());
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = clients_.begin(); it != clients_.end();) {
-    if (!sendRecord(static_cast<SOCKET>(*it), rec, nowMs() + 250)) {
-      closesocket(static_cast<SOCKET>(*it)); it = clients_.erase(it);
-    } else ++it;
+  bool wantKeyframe = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int64_t now = nowMs();
+    for (auto it = clients_.begin(); it != clients_.end();) {
+      Client& client = *it;
+      bool ok = flush(client, 0);
+      if (ok && !client.pending.empty()) {
+        // Still stalled on an earlier record: skip this one for this reader.
+        if (!client.stalledSinceMs) client.stalledSinceMs = now;
+        if (now - client.stalledSinceMs > kStalledReaderDropMs) {
+          logLine("stream: dropping a reader stalled for " + std::to_string(now - client.stalledSinceMs) + "ms");
+          ok = false;
+        } else if (type == 2) {
+          client.needKeyframe = true;
+        }
+      } else if (ok) {
+        if (client.stalledSinceMs) {
+          logLine("stream: reader resumed after " + std::to_string(now - client.stalledSinceMs) + "ms");
+          client.stalledSinceMs = 0;
+        }
+        const bool skip = type == 2 && client.needKeyframe && !keyframe;
+        if (skip) {
+          wantKeyframe = true;
+        } else {
+          if (type == 2 && keyframe) client.needKeyframe = false;
+          if (client.needConfig && !configRecord_.empty()) {
+            client.pending = configRecord_;
+            client.pending.insert(client.pending.end(), rec.begin(), rec.end());
+            client.needConfig = false;
+          } else {
+            client.pending = rec;
+          }
+          client.offset = 0;
+          ok = flush(client, kHealthyWriteWaitMs);
+          if (ok && !client.pending.empty()) client.stalledSinceMs = now;
+        }
+      }
+      if (!ok) { closesocket(static_cast<SOCKET>(client.socket)); it = clients_.erase(it); }
+      else ++it;
+    }
   }
+  // Outside the lock: asks the encoder for a keyframe for a recovering reader.
+  if (wantKeyframe && onClientAttached_) onClientAttached_();
 }
 
 size_t StreamByteServer::clientCount() {

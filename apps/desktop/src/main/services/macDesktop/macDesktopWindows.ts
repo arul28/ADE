@@ -13,6 +13,10 @@
 
 import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+  MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+  type MacDesktopWindowAction,
+  type MacDesktopWindowActionArgs,
+  type MacDesktopWindowActionResult,
   type DesktopSeatProvider,
   type MacDesktopClaimArgs,
   type MacDesktopEventPayload,
@@ -117,6 +121,7 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     // something else touched the list. The listing is cheap and this is the
     // only site that had a stale one to hand.
     deps.emit({ type: "windows-changed", laneId, windows: await listInternal(laneId) });
+    const handedOff = reply.handedOff === true;
     return {
       laneId,
       pid,
@@ -124,6 +129,64 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       bundleId,
       windows,
       watching: reply.watching === true,
+      // Windows: the launcher passed the request to a running instance and
+      // exited, so no window will come. Said, so nobody waits for one.
+      ...(handedOff ? { handedOff: true } : {}),
+      ...(handedOff || reply.message != null ? { message: asNullableString(reply.message) } : {}),
+      ...(reply.profileDir !== undefined ? { profileDir: asNullableString(reply.profileDir) } : {}),
+      ...(reply.resolvedPath !== undefined ? { resolvedPath: asNullableString(reply.resolvedPath) } : {}),
+    };
+  };
+
+  /**
+   * Raise, minimize or close one of this lane's own windows.
+   *
+   * Only a window this lane holds: the user's windows and another lane's are
+   * refused here, before the driver is asked (the driver checks again).
+   */
+  const windowAction = async (
+    args: MacDesktopWindowActionArgs,
+    action: MacDesktopWindowAction,
+  ): Promise<MacDesktopWindowActionResult> => {
+    const laneId = args.laneId.trim();
+    const windowId = args.windowId;
+    deps.requireDisplay(laneId);
+    const seat = await deps.ensureProvider();
+    if (!seat.windowAction) {
+      throw new MacDesktopOwnershipError(
+        "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+        `\`${action}\` is not supported on this host's screen driver.`,
+        null,
+      );
+    }
+    const holder = ownership.laneForWindow(windowId);
+    if (holder && holder !== laneId) {
+      throw new MacDesktopOwnershipError(
+        MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+        `Window ${windowId} belongs to lane ${holder}. A lane acts only on its own windows.`,
+        holder,
+      );
+    }
+    if (!holder) {
+      const live = await listInternal(laneId);
+      if (!live.some((window) => window.id === windowId && window.laneId === laneId)) {
+        throw new MacDesktopOwnershipError(
+          MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+          `Window ${windowId} is not on this lane's screen. List them with: ade screen windows --text`,
+          null,
+        );
+      }
+    }
+    const reply = await seat.windowAction({ laneId, windowId, action });
+    ownership.touchDisplay(laneId);
+    const windows = await listInternal(laneId);
+    deps.emit({ type: "windows-changed", laneId, windows });
+    return {
+      laneId,
+      windowId,
+      action,
+      ...(action === "close" ? { closed: reply.closed !== false } : {}),
+      windows,
     };
   };
 
@@ -262,5 +325,5 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     return { moved: asNumber(reply.moved, 0) };
   };
 
-  return { listInternal, open, claimWindow, releaseWindow, quitApp, present };
+  return { listInternal, open, claimWindow, releaseWindow, quitApp, present, windowAction };
 }

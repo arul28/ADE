@@ -1132,9 +1132,9 @@ function writeCapture(name: string, bytes: number): string {
 
 describe("macDesktopService proof from the pane", () => {
   it("names a pane capture after the lane, and plainly without one", () => {
-    expect(macDesktopPaneCaption("recording", "docs-fix")).toBe("Mac Desktop recording · docs-fix");
-    expect(macDesktopPaneCaption("screenshot", "  ")).toBe("Mac Desktop screenshot");
-    expect(macDesktopPaneCaption("recording", null)).toBe("Mac Desktop recording");
+    expect(macDesktopPaneCaption("recording", "docs-fix", "Mac Desktop")).toBe("Mac Desktop recording · docs-fix");
+    expect(macDesktopPaneCaption("screenshot", "  ", "Mac Desktop")).toBe("Mac Desktop screenshot");
+    expect(macDesktopPaneCaption("recording", null, "Mac Desktop")).toBe("Mac Desktop recording");
   });
 
   it("files a captioned recording and hands back its proof record and size", async () => {
@@ -1147,7 +1147,7 @@ describe("macDesktopService proof from the pane", () => {
     await service.start({ laneId: "lane-1" });
     await service.startRecording({
       laneId: "lane-1",
-      caption: macDesktopPaneCaption("recording", "docs-fix"),
+      caption: macDesktopPaneCaption("recording", "docs-fix", "Mac Desktop"),
       chatSessionId: "chat-1",
     });
 
@@ -1206,7 +1206,7 @@ describe("macDesktopService proof from the pane", () => {
     const filed = await service.screenshot({
       laneId: "lane-1",
       chatSessionId: "chat-1",
-      caption: macDesktopPaneCaption("screenshot", "docs-fix"),
+      caption: macDesktopPaneCaption("screenshot", "docs-fix", "Mac Desktop"),
     });
     expect(filed).toMatchObject({ proofArtifactId: "artifact-1-0", bytes: 2_048 });
     expect(broker.requests[0]!.inputs[0]).toMatchObject({

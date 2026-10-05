@@ -141,6 +141,10 @@ export function reduceMacDesktopStatus(
       return { ...status, permissions: event.permissions };
     case "driver-health":
       return { ...status, driver: event.health };
+    // Host-wide too: setup, the sign-in's phases, and who holds the private
+    // screen. Without this the Windows cards only moved on the next read.
+    case "windows-desktop-changed":
+      return { ...status, windowsDesktop: event.status };
     default:
       return status;
   }

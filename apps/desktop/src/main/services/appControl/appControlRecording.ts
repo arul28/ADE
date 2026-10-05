@@ -59,7 +59,7 @@ import {
 import { clampFps } from "../macDesktop/macDesktopStreamServer";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
-import { demoLengths, produceDemoVideo } from "../demoVideo/demoRenderService";
+import { demoLengths, produceDemoVideo, DemoRecordingUnusableError } from "../demoVideo/demoRenderService";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 /** The broker's backend name for everything App Control files. */
@@ -739,6 +739,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
           track,
           plain: raw?.plain ?? false,
           engines: demoEngines.engines(),
+          missingEngineReason: demoEngines.missingEngineReason?.() ?? null,
           logger: deps.logger,
         });
         filePath = produced.path;
@@ -749,7 +750,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         deps.logger.warn("app_control.recording_demo_failed", { laneId, error: demoError });
         // A screencast's raw file cannot be played, so there is nothing to
         // file, and nothing will ever read it: it goes (it can be 2 GB).
-        if (rawFilePath.endsWith(DEMO_RAW_FILE_EXTENSION)) {
+        // An empty or unfinished movie is not proof either.
+        if (rawFilePath.endsWith(DEMO_RAW_FILE_EXTENSION) || error instanceof DemoRecordingUnusableError) {
           filePath = null;
           await fs.promises.rm(rawFilePath, { force: true }).catch(() => {});
         }

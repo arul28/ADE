@@ -50,6 +50,11 @@ export type MacDesktopErrorTextOptions = {
  * not about the screen the user just opened — so it becomes a sentence naming
  * the machine and the version, which is the one thing they can act on.
  */
+/** `The desktop driver did not answer windows.setup in 160000ms.` */
+const DRIVER_TIMEOUT = /^The desktop driver did not answer \S+ in \d+ms\.?$/i;
+/** `The desktop driver stopped (code 1).` */
+const DRIVER_STOPPED = /^The desktop driver stopped \([^)]*\)\.?$/i;
+
 const MAC_DESKTOP_MISSING_DOMAIN = /Domain ['"]mac_desktop['"] is unavailable in this runtime/i;
 
 function macDesktopMissingDomainText(options?: MacDesktopErrorTextOptions): string {
@@ -109,6 +114,91 @@ export function macDesktopErrorText(
   // A brain with no domain at all is the one failure the panel answers with the
   // machine's own name and version rather than with the refusal itself.
   if (MAC_DESKTOP_MISSING_DOMAIN.test(text)) return macDesktopMissingDomainText(options);
+  // The driver client's own sentences name an op and a millisecond count,
+  // which mean nothing in a pane. Said as what happened to the helper.
+  if (DRIVER_TIMEOUT.test(text)) return "The desktop helper stopped responding, so ADE restarted it.";
+  if (DRIVER_STOPPED.test(text)) return "The desktop helper stopped unexpectedly. ADE is restarting it.";
   if (options?.laneId) text = stripMacDesktopLaneId(text, options.laneId, options.laneName);
   return text.length ? text : null;
+}
+
+/** The `CODE` an error text carries, after Electron's wrapper. */
+export function macDesktopErrorCode(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  let text = String(raw).trim();
+  for (let pass = 0; pass < 4; pass += 1) {
+    const before = text;
+    text = text.replace(IPC_WRAPPER, "").replace(ERROR_LABEL, "").trim();
+    if (text === before) break;
+  }
+  const match = /^((?:MAC|WINDOWS)_DESKTOP_[A-Z0-9_]+):/.exec(text);
+  return match ? match[1]! : null;
+}
+
+export type WindowsDesktopOperationFailureKind =
+  | "setup"
+  | "save_password"
+  | "forget_password"
+  | "start_private"
+  | "takeover"
+  | "shared";
+
+/**
+ * What a failed Windows sign-in, setup or start should say: a title naming
+ * what did not happen, and a detail that says why and whether anything was
+ * saved. Every Windows code the driver can return during these steps has its
+ * own sentence; anything else keeps the host's own words.
+ */
+export function windowsDesktopOperationFailureText(
+  kind: WindowsDesktopOperationFailureKind,
+  raw: string | null | undefined,
+  options?: MacDesktopErrorTextOptions & { passwordSaved?: boolean },
+): { title: string; detail: string } {
+  const code = macDesktopErrorCode(raw);
+  const text = macDesktopErrorText(raw, options) ?? "";
+  const savingPassword = kind === "save_password";
+  const title = {
+    setup: "Setup didn't finish",
+    save_password: "Your password wasn't saved",
+    forget_password: "The saved password wasn't removed",
+    start_private: "The private screen didn't start",
+    takeover: "The private screen didn't start",
+    shared: "Your main desktop couldn't be used",
+  }[kind];
+  const nothingSaved = savingPassword ? " Nothing was saved." : "";
+  let detail: string;
+  switch (code) {
+    case "WINDOWS_DESKTOP_WRONG_PASSWORD":
+      detail = savingPassword
+        ? "Windows didn't accept that password. Nothing was saved. Use your Windows account password, not your PIN."
+        : options?.passwordSaved === false
+          ? "Windows didn't accept the saved password, so ADE forgot it. Save your current Windows password again."
+          : "Windows didn't accept the password. Use your Windows account password, not your PIN.";
+      break;
+    case "WINDOWS_DESKTOP_CANCELLED":
+      detail = kind === "setup"
+        ? "The Windows admin prompt was closed, so nothing changed on this PC."
+        : `The sign-in window was closed.${nothingSaved}`;
+      break;
+    case "WINDOWS_DESKTOP_SIGN_IN_FAILED":
+      detail = `Windows couldn't sign in to the private session.${nothingSaved}${text ? ` ${text}` : ""}`;
+      break;
+    case "WINDOWS_DESKTOP_LOCKED":
+      detail = `This PC is locked.${nothingSaved} Unlock it, then try again.`;
+      break;
+    case "WINDOWS_DESKTOP_HELD":
+      detail = `${text || "Another lane is using the private screen."}${nothingSaved} Password checks need the private screen to be free.`;
+      break;
+    case "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION":
+    case "WINDOWS_DESKTOP_SETUP_REQUIRED":
+    case "WINDOWS_DESKTOP_CONSENT_REQUIRED":
+      detail = `${text}${nothingSaved}`;
+      break;
+    case "MAC_DESKTOP_DRIVER_UNAVAILABLE":
+      detail = `${text || "The desktop helper stopped responding."}${nothingSaved} You can try again now.`;
+      break;
+    default:
+      detail = `${text || "Windows didn't say why."}${nothingSaved}`;
+  }
+  return { title, detail: detail.trim() };
 }

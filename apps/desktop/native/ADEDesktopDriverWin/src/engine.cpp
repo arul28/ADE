@@ -18,6 +18,7 @@ const std::set<std::string>& engineOps() {
       "window.unpark",  "app.launch",      "app.quit",          "present",       "observe",
       "input",          "lease.set",       "lease.clear",       "capture.screenshot", "stream.start",
       "stream.setRate", "stream.setCursorVisible", "stream.stop", "record.start", "record.stop",
+      "window.focus",   "window.minimize", "window.close",
   };
   return ops;
 }
@@ -173,14 +174,22 @@ Json windowToJson(const WinInfo& w, const std::string& laneId, const std::string
   return j;
 }
 
-Json Engine::windowJson(const WinInfo& w, const Lane* lane) {
+Json Engine::windowJson(const WinInfo& w, const Lane* lane, const std::set<DWORD>* owned) {
   if (!lane) return windowToJson(w, "", "", 0);
-  std::string origin = "ade_launched";
+  std::string origin;
   if (mode_ == Mode::Shared) {
     auto it = lane->origin.find(w.hwnd);
     origin = it == lane->origin.end() ? "claimed" : it->second;
+  } else {
+    std::set<DWORD> computed;
+    if (!owned) { computed = ownedProcesses(*const_cast<Lane*>(lane)); owned = &computed; }
+    origin = owned->count(w.pid) ? "ade_launched" : "adopted";
   }
   return windowToJson(w, lane->laneId, origin, lane->displayId);
+}
+
+std::set<DWORD> Engine::ownedForListing(Lane& lane) {
+  return mode_ == Mode::Private ? ownedProcesses(lane) : std::set<DWORD>{};
 }
 
 std::vector<WinInfo> Engine::laneWindows(Lane& lane) {
@@ -228,7 +237,7 @@ Json Engine::handle(const Json& req) {
   if (op == "window.list") return listWindowsOp(req);
   if (op == "window.park") return park(req);
   if (op == "window.unpark") return unpark(req);
-  if (op == "app.launch") return launch(req);
+  if (op == "app.launch") return launch(req, operation);
   if (op == "app.quit") return quitApp(req);
   if (op == "present") return present(req);
   if (op == "observe") return observe(req);
@@ -244,8 +253,11 @@ Json Engine::handle(const Json& req) {
   if (op == "stream.setRate") return setStreamRate(req);
   if (op == "stream.setCursorVisible") return setStreamCursor(req);
   if (op == "stream.stop") return stopStream(req);
-  if (op == "record.start") return startRecording(req);
-  if (op == "record.stop") return stopRecording(req);
+  if (op == "window.focus" || op == "window.minimize" || op == "window.close") return windowCommand(op, req);
+  // Both re-take the operation lock only for the short parts; opening and
+  // finalizing an MP4 must not stall capture or queue window.list.
+  if (op == "record.start") { operation.unlock(); return startRecording(req); }
+  if (op == "record.stop") { operation.unlock(); return stopRecording(req); }
   fail(code::kUnknownOp, "This ade-desktop-driver build does not implement \"" + op + "\".");
 }
 
@@ -271,6 +283,7 @@ Json Engine::createDisplay(const Json& req) {
       lane->laneId = laneId;
       lane->name = req["name"].str("ADE lane");
       lane->createdAt = isoNow();
+      if (mode_ == Mode::Private) lane->dataDir = widen(req["laneDataDir"].str());
       if (mode_ == Mode::Private) {
         lane->area = virtualScreen();
         lane->displayId = static_cast<int64_t>(currentSessionId());
@@ -449,7 +462,8 @@ Json Engine::listWindowsOp(const Json& req) {
   Json windows = Json::array();
   if (!laneId.empty()) {
     auto lane = requireLane(laneId);
-    for (auto& w : laneWindows(*lane)) windows.push(windowJson(w, lane.get()));
+    const auto owned = ownedForListing(*lane);
+    for (auto& w : laneWindows(*lane)) windows.push(windowJson(w, lane.get(), &owned));
   } else {
     // Every window of this session, each tagged with the lane that holds it.
     std::vector<std::shared_ptr<Lane>> lanes;
@@ -457,12 +471,14 @@ Json Engine::listWindowsOp(const Json& req) {
       std::lock_guard<std::mutex> lock(mutex_);
       for (auto& kv : lanes_) lanes.push_back(kv.second);
     }
+    std::map<const Lane*, std::set<DWORD>> owned;
+    for (auto& l : lanes) owned[l.get()] = ownedForListing(*l);
     for (auto& w : listAppWindows()) {
       const Lane* holder = nullptr;
       for (auto& l : lanes) {
         if (mode_ == Mode::Private || l->origin.count(w.hwnd)) holder = l.get();
       }
-      windows.push(windowJson(w, holder));
+      windows.push(holder ? windowJson(w, holder, &owned[holder]) : windowJson(w, nullptr));
     }
   }
   Json out = Json::object();
@@ -549,11 +565,60 @@ Json Engine::unpark(const Json& req) {
   return out;
 }
 
-Json Engine::launch(const Json& req) {
+namespace {
+// Apps that hand a second launch to their running instance (one per profile).
+// On the private seat that instance is the user's own, in the console session,
+// so the launch would open on the user's desktop and nothing on the lane's.
+enum class ProfileFlag { None, Chromium, Firefox };
+ProfileFlag profileFlagFor(const std::wstring& exeName) {
+  static const wchar_t* chromium[] = {L"chrome.exe", L"msedge.exe", L"brave.exe", L"vivaldi.exe", L"chromium.exe"};
+  const auto name = lower(exeName);
+  for (auto c : chromium) if (name == c) return ProfileFlag::Chromium;
+  if (name == L"firefox.exe" || name == L"librewolf.exe" || name == L"waterfox.exe") return ProfileFlag::Firefox;
+  return ProfileFlag::None;
+}
+bool callerChoseProfile(ProfileFlag kind, const std::vector<std::wstring>& args) {
+  for (const auto& raw : args) {
+    const auto a = lower(raw);
+    if (kind == ProfileFlag::Chromium && a.rfind(L"--user-data-dir", 0) == 0) return true;
+    if (kind == ProfileFlag::Firefox && (a == L"-profile" || a == L"--profile" || a == L"-p" || a == L"-no-remote" ||
+                                        a == L"--no-remote" || a.rfind(L"--profile=", 0) == 0)) return true;
+  }
+  return false;
+}
+std::wstring baseName(const std::wstring& path) {
+  const auto slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+}  // namespace
+
+Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& operation) {
   auto lane = requireLane(requireString(req, "laneId"));
   std::wstring target = widen(requireString(req, "target"));
   std::vector<std::wstring> args;
   for (const auto& a : stringList(req["args"])) args.push_back(widen(a));
+  // "chrome" reaches chrome.exe through App Paths, as it would from Run.
+  const std::wstring resolved = resolveAppPath(target);
+  if (!resolved.empty()) target = resolved;
+  Json profileDir;
+  const ProfileFlag profileKind = profileFlagFor(baseName(target).find(L'.') == std::wstring::npos ? baseName(target) + L".exe" : baseName(target));
+  if (mode_ == Mode::Private && profileKind != ProfileFlag::None && !lane->dataDir.empty() && !callerChoseProfile(profileKind, args)) {
+    std::wstring stem = lower(baseName(target));
+    if (stem.size() > 4 && stem.substr(stem.size() - 4) == L".exe") stem.resize(stem.size() - 4);
+    const std::wstring dir = joinPath(joinPath(lane->dataDir, L"profiles"), stem);
+    if (ensureDir(dir)) {
+      // Stable per lane, so sign-ins in this lane's browser persist for the lane.
+      if (profileKind == ProfileFlag::Chromium) {
+        args.insert(args.begin(), {L"--user-data-dir=" + dir, L"--no-first-run", L"--no-default-browser-check"});
+      } else {
+        args.insert(args.begin(), {L"-no-remote", L"-profile", dir});
+      }
+      profileDir = narrow(dir);
+      logLine("launch: lane-private browser profile added");
+    } else {
+      logLine("launch: lane profile directory unavailable; launching without one");
+    }
+  }
   std::set<HWND> before;
   for (auto& w : listAppWindows()) before.insert(w.hwnd);
   FILETIME since;
@@ -578,10 +643,14 @@ Json Engine::launch(const Json& req) {
     lane->watches.push_back(watch);
   }
   touch(*lane);
-  // Wait briefly for the first window, so the reply can name it.
+  // Wait briefly for the first window, so the reply can name it. The operation
+  // lock is released while sleeping so capture and other requests keep going.
   std::vector<WinInfo> fresh;
   for (int i = 0; i < 40 && fresh.empty(); ++i) {
+    operation.unlock();
     Sleep(125);
+    operation.lock();
+    if (!running_) fail(code::kCancelled, "The Windows screen stopped while the app was starting.");
     std::set<DWORD> tree = launched.pid ? ownedProcesses(*lane, launched.pid) : std::set<DWORD>{};
     for (auto& w : listAppWindows()) {
       if (before.count(w.hwnd)) continue;
@@ -612,6 +681,19 @@ Json Engine::launch(const Json& req) {
   out["bundleId"] = fresh.empty() ? Json() : Json(narrow(fresh.front().exeName));
   out["windows"] = windows;
   out["watching"] = true;
+  // No window, and nothing of the launch left running: Windows passed it to an
+  // instance that was already running (for the private seat, outside it).
+  const bool rootGone = launched.pid && ownedProcesses(*lane, launched.pid).empty();
+  const bool handedOff = fresh.empty() && (rootGone || !launched.pid);
+  out["handedOff"] = handedOff;
+  out["message"] = handedOff
+      ? Json(mode_ == Mode::Private
+            ? "No window opened on this lane's screen: Windows handed the launch to an instance that was already running, which may be on your own desktop. Quit that app on the lane's screen, or pass the app's own new-instance or profile flag."
+            : "No new window opened: Windows handed the launch to an instance that was already running.")
+      : Json();
+  out["profileDir"] = profileDir;
+  out["resolvedPath"] = resolved.empty() ? Json() : Json(narrow(resolved));
+  if (handedOff) logLine("launch: handed off; no window from the launched process");
   return out;
 }
 
@@ -675,6 +757,53 @@ Json Engine::present(const Json& req) {
   }
   Json out = Json::object();
   out["moved"] = moved;
+  return out;
+}
+
+HWND Engine::requireLaneWindow(Lane& lane, int64_t windowId) {
+  HWND hwnd = hwndFromId(windowId);
+  if (!IsWindow(hwnd)) fail(code::kWindowNotFound, "Window " + std::to_string(windowId) + " is not open.");
+  const auto windows = laneWindows(lane);
+  if (std::any_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == hwnd; })) return hwnd;
+  if (mode_ == Mode::Shared) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& kv : lanes_) {
+      if (kv.first != lane.laneId && kv.second->origin.count(hwnd))
+        fail(code::kAppOwnedByOtherLane, "Lane " + kv.first + " holds window " + std::to_string(windowId) + ".");
+    }
+    fail(code::kAppOwnedByOtherLane, "Window " + std::to_string(windowId) + " is not on lane " + lane.laneId + "'s screen.");
+  }
+  fail(code::kWindowNotFound, "Window " + std::to_string(windowId) + " is not on lane " + lane.laneId + "'s screen.");
+}
+
+// Window management without the pointer. On the private seat the session is
+// the lane's own, so focus really activates the window there. On the shared
+// seat nothing may take the user's foreground: focus only raises the parked
+// window inside the lane's area (what the lane's view and capture show).
+Json Engine::windowCommand(const std::string& op, const Json& req) {
+  auto lane = requireLane(requireString(req, "laneId"));
+  const int64_t windowId = requireInt(req, "windowId");
+  HWND hwnd = requireLaneWindow(*lane, windowId);
+  Json out = Json::Object{{"windowId", windowId}};
+  if (op == "window.focus") {
+    if (IsIconic(hwnd)) ShowWindow(hwnd, mode_ == Mode::Private ? SW_RESTORE : SW_SHOWNOACTIVATE);
+    bool focused;
+    if (mode_ == Mode::Private) {
+      focused = forceForeground(hwnd) && currentForeground() == hwnd;
+      if (!focused) fail(code::kNoWindow, "Windows did not bring window " + std::to_string(windowId) + " to the front.");
+    } else {
+      focused = SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE;
+    }
+    out["focused"] = focused;
+  } else if (op == "window.minimize") {
+    ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+    out["minimized"] = IsIconic(hwnd) != FALSE;
+  } else {
+    // WM_CLOSE asks; it never forces. An app with unsaved work may answer
+    // with its own prompt, which then shows on the lane's screen.
+    out["closed"] = closeWindowGracefully(hwnd, 2'000);
+  }
+  touch(*lane);
   return out;
 }
 
@@ -808,7 +937,8 @@ Json Engine::observe(const Json& req) {
   display["scale"] = 1;
   out["display"] = display;
   Json wins = Json::array();
-  for (auto& w : windows) wins.push(windowJson(w, lane.get()));
+  const auto owned = ownedForListing(*lane);
+  for (auto& w : windows) wins.push(windowJson(w, lane.get(), &owned));
   out["windows"] = wins;
   Json elements = Json::array();
   for (auto& e : obs.elements) elements.push(elementJson(e, obs.id));
@@ -878,14 +1008,16 @@ void Engine::watchLoop() {
         }
       }
       auto windows = laneWindows(*lane);
+      const auto owned = ownedForListing(*lane);
       std::string sig;
       for (auto& w : windows) {
-        sig += std::to_string(windowIdOf(w.hwnd)) + ":" + narrow(w.title) + ":" + std::to_string(w.minimized) + ";";
+        sig += std::to_string(windowIdOf(w.hwnd)) + ":" + narrow(w.title) + ":" + std::to_string(w.minimized) + ":" +
+               std::to_string(owned.count(w.pid)) + ";";
       }
       if (sig != lane->windowsSignature) {
         lane->windowsSignature = sig;
         Json list = Json::array();
-        for (auto& w : windows) list.push(windowJson(w, lane.get()));
+        for (auto& w : windows) list.push(windowJson(w, lane.get(), &owned));
         emit_(eventLine("windows-changed", Json::Object{{"laneId", lane->laneId}, {"windows", list}}));
       }
     }

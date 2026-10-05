@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
@@ -22,7 +23,9 @@ import {
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   type BuiltInBrowserRuntimeStatus,
 } from "../../../shared/types/builtInBrowserRuntimeStatus";
+import { promisify } from "node:util";
 import type { Logger } from "../logging/logger";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import type { AppControlScreencastRecorderBackend } from "../appControl/appControlRecording";
 import {
   APP_CONTROL_RECORDER_BRIDGE_PREFIX,
@@ -42,6 +45,7 @@ import {
   resolveBuiltInBrowserActorCapability,
   revokeBuiltInBrowserActorCapability,
 } from "./builtInBrowserActorCapabilities";
+import { DEMO_MP4_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
@@ -95,6 +99,26 @@ export type BuiltInBrowserDesktopBridgeServer = {
   dispose: () => void;
 };
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * True when this Windows process runs elevated (High or System integrity).
+ * `whoami /groups` names the token's mandatory label; never throws.
+ */
+export async function isWindowsProcessElevated(): Promise<boolean> {
+  if (process.platform !== "win32") return false;
+  try {
+    const whoami = resolveTrustedWindowsTool("whoami");
+    const { stdout } = await execFileAsync(whoami, ["/groups", "/fo", "csv", "/nh"], {
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    return /S-1-16-(?:12288|16384)\b/.test(String(stdout));
+  } catch {
+    return false;
+  }
+}
+
 export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
@@ -109,6 +133,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * `demo_engine.*`. Absent: those methods are not found.
    */
   demoEngine?: DemoEngine | null;
+  /**
+   * Windows: this desktop is running elevated, so the background service
+   * cannot open its bridge pipe. The caller tells the user.
+   */
+  onElevatedDesktop?: (() => void) | null;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -240,6 +269,20 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         }
       }
       logger.info("built_in_browser_bridge.listening", { socketPath });
+      if (isNamedPipe && process.platform === "win32") {
+        // A pipe made by an elevated process admits administrators only, so
+        // the background service (the plain user) is refused with EPERM and
+        // every demo, browser call and screencast from it fails. Node cannot
+        // set the pipe's DACL, so this is said once, loudly, instead.
+        void isWindowsProcessElevated().then((elevated) => {
+          if (!elevated) return;
+          logger.warn("built_in_browser_bridge.elevated_desktop", {
+            socketPath,
+            reason: "ADE is running as administrator, so the ADE background service cannot reach it. Quit ADE and open it normally.",
+          });
+          args.onElevatedDesktop?.();
+        });
+      }
     });
   } catch (error) {
     throw error;
@@ -603,15 +646,15 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     connection.demoJobs.set(jobId, controller);
     try {
       if (name === "analyze") {
-        const input = await resolveDemoEnginePath(normalizedString(params.input), DEMO_RAW_FILE_EXTENSION, true);
+        const input = await resolveDemoEnginePath(normalizedString(params.input), DEMO_ENGINE_INPUT_EXTENSIONS, true);
         return await engine.analyze(input, { signal: controller.signal });
       }
       const request = isRecord(params.request) ? params.request : null;
       if (!request || !isRecord(request.plan)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Demo engine render needs a request with a plan.");
       }
-      const input = await resolveDemoEnginePath(normalizedString(request.input), DEMO_RAW_FILE_EXTENSION, true);
-      const output = await resolveDemoEnginePath(normalizedString(request.output), ".mp4", false);
+      const input = await resolveDemoEnginePath(normalizedString(request.input), DEMO_ENGINE_INPUT_EXTENSIONS, true);
+      const output = await resolveDemoEnginePath(normalizedString(request.output), [".mp4"], false);
       return await engine.render(
         { input, output, plan: request.plan as unknown as DemoPlan },
         { signal: controller.signal },
@@ -691,21 +734,24 @@ async function resolveRecorderTargetPath(filePath: string | null): Promise<strin
   return path.join(realDir, path.basename(filePath));
 }
 
+/** What the demo engine reads: an `.aderaw` capture, or an H.264 movie (the Windows desktop driver's recording). */
+const DEMO_ENGINE_INPUT_EXTENSIONS = [DEMO_RAW_FILE_EXTENSION, ...DEMO_MP4_EXTENSIONS];
+
 /**
- * A file the demo engine may read (`mustExist`) or write. Absolute, with the
- * one extension that job takes, in a project's `.ade/artifacts/computer-use`
+ * A file the demo engine may read (`mustExist`) or write. Absolute, with an
+ * extension that job takes, in a project's `.ade/artifacts/computer-use`
  * directory (the only place App Control's recordings live); resolved through
  * symlinks and rebuilt from the real directory, as for the recorder. The
  * engine writes a temporary sibling and renames it onto the output.
  */
-async function resolveDemoEnginePath(filePath: string | null, extension: string, mustExist: boolean): Promise<string> {
+async function resolveDemoEnginePath(filePath: string | null, extensions: readonly string[], mustExist: boolean): Promise<string> {
   const refuse = (): never => {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      `The demo engine needs an absolute ${extension} path under a project's .ade/artifacts/computer-use directory${mustExist ? ", of a file that exists" : ""}.`,
+      `The demo engine needs an absolute ${extensions.join(" or ")} path under a project's .ade/artifacts/computer-use directory${mustExist ? ", of a file that exists" : ""}.`,
     );
   };
-  if (!filePath || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== extension) return refuse();
+  if (!filePath || !path.isAbsolute(filePath) || !extensions.includes(path.extname(filePath).toLowerCase())) return refuse();
   const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
   if (!realDir || !isComputerUseArtifactsDir(realDir)) return refuse();
   const resolved = path.join(realDir, path.basename(filePath));

@@ -22,6 +22,24 @@ bool pointFrom(const Json& payload, const char* key, POINT& out) {
 POINT centerOf(const RECT& r) { return POINT{(r.left + r.right) / 2, (r.top + r.bottom) / 2}; }
 
 bool inRect(const RECT& r, POINT p) { return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom; }
+
+// The private seat is the lane's own session: acting on a window there first
+// brings it in front of the lane's other windows, as a person's click would.
+void raiseOnPrivateSeat(HWND window) {
+  if (!window || !IsWindow(window)) return;
+  HWND top = GetAncestor(window, GA_ROOT);
+  if (!top) top = window;
+  if (IsIconic(top)) ShowWindow(top, SW_RESTORE);
+  if (GetForegroundWindow() != top) forceForeground(top);
+}
+}
+
+// A lane window named by the payload's `windowId`, or null.
+static HWND payloadWindow(const std::vector<WinInfo>& windows, const Json& payload) {
+  if (!payload["windowId"].isNumber()) return nullptr;
+  HWND want = hwndFromId(payload["windowId"].asInt());
+  for (const auto& w : windows) if (w.hwnd == want) return want;
+  fail(code::kWindowNotFound, "Window " + std::to_string(payload["windowId"].asInt()) + " is not on this lane's screen.");
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +98,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
   if (command == "click") {
     UiaElement e = resolveTarget(lane.laneId, payload);
     out["resolvedIndex"] = e.index;
+    if (priv) raiseOnPrivateSeat(e.window);
     if (uia_.invoke(e)) return out;
     POINT c = centerOf(e.frame);
     int count = static_cast<int>(payload["count"].asInt(1));
@@ -103,6 +122,18 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     } else if (!payload["handle"].str().empty() || (canonicalText && !payload["text"].str().empty())) {
       e = resolveTarget(lane.laneId, payload);
       haveTarget = true;
+    } else if (HWND named = payloadWindow(laneWindows(lane), payload)) {
+      // `--window` without an element: type into that window's focused control.
+      if (priv) raiseOnPrivateSeat(named);
+      auto observation = uia_.observe(std::vector<WinInfo>{[&] { WinInfo w; describeWindow(named, w); return w; }()}, 400, 1500);
+      uia_.remember(lane.laneId, observation);
+      haveTarget = uia_.newestFocused(lane.laneId, e);
+      if (!haveTarget && priv) {
+        if (!forceForeground(named) || currentForeground() != named) fail(code::kNoWindow, "Windows could not focus that window; no text was sent.");
+        if (clear && !sendKeys("a", {"ctrl"})) failLocked();
+        if (!sendText(text)) failLocked();
+        return out;
+      }
     } else {
       // Focus may have moved since observe (for example after closing a dialog).
       // Never reuse the previous observation's focused element for typing.
@@ -156,6 +187,12 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       }
     }
     auto windows = laneWindows(lane);
+    if (!window) window = payloadWindow(windows, payload);
+    if (!window && priv) {
+      // The lane's own foreground window, not whichever window lists first.
+      HWND fg = currentForeground();
+      if (std::any_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == fg; })) window = fg;
+    }
     if (!window && !windows.empty()) window = windows.front().hwnd;
     if (!window) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to send a key to.");
     if (priv) {
@@ -183,11 +220,16 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     }
     auto windows = laneWindows(lane);
     if (windows.empty()) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to scroll.");
-    POINT c = centerOf(windows.front().frame);
+    HWND scrollWindow = payloadWindow(windows, payload);
+    if (!scrollWindow) scrollWindow = windows.front().hwnd;
+    RECT frame = windows.front().frame;
+    for (const auto& w : windows) if (w.hwnd == scrollWindow) frame = w.frame;
+    POINT c = centerOf(frame);
     if (priv) {
+      raiseOnPrivateSeat(scrollWindow);
       if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
     } else {
-      postScroll(windows.front().hwnd, c.x, c.y, direction, amount);
+      postScroll(scrollWindow, c.x, c.y, direction, amount);
     }
     return out;
   }
@@ -267,7 +309,9 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
     bool explicitTarget = !payload["handle"].str().empty() || payload["target"].isObject() ||
         (!payload["text"].str().empty() && (command == "press" || payload["typeText"].isString()));
     if (explicitTarget) element = resolveTarget(lane.laneId, payload);
-    HWND target = explicitTarget ? element.window : currentForeground();
+    HWND target = explicitTarget ? element.window : nullptr;
+    if (!target) target = payloadWindow(windows, payload);
+    if (!target) target = currentForeground();
     if (std::none_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == target; }))
       target = windows.empty() ? nullptr : windows.front().hwnd;
     HWND user = priv ? nullptr : currentForeground();

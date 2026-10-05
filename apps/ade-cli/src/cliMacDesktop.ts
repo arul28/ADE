@@ -30,6 +30,16 @@ import {
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+  WINDOWS_DESKTOP_CANCELLED_CODE,
+  WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+  WINDOWS_DESKTOP_HELD_CODE,
+  WINDOWS_DESKTOP_LOCKED_CODE,
+  WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
+  WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
+  WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE,
+  WINDOWS_DESKTOP_WRONG_PASSWORD_CODE,
+  describeDesktopSeat,
+  desktopProductName,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
   CliUsageError,
@@ -140,50 +150,80 @@ export const MAC_DESKTOP_VALUE_FLAGS: readonly string[] = [
 export const MAC_DESKTOP_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(MAC_DESKTOP_VALUE_FLAGS);
 
 /**
+ * The host the CLI is asked about.
+ *
+ * An agent's shell runs on the runtime host, so the CLI's own platform names
+ * the screen correctly; a reply that carries `platform` (status, observation)
+ * overrides it for the rare remote caller.
+ */
+function hostPlatform(value?: unknown): string {
+  if (isRecord(value)) {
+    const direct = asString(value.platform);
+    if (direct) return direct;
+    const observation = firstRecord(value, ["observation"]);
+    const nested = observation ? asString(observation.platform) : null;
+    if (nested) return nested;
+  }
+  return process.platform;
+}
+
+/** "ADE Windows Desktop" on a Windows host, "ADE Mac Desktop" on a Mac. */
+function screenTitle(value: unknown, suffix = ""): string {
+  return `ADE ${desktopProductName(hostPlatform(value))}${suffix ? ` ${suffix}` : ""}`;
+}
+
+/**
  * One row per code, in the order they are checked.
  *
  * A table rather than a ladder of ifs: the codes are a closed set that lives in
  * the shared contract, and a table is the shape that can be read against it.
+ * Every hint names `ade screen`, the family's neutral spelling, so the same
+ * line is right on a Mac and on a Windows PC; a row whose fix differs by host
+ * is a function of the host.
  */
-const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: string]> = [
+const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: string | ((host: string) => string)]> = [
   [
     MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
-    "Mac Desktop needs a macOS runtime host. Run this against a Mac runtime, or use `ade browser` / `ade app-control` here.",
+    (host) => host === "win32"
+      ? "This needs a Windows host with the ADE desktop driver installed (or the verb is Mac-only). Check: ade screen status --text"
+      : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
   ],
   [
     MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
-    "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade mac-desktop status --text",
+    "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade screen status --text",
   ],
   [
     MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
-    "The ADE desktop driver is not running. Check it with: ade mac-desktop status --text",
+    "The ADE desktop driver is not running. Check it with: ade screen status --text",
   ],
   [
     MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
-    "No virtual display could be created on this Mac. `ade mac-desktop status --text` reports the mode it fell back to.",
+    "No lane screen could be created. `ade screen status --text` reports the mode it fell back to.",
   ],
-  [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no display yet — run: ade mac-desktop start"],
+  [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no screen yet — run: ade screen start --text"],
   [
     // The display exists; there is nothing on it to act on. `start` would not help.
     MAC_DESKTOP_NO_WINDOW_CODE,
-    "This lane's display has no window — open an app (ade mac-desktop open <app>) or claim a window (ade mac-desktop claim --window <id>).",
+    "This lane's screen has no window — open an app (ade screen open <app>) or claim a window (ade screen claim --window <id>).",
   ],
   [
     // The message already names the holding lane; the hint does not restate it.
     MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
-    "That app is single-instance and the lane named above holds it. Wait for that lane, or drive a different app.",
+    "That window or app belongs to the lane named above. Act only on your lane's windows (ade screen windows --text).",
   ],
   [
     MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
-    "Window ids die with their process — re-enumerate with: ade mac-desktop windows --text",
+    "Window ids die with their process — re-enumerate with: ade screen windows --text",
   ],
   [
     MAC_DESKTOP_HANDLE_EXPIRED_CODE,
-    "That handle belongs to an older observation — re-observe with: ade mac-desktop observe --text",
+    "That handle belongs to an older observation — re-observe with: ade screen observe --text",
   ],
   [
     MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
-    "Real pointer and keyboard input needs the user's approval once per chat — run: ade mac-desktop lease",
+    (host) => host === "win32"
+      ? "Real input on the user's main desktop needs the user's yes once per chat — run: ade screen lease --reason \"<what for>\" (a private Windows screen never needs this)."
+      : "Real pointer and keyboard input moves the user's one Mac pointer, so it needs the user's approval once per chat — run: ade screen lease --reason \"<what for>\"",
   ],
   [
     MAC_DESKTOP_USER_HAS_CONTROL_CODE,
@@ -191,20 +231,53 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
   [
     MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
-    "Another controller holds the input lease. Wait for it to lapse, or use accessibility input (drop --real).",
+    "Another chat or lane holds real input on this screen. Wait for it to lapse (about a minute after its last action), or use accessibility input (drop --real, act by handle).",
   ],
   [
     MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
-    "No recording is running — start one with: ade mac-desktop record start",
+    "No recording is running — start one with: ade screen record start --caption \"<what>\"",
   ],
   [
     MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
-    "--out must land inside the lane worktree named above or the OS temp directory ($TMPDIR) — drop --out to use the default scratch path.",
+    "--out must land inside the lane worktree named above or the OS temp directory (%TEMP% on Windows, $TMPDIR elsewhere) — drop --out to use the default scratch path.",
+  ],
+  [
+    WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
+    "Only the user can set up Windows Desktop (an admin prompt on the PC). Ask them to use the setup card in the Windows Desktop pane, then retry: ade screen start --text",
+  ],
+  [
+    WINDOWS_DESKTOP_HELD_CODE,
+    "If another lane holds the private screen, ask the user to take it over (Take over in the Windows Desktop pane); if it is a Windows session ADE did not start, only the user can sign it out. Or ask for their main desktop: ade screen start --shared --reason \"<what for>\" --text",
+  ],
+  [
+    WINDOWS_DESKTOP_LOCKED_CODE,
+    "The PC is locked. Ask the user to unlock it; then retry the same command.",
+  ],
+  [
+    WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
+    "The private screen needs ADE running on the PC's own desktop (not over SSH). Ask for the main desktop instead: ade screen start --shared --text",
+  ],
+  [
+    WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+    "Only the user can allow the main desktop. Ask in this chat with: ade screen start --shared --reason \"<what for>\" --text",
+  ],
+  [
+    WINDOWS_DESKTOP_WRONG_PASSWORD_CODE,
+    "The saved Windows password was rejected and forgotten. Ask the user to save their current password in the Windows Desktop pane.",
+  ],
+  [
+    WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE,
+    "The private sign-in did not finish. Retry once with: ade screen start --text; if it fails again, ask the user to check the PC.",
+  ],
+  [
+    WINDOWS_DESKTOP_CANCELLED_CODE,
+    "The user cancelled the Windows sign-in. Ask before trying again.",
   ],
 ];
 
-export function macDesktopErrorHint(message: string): string | null {
-  return MAC_DESKTOP_ERROR_HINTS.find(([code]) => message.includes(code))?.[1] ?? null;
+export function macDesktopErrorHint(message: string, host: string = process.platform): string | null {
+  const hint = MAC_DESKTOP_ERROR_HINTS.find(([code]) => message.includes(code))?.[1] ?? null;
+  return typeof hint === "function" ? hint(host) : hint;
 }
 
 /** `handle` / `x,y` / bare text, as the service's target trio. */
@@ -290,6 +363,8 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       // in one family and a boolean in another swallows the next positional.
       ...(readFlag(args, ["--alt", "--opt"]) ? ["option"] : []),
       ...(readFlag(args, ["--control", "--ctrl"]) ? ["control"] : []),
+      // The Windows key. A Mac host refuses it; on Windows `--cmd` is Ctrl.
+      ...(readFlag(args, ["--win", "--windows-key", "--super"]) ? ["win"] : []),
     ];
     return pressed.length ? { modifiers: pressed } : {};
   };
@@ -316,13 +391,22 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     return workToolShowPlan(claimArgs, floating ? "floating-mac-desktop" : "mac-desktop");
   }
   if (sub === "start" || sub === "create") {
-    const seatMode = readValue(args, ["--seat-mode", "--seat"]);
+    const sharedFlag = readFlag(args, ["--shared", "--main-desktop"]);
+    const seatMode = readValue(args, ["--seat-mode", "--seat"]) ?? (sharedFlag ? "shared" : null);
     if (seatMode != null && seatMode !== "private" && seatMode !== "shared") {
-      throw new CliUsageError("mac-desktop start: --seat-mode must be private or shared.");
+      throw new CliUsageError("screen start: --seat-mode must be private or shared.");
     }
     if (seatMode === "shared") {
-      if (!readFlag(args, ["--consent", "--shared-consent"])) throw new CliUsageError("Using the main desktop requires --consent from the user.");
-      return desktopAction("mac-desktop start", "useSharedDesktop", laneClaim(), "mac-desktop-status");
+      // `--consent` is a trusted ADE client saying the user already agreed;
+      // a session-bound agent is refused that action. Without it this is the
+      // agent's ask: a card in its chat, and the user's answer is the consent.
+      if (readFlag(args, ["--consent", "--shared-consent"])) {
+        return desktopAction("screen start", "useSharedDesktop", laneClaim(), "mac-desktop-status");
+      }
+      return desktopAction("screen start --shared", "requestSharedDesktop", {
+        ...laneClaim(),
+        reason: readValue(args, ["--reason", "--for"]),
+      }, "mac-desktop-status");
     }
     return desktopAction("mac-desktop start", "start", {
       ...laneClaim(),
@@ -355,7 +439,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const positional = explicit == null ? Number(positionals(args)[0]) : explicit;
     if (!Number.isFinite(positional)) {
       throw new CliUsageError(
-        "mac-desktop claim requires --window <id>. Window ids come from `ade mac-desktop windows` and die with their process.",
+        "screen claim requires --window <id>. Window ids come from `ade screen windows` and die with their process.",
       );
     }
     return desktopAction("mac-desktop claim", "claimWindow", {
@@ -368,6 +452,19 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
     });
+  if (sub === "focus" || sub === "raise" || sub === "minimize" || sub === "minimise" || sub === "close") {
+    // Windows only: one of this lane's own windows. The Mac driver has no
+    // such op and the service says so.
+    const explicit = windowId();
+    const id = explicit == null ? Number(positionals(args)[0]) : explicit;
+    if (!Number.isFinite(id)) {
+      throw new CliUsageError(
+        `screen ${sub} requires --window <id>. Window ids come from \`ade screen windows --text\`.`,
+      );
+    }
+    const method = sub === "close" ? "closeWindow" : sub === "focus" || sub === "raise" ? "focusWindow" : "minimizeWindow";
+    return desktopAction(`screen ${sub}`, method, { ...laneClaim(), windowId: id }, "mac-desktop-window-action");
+  }
   if (sub === "quit") {
     // Only apps the lane opened, including ones it released to the user.
     // Nothing named quits them all.
@@ -391,7 +488,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...laneClaim(),
       target,
       ...(appArgs.length ? { args: appArgs } : {}),
-    });
+    }, "mac-desktop-open");
   }
   if (sub === "observe" || sub === "snapshot") {
     const observeArgs = {
@@ -525,7 +622,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       out: readValue(args, ["--out", "--out-path", "--output"]),
-    });
+    }, "mac-desktop-screenshot");
   if (sub === "record" || sub === "recording") {
     const mode = (positionals(args)[0] ?? "start").toLowerCase();
     if (mode === "start") {
@@ -545,12 +642,15 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       }, "mac-desktop-recording");
     }
     if (mode === "stop")
-      return desktopAction(
-        "mac-desktop record stop",
-        "stopRecording",
-        laneClaim(),
-        "mac-desktop-recording",
-      );
+      return {
+        kind: "execute" as const,
+        label: "mac-desktop record stop",
+        formatter: "mac-desktop-recording",
+        steps: [macDesktopStep("result", "stopRecording", collectGenericObjectArgs(args, laneClaim()))],
+        // The stop refused to file an empty or unfinished video: the result
+        // still prints (with its `error` line), and the exit code says so.
+        exitCodeFromResult: (result: unknown) => (recordingStopLeftNoFile(result) ? 1 : 0),
+      };
     // The lane's recording, as `app-control record status` reports its own.
     if (mode === "status")
       return desktopAction(
@@ -567,13 +667,13 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const laneArgs = laneClaim();
     if (!claimArgs.chatSessionId) {
       throw new CliUsageError(
-        "mac-desktop lease requires --chat-session <id> or ADE_CHAT_SESSION_ID: the approval is remembered per chat.",
+        "screen lease requires --chat-session <id> or ADE_CHAT_SESSION_ID: the approval is remembered per chat.",
       );
     }
     return desktopAction("mac-desktop lease", "requestInputLease", {
       ...laneArgs,
       reason: readValue(args, ["--reason", "--for"]),
-    });
+    }, "mac-desktop-lease");
   }
   if (sub === "display" || sub === "resolution") {
     const resolution = readValue(args, ["--resolution", "--size"]) ?? positionals(args)[0] ?? null;
@@ -616,7 +716,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     if (!caption) {
       throw new CliUsageError(
-        "mac-desktop proof requires --caption \"<what this shows>\". Use `ade mac-desktop screenshot` for a capture you are not filing.",
+        "screen proof requires --caption \"<what this shows>\". Use `ade screen screenshot` for a capture you are not filing.",
       );
     }
     const title = readValue(args, ["--title", "--name"]) ?? caption;
@@ -686,7 +786,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    `Unknown mac-desktop subcommand '${sub}'. Run 'ade mac-desktop --help'.`,
+    `Unknown screen subcommand '${sub}'. Run 'ade screen --help'.`,
   );
 }
 /* ── Mac Desktop text output ─────────────────────────────────────────────── */
@@ -736,9 +836,10 @@ function macDesktopObservationSections(
   const windows = firstArray(observation, ["windows"]);
   const display = firstRecord(observation, ["display"]);
   const sizeLabel = options.windowCapture === true ? "capture" : "display";
-  const header = renderKeyValues("ADE Mac Desktop observation", [
+  const header = renderKeyValues(screenTitle(observation, "observation"), [
     ["observation", observation.id],
     ["lane", observation.laneId],
+    ["seat", asString(observation.seatMode)],
     ["captured", observation.capturedAt],
     ["image", observation.screenshotPath],
     ["element map", observation.mapPath],
@@ -827,21 +928,48 @@ export function formatMacDesktopStatus(value: unknown): string {
   const recording = firstRecord(status, ["recording"]);
   const windows = firstArray(status, ["windows"]);
   const lanes = firstArray(status, ["lanes"]);
-  const header = renderKeyValues("ADE Mac Desktop", [
-    ["platform", status.platform],
+  const platform = hostPlatform(status);
+  const windowsHost = platform === "win32";
+  // The service attaches the summary; an older runtime's reply is summarized
+  // here with the same shared function so the two cannot say different things.
+  const seat = firstRecord(status, ["seat"])
+    ?? (describeDesktopSeat({
+      platform: platform as NodeJS.Platform,
+      supported: status.supported === true,
+      display: (display ?? null) as never,
+      windowsDesktop: (firstRecord(status, ["windowsDesktop"]) ?? null) as never,
+    }) as unknown as JsonObject);
+  const windowsDesktop = firstRecord(status, ["windowsDesktop"]);
+  const operation = windowsDesktop ? firstRecord(windowsDesktop, ["operation"]) : null;
+  const yesNo = (flag: unknown): string | null => (typeof flag === "boolean" ? (flag ? "yes" : "no") : null);
+  const header = renderKeyValues(screenTitle(status), [
+    ["platform", platform],
     ["supported", status.supported],
     ["reason", status.unsupportedReason],
     ["driver", driver?.state],
     ["driver message", driver?.message],
-    ["screen recording", permissions?.screenRecording],
-    ["accessibility", permissions?.accessibility],
-    ["mode", display?.mode ?? status.displayMode],
-    ["display", display?.name],
+    // Windows has no grants to show; printing "granted" there was noise.
+    ["screen recording", windowsHost ? null : permissions?.screenRecording],
+    ["accessibility", windowsHost ? null : permissions?.accessibility],
+    // The seat line is the answer to "whose screen is this?". On Windows the
+    // private seat shows the user's wallpaper and taskbar and is still not
+    // their screen, so it is stated, not left to be inferred from a picture.
+    ["seat", display ? asString(seat.seatDescription) ?? asString(seat.seat) : "none (no screen for this lane yet)"],
+    ["real input", display
+      ? windowsHost
+        ? seat.seat === "shared"
+          ? "taken for you under the user's shared-seat consent; one shared lane at a time"
+          : "allowed — no lease needed on a private seat"
+        : "needs the user's lease (ade screen lease)"
+      : null],
+    ["mode", windowsHost ? null : display?.mode ?? status.displayMode],
+    ["display", windowsHost ? null : display?.name],
     // `offscreen-region` is the fallback where no CoreGraphics display was
     // created at all: there is no id to report, and printing `0` read as a
     // real display id (0 is the MAIN display's id on macOS) — the one thing
     // this mode is emphatically NOT using. An em dash says "none".
-    ["display id", macDesktopDisplayIdCell(display, status)],
+    ["display id", windowsHost ? null : macDesktopDisplayIdCell(display, status)],
+    ["session", windowsHost ? display?.displayId : null],
     [
       "size",
       display?.width && display?.height ? `${display.width}x${display.height}` : null,
@@ -852,15 +980,23 @@ export function formatMacDesktopStatus(value: unknown): string {
     ["stream", stream ? `${stream.running ? "running" : "stopped"}${stream.idle ? " (idle rate)" : ""} @ ${stream.fps ?? "?"}fps` : null],
     ["stream error", stream?.lastError],
     ["recording", recording?.running === true ? `running since ${recording.startedAt ?? "?"}` : null],
+    // Windows host facts, every one an agent has had to guess at.
+    // A lane on the private seat is its holder; "held by" itself is noise.
+    ["private seat", windowsHost && typeof seat.privateAvailable === "boolean" && !(display && seat.seat === "private")
+      ? seat.privateAvailable ? "available" : `unavailable — ${asString(seat.privateUnavailable) ?? "see the next step"}`
+      : null],
+    ["held by", windowsHost && !(display && seat.seat === "private") ? asString(seat.heldBy) : null],
+    ["setup done", windowsHost ? yesNo(seat.setupDone) : null],
+    ["password saved", windowsHost ? yesNo(seat.passwordSaved) : null],
+    ["locked", windowsHost ? yesNo(seat.locked) : null],
+    ["in progress", operation ? `${asString(operation.kind) ?? "operation"} since ${asString(operation.startedAt) ?? "?"}` : null],
     ["host is local", status.hostIsLocal],
-  ]);
+    ["next", asString(seat.nextStep)],
+  ], ["seat", "real input", "next", "private seat", "held by"]);
   const sections = [header];
-  // A supported host with no display reads as a wall of green rows that never
-  // says the one thing the caller has to do next.
-  if (status.supported === true && !display) {
-    sections.push("", "No display for this lane yet — run: ade mac-desktop start");
-  }
-  if (macDesktopIsOffscreenRegion(display, status)) {
+  // The Windows shared seat reports `offscreen-region` too; its seat line
+  // already says what that means there.
+  if (!windowsHost && macDesktopIsOffscreenRegion(display, status)) {
     sections.push(
       "",
       "Windows are parked in an off-screen region of the main display — this Mac has no virtual display.",
@@ -871,18 +1007,99 @@ export function formatMacDesktopStatus(value: unknown): string {
     sections.push(
       "",
       renderTable(
-        ["lane", "display", "windows", "streaming"],
+        windowsHost ? ["lane", "seat", "windows", "streaming"] : ["lane", "display", "windows", "streaming"],
         lanes.map((lane) => [
           lane.laneName ?? lane.laneId,
-          lane.displayId == null || lane.displayId === 0 ? "—" : lane.displayId,
+          windowsHost
+            ? asString(lane.seatMode) ?? "private"
+            : lane.displayId == null || lane.displayId === 0 ? "—" : lane.displayId,
           lane.windowCount,
           lane.streaming,
         ]),
-        "(no lanes hold a display)",
+        "(no lanes hold a screen)",
       ),
     );
   }
   return sections.join("\n");
+}
+
+/** `screen open`: what launched, the windows that appeared, or why none did. */
+export function formatMacDesktopOpen(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const windows = firstArray(result, ["windows"]);
+  const header = renderKeyValues(screenTitle(result, "open"), [
+    ["lane", result.laneId],
+    ["app", result.appName],
+    ["pid", result.pid],
+    ["resolved", result.resolvedPath],
+    ["profile", result.profileDir],
+  ]);
+  const lines = [header];
+  if (windows.length) {
+    lines.push(...macDesktopWindowsFooter(windows));
+  } else if (result.handedOff === true) {
+    lines.push(
+      "",
+      `No window: ${asString(result.message) ?? "the app handed the request to an instance that was already running, and exited."}`,
+      "Next: open it with its full path and a fresh profile or file, or claim the existing window (ade screen windows --text, then ade screen claim --window <id>).",
+    );
+  } else if (result.watching === true) {
+    lines.push(
+      "",
+      "No window yet; ADE is watching for it. Next: ade screen wait --window-title \"<part of its title>\" --text",
+    );
+  } else {
+    lines.push(
+      "",
+      "No window appeared and ADE is not watching for one. Check the screen: ade screen observe --text",
+    );
+  }
+  return lines.join("\n");
+}
+
+/** `screen screenshot`: where the picture is; not filed as proof. */
+export function formatMacDesktopScreenshot(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  return renderKeyValues(screenTitle(result, "screenshot"), [
+    ["lane", result.laneId],
+    ["file", result.filePath],
+    ["size", result.width && result.height ? `${result.width}x${result.height}` : null],
+    ["captured", result.capturedAt],
+    ["filed", result.proofArtifactId ? "yes" : "no — use `ade screen proof --caption \"<what>\"` to file proof"],
+  ], ["filed"]);
+}
+
+/** `screen lease`: granted, not needed, or refused, and what to do next. */
+export function formatMacDesktopLease(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const lease = firstRecord(result, ["lease"]);
+  const code = asString(result.code);
+  return renderKeyValues(screenTitle(result, "lease"), [
+    ["granted", result.notRequired === true ? "not needed" : result.granted],
+    ["holder", lease ? `${lease.holder} ${lease.holderLabel ?? lease.holderId}` : null],
+    ["expires", lease?.expiresAt],
+    ["note", result.message],
+    ["refused", code],
+    ["next", code ? macDesktopErrorHint(code) : null],
+  ], ["note", "next"]);
+}
+
+/** `screen focus|minimize|close`: what happened, then the lane's windows. */
+export function formatMacDesktopWindowAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const action = asString(result.action) ?? "window";
+  const lines = [
+    renderKeyValues(screenTitle(result, action), [
+      ["lane", result.laneId],
+      ["window", result.windowId],
+      ["closed", action === "close" ? result.closed : null],
+      ["note", action === "close" && result.closed === false
+        ? "The window is still open (it may be asking to save). Observe it: ade screen observe --window <id> --text"
+        : null],
+    ], ["note"]),
+    ...macDesktopWindowsFooter(firstArray(result, ["windows"])),
+  ];
+  return lines.join("\n");
 }
 
 /**
@@ -900,7 +1117,7 @@ export function formatMacDesktopStop(value: unknown): string {
   const leftOpen = (Array.isArray(result.appsLeftOpen) ? result.appsLeftOpen : [])
     .filter(isRecord);
   const sections = [
-    renderKeyValues("ADE Mac Desktop stop", [
+    renderKeyValues(screenTitle(result, "stop"), [
       ["stopped", result.stopped],
       ["released windows", result.releasedWindows],
     ]),
@@ -980,7 +1197,7 @@ export function formatMacDesktopAction(value: unknown): string {
   const header = [
     ...macDesktopAnswerLines(result, resolved),
     "",
-    renderKeyValues("ADE Mac Desktop action", [
+    renderKeyValues(screenTitle(result, "action"), [
       ["ok", result.ok ?? true],
       ["action", result.action],
       ["mode", result.mode],
@@ -1008,6 +1225,21 @@ export function macDesktopRecordingDurationMs(record: JsonObject): number | null
   return null;
 }
 
+/**
+ * True when a `record stop` ended with an error and no file: nothing was
+ * recorded that can be played or filed. Shared by every `record stop` whose
+ * result is a recording status (`screen`, `app-control`).
+ */
+export function recordingStopLeftNoFile(result: unknown): boolean {
+  const outer = isRecord(result) ? result : {};
+  // An action envelope (`{ domain, action, result }`) wraps the status.
+  const record = typeof outer.domain === "string" && isRecord(outer.result) ? outer.result : outer;
+  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  const lastError = typeof status.lastError === "string" ? status.lastError.trim() : "";
+  const filePath = typeof status.filePath === "string" ? status.filePath.trim() : "";
+  return status.running !== true && lastError.length > 0 && filePath.length === 0;
+}
+
 /** `record start` / `record stop`: is it running, where is the file, how long. */
 export function formatMacDesktopRecording(value: unknown): string {
   const record = isRecord(value) ? value : {};
@@ -1021,7 +1253,7 @@ export function formatMacDesktopRecording(value: unknown): string {
   const wallDurationMs = finite(status.wallDurationMs);
   const idleCut = proofIdleCutLabel(finite(status.idleCutMs));
   const maxDurationMs = finite(status.maxDurationMs);
-  return renderKeyValues("ADE Mac Desktop recording", [
+  return renderKeyValues(screenTitle(record, "recording"), [
     ["lane", status.laneId],
     ["running", status.running],
     ["started", status.startedAt],
@@ -1029,7 +1261,16 @@ export function formatMacDesktopRecording(value: unknown): string {
     // A stop that failed still flips `running` to false; without this line the
     // failure was invisible and the file looked like a finished recording.
     ["error", status.lastError],
-    ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
+    // Filed uncut (no demo engine, or the demo failed): never let that read as
+    // a finished demo.
+    ["demo", status.demoNote],
+    // A finished file reported as 0s is a measurement that failed, not an
+    // empty video: say so, and give the real time it covered instead.
+    ["duration", durationMs == null
+      ? null
+      : durationMs === 0 && status.running !== true && status.filePath
+        ? `not measured${wallDurationMs ? ` (covered ${formatProofDuration(wallDurationMs)} of real time)` : ""} — check the file before citing it`
+        : `${(durationMs / 1000).toFixed(1)}s`],
     // The video is shorter than the real time it covers when still time was
     // cut; the same "idle cut m:ss" the proof drawer prints.
     ["real time", idleCut && wallDurationMs != null ? `${formatProofDuration(wallDurationMs)} · ${idleCut}` : null],
@@ -1048,7 +1289,7 @@ export function formatMacDesktopRecording(value: unknown): string {
     ["cite", typeof status.proofArtifactId === "string" && status.proofArtifactId
       ? proofCitationMarkdown(status.proofArtifactId, asString(status.caption))
       : null],
-  ]);
+  ], ["cite", "duration", "caption"]);
 }
 
 /**
@@ -1080,7 +1321,7 @@ export function formatMacDesktopProofFiled(value: unknown): string {
       ["owners", ownersFor(artifact.id)],
       // Pasted into the answer, this shows the proof next to the claim.
       ["cite", typeof artifact.id === "string" ? proofCitationMarkdown(artifact.id, asString(artifact.description) ?? asString(artifact.title)) : null],
-    ]),
+    ], ["cite", "path", "caption"]),
   );
   const confirmation = asString(record.confirmation);
   return [

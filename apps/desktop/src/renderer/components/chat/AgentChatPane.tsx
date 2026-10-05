@@ -242,6 +242,7 @@ import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedSched
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
@@ -14701,6 +14702,7 @@ export function AgentChatPane({
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
       />
+      <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
       {hasAttachedTerminal ? (
         <button
           type="button"

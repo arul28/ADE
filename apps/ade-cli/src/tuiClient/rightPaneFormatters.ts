@@ -14,7 +14,7 @@ import {
 } from "../../../desktop/src/shared/types/workTools";
 import { macDesktopNotParkedSentence } from "../../../desktop/src/renderer/components/chat/macDesktopActivityText";
 import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
-import { macDesktopVisibleNotParked } from "../../../desktop/src/shared/types/macDesktop";
+import { macDesktopVisibleNotParked, windowsDesktopPrivateUnavailableMessage } from "../../../desktop/src/shared/types/macDesktop";
 import { formatRelativePastTime } from "./relativeTime";
 
 type JsonRecord = Record<string, unknown>;
@@ -777,8 +777,12 @@ export function formatWorkToolsLaneState(
     if (frame) lines.push(`last frame: ${frame}`);
   }
 
+  // The same screen, named for its host: a Windows host opens it as
+  // "windows-desktop", and that pane was never shown here.
   const macDesktopOpen = state.activeTool === "mac-desktop"
-    || (state.openTools ?? []).includes("mac-desktop");
+    || state.activeTool === "windows-desktop"
+    || (state.openTools ?? []).includes("mac-desktop")
+    || (state.openTools ?? []).includes("windows-desktop");
   if (state.macDesktop?.supported && (state.macDesktop.display || macDesktopOpen)) {
     lines.push(...workToolsMacDesktopLines(state.macDesktop, nowMs));
   }
@@ -794,11 +798,26 @@ export function formatWorkToolsLaneState(
  * cannot host a screen, matching the other clients.
  */
 function workToolsMacDesktopLines(desktop: WorkToolsMacDesktopState, nowMs: number): string[] {
-  const lines = ["", "Mac Desktop"];
+  // `windowsDesktop` is non-null exactly on a Windows host.
+  const windowsHost = desktop.windowsDesktop != null;
+  const lines = ["", windowsHost ? "Windows Desktop" : "Mac Desktop"];
   const display = desktop.display;
   if (!display) {
-    lines.push("No display yet.");
+    const windows = desktop.windowsDesktop;
+    if (windows?.heldByLaneId) {
+      lines.push(`No screen yet. The private screen is held by ${windows.heldByLaneName ?? windows.heldByLaneId}.`);
+    } else if (windows && !windows.privateAvailable && windows.privateUnavailableReason) {
+      lines.push(`No screen yet. ${windowsDesktopPrivateUnavailableMessage(windows.privateUnavailableReason)}`);
+    } else {
+      lines.push(windowsHost ? "No screen yet." : "No display yet.");
+    }
     return lines;
+  }
+  if (windowsHost) {
+    // The private seat shows the user's wallpaper and taskbar; say whose it is.
+    lines.push(display.seatMode === "shared"
+      ? "seat: shared — the user's main desktop"
+      : "seat: private — a separate Windows session, not the user's screen");
   }
   const windowCount = desktop.windows.length;
   const parts = [

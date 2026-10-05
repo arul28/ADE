@@ -10,7 +10,7 @@ import {
 } from "react";
 import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { desktopProductName, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -651,7 +651,7 @@ export function useMacDesktopPanelController({
         : await macDesktopApi().startRecording({
           laneId,
           chatSessionId: sessionId,
-          caption: macDesktopPaneCaption("recording", laneName),
+          caption: macDesktopPaneCaption("recording", laneName, desktopProductName(status?.platform)),
         }, pinRef.current);
       setStatus((current) => (current ? { ...current, recording: next } : current));
       setCaptureError(null);
@@ -672,7 +672,7 @@ export function useMacDesktopPanelController({
     } finally {
       setBusy(false);
     }
-  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus]);
+  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus, status?.platform]);
 
   /** Save screenshot: one picture of the lane's screen, filed as proof. */
   const saveScreenshot = useCallback(async () => {
@@ -682,7 +682,7 @@ export function useMacDesktopPanelController({
       const shot = await macDesktopApi().screenshot({
         laneId,
         chatSessionId: sessionId,
-        caption: macDesktopPaneCaption("screenshot", laneName),
+        caption: macDesktopPaneCaption("screenshot", laneName, desktopProductName(status?.platform)),
       }, pinRef.current);
       setCaptureError(null);
       if (shot.proofArtifactId) {
@@ -700,7 +700,7 @@ export function useMacDesktopPanelController({
     } finally {
       setScreenshotPending(false);
     }
-  }, [display, errorText, laneId, laneName, sessionId]);
+  }, [display, errorText, laneId, laneName, sessionId, status?.platform]);
 
   /**
    * The receipt's Open, the way the Apple pane's does it: the proof row when

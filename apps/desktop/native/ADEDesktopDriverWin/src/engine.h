@@ -79,7 +79,7 @@ class Engine {
   Json listWindowsOp(const Json& req);
   Json park(const Json& req);
   Json unpark(const Json& req);
-  Json launch(const Json& req);
+  Json launch(const Json& req, std::unique_lock<std::recursive_mutex>& operation);
   Json quitApp(const Json& req);
   Json present(const Json& req);
   Json observe(const Json& req);
@@ -93,6 +93,10 @@ class Engine {
   Json stopStream(const Json& req);
   Json startRecording(const Json& req);
   Json stopRecording(const Json& req);
+  // window.focus / window.minimize / window.close for one lane window.
+  Json windowCommand(const std::string& op, const Json& req);
+  // The lane window `windowId` names, or a typed error.
+  HWND requireLaneWindow(Lane& lane, int64_t windowId);
 
   // Input halves.
   Json accessibilityInput(Lane& lane, const std::string& command, const Json& payload);
@@ -104,13 +108,18 @@ class Engine {
   // Lanes and windows.
   std::shared_ptr<Lane> requireLane(const std::string& laneId);
   std::vector<WinInfo> laneWindows(Lane& lane);
-  Json windowJson(const WinInfo& w, const Lane* lane);
+  // `owned`: the lane's ADE-launched pids (ownedProcesses), computed once per
+  // listing. Private mode tags a window "ade_launched" only when its process is
+  // one of them; anything else on the private desktop (the account's startup
+  // apps) is "adopted", so cleanup never treats it as ADE's.
+  Json windowJson(const WinInfo& w, const Lane* lane, const std::set<DWORD>* owned = nullptr);
   Json displayJson(Lane& lane);
   void parkWindow(Lane& lane, HWND hwnd, const char* origin);
   void releaseWindow(Lane& lane, HWND hwnd);
   bool captureLane(Lane& lane, Frame& frame, HWND onlyWindow, std::string* error);
   void touch(Lane& lane);
   std::set<DWORD> ownedProcesses(Lane& lane, DWORD watchedRoot = 0);
+  std::set<DWORD> ownedForListing(Lane& lane);
   std::map<DWORD, FILETIME> ownedProcessIdentities(Lane& lane, DWORD watchedRoot = 0);
   void rememberProcess(Lane& lane, DWORD pid, DWORD watchedRoot = 0);
 

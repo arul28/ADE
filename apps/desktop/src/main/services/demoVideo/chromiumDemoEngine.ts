@@ -1,6 +1,8 @@
 /**
- * The `chromium` demo engine: measures and renders an `.aderaw` capture in a
- * hidden renderer of the ADE desktop app, on any OS.
+ * The `chromium` demo engine: measures and renders an `.aderaw` capture, or
+ * an H.264 MP4 (the Windows desktop driver's recording, served as `.aderaw`
+ * records by `demoMp4Source.ts`), in a hidden renderer of the ADE desktop
+ * app, on any OS.
  *
  * Electron main process only: it imports `electron`. The runtime daemon
  * reaches it over the desktop bridge (`demo_engine.*`); a machine with no
@@ -52,6 +54,7 @@ import {
   type DemoRenderResult,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
+import { type DemoMp4Info, demoRawStreamFromMp4, isDemoMp4Path, readDemoMp4 } from "./demoMp4Source";
 import { DEMO_RAW_MAX_PAYLOAD_BYTES, hasDemoRawMagic } from "./demoRawFormat";
 
 const PARTITION = "ade-demo-engine";
@@ -967,8 +970,17 @@ async function renameIntoPlace(from: string, to: string): Promise<void> {
  * Where the job's page and raw file are served from; one token per job. The
  * job's open read streams are closed when it ends: on Windows an open handle
  * would stop the raw file from being deleted afterwards.
+ *
+ * An H.264 MP4 input (the Windows desktop driver's recording) is served as
+ * `.aderaw` records made from its samples on the fly (`demoMp4Source.ts`), so
+ * the page reads one format.
  */
-type ServedJob = { input: string; streams: Set<fs.ReadStream> };
+type ServedJob = { input: string; mp4: DemoMp4Info | null; streams: Set<Readable> };
+
+/** True for an input this engine reads: an `.aderaw` capture or an H.264 MP4. */
+function readsInput(inputPath: string): boolean {
+  return path.extname(inputPath).toLowerCase() === DEMO_RAW_FILE_EXTENSION || isDemoMp4Path(inputPath);
+}
 
 export type ChromiumDemoEngine = DemoEngine & { dispose(): void };
 
@@ -1004,7 +1016,9 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
           });
         }
         if (resource === "raw") {
-          const stream = fs.createReadStream(job.input, { highWaterMark: 1024 * 1024 });
+          const stream: Readable = job.mp4
+            ? demoRawStreamFromMp4(job.input, job.mp4)
+            : fs.createReadStream(job.input, { highWaterMark: 1024 * 1024 });
           job.streams.add(stream);
           stream.once("close", () => job.streams.delete(stream));
           return new Response(Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>, {
@@ -1024,12 +1038,16 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
   ): Promise<unknown> => {
     if (disposed) throw new Error("The Chromium demo engine was shut down.");
     if (options.signal?.aborted) throw new Error("The demo render was cancelled.");
-    if (!(await hasDemoRawMagic(job.input))) {
+    // An MP4's index is read here, so a file that is not a finished H.264
+    // movie fails with its reason before any window opens.
+    const mp4 = isDemoMp4Path(job.input) ? await readDemoMp4(job.input) : null;
+    if (!mp4 && !(await hasDemoRawMagic(job.input))) {
       throw new Error(`The recording ${path.basename(job.input)} is missing or is not an ADE raw capture.`);
     }
+    if (mp4 && !mp4.frames) throw new Error("The recording has no frames.");
     const size = (await fs.promises.stat(job.input)).size;
     const token = randomBytes(18).toString("base64url");
-    const servedJob: ServedJob = { input: job.input, streams: new Set() };
+    const servedJob: ServedJob = { input: job.input, mp4, streams: new Set() };
     served.set(token, servedJob);
     engineSession();
     const window = new BrowserWindow({
@@ -1187,7 +1205,7 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
 
   return {
     id: "chromium",
-    canRead: (inputPath: string) => path.extname(inputPath).toLowerCase() === DEMO_RAW_FILE_EXTENSION,
+    canRead: readsInput,
     analyze,
     render,
     dispose() {

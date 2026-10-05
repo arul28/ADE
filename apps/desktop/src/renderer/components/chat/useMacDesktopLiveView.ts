@@ -299,6 +299,25 @@ export function useMacDesktopLiveView(args: {
     setRestartNonce((nonce) => nonce + 1);
   }, []);
 
+  /*
+   * A viewer that gave up takes the picture back once the host has one again.
+   *
+   * Starting or stopping a recording can drop the live capture (the Windows
+   * driver did on 2026-10-05), and the three quick re-dials can all land before
+   * the capture is back. Without this the surface sat on "No picture" until a
+   * person pressed Retry, although another surface had already restarted it.
+   */
+  useEffect(() => {
+    const api = window.ade?.macDesktop;
+    if (!gaveUp || !enabled || !laneId || !api?.onEvent) return undefined;
+    return api.onEvent((event) => {
+      const forLane = (event.type === "stream-started" && event.status.laneId === laneId)
+        || (event.type === "recording-changed" && event.status.laneId === laneId)
+        || (event.type === "display-created" && event.display.laneId === laneId);
+      if (forLane) restart();
+    }, pinRef.current);
+  }, [enabled, gaveUp, laneId, pinKey, restart]);
+
   /* ── Start and stop ──────────────────────────────────────────────────── */
 
   useEffect(() => {

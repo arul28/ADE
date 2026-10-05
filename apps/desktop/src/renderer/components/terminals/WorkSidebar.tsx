@@ -34,7 +34,13 @@ import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
-import { isAvailableWorkSidebarTab, workToolContextLabel, workToolLabel } from "./workTools";
+import {
+  isAvailableWorkSidebarTab,
+  isHostMismatchWorkTool,
+  workToolContextLabel,
+  workToolLabel,
+  type WorkToolContext,
+} from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
@@ -102,6 +108,17 @@ function hideBuiltInBrowserView(projectRoot: string | null): void {
     height: 0,
     visible: false,
   }).catch(() => {});
+}
+
+/** The desktop tool this host offers in place of `tool`, or null. */
+function desktopToolTwin(tool: WorkSidebarTab, context: WorkToolContext): WorkSidebarTab | null {
+  const twin: WorkSidebarTab | null = tool === "mac-desktop"
+    ? "windows-desktop"
+    : tool === "windows-desktop" ? "mac-desktop" : null;
+  return twin && isAvailableWorkSidebarTab(twin, context) && !isHostMismatchWorkTool(twin, context)
+    && (twin === "windows-desktop" ? context.supportsWindowsDesktop === true : context.supportsMacDesktop === true)
+    ? twin
+    : null;
 }
 
 export function WorkSidebar({
@@ -209,9 +226,14 @@ export function WorkSidebar({
   }, [laneId, runtimePin?.key]);
 
   useEffect(() => {
-    if (tool && !isAvailableWorkSidebarTab(tool, toolContext)) {
-      onToolChange(null);
-    }
+    if (!tool || isAvailableWorkSidebarTab(tool, toolContext)) return;
+    // The lane's screen has one name per host. A request for the other host's
+    // desktop tool (an agent's `ade screen show`, held until this chat was in
+    // front, asks for `mac-desktop` everywhere) opens this host's one instead
+    // of dropping to the picker, which then read "Windows Desktop is off"
+    // about a screen that was live.
+    const twin = desktopToolTwin(tool, toolContext);
+    onToolChange(twin);
   }, [onToolChange, tool, toolContext]);
 
   // Hiding the native browser view is the pane's one non-React obligation: the

@@ -20,6 +20,7 @@ import {
 } from "../chat/chatCompanionUiState";
 import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
 import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../work/appControlCardGrants";
+import { useMacDesktopSupport } from "./useMacDesktopSupport";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -39,12 +40,13 @@ function showPaneTool({
   setWorkSidebarTool,
 }: {
   chatSessionId: string;
-  tool: "ios" | "mac-desktop" | "app-control";
+  tool: "ios" | "mac-desktop" | "windows-desktop" | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
   setWorkSidebarTool: (tool: WorkSidebarTab) => void;
 }): Promise<WorkToolShowOutcome> {
-  setWorkLivePreviewEnabledForChat(chatSessionId, tool, true);
+  // The preview marker is keyed `mac-desktop` on both hosts (see `MacDesktopMiniPlayer`).
+  setWorkLivePreviewEnabledForChat(chatSessionId, tool === "windows-desktop" ? "mac-desktop" : tool, true);
   setWorkSidebarTool(tool);
   return showOutcomeWhenOnScreen(workSurfaceKey(tool, scopeKey, activeLaneId));
 }
@@ -110,7 +112,16 @@ export function useWorkShowRequests({
 
   const scopeKey = workRuntimeScopeKey(runtimePin, projectBinding);
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
-  const macDesktopToolOpening = workSidebarVisible && workSidebarTool === "mac-desktop";
+  /*
+   * `mac-desktop` is the surface name on every host; the pane tool that shows
+   * it is Windows Desktop on a Windows host. The capability read is the cached
+   * one the tools pane already made, so this costs no extra round trip.
+   */
+  const desktopSupport = useMacDesktopSupport({ runtimePin, enabled: active });
+  const desktopTool: "mac-desktop" | "windows-desktop" = desktopSupport?.platform === "win32"
+    ? "windows-desktop"
+    : "mac-desktop";
+  const macDesktopToolOpening = workSidebarVisible && workSidebarTool === desktopTool;
   const appControlToolOpening = workSidebarVisible && workSidebarTool === "app-control";
   const showWorkSurface = useCallback((
     request: WorkToolShowRequest,
@@ -153,7 +164,7 @@ export function useWorkShowRequests({
       // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
       return showPaneTool({
         chatSessionId: request.chatSessionId,
-        tool: "mac-desktop",
+        tool: desktopTool,
         scopeKey,
         activeLaneId,
         setWorkSidebarTool,
@@ -162,7 +173,7 @@ export function useWorkShowRequests({
     if (request.surface === "floating-mac-desktop") {
       // Like the floating device: only over a chat of the card's own lane.
       if (!floatsOnChatLane) return "declined";
-      if (isWorkSurfaceOnScreen(workSurfaceKey("mac-desktop", scopeKey, activeLaneId))) return "shown";
+      if (isWorkSurfaceOnScreen(workSurfaceKey(desktopTool, scopeKey, activeLaneId))) return "shown";
       if (request.auto) {
         if (macDesktopToolOpening) return "declined";
         if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "mac-desktop")) {
@@ -225,6 +236,7 @@ export function useWorkShowRequests({
     activeWorkSession,
     appControlToolOpening,
     appleToolOpening,
+    desktopTool,
     macDesktopToolOpening,
     runtimePin,
     scopeKey,

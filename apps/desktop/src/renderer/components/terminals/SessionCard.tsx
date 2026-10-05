@@ -55,6 +55,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
+import type { LaneDesktopKind } from "./useLaneMacDesktops";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel } from "./useLaneWorkToolUse";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -467,6 +468,7 @@ export const SessionCard = React.memo(function SessionCard({
   machineMarker = null,
   laneAppleDevice = null,
   laneMacDesktop = false,
+  laneDesktopKind = "mac",
   laneCloud = null,
   laneAppControl = false,
   laneBrowserTabs = 0,
@@ -538,6 +540,8 @@ export const SessionCard = React.memo(function SessionCard({
   laneAppleDevice?: LaneAppleDevice | null;
   /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
   laneMacDesktop?: boolean;
+  /** Which screen that is: the Mac Desktop, or a private or shared Windows seat. */
+  laneDesktopKind?: LaneDesktopKind;
   /** A headerless lane that lives on a cloud: its card carries the cloud mark. */
   laneCloud?: "devin" | "cursor" | null;
   /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
@@ -881,7 +885,7 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktopKind} /> : null}
         {laneAppControl ? (
           <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
         ) : null}

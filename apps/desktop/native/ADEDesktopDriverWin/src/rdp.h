@@ -22,6 +22,11 @@
 
 namespace ade {
 
+// The host posts its UI-thread tasks with this message. RdpSession::end pumps
+// every other message while it waits for the control to disconnect, but never
+// this one: a nested task would re-enter the worker's request.
+constexpr UINT kHostUiTaskMessage = WM_APP + 1;
+
 // One child-session connection. Lives on the host's UI thread.
 class RdpSession {
  public:
@@ -31,8 +36,12 @@ class RdpSession {
   ~RdpSession();
   // Starts connecting inside `hostWindow`. Must run on the UI thread.
   bool begin(HWND hostWindow, int width, int height, std::string* error, const WindowsCredential* credential = nullptr);
-  // Closes the control. The caller signs the session out first.
-  void end();
+  // Disconnects (waiting, while pumping messages, up to `disconnectWaitMs` for
+  // the control's OnDisconnected), then closes the control. Must run on the UI
+  // thread. Re-entrant calls (WM_CLOSE during the pump) return at once. The
+  // caller signs the child session out by id afterwards, whether or not this
+  // returned: the control's own teardown is not interruptible.
+  void end(int disconnectWaitMs = 5'000);
 
   // Waits (off the UI thread) until signed in, failed, or timeout.
   State waitSettled(int timeoutMs);
@@ -55,6 +64,8 @@ class RdpSession {
   int reason_ = 0, extendedReason_ = 0;
   bool passwordRejected_ = false;
   bool suppliedCredential_ = false;
+  bool disconnectedEvent_ = false;
+  bool ending_ = false;  // UI thread only
 };
 
 // The child session of this console session, or 0.
@@ -65,5 +76,15 @@ bool remoteDesktopAllowed();
 bool consoleLocked();
 // Signs a session out. Only ever called with the child session's id.
 bool signOutSession(DWORD sessionId, int64_t deadline = 0);
+
+// What tells one Windows session from a later one that reuses its id: the
+// account and the logon and connect times (FILETIME ticks; 0 when not yet set).
+struct SessionIdentity {
+  std::wstring user;
+  int64_t logonTime = 0;
+  int64_t connectTime = 0;
+};
+// False when Windows cannot describe the session (it is gone).
+bool querySessionIdentity(DWORD sessionId, SessionIdentity* out);
 
 }  // namespace ade

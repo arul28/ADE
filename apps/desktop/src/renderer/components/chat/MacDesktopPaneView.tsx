@@ -12,6 +12,7 @@ import {
   Record,
   Stop,
   WarningCircle,
+  WindowsLogo,
 } from "@phosphor-icons/react";
 import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
@@ -149,9 +150,19 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
     selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopKind,
   } = controller;
-  const desktopName = desktopKind === "windows" || status?.platform === "win32" || status?.windowsDesktop
-    ? "Windows Desktop"
-    : "Mac Desktop";
+  const windowsHost = desktopKind === "windows" || status?.platform === "win32" || Boolean(status?.windowsDesktop);
+  const desktopName = windowsHost ? "Windows Desktop" : "Mac Desktop";
+  /** A Windows seat on the user's own desktop (Mode B) rather than the private screen. */
+  const windowsShared = windowsHost && Boolean(display)
+    && (display?.seatMode === "shared" || (!display?.seatMode && display?.mode === "offscreen-region"));
+  const stopLabel = windowsShared
+    ? "Stop using your main desktop"
+    : windowsHost ? "Stop the private screen" : `Stop ${desktopName}`;
+  const stopConsequence = windowsShared
+    ? "The agent stops working on your desktop, and windows it moved off-screen come back."
+    : windowsHost
+      ? "The private screen signs out, and apps this lane opened there close, even with unsaved work."
+      : "Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.";
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
   // when the answer arrived.
@@ -159,7 +170,8 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     return (
       <WorkToolEmptyLine
         testId="mac-desktop-unsupported"
-        title={status?.unsupportedReason ?? "This lane's runtime host cannot host a Mac display."}
+        title={status?.unsupportedReason
+          ?? (windowsHost ? "This lane's host cannot run a Windows Desktop screen." : "This lane's runtime host cannot host a Mac display.")}
       />
     );
   }
@@ -194,9 +206,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <WindowsDesktopStateCard
         laneId={laneId}
         laneName={laneName}
+        sessionId={sessionId}
         windows={status.windowsDesktop}
+        driver={status.driver}
         runtimePin={runtimePin}
         starting={starting}
+        startError={statusError}
+        onDismissStartError={() => setStatusError(null)}
         onChanged={() => void readAgain()}
       />,
     );
@@ -491,7 +507,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {/* Always here while a display exists: the way out that does not
               depend on the picture, the lease or the video working. */}
           <WorkToolChromeButton
-            label={`Stop ${desktopName}`}
+            label={stopLabel}
             onClick={() => setConfirmStop(true)}
             disabled={stopping}
             active={confirmStop}
@@ -837,13 +853,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   const renderStopConfirm = () => (confirmStop ? (
     <div
       role="alertdialog"
-      aria-label={`Stop ${desktopName}?`}
+      aria-label={`${stopLabel}?`}
       data-testid="mac-desktop-stop-confirm"
       className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
     >
       <span className="min-w-0 flex-1">
-        <span className="font-medium">Stop {desktopName}?</span>
-        <span className="text-muted-fg"> Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.</span>
+        <span className="font-medium">{stopLabel}?</span>
+        <span className="text-muted-fg"> {stopConsequence}</span>
       </span>
       <button
         type="button"
@@ -969,16 +985,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       </div>
       {/* Windows Mode B: the seat is the user's own desktop, so the pane keeps a
           reminder and a Stop for as long as it is live. A state, so a banner. */}
-      {status?.windowsDesktop && display?.mode === "offscreen-region" ? (
+      {windowsShared ? (
         <Banner
           layout="inline"
           testId="windows-desktop-shared-reminder"
           model={{
             id: "windows-desktop-shared",
             tone: "warning",
-            icon: <Monitor size={16} aria-hidden="true" />,
+            icon: <WindowsLogo size={16} aria-hidden="true" />,
             title: "Using your main Windows desktop",
-            detail: "ADE takes over the window you are using while it acts.",
+            detail: "ADE takes over the window you are using while it acts. Stop gives your desktop back.",
             actions: [{ label: "Stop", onClick: () => void stopDisplay() }],
           }}
         />

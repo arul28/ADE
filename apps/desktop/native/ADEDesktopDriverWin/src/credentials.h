@@ -17,7 +17,9 @@ std::string credentialAccountKind(const std::wstring& username);
 std::wstring credentialTarget(const std::wstring& home);
 bool credentialSaved(const std::wstring& target);
 std::unique_ptr<WindowsCredential> readCredential(const std::wstring& target);
-std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping, int64_t deadline);
+// Opens the native password dialog on the calling thread, owned by a small
+// topmost window of that thread so it opens in front of ADE, not behind it.
+std::unique_ptr<WindowsCredential> promptCredential(const std::atomic<bool>& stopping, int64_t deadline);
 void saveCredential(const std::wstring& target, const WindowsCredential& credential);
 void forgetCredential(const std::wstring& target);
 }  // namespace ade

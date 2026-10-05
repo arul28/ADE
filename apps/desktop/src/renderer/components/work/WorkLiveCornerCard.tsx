@@ -1278,8 +1278,9 @@ export function WorkLiveCornerCard({
       chatSessionId={chatSessionId}
       sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
-      supported={toolContext.supportsMacDesktop !== false}
-      onOpenInPane={() => onPick("mac-desktop")}
+      desktopTool={toolContext.supportsWindowsDesktop === true ? "windows-desktop" : "mac-desktop"}
+      supported={toolContext.supportsWindowsDesktop === true || toolContext.supportsMacDesktop !== false}
+      onOpenInPane={() => onPick(toolContext.supportsWindowsDesktop === true ? "windows-desktop" : "mac-desktop")}
     />
     <AppControlMiniPlayer
       active={active}

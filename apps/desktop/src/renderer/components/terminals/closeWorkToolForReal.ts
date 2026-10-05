@@ -146,7 +146,8 @@ export function closeWorkToolForReal(
         .catch((error) => logCloseFailure(tool, error));
       return;
     }
-    case "mac-desktop": {
+    case "mac-desktop":
+    case "windows-desktop": {
       const macDesktop = window.ade?.macDesktop;
       if (!macDesktop?.stop || !laneId) return;
       // Through the status store, so a pane reopened before the stop answers

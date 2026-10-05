@@ -5,6 +5,7 @@
 #include <olectl.h>
 #include <wtsapi32.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace ade {
@@ -472,7 +473,7 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
     std::lock_guard<std::mutex> lock(mutex_);
     suppliedCredential_ = credential != nullptr;
     state_ = State::Connecting;
-    reason_ = 0; extendedReason_ = 0; passwordRejected_ = false;
+    reason_ = 0; extendedReason_ = 0; passwordRejected_ = false; disconnectedEvent_ = false;
   }
   logLine("rdp: state Connecting; Connect calling");
   hr = dispCall(impl_->disp, L"Connect");
@@ -485,14 +486,51 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
   return true;
 }
 
-void RdpSession::end() {
+namespace {
+bool controlConnected(IDispatch* disp) {
+  VARIANT connected;
+  const bool on = SUCCEEDED(dispGet(disp, L"Connected", &connected)) && connected.vt == VT_I2 && connected.iVal != 0;
+  VariantClear(&connected);
+  return on;
+}
+
+// Dispatches every message except the host's task message until `done` or the
+// deadline. The control finishes Disconnect asynchronously on this thread's
+// queue; closing it before OnDisconnected arrives has hung Close/Release.
+template <typename Done>
+void pumpUntil(Done done, int64_t deadline) {
+  while (!done() && nowMs() < deadline) {
+    MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, kHostUiTaskMessage - 1, PM_REMOVE) ||
+           PeekMessageW(&msg, nullptr, kHostUiTaskMessage + 1, 0xFFFFFFFF, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+}
+}  // namespace
+
+void RdpSession::end(int disconnectWaitMs) {
+  // WM_CLOSE on the sign-in window, dispatched by the pump below, lands here.
+  if (ending_) { logLine("rdp: teardown already running"); return; }
+  ending_ = true;
+  struct Reset { bool& flag; ~Reset() { flag = false; } } reset{ending_};
   logLine("rdp: teardown begin");
   if (impl_->disp) {
-    VARIANT connected;
-    if (SUCCEEDED(dispGet(impl_->disp, L"Connected", &connected)) && connected.vt == VT_I2 && connected.iVal != 0) {
+    if (controlConnected(impl_->disp)) {
+      logLine("rdp: teardown Disconnect calling");
       dispCall(impl_->disp, L"Disconnect");
+      logLine("rdp: teardown Disconnect returned; waiting for OnDisconnected");
+      const int64_t waitStart = nowMs();
+      pumpUntil([&] {
+        { std::lock_guard<std::mutex> lock(mutex_); if (disconnectedEvent_) return true; }
+        return !impl_->disp || !controlConnected(impl_->disp);
+      }, waitStart + std::max(0, disconnectWaitMs));
+      bool event; { std::lock_guard<std::mutex> lock(mutex_); event = disconnectedEvent_; }
+      logLine("rdp: teardown disconnect wait " + std::string(event ? "event" : controlConnected(impl_->disp) ? "timed out" : "not-connected") +
+          " afterMs=" + std::to_string(nowMs() - waitStart));
     }
-    VariantClear(&connected);
     VARIANT value;
     if (SUCCEEDED(dispGet(impl_->disp, L"ExtendedDisconnectReason", &value))) {
       VARIANT number; VariantInit(&number);
@@ -504,8 +542,11 @@ void RdpSession::end() {
     VariantClear(&value);
     logLine("rdp: teardown disconnect reason=" + std::to_string(disconnectReason()) + " extended=" + std::to_string(extendedDisconnectReason()));
   }
+  // Each step below calls into the control and can block inside it; the log
+  // line before each one names the call a future hang is stuck in.
   if (impl_->sink) impl_->sink->detach();
   if (impl_->cp) {
+    logLine("rdp: teardown Unadvise");
     impl_->cp->Unadvise(impl_->cookie);
     impl_->cp->Release();
     impl_->cp = nullptr;
@@ -519,8 +560,11 @@ void RdpSession::end() {
     impl_->disp = nullptr;
   }
   if (impl_->ole) {
+    logLine("rdp: teardown Close");
     impl_->ole->Close(OLECLOSE_NOSAVE);
+    logLine("rdp: teardown SetClientSite");
     impl_->ole->SetClientSite(nullptr);
+    logLine("rdp: teardown Release");
     impl_->ole->Release();
     impl_->ole = nullptr;
   }
@@ -557,7 +601,10 @@ bool RdpSession::passwordRejected() {
   std::lock_guard<std::mutex> lock(mutex_); return passwordRejected_;
 }
 void RdpSession::onLogonError(int error) {
-  logLine("rdp: OnLogonError=" + std::to_string(error));
+  // -2 is LOGON_WARNING, "the logon process is continuing": it precedes
+  // OnLoginComplete on every successful sign-in and is never a failure. Only
+  // the explicit codes below fail a supplied credential.
+  logLine("rdp: OnLogonError=" + std::to_string(error) + (error == -2 ? " (logon continuing; benign)" : ""));
   std::lock_guard<std::mutex> lock(mutex_);
   // 1 means password renewal, not a wrong password; STATUS_LOGON_FAILURE is
   // also ambiguous. Keep the actual disconnect reason separate from this flag.
@@ -592,7 +639,7 @@ void RdpSession::onDisconnected(int reason) {
   VariantClear(&value);
   logLine("rdp: OnDisconnected reason=" + std::to_string(reason) + " extended=" + std::to_string(extended));
   std::lock_guard<std::mutex> lock(mutex_);
-  reason_ = reason; extendedReason_ = extended;
+  reason_ = reason; extendedReason_ = extended; disconnectedEvent_ = true;
   state_ = state_ == State::Connecting ? State::Failed : State::Ended;
   logLine("rdp: state=" + std::to_string(static_cast<int>(state_)));
   changed_.notify_all();
@@ -634,6 +681,23 @@ bool consoleLocked() {
     WTSFreeMemory(buffer);
   }
   return locked;
+}
+
+bool querySessionIdentity(DWORD sessionId, SessionIdentity* out) {
+  if (!sessionId || !out) return false;
+  LPWSTR buffer = nullptr;
+  DWORD bytes = 0;
+  if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSSessionInfoEx, &buffer, &bytes) || !buffer) return false;
+  auto* info = reinterpret_cast<WTSINFOEXW*>(buffer);
+  const bool ok = info->Level == 1 && info->Data.WTSInfoExLevel1.SessionId == sessionId;
+  if (ok) {
+    const auto& level = info->Data.WTSInfoExLevel1;
+    out->user = std::wstring(level.DomainName) + L"\\" + std::wstring(level.UserName);
+    out->logonTime = level.LogonTime.QuadPart;
+    out->connectTime = level.ConnectTime.QuadPart;
+  }
+  WTSFreeMemory(buffer);
+  return ok;
 }
 
 bool signOutSession(DWORD sessionId, int64_t deadline) {

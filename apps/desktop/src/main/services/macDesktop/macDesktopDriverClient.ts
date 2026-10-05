@@ -72,6 +72,14 @@ export const MAC_DESKTOP_DRIVER_OPS = {
    */
   windowsStatus: "windows.status",
   setupWindows: "windows.setup",
+  /**
+   * Windows only: one lane window raised (restored first when minimized),
+   * minimized, or closed gracefully. Params `{laneId, windowId}`; the result is
+   * `{windowId}`, and `{windowId, closed}` for close. The Mac helper has none.
+   */
+  windowFocus: "window.focus",
+  windowMinimize: "window.minimize",
+  windowClose: "window.close",
 } as const;
 
 /**
@@ -170,7 +178,20 @@ type PendingRequest = {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
   op: string;
+  /** The request as written, so a retired driver's queue can be replayed. */
+  line: string;
 };
+
+/**
+ * The exit code of a Windows driver that retires itself on purpose, after its
+ * reply (`kRetireExitCode` in the native host's common.h): a wedged UI thread,
+ * or an operation past its hard deadline. Not a crash — a fresh driver starts
+ * at once, and the requests it had queued but not begun go to the new one.
+ */
+export const MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE = 75;
+
+/** The `onDriverLost` reason for a driver that retired itself. */
+export const MAC_DESKTOP_DRIVER_RETIRED_REASON = "retired";
 
 export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const platform = deps.platform ?? process.platform;
@@ -453,6 +474,49 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     publishHealth();
   };
 
+  /**
+   * A driver that retired itself (exit {@link MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE})
+   * answered everything it started. What it had queued never ran, so it is
+   * written again to a fresh driver started now, with each request's own
+   * timeout still running. No backoff, no crash-loop count, and no "driver
+   * lost" unless a lane's display really went with it (the service decides).
+   */
+  const handleRetirement = (pid: number | null, wasReady: boolean): void => {
+    const queued = [...pending];
+    pending.clear();
+    deps.logger.info("mac_desktop.driver_retired", { pid, queuedRequests: queued.length });
+    if (wasReady) deps.onDriverLost?.(MAC_DESKTOP_DRIVER_RETIRED_REASON);
+    publishHealth();
+    const failQueued = (error: Error): void => {
+      for (const [, entry] of queued) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.reject(error);
+      }
+    };
+    void start().then(() => {
+      const fresh = child;
+      if (!fresh || !childReady) {
+        failQueued(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver is not running."));
+        return;
+      }
+      for (const [id, entry] of queued) {
+        pending.set(id, entry);
+        try {
+          fresh.stdin.write(entry.line);
+        } catch (error) {
+          pending.delete(id);
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.reject(new MacDesktopDriverError(
+            "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+            error instanceof Error ? error.message : String(error),
+          ));
+        }
+      }
+    }, (error: unknown) => {
+      failQueued(error instanceof Error ? error : new Error(String(error)));
+    });
+  };
+
   const start = (): Promise<void> => {
     if (disposed) return Promise.reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver client is disposed."));
     if (child && childReady) return Promise.resolve();
@@ -560,6 +624,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           stableTimer = null;
         }
         const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+        if (!disposed && code === MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE && platform === "win32") {
+          handleRetirement(spawned.pid ?? null, wasReady);
+          reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver retired itself."));
+          return;
+        }
         // Unasked-for, this took every lane's display with it: a warning.
         deps.logger[disposed ? "info" : "warn"]("mac_desktop.driver_exited", {
           code,
@@ -639,6 +708,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         reject,
         timer,
         op,
+        line,
       });
       try {
         active.stdin.write(line);

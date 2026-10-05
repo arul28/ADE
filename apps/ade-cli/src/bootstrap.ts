@@ -199,10 +199,11 @@ import type { BuiltInBrowserService } from "../../desktop/src/main/services/buil
 import {
   createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
-  verifyBuiltInBrowserDesktopBridgeAuth,
+  checkBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
+import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -1643,7 +1644,9 @@ export async function createAdeRuntime(args: {
       /** The desktop's Chromium demo engine, over the same bridge. */
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       isAttached: () => boolean;
-    } = { current: null, demoEngine: null, isAttached: () => false };
+      /** Why a desktop that tried to attach could not; null otherwise. */
+      unattachedReason: () => string | null;
+    } = { current: null, demoEngine: null, isAttached: () => false, unattachedReason: () => null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1736,6 +1739,15 @@ export async function createAdeRuntime(args: {
           })
           : null,
         adeHome: resolveMachineAdeLayout().adeDir,
+        // `ade-media` on macOS; the attached desktop's Chromium engine (over
+        // the desktop bridge) everywhere, which is what turns a Windows lane's
+        // MP4 recording into its demo. Read per stop: a desktop may attach late.
+        demoEngines: createDemoEngineSet({
+          logger: macDesktopLogger,
+          getChromiumDemoEngine: () =>
+            desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
+          getChromiumUnavailableReason: () => desktopBridgeHolder.unattachedReason(),
+        }),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
           try {
@@ -1780,6 +1792,14 @@ export async function createAdeRuntime(args: {
     // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
     // ADE home.
     let builtInBrowserBridgeAuthToken: string | null = null;
+    let builtInBrowserBridgeAuthAttempt = 0;
+    /**
+     * Why no desktop app is attached, once one tried and failed. Null while
+     * none has tried (a headless brain) or once one is attached.
+     */
+    let desktopBridgeUnattached: { kind: string; reason: string } | null = null;
+    desktopBridgeHolder.unattachedReason = () =>
+      builtInBrowserBridgeAuthToken ? null : desktopBridgeUnattached?.reason ?? null;
     const builtInBrowserBridgeSocketPath =
       process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveMachineAdeLayout().desktopBridgeSocketPath;
@@ -3100,16 +3120,46 @@ export async function createAdeRuntime(args: {
           });
           return false;
         }
-        const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
-          socketPath: builtInBrowserBridgeSocketPath,
-          authToken,
-        });
-        if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
-        logger.info("built_in_browser_bridge.runtime_auth_configured", {
-          socketPath: builtInBrowserBridgeSocketPath,
-          projectRoot,
-          verified,
-        });
+        // A newer token supersedes a retry still running for an older one.
+        const attempt = ++builtInBrowserBridgeAuthAttempt;
+        const check = async (): Promise<boolean> => {
+          const result = await checkBuiltInBrowserDesktopBridgeAuth({
+            socketPath: builtInBrowserBridgeSocketPath,
+            authToken,
+          });
+          if (attempt !== builtInBrowserBridgeAuthAttempt) return result.verified;
+          if (result.verified) {
+            builtInBrowserBridgeAuthToken = authToken.trim();
+            desktopBridgeUnattached = null;
+          } else if (!builtInBrowserBridgeAuthToken) {
+            desktopBridgeUnattached = { kind: result.kind, reason: result.reason };
+          }
+          logger[result.verified ? "info" : "warn"]("built_in_browser_bridge.runtime_auth_configured", {
+            socketPath: builtInBrowserBridgeSocketPath,
+            projectRoot,
+            verified: result.verified,
+            ...(result.verified ? {} : { kind: result.kind, reason: result.reason }),
+          });
+          return result.verified;
+        };
+        const verified = await check();
+        if (!verified) {
+          // A timeout or a refused connect can be the brain or the desktop
+          // still starting up; a denied pipe or a rejected token cannot.
+          // Retried in the background so `ade/initialize` is not held up.
+          void (async () => {
+            for (const delayMs of [2_000, 10_000, 30_000]) {
+              if (attempt !== builtInBrowserBridgeAuthAttempt || builtInBrowserBridgeAuthToken) return;
+              if (desktopBridgeUnattached?.kind === "access_denied" || desktopBridgeUnattached?.kind === "rejected") return;
+              await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, delayMs);
+                timer.unref?.();
+              });
+              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
+              if (await check()) return;
+            }
+          })().catch(() => {});
+        }
         return verified;
       },
       eventBuffer,

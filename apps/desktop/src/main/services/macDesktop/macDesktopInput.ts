@@ -16,6 +16,7 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   type DesktopSeatProvider,
   type MacDesktopClickArgs,
@@ -121,6 +122,19 @@ export function macDesktopActionEffect(
 
 export type MacDesktopInputDeps = {
   now: () => number;
+  /**
+   * The seat's host. A Windows private seat is a separate session with its own
+   * pointer and keyboard, so real input there needs no lease; a Mac display and
+   * a Windows shared seat both share the one real pointer with the user.
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * Windows shared seat: the user's consent to the shared seat covers real
+   * input for this lane, so the acting chat takes the lane's lease here rather
+   * than asking again. Refuses while another lane's shared seat is driving the
+   * same main desktop. Absent on a Mac, where the lease card is the only way.
+   */
+  takeSharedSeatLease?: ((laneId: string, holderId: string) => Promise<void>) | null;
   emit: (payload: MacDesktopEventPayload) => void;
   /** Starts the backend if needed. Throws the same errors the service does. */
   ensureProvider: () => Promise<DesktopSeatProvider>;
@@ -193,6 +207,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         ? reply.stalledApps.filter((app): app is string => typeof app === "string" && app.length > 0)
         : [],
       caption: asNullableString(reply.caption) ?? args.caption?.trim() ?? null,
+      ...(deps.platform ? { platform: deps.platform } : {}),
+      ...(display.seatMode ? { seatMode: display.seatMode } : {}),
     };
     observations.writeObservationSidecar({
       imagePath: observation.screenshotPath,
@@ -342,6 +358,69 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     throw deps.serviceError(decision.code, decision.message);
   };
 
+  /**
+   * The lease rule, per seat.
+   *
+   * - Mac: the lease, always. Real input moves the user's one pointer.
+   * - Windows private: no lease. The seat is a separate Windows session with
+   *   its own pointer and keyboard, so nothing of the user's moves. A person
+   *   who took control from the pane, or another chat holding the lease, still
+   *   wins: those refusals stand.
+   * - Windows shared: the lease, taken for the acting chat on the strength of
+   *   the user's shared-seat consent (only a consented lane has a shared seat).
+   */
+  const authorizeRealInput = async (
+    laneId: string,
+    display: MacDesktopDisplay,
+    holderId: string,
+    controllerId: string | null | undefined,
+  ): Promise<void> => {
+    if (deps.platform === "win32" && display.seatMode === "private") {
+      const decision = leases.checkRealInput({ laneId, holderId });
+      if (decision.ok || decision.code === MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE) return;
+      throw deps.serviceError(decision.code, decision.message);
+    }
+    if (deps.platform === "win32" && display.seatMode === "shared" && !controllerId?.trim()) {
+      await deps.takeSharedSeatLease?.(laneId, holderId);
+    }
+    assertRealInputAllowed(laneId, holderId);
+  };
+
+  /**
+   * Windows shared seat: an Accessibility (UIA) action takes the user's
+   * foreground as surely as real input does, so it goes through the same
+   * per-host lease. Two shared lanes then cannot fight over the one pointer
+   * and foreground: the second is refused with MAC_DESKTOP_LEASE_HELD_BY_OTHER
+   * naming the lane that holds it. A person who took control keeps it. No-op
+   * on the Mac and on a private seat (its own session, its own foreground).
+   */
+  const claimSharedSeatForeground = async (
+    laneId: string,
+    args: { chatSessionId?: string | null; controllerId?: string | null },
+  ): Promise<void> => {
+    if (deps.platform !== "win32" || args.controllerId?.trim()) return;
+    let display: MacDesktopDisplay;
+    try {
+      display = deps.requireDisplay(laneId);
+    } catch {
+      return;
+    }
+    if (display.seatMode !== "shared") return;
+    const holderId = inputHolderId(args);
+    await deps.takeSharedSeatLease?.(laneId, holderId);
+    assertRealInputAllowed(laneId, holderId);
+  };
+
+  /** A Windows shared seat sends keys only as real input (the driver's rule). */
+  const isSharedSeat = (laneId: string): boolean => {
+    if (deps.platform !== "win32") return false;
+    try {
+      return deps.requireDisplay(laneId).seatMode === "shared";
+    } catch {
+      return false;
+    }
+  };
+
   const runAction = async (args: {
     laneId: string;
     action: string;
@@ -361,18 +440,20 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     demo?: { kind: DemoTrackEventKind; label?: string | null } | null;
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
-    deps.requireDisplay(laneId);
+    const display = deps.requireDisplay(laneId);
     const seat = await deps.ensureProvider();
     // Both modes drive the accessibility API: `real` posts a `CGEvent` at a
     // point this process resolved through that same tree.
     deps.assertPermission("accessibility");
     const holderId = inputHolderId(args);
     if (args.mode === "real") {
-      assertRealInputAllowed(laneId, holderId);
+      await authorizeRealInput(laneId, display, holderId, args.controllerId);
       // A synthetic event posted without Accessibility is dropped by macOS
       // with no error, which is how a takeover looked like a dead screen. Say
       // so instead, with the grant named.
       deps.assertPermission("accessibility");
+    } else {
+      await claimSharedSeatForeground(laneId, args);
     }
     const startedAt = new Date(now()).toISOString();
     const startedMs = now();
@@ -523,6 +604,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
 
   return {
     postRealInput,
+    claimSharedSeatForeground,
     /** The one capture path. The service's `observe` is this plus the gate. */
     observe: observeInternal,
 
@@ -554,7 +636,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     async type(args: MacDesktopTypeArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
       const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
-      const mode = resolveMode(args.mode, target.needsReal);
+      // `--clear` on the Windows main desktop is a real Ctrl+A.
+      const mode = resolveMode(args.mode, target.needsReal || (args.clear === true && args.mode == null && isSharedSeat(laneId)));
       const silent = isSilent(args, mode);
       const submit = args.submit === true;
       const caption = `type · ${args.text.slice(0, 40)}`;
@@ -614,16 +697,22 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
 
     async press(args: MacDesktopPressArgs): Promise<MacDesktopInputResult> {
       const laneId = args.laneId.trim();
+      if (deps.platform !== "win32" && (args.modifiers ?? []).includes("win")) {
+        throw new Error("A Mac has no Windows key. Use --cmd, --ctrl, --alt or --shift.");
+      }
+      // The Windows main desktop takes keys only as real input; asking for
+      // accessibility there was a refusal with no way forward.
+      const mode = args.mode ?? (isSharedSeat(laneId) ? "real" : "accessibility");
       return await runAction({
         laneId,
         action: "press",
         command: "press",
-        mode: args.mode ?? "accessibility",
+        mode,
         payload: { key: args.key, modifiers: args.modifiers ?? [] },
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
-        silent: isSilent(args, args.mode ?? "accessibility"),
+        silent: isSilent(args, mode),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
         demo: { kind: "key", label: [...(args.modifiers ?? []), args.key].join("+") },
         target: { key: args.key, modifiers: args.modifiers ?? [] },

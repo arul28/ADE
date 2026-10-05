@@ -397,6 +397,7 @@ import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
 import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
+import { createDemoEngineSet } from "./services/demoVideo/demoEngines";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -1829,6 +1830,14 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      // Windows: an elevated desktop's pipe refuses the background service.
+      onElevatedDesktop: () => {
+        if (!Notification.isSupported()) return;
+        new Notification({
+          title: "ADE is running as administrator",
+          body: "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.",
+        }).show();
+      },
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -4847,6 +4856,12 @@ app.whenReady().then(async () => {
         })
         : null,
       adeHome: process.env.ADE_HOME?.trim() || null,
+      // `ade-media` on macOS; this desktop's Chromium engine everywhere, which
+      // is what turns a Windows lane's MP4 recording into its demo.
+      demoEngines: createDemoEngineSet({
+        logger: macDesktopLogger,
+        getChromiumDemoEngine: () => chromiumDemoEngine,
+      }),
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {

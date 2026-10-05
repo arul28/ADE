@@ -986,7 +986,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * durable agent transcript, so an unredacted stream token would be printed
    * into one.
    *
-   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`, `click`,
+   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`,
+   * `focusWindow`, `minimizeWindow`, `closeWindow`, `requestSharedDesktop`, `click`,
    * `type`, `press`, `scroll`, `drag`, `wait`, `screenshot`, `startRecording`,
    * `stopRecording`, `requestInputLease`, `present`.
    *
@@ -1011,6 +1012,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "claimWindow",
     "releaseWindow",
     "quitApp",
+    // Windows: a lane's own windows only (the service refuses any other).
+    "focusWindow",
+    "minimizeWindow",
+    "closeWindow",
+    // Windows: asks the user in the calling chat; their answer is the consent.
+    "requestSharedDesktop",
     "observe",
     "click",
     "type",

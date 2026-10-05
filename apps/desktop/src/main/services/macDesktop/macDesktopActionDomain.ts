@@ -14,6 +14,7 @@
 
 import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+  MAC_DESKTOP_MODIFIERS,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   type MacDesktopInputMode,
@@ -53,8 +54,10 @@ type OpaqueService = Record<string, (args?: unknown) => unknown>;
  */
 class MacDesktopUnsupportedPlatformError extends Error {
   readonly code = MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE;
-  constructor() {
-    super(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: ${MAC_DESKTOP_MACOS_ONLY_MESSAGE}`);
+  constructor(reason?: string | null) {
+    // The status's own reason names the host ("needs a Windows host", "the
+    // driver is missing"); the macOS sentence is the fallback.
+    super(`${MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE}: ${reason?.trim() || MAC_DESKTOP_MACOS_ONLY_MESSAGE}`);
     this.name = "MacDesktopUnsupportedPlatformError";
   }
 }
@@ -162,6 +165,13 @@ function requiredTargetOf(source: unknown, label: string, action: string): MacDe
   return target;
 }
 
+function windowActionArgs(args: unknown, action: string): { laneId: string; windowId: number; chatSessionId?: string } {
+  const windowId = optionalNumber(args, "windowId");
+  if (windowId == null) throw new Error(`macDesktop.${action} requires windowId.`);
+  const chat = optionalString(args, "chatSessionId");
+  return { laneId: requiredLaneId(args, action), windowId, ...(chat ? { chatSessionId: chat } : {}) };
+}
+
 export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): OpaqueService | null {
   const service: MacDesktopServiceApi | null = runtime.macDesktopService ?? null;
   if (!service) return null;
@@ -176,7 +186,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
    */
   const supported = async (): Promise<void> => {
     const status = await service.getStatus();
-    if (!status.supported) throw new MacDesktopUnsupportedPlatformError();
+    if (!status.supported) throw new MacDesktopUnsupportedPlatformError(status.unsupportedReason);
   };
   const gated = <T>(run: () => Promise<T>): Promise<T> => supported().then(run);
   const chatSessionId = (args: unknown): { chatSessionId?: string } => {
@@ -302,6 +312,23 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "quitApp"),
       app: optionalString(args, "app"),
     })),
+    /**
+     * Windows only: raise, minimize or close one of the lane's own windows.
+     * The service refuses another lane's window and the user's.
+     */
+    focusWindow: (args?: unknown) => gated(() => service.focusWindow(windowActionArgs(args, "focusWindow"))),
+    minimizeWindow: (args?: unknown) => gated(() => service.minimizeWindow(windowActionArgs(args, "minimizeWindow"))),
+    closeWindow: (args?: unknown) => gated(() => service.closeWindow(windowActionArgs(args, "closeWindow"))),
+    /**
+     * Windows only, agent-callable: raises a card in the calling chat asking
+     * the user to allow the main desktop, and starts the shared seat on yes.
+     * The consent is the user's answer; `useSharedDesktop` stays CTO-only.
+     */
+    requestSharedDesktop: (args?: unknown) => gated(() => service.requestSharedDesktop({
+      laneId: requiredLaneId(args, "requestSharedDesktop"),
+      reason: optionalString(args, "reason"),
+      ...chatSessionId(args),
+    })),
     observe: (args?: unknown) => gated(() => service.observe({
       laneId: requiredLaneId(args, "observe"),
       windowId: optionalNumber(args, "windowId"),
@@ -337,7 +364,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     }),
     press: (args?: unknown) => gated(() => {
       const modifiers = objectArgs(args).modifiers;
-      const valid = ["cmd", "shift", "option", "control"] as const;
+      const valid = MAC_DESKTOP_MODIFIERS;
       const parsed = Array.isArray(modifiers)
         ? modifiers.map((entry) => {
           const match = valid.find((value) => value === entry);

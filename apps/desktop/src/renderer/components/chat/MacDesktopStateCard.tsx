@@ -27,9 +27,12 @@ export const MAC_DESKTOP_SECONDARY_BUTTON = cn(
 
 export type MacDesktopStateCardTone = "idle" | "busy" | "error";
 
-function useElapsedSeconds(active: boolean): number | null {
-  const [startedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(startedAt);
+function useElapsedSeconds(active: boolean, since?: number | null): number | null {
+  const [mountedAt] = useState(() => Date.now());
+  // A wait the host started before this card mounted (a sign-in still running
+  // when the pane is reopened) counts from its own start, not from the mount.
+  const startedAt = since ?? mountedAt;
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -47,6 +50,7 @@ export function MacDesktopStateCard({
   actions,
   footer,
   icon: StateIcon = Monitor,
+  since = null,
   children,
 }: {
   testId: string;
@@ -61,10 +65,12 @@ export function MacDesktopStateCard({
   icon?: Icon;
   /** A form between the detail and the actions (App Control's Launch). */
   children?: ReactNode;
+  /** When the wait began, if before this card mounted (epoch ms). */
+  since?: number | null;
 }) {
   const busy = tone === "busy";
   const failed = tone === "error";
-  const elapsedSeconds = useElapsedSeconds(busy);
+  const elapsedSeconds = useElapsedSeconds(busy, since);
   return (
     <div
       data-testid={testId}
@@ -90,7 +96,11 @@ export function MacDesktopStateCard({
             ) : null}
             <p className="min-w-0 break-words font-sans text-sm font-medium text-fg">{title}</p>
             {elapsedSeconds != null ? (
-              <span className="shrink-0 font-sans text-xs tabular-nums text-muted-fg">{elapsedSeconds}s</span>
+              <span className="shrink-0 font-sans text-xs tabular-nums text-muted-fg">
+                {elapsedSeconds >= 60
+                  ? `${Math.floor(elapsedSeconds / 60)}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                  : `${elapsedSeconds}s`}
+              </span>
             ) : null}
           </div>
           {detail ? (

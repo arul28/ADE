@@ -197,6 +197,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["mac_desktop.setupWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   ["mac_desktop.takeoverWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // Waits on the user's answer to the shared-seat card, then the start.
+  ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],

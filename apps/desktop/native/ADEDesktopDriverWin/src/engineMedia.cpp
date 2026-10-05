@@ -52,12 +52,18 @@ void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
     if (!streaming && !recording) break;
     int64_t frameStart = nowMs();
     if (readers || recording) {
-      Frame frame;
+      // The stream always shows the whole lane; a window recording also
+      // captures its window. Each consumer gets its own frame.
+      Frame screenFrame, windowFrame;
       std::string err;
+      const bool wantScreen = readers || (recording && !recordWindow);
+      const bool wantWindow = recording && recordWindow;
       std::unique_lock<std::recursive_mutex> operation(operationMutex_, std::try_to_lock);
       if (!operation.owns_lock()) { Sleep(10); continue; }
-      bool ok = captureLane(*lane, frame, recording && recordWindow ? recordWindow : nullptr, &err);
+      bool screenOk = wantScreen && captureLane(*lane, screenFrame, nullptr, &err);
+      bool windowOk = wantWindow && captureLane(*lane, windowFrame, recordWindow, &err);
       operation.unlock();
+      const bool ok = (!wantScreen || screenOk) && (!wantWindow || windowOk);
       if (!ok) {
         if (nowMs() - lane->lastStreamErrorMs > 5000) {
           lane->lastStreamErrorMs = nowMs();
@@ -66,11 +72,13 @@ void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
                                     : "No frame from the Windows screen: " + err;
           emit_(eventLine("stream-error", Json::Object{{"laneId", lane->laneId}, {"message", message}}));
         }
-      } else {
+      }
+      {
         // Frames must match the encoder's size; a window recording keeps the
         // window's first size and crops or pads later frames.
         std::lock_guard<std::mutex> lock(lane->media);
-        if (streaming && readers && !recordWindow && lane->streaming && lane->server && lane->encoder) {
+        if (screenOk && streaming && readers && lane->streaming && lane->server && lane->encoder) {
+          const Frame& frame = screenFrame;
           Frame sized = frame;
           if (sized.width != lane->encoder->width() || sized.height != lane->encoder->height()) {
             Frame canvas;
@@ -96,7 +104,11 @@ void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
             emit_(eventLine("stream-error", Json::Object{{"laneId", lane->laneId}, {"message", encErr}}));
           }
         }
-        if (lane->recorder) {
+        // The recorder may have been swapped since the snapshot above; only
+        // feed it a frame of the kind it asked for.
+        const bool recorderFrameOk = lane->recordWindow ? windowOk && lane->recordWindow == recordWindow : screenOk;
+        if (lane->recorder && recorderFrameOk) {
+          const Frame& frame = lane->recordWindow ? windowFrame : screenFrame;
           Frame sized = frame;
           if (sized.width != lane->recorder->width() || sized.height != lane->recorder->height()) {
             Frame canvas;
@@ -121,6 +133,8 @@ void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
             int64_t duration = std::max<int64_t>(1, step) * 10'000;
             if (!lane->recorder->write(nv12, lane->recordMediaMs * 10'000, duration, &recErr)) {
               lane->recordError = recErr;
+            } else {
+              ++lane->recordFrames;
             }
             lane->recordMediaMs += std::max<int64_t>(1, step);
           }
@@ -221,6 +235,8 @@ Json Engine::stopStream(const Json& req) {
   return out;
 }
 
+// Called without operationMutex_: opening the MP4 sink writer takes 1-2 s and
+// must not freeze the live view or queue window.list behind it.
 Json Engine::startRecording(const Json& req) {
   auto lane = requireLane(requireString(req, "laneId"));
   std::wstring path = widen(requireString(req, "filePath"));
@@ -228,6 +244,8 @@ Json Engine::startRecording(const Json& req) {
   HWND window = req["windowId"].isNumber() ? hwndFromId(req["windowId"].asInt()) : nullptr;
   int width = lane->width, height = lane->height;
   if (window) {
+    // laneWindows reads the shared seat's parked-window map: under the lock.
+    std::lock_guard<std::recursive_mutex> validate(operationMutex_);
     const auto owned = laneWindows(*lane);
     if (std::none_of(owned.begin(), owned.end(), [&](const WinInfo& entry) { return entry.hwnd == window; }))
       fail(code::kWindowNotFound, "That window is not on this lane's screen.");
@@ -239,9 +257,22 @@ Json Engine::startRecording(const Json& req) {
   {
     std::lock_guard<std::mutex> lock(lane->media);
     if (lane->recorder) fail(code::kInvalidArgument, "Lane " + lane->laneId + " is already recording.");
-    auto recorder = std::make_unique<Mp4Recorder>();
-    std::string err;
-    if (!recorder->open(path, width, height, fps, &err)) fail(code::kInternalError, err);
+  }
+  const int64_t openStart = nowMs();
+  auto recorder = std::make_unique<Mp4Recorder>();
+  std::string err;
+  if (!recorder->open(path, width, height, fps, &err)) fail(code::kInternalError, err);
+  logLine("record: writer opened in " + std::to_string(nowMs() - openStart) + "ms");
+  std::unique_lock<std::recursive_mutex> operation(operationMutex_);
+  if (!running_) fail(code::kCancelled, "The Windows screen is stopping.");
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = lanes_.find(lane->laneId);
+    if (it == lanes_.end() || it->second != lane) fail(code::kNoDisplay, "Lane " + lane->laneId + "'s screen stopped while the recording started.");
+  }
+  {
+    std::lock_guard<std::mutex> lock(lane->media);
+    if (lane->recorder) fail(code::kInvalidArgument, "Lane " + lane->laneId + " is already recording.");
     lane->recorder = std::move(recorder);
     lane->recordPath = path;
     lane->recordFps = fps;
@@ -253,6 +284,7 @@ Json Engine::startRecording(const Json& req) {
     lane->recordLastWallMs = nowMs();
     lane->recordMediaMs = 0;
     lane->recordLastHash = 0;
+    lane->recordFrames = 0;
     lane->recordError.clear();
   }
   ensureMediaThread(lane);
@@ -262,10 +294,11 @@ Json Engine::startRecording(const Json& req) {
   return out;
 }
 
+// Called without operationMutex_: Finalize writes the MP4 index.
 Json Engine::stopRecording(const Json& req) {
   auto lane = requireLane(requireString(req, "laneId"));
   std::unique_ptr<Mp4Recorder> recorder;
-  int64_t wall = 0, idleCut = 0, media = 0;
+  int64_t wall = 0, idleCut = 0, media = 0, frames = 0;
   std::wstring path;
   {
     std::lock_guard<std::mutex> lock(lane->media);
@@ -275,10 +308,14 @@ Json Engine::stopRecording(const Json& req) {
     idleCut = lane->recordIdleCutMs;
     media = lane->recordMediaMs;
     path = lane->recordPath;
+    frames = lane->recordFrames;
     lane->recordWindow = nullptr;
   }
   std::string err;
   if (!recorder->finish(&err)) fail(code::kInternalError, err);
+  // Joining the media thread races stream.start's ensureMediaThread unless
+  // both run under the operation lock.
+  std::unique_lock<std::recursive_mutex> operation(operationMutex_);
   bool streaming;
   {
     std::lock_guard<std::mutex> lock(lane->media);
@@ -293,6 +330,7 @@ Json Engine::stopRecording(const Json& req) {
   out["durationMs"] = media;
   out["wallDurationMs"] = wall;
   out["idleCutMs"] = idleCut;
+  out["frameCount"] = frames;
   return out;
 }
 

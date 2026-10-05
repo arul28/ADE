@@ -22,13 +22,14 @@ import {
   asNullableString,
   asRecord,
   createSeatProvider,
+  createSeatRequester,
   type DesktopSeatAdapter,
   type SeatRequester,
 } from "../macDesktop/macDesktopSeatProvider";
 import { resolveWindowsDesktopDriverBinary } from "../native/nativeHelperPaths";
 import { createWindowsDesktopDriverClient } from "./windowsDesktopDriverClient";
 import type { Logger } from "../logging/logger";
-import type { MacDesktopDriverHealth } from "../../../shared/types/macDesktop";
+import type { MacDesktopDriverHealth, MacDesktopWindowAction } from "../../../shared/types/macDesktop";
 import {
   WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE,
   macDesktopDisplayName,
@@ -38,6 +39,7 @@ import {
   type WindowsDesktopSetupResult,
   type WindowsDesktopStatus,
   type WindowsDesktopHostState,
+  type WindowsDesktopPhase,
 } from "../../../shared/types/macDesktop";
 
 /**
@@ -58,6 +60,13 @@ function asNullableNumber(value: unknown): number | null {
 
 function asSeatMode(value: unknown): WindowsDesktopSeatMode | null {
   return value === "private" || value === "shared" ? value : null;
+}
+
+/** The driver's sign-in phase; anything unknown is idle. */
+function asPhase(value: unknown): WindowsDesktopPhase | null {
+  return value === "prompt_open" || value === "verifying" || value === "starting" || value === "cleaning_up"
+    ? value
+    : null;
 }
 
 const WINDOWS_STATES: ReadonlySet<string> = new Set<WindowsDesktopHostState>([
@@ -141,6 +150,7 @@ export function asWindowsDesktopStatus(raw: unknown): WindowsDesktopStatus {
     seatMode: asSeatMode(record.seatMode),
     privateAvailable: state === "ready",
     privateUnavailableReason: privateUnavailableFor(state),
+    ...("phase" in record ? { phase: asPhase(record.phase) } : {}),
   };
 }
 
@@ -181,7 +191,8 @@ function windowsSeatHooks(): {
  * without consent and parking needs no sign-in.
  */
 export function createWindowsSeatProvider(client: MacDesktopDriverClient): ReturnType<typeof createSeatProvider> {
-  return createSeatProvider(client, {
+  const request = createSeatRequester(client);
+  const provider = createSeatProvider(client, {
     id: "windows-child-session",
     createArgs: (args) => ({
       seatMode: args.seatMode,
@@ -192,6 +203,16 @@ export function createWindowsSeatProvider(client: MacDesktopDriverClient): Retur
     createTimeoutMs: (args) => (args.seatMode === "private" ? PRIVATE_SIGN_IN_TIMEOUT_MS : undefined),
     windows: windowsSeatHooks(),
   });
+  const windowOps: Record<MacDesktopWindowAction, (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS]> = {
+    focus: MAC_DESKTOP_DRIVER_OPS.windowFocus,
+    minimize: MAC_DESKTOP_DRIVER_OPS.windowMinimize,
+    close: MAC_DESKTOP_DRIVER_OPS.windowClose,
+  };
+  provider.windowAction = (args) => request(windowOps[args.action], {
+    laneId: args.laneId,
+    windowId: args.windowId,
+  });
+  return provider;
 }
 
 /**
@@ -222,6 +243,7 @@ export function createWindowsDesktopSeatAdapter(args: {
     // Windows has no Screen Recording / Accessibility grants; the service
     // reports both as granted and never probes or prompts.
     permissionsSupported: false,
-    displayName: macDesktopDisplayName,
+    // The pane and the CLI print this; "ADE · <lane>" read as a Mac display.
+    displayName: (laneName) => macDesktopDisplayName(laneName).replace(/^ADE\b/, "Windows Desktop"),
   };
 }

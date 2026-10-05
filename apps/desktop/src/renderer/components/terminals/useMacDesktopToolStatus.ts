@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { MacDesktopDisplay } from "../../../shared/types/macDesktop";
+import type { MacDesktopDisplay, WindowsDesktopOperationKind } from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_STOP_WAIT_MS,
   macDesktopPendingStop,
   macDesktopStatusKey,
   publishMacDesktopStatus,
   publishMacDesktopUnconfirmed,
+  readMacDesktopStatusEntry,
   subscribeMacDesktopRuntimeChanges,
   useMacDesktopStatusEntry,
   withMacDesktopTimeout,
@@ -54,19 +55,35 @@ export type MacDesktopToolState = {
    * Absent means confirmed, for callers that build a state by hand.
    */
   confirmed?: boolean;
+  /** A Windows sign-in or setup running on the host, so the card is not "off". */
+  windowsOperation?: WindowsDesktopOperationKind | null;
 };
 
 /** The card's state from one store entry. */
-export function macDesktopToolStateFromEntry(entry: MacDesktopStatusEntry | null): MacDesktopToolState | null {
+export function macDesktopToolStateFromEntry(
+  entry: MacDesktopStatusEntry | null,
+  laneId?: string | null,
+): MacDesktopToolState | null {
   if (!entry) return null;
   const display = entry.status?.display ?? null;
-  return {
+  const state: MacDesktopToolState = {
     display,
     windowCount: display && entry.status
       ? entry.status.windows.filter((window) => window.onDisplayId === display.displayId).length
       : 0,
     confirmed: entry.confirmed,
   };
+  // Host-wide setup steps count for every lane; a private start only for its own.
+  const windowsOperation = windowsOperationFor(entry.status?.windowsDesktop?.operation, laneId);
+  return windowsOperation ? { ...state, windowsOperation } : state;
+}
+
+function windowsOperationFor(
+  operation: { kind: WindowsDesktopOperationKind; laneId: string | null } | null | undefined,
+  laneId: string | null | undefined,
+): WindowsDesktopOperationKind | null {
+  if (!operation) return null;
+  return operation.laneId === null || operation.laneId === laneId ? operation.kind : null;
 }
 
 /** Coming back to the window re-reads the card, at most this often. */
@@ -88,7 +105,7 @@ export function useMacDesktopToolStatus(args: {
   // The pane writes the same entry, so the card and the pane cannot disagree.
   const storeKey = active && laneId ? macDesktopStatusKey(laneId, runtimePin) : null;
   const entry = useMacDesktopStatusEntry(storeKey);
-  const state = useMemo(() => (active ? macDesktopToolStateFromEntry(entry) : null), [active, entry]);
+  const state = useMemo(() => (active ? macDesktopToolStateFromEntry(entry, laneId) : null), [active, entry, laneId]);
 
   useEffect(() => {
     // A host that cannot run this is never read from — the same rule the rest
@@ -140,6 +157,18 @@ export function useMacDesktopToolStatus(args: {
     // come back from the one read, so the two can never disagree.
     const dispose = api.onEvent?.((event) => {
       switch (event.type) {
+        case "windows-desktop-changed": {
+          // Host-wide and carries the whole Windows status: patched in place,
+          // no read, so a sign-in's phases cost nothing here.
+          const current = readMacDesktopStatusEntry(storeKey);
+          if (current?.status) {
+            publishMacDesktopStatus(storeKey, {
+              status: { ...current.status, windowsDesktop: event.status },
+              confirmed: current.confirmed,
+            });
+          }
+          return;
+        }
         case "display-created":
           if (event.display.laneId !== laneId) return;
           break;
@@ -171,18 +200,43 @@ export function useMacDesktopToolStatus(args: {
  * "Off" in the pane's own words: the card opens the pane, and the pane shows
  * the Off card with its Start button. Opening it never starts a display.
  */
-export function macDesktopStatusLineText(state: MacDesktopToolState | null): {
+export function macDesktopStatusLineText(
+  state: MacDesktopToolState | null,
+  desktopName: "Mac Desktop" | "Windows Desktop" = "Mac Desktop",
+): {
   line: string;
   live: boolean;
 } {
   // Never "active" on the strength of a read that failed: that is how the card
   // kept saying "active · 1 window" about a display that was gone.
-  if (state && state.confirmed === false) return { line: "Mac Desktop is not answering", live: false };
-  if (!state?.display) return { line: "Mac Desktop is off", live: false };
+  if (state && state.confirmed === false) return { line: `${desktopName} is not answering`, live: false };
+  if (state?.windowsOperation && !state.display) {
+    return { line: windowsOperationLine(state.windowsOperation), live: true };
+  }
+  if (!state?.display) return { line: `${desktopName} is off`, live: false };
+  // A Windows seat says which one: the private screen or the user's own desktop.
+  const name = state.display.seatMode === "shared"
+    ? "Main desktop"
+    : state.display.seatMode === "private" || desktopName === "Windows Desktop"
+      ? "Private screen"
+      : desktopName;
   return {
     line: state.windowCount > 0
-      ? `Mac Desktop active · ${state.windowCount} ${state.windowCount === 1 ? "window" : "windows"}`
-      : "Mac Desktop active",
+      ? `${name} active · ${state.windowCount} ${state.windowCount === 1 ? "window" : "windows"}`
+      : `${name} active`,
     live: true,
   };
+}
+
+function windowsOperationLine(kind: WindowsDesktopOperationKind): string {
+  switch (kind) {
+    case "setup":
+      return "Setting up on the Windows PC…";
+    case "save_password":
+      return "Saving your Windows password…";
+    case "forget_password":
+      return "Forgetting the saved password…";
+    case "start_private":
+      return "Starting your private screen…";
+  }
 }

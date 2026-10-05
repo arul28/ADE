@@ -30,6 +30,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import { demoProofSentence, isLimitStop, recordingStopSentence } from "../../../shared/demoVideo/demoProofText";
 import type { DemoArtifactMetadata } from "../../../shared/demoVideo/demoContract";
 import { RECORDING_MAX_MS } from "../../../shared/demoVideo/demoContract";
@@ -42,11 +43,17 @@ import {
   type MacDesktopRecordingStatus,
   type MacDesktopRecordingStopReason,
   type MacDesktopTimeLapse,
+  desktopProductName,
   macDesktopPaneCaption,
 } from "../../../shared/types/macDesktop";
 import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import { rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
-import { demoLengths, produceDemoVideo, type DemoRecordingLengths } from "../demoVideo/demoRenderService";
+import {
+  DemoRecordingUnusableError,
+  demoLengths,
+  produceDemoVideo,
+  type DemoRecordingLengths,
+} from "../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopObservations } from "./macDesktopObservations";
@@ -78,7 +85,9 @@ export function readLengths(reply: DesktopSeatReply): RecordingLengths {
 }
 
 /** What a recording filed without a caption says first. Apple's, for this display. */
-const DEFAULT_RECORDING_DESCRIPTION = "Screen recording of the lane's Mac Desktop.";
+function defaultRecordingDescription(productName: string): string {
+  return `Screen recording of the lane's ${productName}.`;
+}
 
 /**
  * "0:23" / "1:10 · idle cut 2:07" — the default caption's duration part. The
@@ -144,6 +153,8 @@ export type MacDesktopRecordingDeps = {
   onRecordingFiled?: (() => void) | null;
   /** The engines that turn the raw file into the demo. Absent: the raw file is filed as it is. */
   demoEngines?: DemoEngineSet | null;
+  /** The seat's host platform, which names the product in default captions. */
+  seatPlatform?: NodeJS.Platform;
 };
 
 /** The recording's key in the demo track registry. */
@@ -159,6 +170,8 @@ type RawRecording = {
 };
 
 export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
+  /** "Mac Desktop" or "Windows Desktop": the lane screen this seat records. */
+  const productName = desktopProductName(deps.seatPlatform ?? process.platform);
   /** laneId → the user-facing recording, running or just finished. */
   const recordings = new Map<string, MacDesktopRecordingStatus>();
   /**
@@ -175,6 +188,49 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   const stopping = new Map<string, Promise<MacDesktopRecordingStatus>>();
   /** laneId → where the running recording's raw file goes and what it becomes. */
   const raws = new Map<string, RawRecording>();
+  /**
+   * `${laneId}:${chatSessionId}` → the turn clip that chat's card can still
+   * play. Only the newest is ever shown, so each newer one deletes the last,
+   * and a clip that was closed without being published is deleted at once.
+   * Nothing else removed them, so every turn on a lane screen left an MP4 in
+   * `.ade/artifacts/computer-use` for good (both platforms).
+   */
+  const publishedClips = new Map<string, string>();
+  const isPublishedClip = (filePath: string): boolean =>
+    [...publishedClips.values()].some((published) => path.resolve(published) === path.resolve(filePath));
+  /**
+   * Once per process, on the first turn clip: clips an earlier run left (no
+   * card shows them after a restart). An hour old at least, so a clip another
+   * brain process is still writing is never touched.
+   */
+  let staleClipsSwept = false;
+  const sweepStaleTurnClips = async (dir: string): Promise<void> => {
+    const cutoffMs = deps.now() - 60 * 60_000;
+    const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+    let removed = 0;
+    for (const name of names) {
+      if (!/-mac-desktop-turn-.+\.mp4$/.test(name)) continue;
+      const filePath = path.join(dir, name);
+      if (isPublishedClip(filePath)) continue;
+      const stat = await fs.promises.stat(filePath).catch(() => null);
+      if (!stat || stat.mtimeMs > cutoffMs) continue;
+      await fs.promises.rm(filePath, { force: true }).then(() => { removed += 1; }, () => {});
+    }
+    if (removed) deps.logger.info("mac_desktop.turn_clips_swept", { removed });
+  };
+  const discardClipFiles = async (filePaths: Array<string | null | undefined>): Promise<void> => {
+    for (const filePath of filePaths) {
+      if (!filePath || isPublishedClip(filePath)) continue;
+      // Windows: a file the driver still holds cannot be removed; the startup
+      // sweep gets it next time.
+      await fs.promises.rm(filePath, { force: true }).catch((error: unknown) => {
+        deps.logger.debug("mac_desktop.turn_clip_remove_failed", {
+          filePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
 
   const endRaw = (laneId: string): RawRecording | null => {
     const raw = raws.get(laneId) ?? null;
@@ -279,7 +335,14 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     const rawFilePath = typeof reply.filePath === "string" && reply.filePath.trim().length
       ? reply.filePath.trim()
       : null;
-    const rawLengths = readLengths(reply);
+    // A driver that sends no lengths (or none yet) still recorded from the
+    // start to now: the wall clock is the honest fallback, and the demo (or
+    // the raw file's own index) replaces the video length below.
+    const replyLengths = readLengths(reply);
+    const startedAtMs = existing.startedAt ? Date.parse(existing.startedAt) : Number.NaN;
+    const rawLengths: RecordingLengths = replyLengths.wallDurationMs > 0 || !Number.isFinite(startedAtMs)
+      ? replyLengths
+      : { ...replyLengths, wallDurationMs: Math.max(0, stoppedAtMs - startedAtMs) };
     const raw = endRaw(laneId);
     const demoKey = macDesktopDemoKey(laneId);
     // The raw file is recorded at wall clock, so its first frame was its
@@ -302,6 +365,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           track,
           plain: raw?.plain ?? false,
           engines: deps.demoEngines?.engines() ?? [],
+          missingEngineReason: deps.demoEngines?.missingEngineReason?.() ?? null,
           logger: deps.logger,
         });
         filePath = produced.path;
@@ -310,6 +374,12 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       } catch (error) {
         demoError = error instanceof Error ? error.message : String(error);
         deps.logger.warn("mac_desktop.recording_demo_failed", { laneId, error: demoError });
+        // An empty or unfinished movie is never proof, and nothing reads it.
+        if (error instanceof DemoRecordingUnusableError) {
+          filePath = null;
+          lengths = { durationMs: 0, wallDurationMs: rawLengths.wallDurationMs, idleCutMs: 0 };
+          await fs.promises.rm(rawFilePath, { force: true }).catch(() => {});
+        }
       }
     }
     const finished: MacDesktopRecordingStatus = {
@@ -320,6 +390,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       ...lengths,
       lastError: demoError,
       stopReason: reason,
+      // Filed, but not as a demo: say so where the caller reads the result.
+      demoNote: demo?.fallbackReason ? demoProofSentence(demo) : null,
     };
     // A caption is the opt-in that makes the file reviewer-facing evidence.
     // Without one it stays a scratch file and nothing reaches the drawer.
@@ -329,7 +401,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     const capFiled = !existing.caption && isLimitStop(reason) && Boolean(existing.chatSessionId);
     const caption = existing.caption
       ?? (capFiled
-        ? `${macDesktopPaneCaption("recording", await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))} · ${captionDuration(finished)}`
+        ? `${macDesktopPaneCaption("recording", await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null), productName)} · ${captionDuration(finished)}`
         : null);
     let proofArtifactId: string | null = null;
     if (caption && filePath) {
@@ -340,7 +412,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         chatSessionId: existing.chatSessionId ?? stopperChatSessionId,
         toolName: "desktop record",
         title: caption,
-        caption: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished, demo),
+        caption: recordingProofDescription(existing.caption ?? defaultRecordingDescription(productName), finished, demo),
         filePath,
         kind: "video_recording",
         metadata: {
@@ -435,6 +507,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // through `ade-artifact://<path>`, and main only serves that scheme from
       // inside `.ade/artifacts`. A clip written anywhere else is a 404 in the UI.
       const filePath = deps.observations.artifactPath(`mac-desktop-turn-${turnId}`, "mp4");
+      if (!staleClipsSwept) {
+        staleClipsSwept = true;
+        void sweepStaleTurnClips(path.dirname(filePath));
+      }
       const recording = deps.observations.beginTurnRecording({
         laneId,
         chatSessionId,
@@ -474,7 +550,11 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // started, so its bookkeeping is dropped without touching the backend.
       const userOwnsRecorder = isUserRecording(laneId);
       const { ended, reply } = await closeTurnClips(laneId, { stopBackend: !userOwnsRecorder });
-      if (!ended.length || userOwnsRecorder || !reply) return null;
+      if (!ended.length) return null;
+      if (userOwnsRecorder || !reply) {
+        await discardClipFiles(ended.map((entry) => entry.filePath));
+        return null;
+      }
       const recording = ended.find((entry) => entry.turnId === args.turnId) ?? ended[0]!;
       const replyPath = typeof reply.filePath === "string" && reply.filePath.trim().length
         ? reply.filePath.trim()
@@ -491,6 +571,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         frameCount: recording.frameCount,
         createdAt: new Date(deps.now()).toISOString(),
       };
+      const clipKey = `${laneId}:${timeLapse.chatSessionId}`;
+      const previous = publishedClips.get(clipKey) ?? null;
+      publishedClips.set(clipKey, timeLapse.filePath);
+      await discardClipFiles([previous, ...ended.map((entry) => entry.filePath)]);
       // Context, not proof: it never reaches the artifact broker.
       deps.emit({ type: "time-lapse", timeLapse });
       return timeLapse;
@@ -498,7 +582,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
 
     /** Teardown: the lane's display is going away, or its chat ended. */
     async stopTurnClips(laneId: string): Promise<void> {
-      await closeTurnClips(laneId, { stopBackend: !isUserRecording(laneId) });
+      const { ended } = await closeTurnClips(laneId, { stopBackend: !isUserRecording(laneId) });
+      await discardClipFiles(ended.map((entry) => entry.filePath));
     },
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
@@ -515,7 +600,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // The helper records one file per lane. A turn clip already writing one
       // would have had its file silently taken over by this start, so it is
       // closed first and the deliberate, reviewer-facing capture wins.
-      await closeTurnClips(laneId);
+      const closed = await closeTurnClips(laneId);
+      await discardClipFiles(closed.ended.map((entry) => entry.filePath));
       // Same root as the turn clip: a captioned recording is played back in
       // the thread before it is ever filed as proof.
       const finalPath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");

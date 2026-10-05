@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
+import { desktopProductName } from "../../desktop/src/shared/types/macDesktop";
 import {
   createSessionHomeResolver,
   type SessionHomeLane,
@@ -2452,6 +2453,12 @@ export function describeLaneDisplayProofRefusal(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const noun = kind === "screenshot" ? "capture" : "record";
+  if (platform === "win32") {
+    // A Windows lane has its own screen once it is started; the real screen
+    // is never captured from Windows.
+    return `refused: this lane has no Windows Desktop screen, and ADE does not ${noun} your real screen. `
+      + `Start the lane's screen with \`ade screen start\` and run this again, or use \`ade browser proof\`, \`ade app-control proof\` or \`ade proof attach <file>\`.`;
+  }
   if (platform !== "darwin") {
     return `refused: ADE does not ${noun} your real screen by default, and this runtime host cannot run a Mac Desktop display. `
       + "Use `ade browser proof`, `ade app-control proof` or `ade proof attach <file>`.";
@@ -2539,8 +2546,9 @@ async function fileLaneDisplayProof(args: {
     );
   }
   const display = await service.getDisplay({ laneId }).catch(() => null);
+  const productName = desktopProductName(process.platform);
   const title = asOptionalTrimmedString(toolArgs.name)
-    ?? (kind === "screenshot" ? "Mac Desktop screenshot" : "Mac Desktop recording");
+    ?? `${productName} ${kind === "screenshot" ? "screenshot" : "recording"}`;
   let filePath: string | null;
   let artifactId: string | null;
   let failure: string | null = null;
@@ -2556,7 +2564,7 @@ async function fileLaneDisplayProof(args: {
     if (status.recording?.running) {
       throw new JsonRpcError(
         JsonRpcErrorCode.toolFailed,
-        `a Mac Desktop recording is already running on lane ${laneId}. Stop it with \`ade mac-desktop record stop\` first.`,
+        `a ${productName} recording is already running on lane ${laneId}. Stop it with \`ade screen record stop\` first.`,
       );
     }
     // The cap is a backstop: if this call dies mid-wait, the recorder still
@@ -2583,7 +2591,7 @@ async function fileLaneDisplayProof(args: {
   if (!artifactId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.toolFailed,
-      `the Mac Desktop ${kind === "screenshot" ? "screenshot" : "recording"} of lane ${laneId} was not filed as proof`
+      `the ${productName} ${kind === "screenshot" ? "screenshot" : "recording"} of lane ${laneId} was not filed as proof`
         + (failure ? `: ${failure}` : filePath ? ` (file kept at ${filePath})` : ""),
     );
   }
@@ -3569,8 +3577,14 @@ export function scopeMacDesktopAdeActionArgs(
   // under the human's takeover controller id it read off `getStatus`. Refused
   // by caller shape, not role.
   if (isCtoOnlyAdeAction("mac_desktop", action)) {
+    // The Windows steps are the user's; say what the agent does instead.
+    const windowsUserStep: Record<string, string> = {
+      setupWindows: "Windows Desktop setup and the saved password are the user's steps: ask them to use the setup card in the Windows Desktop pane",
+      takeoverWindows: "taking the private Windows screen from another lane is the user's choice: ask them to press Take over in the Windows Desktop pane",
+      useSharedDesktop: "only the user can allow the main desktop: run `ade screen start --shared --reason \"<why>\"` to ask them in this chat",
+    };
     scopeAccessDenied(
-      "mac_desktop viewing and permission actions belong to user clients",
+      windowsUserStep[action] ?? "mac_desktop viewing and permission actions belong to user clients",
       `run_ade_action:mac_desktop.${action}`,
     );
   }

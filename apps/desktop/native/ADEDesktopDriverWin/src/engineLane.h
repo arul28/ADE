@@ -18,6 +18,9 @@ struct Engine::Lane {
   int height = 0;
   int64_t displayId = 0;
   std::string createdAt;
+  // Private seat: a stable per-lane directory under the ADE home, sent by the
+  // host, for lane-private browser profiles. Empty on the shared seat.
+  std::wstring dataDir;
   std::string lastActivityAt;
   int64_t lastActivityMs = 0;
   int slot = 0;
@@ -51,6 +54,7 @@ struct Engine::Lane {
   int64_t recordIdleCutMs = 0;
   int64_t recordLastChangeMs = 0;
   int64_t recordMediaMs = 0;  // media time written so far
+  int64_t recordFrames = 0;
   int64_t recordLastWallMs = 0;
   uint64_t recordLastHash = 0;
   std::string recordError;

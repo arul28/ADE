@@ -9,8 +9,30 @@ namespace ade {
 // host owns this helper process and can bound/cancel that wait without blocking
 // its STA pump or killing any process found through a name search.
 int runSetupPrompt() {
+  // Windows shows the UAC consent for a background requester as a flashing
+  // taskbar button the user has to find. A topmost owner window that tries to
+  // take the foreground first lets consent open in front of ADE.
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ADEWindowsSetupPromptOwner";
+  RegisterClassW(&wc);
+  RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"ADE Windows Desktop setup", WS_POPUP,
+      (work.left + work.right) / 2, (work.top + work.bottom) / 2, 1, 1, nullptr, nullptr, wc.hInstance, nullptr);
+  struct Owner { HWND value; ~Owner() { if (value) DestroyWindow(value); } } ownedOwner{owner};
+  if (owner) {
+    ShowWindow(owner, SW_SHOW);
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD self = GetCurrentThreadId();
+    const bool attached = foregroundThread && foregroundThread != self && AttachThreadInput(self, foregroundThread, TRUE);
+    BringWindowToTop(owner);
+    const bool activated = SetForegroundWindow(owner) != FALSE;
+    if (attached) AttachThreadInput(self, foregroundThread, FALSE);
+    logLine(std::string("setup: prompt owner activated=") + (activated ? "1" : "0"));
+  }
   SHELLEXECUTEINFOW execute = {sizeof(execute)};
   auto binary = exePath();
+  execute.hwnd = owner;
   execute.fMask = SEE_MASK_NOCLOSEPROCESS;
   execute.lpVerb = L"runas";
   execute.lpFile = binary.c_str();

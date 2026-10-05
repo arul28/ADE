@@ -208,7 +208,7 @@ export function createMacDesktopDriverLifecycle(
 
   const ensureDriver = async (): Promise<DriverBackend> => {
     deps.assertSupported();
-    if (disposed) throw deps.serviceError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The Mac Desktop service is disposed.");
+    if (disposed) throw deps.serviceError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The lane screen service is disposed.");
     if (!backend) {
       const onHealthChanged = (health: MacDesktopDriverHealth) => deps.emit({ type: "driver-health", health });
       const createProvider = deps.createProvider ?? createMacVirtualDisplayProvider;

@@ -536,7 +536,8 @@ export function useWorkToolStatuses(args: {
     enabled: enabled && !offline,
     laneId,
     runtimePin,
-    supported: context.supportsMacDesktop ?? null,
+    // One read serves both desktop tools: a host offers exactly one of them.
+    supported: context.supportsWindowsDesktop === true ? true : context.supportsMacDesktop ?? null,
   });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
@@ -606,7 +607,8 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop);
+  const desktopName = context.supportsWindowsDesktop === true ? "Windows Desktop" : "Mac Desktop";
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopName);
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
@@ -625,6 +627,7 @@ export function useWorkToolStatuses(args: {
     // answer standing rather than claiming the lane has no screen, and the
     // hook already stops reading.
     "mac-desktop": macDesktopStatus,
+    "windows-desktop": macDesktopStatus,
     pr: prToolStatusLine(prCount),
   }), [
     appControlSession,

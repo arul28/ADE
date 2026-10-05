@@ -223,7 +223,7 @@ export function useWorkSidebarTool(
        * Mac Desktop asks too, while a display runs, and has a third answer:
        * "Keep running" closes the tab and leaves the display up.
        */
-      if (target === "mac-desktop") {
+      if (target === "mac-desktop" || target === "windows-desktop") {
         void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
           if (answer === "stop") drop();
           else if (answer === "keep") drop(false);
