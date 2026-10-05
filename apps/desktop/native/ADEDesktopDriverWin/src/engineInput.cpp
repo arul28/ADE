@@ -238,6 +238,11 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       fail(code::kNoWindow, "That window is not on this lane's screen, so it cannot be scrolled.");
     POINT c = centerOf(visible);
     if (priv) {
+      // The wheel goes to the window under the pointer. A window just restored
+      // from minimized is still animating there, and a wheel sent at once fell
+      // on whatever was behind it; wait (bounded) until it is the one hit.
+      const HWND top = GetAncestor(scrollWindow, GA_ROOT) ? GetAncestor(scrollWindow, GA_ROOT) : scrollWindow;
+      for (int i = 0; i < 25 && GetAncestor(WindowFromPoint(c), GA_ROOT) != top; ++i) Sleep(20);
       if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
     } else {
       postScroll(scrollWindow, c.x, c.y, direction, amount);
