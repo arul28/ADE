@@ -1594,10 +1594,9 @@ export class RemoteConnectionService {
     // cross-machine lane union answered each one with a status read of every
     // machine -- itself a call, so the loop ran several times a second. Only a
     // change a window can act on is broadcast.
-    const changedKeys = new Set([...Object.keys(current), ...Object.keys(next)]);
-    changedKeys.delete("lastAttemptedAt");
-    const meaningful = [...changedKeys].some(
-      (key) => (current as Record<string, unknown>)[key] !== (next as Record<string, unknown>)[key],
+    const previous: Record<string, unknown> = current;
+    const meaningful = Object.entries(next).some(
+      ([key, value]) => key !== "lastAttemptedAt" && previous[key] !== value,
     );
     if (meaningful) this.emit();
   }

@@ -1391,9 +1391,6 @@ export type ProjectTransitionError = {
  * the push-divergence guard, which needs a dropped machine's last-known branch
  * state. Slices are deleted only by `dropCrossMachineLanes`.
  */
-/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
-const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
-
 export type CrossMachineMachineLanes = {
   /**
    * Usually a remote target id. `THIS_MACHINE_ID` is stored only while the
@@ -1939,6 +1936,9 @@ function transitionFailureState(
   }
   return { projectTransitionError: formatProjectTransitionError(kind, error) };
 }
+
+/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
+const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
 
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;

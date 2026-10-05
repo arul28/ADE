@@ -3220,13 +3220,7 @@ export function createProjectConfigService({
 
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     const key = `${fileIdentity(localPath)}|${fileIdentity(sharedPath)}`;
-    if (cachedSnapshot?.key === key) {
-      try {
-        return structuredClone(cachedSnapshot.snapshot);
-      } catch {
-        cachedSnapshot = null;
-      }
-    }
+    if (cachedSnapshot?.key === key) return structuredClone(cachedSnapshot.snapshot);
     const snapshot = readSnapshotFromDiskUncached();
     // Keyed by the identity seen before the read: a write racing the read
     // changes the files again, so the next call misses and reads afresh.

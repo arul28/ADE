@@ -118,7 +118,7 @@ export type AppControlSyncSource = {
 };
 
 /** This module's name in the service's frame-demand registry. */
-export const APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE = "sync-stream";
+const APP_CONTROL_SYNC_STREAM_DEMAND_SOURCE = "sync-stream";
 
 export type AppControlSyncStreamDeps = {
   logger: Logger;

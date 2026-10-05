@@ -1,3 +1,4 @@
+import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -1167,7 +1168,7 @@ export class LocalRuntimeConnectionPool {
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
   /** Lanes whose App Control frames this desktop's windows show. */
-  private appControlFrameLanes: readonly string[] | "all" = [];
+  private appControlFrameLanes: AppControlFrameDemand = [];
   /** projectId → the client that project's event subscription runs on. */
   private readonly frameDemandClients = new Map<string, RuntimeRpcClient>();
 
@@ -2139,25 +2140,29 @@ export class LocalRuntimeConnectionPool {
     // shown, so the brain does not stream every lane's screencast meanwhile.
     this.frameDemandClients.set(project.projectId, entry.client);
     this.declareAppControlFrameDemand(entry.client, project.projectId);
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (this.frameDemandClients.get(project.projectId) === entry.client) {
+        this.frameDemandClients.delete(project.projectId);
+      }
+    };
   }
 
   /**
    * Which lanes' App Control frames this desktop shows, across its windows.
    * The brain streams a lane's screencast only while something shows it.
    */
-  setAppControlFrameLanes(lanes: readonly string[] | "all"): void {
-    this.appControlFrameLanes = lanes === "all" ? "all" : [...lanes];
+  setAppControlFrameLanes(lanes: AppControlFrameDemand): void {
+    this.appControlFrameLanes = lanes;
     for (const [projectId, client] of this.frameDemandClients) {
       this.declareAppControlFrameDemand(client, projectId);
     }
   }
 
   private declareAppControlFrameDemand(client: RuntimeRpcClient, projectId: string): void {
-    const lanes = this.appControlFrameLanes;
     void client.call(
       "appControl.setFrameDemand",
-      { projectId, ...(lanes === "all" ? { all: true } : { laneIds: lanes }) },
+      appControlFrameDemandParams(projectId, this.appControlFrameLanes),
       { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
     ).catch(() => {
       // An older brain has no demand and streams every lane, as before; a

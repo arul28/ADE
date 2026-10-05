@@ -3214,11 +3214,12 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         /**
-         * A view that shows live frames holds this while it is on screen, for
-         * its lane (no lane holds every lane). Status-only `onEvent` listeners
-         * do not keep frames flowing: the web client streams them over the
-         * relay, and the desktop sends a window frames, only while a view holds
-         * them. Returns the release.
+         * A view that shows live frames holds this while it is on screen.
+         * Status-only `onEvent` listeners do not keep frames flowing: the web
+         * client streams them over the relay, and the desktop sends a window
+         * frames, only while a view holds them. On the desktop the hold is for
+         * `laneId`, and omitting it holds every lane; the web client ignores
+         * the lane. Returns the release.
          */
         holdFrames?: (laneId?: string | null) => () => void;
       };

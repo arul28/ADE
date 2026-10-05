@@ -146,13 +146,11 @@ import {
 import {
   heldAppControlFrameLanes,
   normalizeAppControlFrameLaneIds,
-  onAppControlFrameLanesChanged,
   setAppControlFrameLanesForSender,
+  setAppControlFrameLanesListener,
   shouldSendAppControlFrameToWebContents,
 } from "./services/appControl/appControlFrameSubscriptions";
-
-/** The desktop's windows, in a project service's App Control frame demand. */
-const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
+import { appControlFrameEventLaneId } from "../shared/appControlFrameDemand";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
@@ -444,6 +442,9 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
+
+/** The desktop's windows, in a project service's App Control frame demand. */
+const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
@@ -2109,7 +2110,7 @@ app.whenReady().then(async () => {
   });
   // App Control screencasts follow what the windows show: a lane no window
   // holds streams no frames, in the brain or in a project hosted here.
-  onAppControlFrameLanesChanged(() => {
+  setAppControlFrameLanesListener(() => {
     const lanes = heldAppControlFrameLanes();
     localRuntimePool.setAppControlFrameLanes(lanes);
     for (const ctx of projectContexts.values()) {
@@ -5123,7 +5124,7 @@ app.whenReady().then(async () => {
           payload.type === "frame"
             ? (webContents) => shouldSendAppControlFrameToWebContents(
               webContents,
-              payload.laneId ?? payload.frame.laneId,
+              appControlFrameEventLaneId(payload),
             )
             : undefined,
         );

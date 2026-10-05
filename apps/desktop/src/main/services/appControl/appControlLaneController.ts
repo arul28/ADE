@@ -1699,6 +1699,21 @@ export function createAppControlLaneController(context: AppControlLaneController
     void client.send("Network.enable").catch(() => {});
   };
 
+  /** Starts the frame stream on `client`. Streaming is marked first, so the first frame is kept. */
+  const beginFrameStream = async (client: CdpClient, generation: number): Promise<boolean> => {
+    screencastStreaming = true;
+    try {
+      await client.send("Page.startScreencast", APP_CONTROL_SCREENCAST_PARAMS);
+      return true;
+    } catch (error) {
+      if (screencastGeneration === generation && screencastClient === client) screencastStreaming = false;
+      args.logger.debug?.("app_control.screencast_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
   const startScreencast = async (sessionId: string, targetId: string | null, cdpEndpoint: string): Promise<void> => {
     if (
       screencastClient
@@ -1819,16 +1834,8 @@ export function createAppControlLaneController(context: AppControlLaneController
       }
     });
     if (!isFrameDemanded()) return;
-    screencastStreaming = true;
-    try {
-      await client.send("Page.startScreencast", APP_CONTROL_SCREENCAST_PARAMS);
-    } catch (error) {
-      if (screencastGeneration === generation && screencastClient === client) screencastStreaming = false;
-      args.logger.debug?.("app_control.screencast_start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      if (screencastGeneration === generation) await stopScreencast();
-    }
+    const started = await beginFrameStream(client, generation);
+    if (!started && screencastGeneration === generation) await stopScreencast();
   };
 
   /**
@@ -1842,14 +1849,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     if (isFrameDemanded()) {
       clearFrameDemandPauseTimer();
       if (screencastStreaming) return;
-      const generation = screencastGeneration;
-      screencastStreaming = true;
-      void client.send("Page.startScreencast", APP_CONTROL_SCREENCAST_PARAMS).catch((error) => {
-        if (screencastGeneration === generation && screencastClient === client) screencastStreaming = false;
-        args.logger.debug?.("app_control.screencast_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      void beginFrameStream(client, screencastGeneration);
       return;
     }
     if (!screencastStreaming || frameDemandPauseTimer) return;

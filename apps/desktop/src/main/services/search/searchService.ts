@@ -1005,8 +1005,7 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processPrSweep = async (): Promise<void> => {
     if (!deps.prs) return;
-    const summaries = await deps.prs.listAll();
-    await syncPrTermsByChatSession(summaries);
+    const summaries = await prSummariesForPass(deps.prs);
     const liveIds = new Set(summaries.map((pr) => `pr:${pr.id}`));
     const indexed = all<{ doc_id: string }>("SELECT doc_id FROM docs WHERE kind = 'pr'");
     withTransaction(() => {

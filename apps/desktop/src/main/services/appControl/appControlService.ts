@@ -1,3 +1,4 @@
+import type { AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import path from "node:path";
 import { isPathInside } from "../shared/pathCompare";
 import { appControlProofCaption } from "../../../shared/proofProvenance";
@@ -87,7 +88,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return false;
   };
 
-  const setFrameDemand = (sourceId: string, laneIds: readonly string[] | "all" | null): void => {
+  const setFrameDemand = (sourceId: string, laneIds: AppControlFrameDemand | null): void => {
     const key = sourceId.trim();
     if (!key) return;
     const lanes = laneIds === "all" ? "all" : new Set((laneIds ?? []).map((id) => id.trim()).filter(Boolean));

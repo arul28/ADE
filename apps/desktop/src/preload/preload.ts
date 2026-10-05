@@ -7,6 +7,7 @@ import {
 } from "../shared/types/systemSettings";
 import { createMacDesktopBridge } from "./macDesktopPreload";
 import { IPC } from "../shared/ipc";
+import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
@@ -4009,7 +4010,6 @@ const resolveMacDesktopStreamUrl = async (
  * holds a lane; the viewer reads its first picture with `getLatestFrame`.
  * A hold without a lane keys `*` and admits every lane's frames.
  */
-const APP_CONTROL_ALL_LANES_HOLD = "*";
 const appControlFrameHoldCounts = new Map<string, number>();
 let appControlFrameSyncQueued = false;
 
@@ -4025,7 +4025,7 @@ function syncAppControlFrameSubscriptions(): void {
 }
 
 function holdAppControlFrames(laneId?: string | null): () => void {
-  const key = (typeof laneId === "string" ? laneId.trim() : "") || APP_CONTROL_ALL_LANES_HOLD;
+  const key = (typeof laneId === "string" ? laneId.trim() : "") || APP_CONTROL_FRAME_ALL_LANES;
   appControlFrameHoldCounts.set(key, (appControlFrameHoldCounts.get(key) ?? 0) + 1);
   syncAppControlFrameSubscriptions();
   let released = false;

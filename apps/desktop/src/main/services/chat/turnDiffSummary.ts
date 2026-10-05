@@ -219,6 +219,20 @@ async function untrackedFiles(cwd: string, only?: ReadonlySet<string>): Promise<
 }
 
 /**
+ * The paths that changed since `beforeTree`: `undefined` when the caller asked
+ * for no scope, `null` when either capture failed.
+ */
+async function touchedSince(
+  cwd: string,
+  beforeTree: WorkingTreeFingerprint | null | undefined,
+): Promise<Set<string> | null | undefined> {
+  if (beforeTree === undefined) return undefined;
+  const afterTree = await captureWorkingTreeFingerprint(cwd);
+  if (!beforeTree || !afterTree) return null;
+  return fingerprintChanges(beforeTree, afterTree);
+}
+
+/**
  * The turn's diffstat, or `null` when git could not answer.
  *
  * `null` and an empty `files` array mean different things — the first is "ask
@@ -269,12 +283,8 @@ export async function collectTurnDiffSummary(args: {
     // beats the whole tree's dirt presented as the turn's work. Scoped first,
     // so an untracked file the turn never touched is not read just to be
     // filtered out.
-    let touched: Set<string> | undefined;
-    if (beforeTree !== undefined) {
-      const afterTree = await captureWorkingTreeFingerprint(cwd);
-      if (!beforeTree || !afterTree) return null;
-      touched = fingerprintChanges(beforeTree, afterTree);
-    }
+    const touched = await touchedSince(cwd, beforeTree);
+    if (touched === null) return null;
     // A file git has never seen produces no diff record at all, so the turn
     // that created it would otherwise report zero changes.
     const seen = new Set(files.map((file) => file.path));
@@ -282,10 +292,7 @@ export async function collectTurnDiffSummary(args: {
       if (seen.has(file.path)) continue;
       files.push(file);
     }
-    if (touched) {
-      const scope = touched;
-      scoped = files.filter((file) => scope.has(file.path));
-    }
+    if (touched) scoped = files.filter((file) => touched.has(file.path));
   }
 
   let totalAdditions = 0;

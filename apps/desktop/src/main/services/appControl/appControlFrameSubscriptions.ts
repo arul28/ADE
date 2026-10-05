@@ -1,7 +1,8 @@
 import type { WebContents } from "electron";
-
-/** The lane key of a hold that admits every lane (`holdFrames()` with no lane). */
-export const APP_CONTROL_FRAME_ALL_LANES = "*";
+import {
+  APP_CONTROL_FRAME_ALL_LANES,
+  type AppControlFrameDemand,
+} from "../../../shared/appControlFrameDemand";
 
 /**
  * Which lanes' App Control screencast frames each window is showing.
@@ -14,21 +15,19 @@ export const APP_CONTROL_FRAME_ALL_LANES = "*";
  */
 const laneIdsByWebContentsId = new Map<number, Set<string>>();
 const cleanupRegistered = new Set<number>();
-const changeListeners = new Set<() => void>();
+let onChange: (() => void) | null = null;
 
 const notifyChanged = (): void => {
-  for (const listener of [...changeListeners]) {
-    try {
-      listener();
-    } catch {}
-  }
+  try {
+    onChange?.();
+  } catch {}
 };
 
 /**
  * Every lane any window holds, or `"all"` when one holds every lane. This is
  * what the screencast follows: a lane no window shows streams no frames.
  */
-export function heldAppControlFrameLanes(): string[] | "all" {
+export function heldAppControlFrameLanes(): AppControlFrameDemand {
   const lanes = new Set<string>();
   for (const held of laneIdsByWebContentsId.values()) {
     for (const laneId of held) {
@@ -39,12 +38,9 @@ export function heldAppControlFrameLanes(): string[] | "all" {
   return [...lanes];
 }
 
-/** Called after any window's held lanes change, or a window goes away. */
-export function onAppControlFrameLanesChanged(listener: () => void): () => void {
-  changeListeners.add(listener);
-  return () => {
-    changeListeners.delete(listener);
-  };
+/** The one listener told after any window's held lanes change, or a window goes away. */
+export function setAppControlFrameLanesListener(listener: (() => void) | null): void {
+  onChange = listener;
 }
 
 export function normalizeAppControlFrameLaneIds(value: unknown): Set<string> {

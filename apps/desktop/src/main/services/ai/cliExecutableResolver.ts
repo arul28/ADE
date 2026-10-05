@@ -120,22 +120,22 @@ function parseNpmPrefix(line: string, homeDir: string): string | null {
  * a minute.
  */
 const ENVIRONMENT_PROBE_TTL_MS = 60_000;
-const npmPrefixBinDirsCache = new Map<string, { at: number; dirs: string[] }>();
-const shellPathCache = new Map<string, { at: number; path: string | null }>();
 const ENVIRONMENT_PROBE_CACHE_MAX = 32;
+const npmPrefixBinDirsCache = new Map<string, { at: number; value: string[] }>();
+const shellPathCache = new Map<string, { at: number; value: string | null }>();
 
-function rememberProbe<T>(cache: Map<string, T>, key: string, value: T): void {
+function memoizeProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, read: () => T): T {
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.value;
+  const value = read();
   if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
-  cache.set(key, value);
+  cache.set(key, { at: Date.now(), value });
+  return value;
 }
 
 function readNpmPrefixBinDirs(env: NodeJS.ProcessEnv): string[] {
   const homeDir = getHomeDir(env);
-  const cached = npmPrefixBinDirsCache.get(homeDir);
-  if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.dirs;
-  const dirs = readNpmPrefixBinDirsUncached(homeDir);
-  rememberProbe(npmPrefixBinDirsCache, homeDir, { at: Date.now(), dirs });
-  return dirs;
+  return memoizeProbe(npmPrefixBinDirsCache, homeDir, () => readNpmPrefixBinDirsUncached(homeDir));
 }
 
 function readNpmPrefixBinDirsUncached(homeDir: string): string[] {
@@ -404,11 +404,7 @@ function readShellPath(
 ): string | null {
   const source = env ?? process.env;
   const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
-  const cached = shellPathCache.get(key);
-  if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.path;
-  const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
-  rememberProbe(shellPathCache, key, { at: Date.now(), path: resolved });
-  return resolved;
+  return memoizeProbe(shellPathCache, key, () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env));
 }
 
 function readShellPathUncached(
