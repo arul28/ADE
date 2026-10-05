@@ -20,6 +20,7 @@ import {
   asNullableString,
   asRecord,
   createMacVirtualDisplayProvider,
+  type MacDesktopDriverClientFactory,
 } from "./macDesktopSeatProvider";
 
 const STATUS_DRIVER_READ_TIMEOUT_MS = 4_000;
@@ -55,12 +56,7 @@ export type MacDesktopDriverLifecycleDeps = {
   resolveExecutablePath?: (() => string | null) | null;
   /** Builds the seat provider. Defaults to the Mac virtual-display provider. */
   createProvider?: ((client: MacDesktopDriverClient) => DesktopSeatProvider) | null;
-  createDriverClient?: ((args: {
-    logger: Logger;
-    platform: NodeJS.Platform;
-    onHealthChanged: (health: MacDesktopDriverHealth) => void;
-    onDriverLost: (reason: string) => void;
-  }) => MacDesktopDriverClient) | null;
+  createDriverClient?: MacDesktopDriverClientFactory | null;
   assertSupported: () => void;
   serviceError: (code: string, message: string) => Error;
   permissionError: (which: "screenRecording" | "accessibility") => Error;
@@ -213,7 +209,7 @@ export function createMacDesktopDriverLifecycle(
       const onHealthChanged = (health: MacDesktopDriverHealth) => deps.emit({ type: "driver-health", health });
       const createProvider = deps.createProvider ?? createMacVirtualDisplayProvider;
       const client = deps.createDriverClient
-        ? deps.createDriverClient({ logger: deps.logger, platform: deps.platform, onHealthChanged, onDriverLost })
+        ? deps.createDriverClient({ logger: deps.logger, platform: deps.platform, onHealthChanged, onDriverLost, liveLaneIds: deps.laneIds })
         : createMacDesktopDriverClient({
           logger: deps.logger,
           platform: deps.platform,

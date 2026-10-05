@@ -26,7 +26,7 @@ import {
   type SeatProviderWindowsHooks,
 } from "../macDesktop/macDesktopSeatProvider";
 import { resolveWindowsDesktopDriverBinary } from "../native/nativeHelperPaths";
-import { createWindowsDesktopDriverClient } from "./windowsDesktopDriverClient";
+import { acquireSharedWindowsDesktopDriverClient } from "./windowsDesktopDriverClient";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopDriverHealth, MacDesktopWindowAction } from "../../../shared/types/macDesktop";
 import {
@@ -243,12 +243,7 @@ export function createWindowsDesktopSeatAdapter(args: {
     driverLabel: "Windows Desktop",
     resolveExecutablePath: () => resolveWindowsDesktopDriverBinary({ platform: "win32", logger: args.logger }),
     createProvider: (client) => createWindowsSeatProvider(client),
-    createDriverClient: (clientArgs: {
-      logger: Logger;
-      platform: NodeJS.Platform;
-      onHealthChanged: (health: MacDesktopDriverHealth) => void;
-      onDriverLost: (reason: string) => void;
-    }) => createWindowsDesktopDriverClient({ ...clientArgs, adeHome: args.adeHome }),
+    createDriverClient: (clientArgs) => acquireSharedWindowsDesktopDriverClient({ ...clientArgs, adeHome: args.adeHome }),
     // Windows has no Screen Recording / Accessibility grants; the service
     // reports both as granted and never probes or prompts.
     permissionsSupported: false,

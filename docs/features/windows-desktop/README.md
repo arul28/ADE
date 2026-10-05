@@ -221,6 +221,9 @@ Policy lives at the service and action boundaries, never in prompts:
 
 ## Tooling
 
+- The brain runs one Windows driver per ADE home, shared by every open
+  project. A lane's driver events reach only the project that owns the lane,
+  and a project's cleanup keeps the other projects' screens.
 - On a private screen the pane has no **Release**, **Add app** or **Bring to
   my screen**: a window cannot move between two Windows sessions. The shared
   seat keeps them.
