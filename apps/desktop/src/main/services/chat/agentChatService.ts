@@ -1304,6 +1304,7 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
   type StaleRunSweepChatRow,
@@ -19730,6 +19731,9 @@ export function createAgentChatService(args: {
     managedSessions.get(sessionId)?.activityDetector?.reset();
   };
 
+  // A server an agent's own shell starts lights the Browser on every machine.
+  const agentShellOutput = createAgentShellOutputObserver(projectRoot);
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -19754,6 +19758,7 @@ export function createAgentChatService(args: {
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
+    agentShellOutput.observe({ sessionId: managed.session.id, laneId: managed.session.laneId ?? null }, normalizedEvent);
     codexVoice.observeChatEvent(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {

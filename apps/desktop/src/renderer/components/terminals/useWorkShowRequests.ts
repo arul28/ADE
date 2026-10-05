@@ -20,6 +20,7 @@ import {
 } from "../chat/chatCompanionUiState";
 import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
 import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../work/appControlCardGrants";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -251,6 +252,7 @@ export function useWorkShowRequests({
     if (!active || !sessionId) return undefined;
     return window.ade.iosSimulator.onEvent((event) => {
       if (event.type !== "drawer-open-requested") return;
+      if (!isAddressedToThisDesktop(event.targetClientId)) return;
       if (!appleEventAddresses(event, { chatSessionId: sessionId, laneId: sessionLaneId, acceptUnscoped: false })) return;
       setWorkSidebarTool("ios");
     }, runtimePin);

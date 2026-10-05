@@ -3381,7 +3381,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   // Headless machines cannot mint an actor capability: the issuer asks the
   // desktop bridge for one, and on a box running only `ade serve` that socket
   // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // call before it ever reaches the forwarder's `route`, so the whole remote
   // forwarding path (publish `built_in_browser_remote_request`, wait for a
   // pinned desktop to ack) is unreachable. Only the three "put this URL on a
   // screen" methods are exempt — they are exactly the forwardable set. This is
@@ -3500,6 +3500,14 @@ function scopeWorkToolsAdeActionArgs(
       scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
     }
     return workToolsArgs;
+  }
+  if (action === "listDevServers") {
+    // Same rule as getLaneState: an agent sees its own lane's servers, and an
+    // agent with no resolvable lane sees none.
+    if (isUserClient) return workToolsArgs;
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    if (!sessionLaneId) scopeAccessDenied("work_tools reads need a resolvable lane for this caller", method);
+    return { ...workToolsArgs, laneId: sessionLaneId };
   }
   if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
@@ -5281,9 +5289,14 @@ async function runTool(args: {
     }
     // Stripped here, at the source, because the chat scoping below rebuilds
     // its arguments from these raw ones.
-    const baseObjectArgs = stampedChatAction
+    const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
+    // `inputOrigin` names the desktop a person is talking from, and show
+    // requests follow it. Only a user client may say where that person is.
+    const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs
+      ? (({ inputOrigin: _notADesktop, ...agentArgs }) => agentArgs)(providedObjectArgs)
+      : providedObjectArgs;
     const rawObjectArgs = domain === "chat" && agentCaller && THREAD_COMMENT_SEND_ACTIONS.has(action)
       ? withoutIncludeThreadComments(baseObjectArgs)
       : baseObjectArgs;

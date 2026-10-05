@@ -11,6 +11,7 @@ import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
+import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
   EMPTY_WORK_TOOL_ERRORS,
@@ -220,12 +221,18 @@ export function browserStatusLine(
   rawStatus: BuiltInBrowserStatus | null,
   laneId: string | null,
   errorCount = 0,
+  /** Ports the lane is serving, from the lane's machine. Lights an empty browser. */
+  devServerPorts: readonly number[] = [],
 ): WorkToolStatus {
   // Exported and called with whatever a feed handed the caller, including the
   // web client's shape-breaking "unsupported" stub — so the array is checked
   // here too rather than trusted from the type.
   const status = asBuiltInBrowserStatus(rawStatus);
-  if (!status || status.tabs.length === 0) return statusLine("No tabs", false);
+  if (!status || status.tabs.length === 0) {
+    if (devServerPorts.length === 0) return statusLine("No tabs", false);
+    const extra = devServerPorts.length > 1 ? ` +${devServerPorts.length - 1}` : "";
+    return statusLine(`localhost:${devServerPorts[0]} running${extra}`, true);
+  }
   const activeTab = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0];
   const held = status.tabs.some((tab) => tab.ownerLaneId != null)
     || status.ownerLaneId != null;
@@ -550,6 +557,12 @@ export function useWorkToolStatuses(args: {
   });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
+  // The lane's dev servers, read from the lane's machine, so an empty Browser
+  // still says something is ready to open.
+  const devServers = useLaneDevServers(laneId, runtimePin, enabled && !offline);
+  // The store keeps the array's identity until a port or URL changes.
+  const devServerPorts = useMemo(() => devServers.map((server) => server.port), [devServers]);
+
   /*
     The lane's Apple device, for the card's one line. Polled here rather than
     added to the feed provider because it is a lanes-DB read keyed by LANE, and
@@ -626,7 +639,12 @@ export function useWorkToolStatuses(args: {
     terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
       ? IDLE
-      : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
+      : browserStatusLine(
+        browserStatus,
+        laneId,
+        workToolBrowserErrorCount(browserErrors, browserStatus),
+        devServerPorts,
+      ),
     git: gitStatusLine(lane, laneStatusStale),
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(appleDevice),
@@ -642,6 +660,7 @@ export function useWorkToolStatuses(args: {
     appleDevice,
     browserErrors,
     browserStatus,
+    devServerPorts,
     lane,
     laneId,
     laneStatusStale,

@@ -58,7 +58,17 @@ import {
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
-import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
+import {
+  ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  getLinkOpenMode,
+  refreshLinkOpenMode,
+  setLinkOpenMode,
+  type OpenBuiltInBrowserDetail,
+} from "../../lib/openExternal";
+import { takeHeldBrowserLinkOpens } from "../../lib/pendingBrowserLinkOpens";
+import { useLaneDevServers } from "../../lib/laneDevServers";
+import { pinKey } from "../../state/projectMachines";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { showToast } from "../app/toast/toastStore";
 import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
@@ -1007,6 +1017,12 @@ export function ChatBuiltInBrowserPanel({
           pin,
         ).catch(() => {});
       };
+      // `ade browser panel` with no URL: the pane is on screen (Work opened it
+      // for this request), and there is nothing to load.
+      if (!request.url.trim()) {
+        await acknowledge({ accepted: true, reason: null });
+        return;
+      }
       /*
         The requester gives up after 5 seconds, and nobody answers an approval
         bar in 5 seconds. So the moment a bar goes up the desktop says "I took
@@ -1057,6 +1073,8 @@ export function ChatBuiltInBrowserPanel({
       if (!awaitingAcked || !accepted) await acknowledge({ accepted, reason });
     };
     const unsubscribe = api.onRemoteRequest((request) => {
+      // Meant for the desktop the user is talking from, not this one.
+      if (!isAddressedToThisDesktop(request.targetClientId)) return;
       void handleRequest(request);
     }, pin);
     // Work holds the triggering request when this pane is unmounted (Git
@@ -1170,6 +1188,53 @@ export function ChatBuiltInBrowserPanel({
     setUrlInput(url);
     navigateToUrl(url);
   }, [navigateToUrl]);
+
+  /**
+   * A `localhost` link clicked in a chat or terminal on this pane's machine.
+   *
+   * The plain browser call would tunnel it too, but only this pane can keep the
+   * clicked address in the URL bar and mark the tab as the other machine's. A
+   * click is a person asking, so it needs no approval bar.
+   */
+  const openLinkInNewTab = useCallback((url: string) => {
+    void runBusy("navigate", async () => {
+      if (captureModeRef.current) restoreLiveBrowserView();
+      const api = requireBrowserApi();
+      const prepared = await prepareRemoteNavigation(url, { human: true });
+      if (!prepared.ok) {
+        setMessage({ tone: "error", text: prepared.reason ?? "Navigation was not allowed." });
+        return;
+      }
+      const next = await api.navigate(withBrowserScope({
+        url,
+        newTab: true,
+        ...(activeGroupLaneId ? { groupLaneId: activeGroupLaneId } : {}),
+      }), runtimePinRef.current);
+      if (prepared.tunnel) {
+        rememberTabTunnel(next?.activeTabId ?? statusRef.current?.activeTabId ?? null, prepared.tunnel);
+      }
+      await refreshStatus();
+    });
+  }, [activeGroupLaneId, prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope]);
+
+  useEffect(() => {
+    if (!remotePin) return undefined;
+    const paneKey = pinKey(remotePin);
+    const handleOpen = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
+      const url = event.detail?.url;
+      if (event.defaultPrevented || !url || !parseLoopbackUrl(url)) return;
+      // A null pin is the window's machine. Only take links meant for this pane's machine.
+      const linkBinding = event.detail.runtimePin ?? activeProjectBinding ?? null;
+      if (!linkBinding || pinKey(linkBinding) !== paneKey) return;
+      event.preventDefault();
+      openLinkInNewTab(url);
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, handleOpen);
+    // Links clicked while this pane was not mounted; the click is what revealed it.
+    for (const link of takeHeldBrowserLinkOpens(remotePin)) openLinkInNewTab(link.url);
+    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, handleOpen);
+  }, [activeProjectBinding, openLinkInNewTab, remotePin]);
 
   /**
    * `+` opens an empty tab, not a page.
@@ -2153,17 +2218,25 @@ export function ChatBuiltInBrowserPanel({
     };
   }, [deviceMenuOpen]);
 
+  /*
+    The lane's servers as the shared store sees them, from the lane's machine.
+    Only its identity is used here: it changes when that machine says a server
+    started or stopped, which is the cue to re-read the full list below. For a
+    lane on another machine that is the only way the chips can change.
+  */
+  const laneDevServers = useLaneDevServers(contextLaneId, browserRuntimePin, Boolean(contextLaneId));
+
   /**
    * The real dev servers, asked for rather than guessed at.
    *
-   * The service knows which ports are listening and which command opened them,
-   * so the launchpad can say "npm run dev · :5173" instead of offering a
-   * hardcoded `localhost:3000` that is usually nothing. An older main process
-   * has no such list, so the port probe below stays as the fallback.
+   * The lane's machine knows which ports are listening and which command
+   * opened them, so the launchpad can say "npm run dev · :5173" instead of
+   * offering a hardcoded `localhost:3000` that is usually nothing. An older
+   * build has no such list, so the port probe below stays as the fallback.
    */
   useEffect(() => {
     const api = getBrowserApi();
-    if (!api?.getDevServers || remotePin) return undefined;
+    if (!api?.getDevServers) return undefined;
     let cancelled = false;
     // `Promise.resolve(...)`, not a bare `.then`: the declared return type is
     // what a CURRENT main process sends. A stub namespace or an older build that
@@ -2171,7 +2244,7 @@ export function ChatBuiltInBrowserPanel({
     // inside the effect body, which React does not treat as a rejection — it
     // unmounts the subtree, so the pane blanks instead of falling back to the
     // port probe below.
-    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }))
+    void Promise.resolve(api.getDevServers({ laneId: contextLaneId }, runtimePinRef.current))
       .then((value) => {
         if (cancelled) return;
         const discovered = normalizeDevServers(value);
@@ -2185,14 +2258,15 @@ export function ChatBuiltInBrowserPanel({
     return () => {
       cancelled = true;
     };
-  }, [contextLaneId, remotePin]);
+  }, [contextLaneId, laneDevServers, remotePin]);
 
   /*
     The port probe, as a fallback rather than an alternative.
 
-    `getDevServers` only knows the servers ADE's own PTYs started, so a `npm run
-    dev` the human launched in iTerm before opening ADE made the launchpad claim
-    there was nothing to open while :5173 was serving. An empty answer is now
+    `getDevServers` knows what ADE terminals and agents printed and what runs
+    from a lane's worktree, so a `npm run dev` the human launched in iTerm from
+    some other folder made the launchpad claim there was nothing to open while
+    :5173 was serving. An empty answer is now
     treated the same as no answer at all: probe the usual ports, and label what
     comes back "localhost:5173" — the honest thing to say about a port nobody
     can name a command for.
@@ -2200,14 +2274,16 @@ export function ChatBuiltInBrowserPanel({
   useEffect(() => {
     const api = getBrowserApi();
     if (api?.getDevServers && !discoveryEmpty) return undefined;
-    if (remotePin) return undefined;
     const probePort = window.ade?.localhost?.probePort;
     if (!probePort) return undefined;
+    // On a remote lane the probe runs on that machine: its ports are the ones
+    // this pane's `localhost` means.
+    const pin = runtimePinRef.current;
     let cancelled = false;
     void (async () => {
       for (const port of DEV_SERVER_PROBE_PORTS) {
         if (cancelled) return;
-        const listening = await probePort(port).catch(() => false);
+        const listening = await probePort(port, pin).catch(() => false);
         if (listening && !cancelled) {
           setDevServers((previous) => mergeDevServer(previous, {
             url: `http://localhost:${port}`,

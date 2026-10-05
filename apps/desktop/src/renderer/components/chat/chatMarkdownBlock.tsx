@@ -26,6 +26,7 @@ import { MosaicCard } from "./MosaicCard";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chipFromDeeplinkTarget } from "../../../shared/chips";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import {
@@ -240,6 +241,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
+  // A `localhost` link in this reply means the chat's machine.
+  const runtimePin = useChatRuntimeScope().pin;
   // Lanes, chats, models and the rest that this reply names. The lookup only
   // changes identity when an id or name changes, so settled bodies stay memoized.
   const entityLookup = useThreadEntityLookup();
@@ -426,7 +429,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           rel="noreferrer"
           onClick={(event) => {
             event.preventDefault();
-            openUrlInAdeBrowser(href);
+            openUrlInAdeBrowser(href, { runtimePin });
           }}
           className={
             neu
@@ -438,7 +441,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, runtimePin, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought]);
 
   return (
     <div

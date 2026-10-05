@@ -14522,14 +14522,14 @@ describe("ADE CLI", () => {
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
-    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+    const firstStepArgs = (argv: string[], domain = "built_in_browser"): Record<string, unknown> => {
       const plan = buildCliPlan(argv);
       expect(plan.kind).toBe("execute");
       if (plan.kind !== "execute") throw new Error("expected execute plan");
       const params = plan.steps[0]?.params as
         | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
         | undefined;
-      expect(params?.arguments?.domain).toBe("built_in_browser");
+      expect(params?.arguments?.domain).toBe(domain);
       return {
         action: params?.arguments?.action,
         ...(params?.arguments?.args ?? {}),
@@ -14653,12 +14653,12 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
       .toThrow(/Unknown browser record command/);
 
-    // Scope is never an argument here: `scopeBuiltInBrowserAdeActionArgs` drops
-    // any caller `laneId` and the desktop bridge substitutes the capability's
-    // lane, so the command deliberately sends no target of its own.
-    expect(firstStepArgs(["browser", "dev-servers"])).toEqual({ action: "getDevServers" });
+    // Dev servers are the runtime's list, answered with no desktop attached.
+    // Scope is never an argument: the daemon pins an agent to its own lane,
+    // so the command deliberately sends no target of its own.
+    expect(firstStepArgs(["browser", "dev-servers"], "work_tools")).toEqual({ action: "listDevServers" });
     for (const alias of ["dev-server", "devservers", "servers", "localhost"]) {
-      expect(firstStepArgs(["browser", alias])).toMatchObject({ action: "getDevServers" });
+      expect(firstStepArgs(["browser", alias], "work_tools")).toMatchObject({ action: "listDevServers" });
     }
   }));
 

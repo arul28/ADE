@@ -1760,18 +1760,22 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(screen.queryByRole("region", { name: "Local servers" })).toBeNull();
     });
 
-    it("asks for dev servers by lane, which is the only scope the detector filters on", async () => {
+    it.each([
+      ["a local pane", undefined, null],
+      ["a pane on another machine", REMOTE_PIN, REMOTE_PIN],
+    ])("asks the lane's machine for dev servers by lane from %s", async (_label, runtimePin, expectedPin) => {
       const { api } = installBrowserApi();
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={runtimePin as never} />);
 
       // `browserScope` is `{projectRoot} | {tabCollection} | {}` and never
-      // carries a laneId, so the registry's lane filter never ran. Discovery is
-      // also a fact about THIS machine's PTYs, so it takes no runtime pin.
+      // carries a laneId, so the registry's lane filter never ran. The list
+      // lives on the machine that runs the lane, so a remote pane asks that
+      // machine instead of skipping discovery.
       await waitFor(() => expect(api.getDevServers).toHaveBeenCalled());
-      const [args, ...rest] = api.getDevServers.mock.calls[0];
+      const [args, pin] = api.getDevServers.mock.calls[0];
       expect(args).toHaveProperty("laneId");
       expect(args).not.toHaveProperty("projectRoot");
-      expect(rest).toEqual([]);
+      expect(pin ?? null).toEqual(expectedPin);
     });
 
     it("probes the usual ports when discovery comes back empty", async () => {

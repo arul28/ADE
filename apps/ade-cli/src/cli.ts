@@ -2700,13 +2700,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
-    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
+    $ ade --socket browser dev-servers --text      Dev servers running in this lane
     $ ade --socket browser actions --text          List built_in_browser actions
 
-  "dev-servers" reports what ADE passively noticed in its own terminal output
-  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
-  lane. An empty list means nothing printed a line ADE recognised, not that
-  nothing is listening — start the server in an ADE shell, or just open the URL.
+  "dev-servers" lists the dev servers this machine's runtime knows for the
+  calling chat's lane: ready lines ("Local: http://localhost:5173") printed in
+  ADE terminals or in an agent's own shell, plus listening ports whose process
+  runs from the lane's worktree (a server started in the background shows up a
+  few seconds after the command that started it returns). It needs no desktop.
+  ADE never connects to a port to find it.
 
   No desktop on this machine
 
@@ -13604,10 +13606,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   // The launchpad chips the Browser pane renders, as a list. An agent that just
-  // ran `npm run dev` in an ADE shell reads the port from here instead of
-  // guessing it or grepping the terminal. Scope is not an argument: the daemon
-  // drops any caller-supplied `laneId` and the desktop bridge substitutes the
-  // actor capability's lane, so this always answers for the calling chat.
+  // ran `npm run dev` reads the port from here instead of guessing it or
+  // grepping the terminal. Served by the runtime, which hosts the lane's
+  // terminals and agents, so it answers with no desktop attached. Scope is not
+  // an argument for an agent: the daemon pins `laneId` to the calling chat's lane.
   if (
     sub === "dev-servers" ||
     sub === "dev-server" ||
@@ -13621,8 +13623,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       steps: [
         actionStep(
           "result",
-          "built_in_browser",
-          "getDevServers",
+          "work_tools",
+          "listDevServers",
           collectGenericObjectArgs(args),
         ),
       ],

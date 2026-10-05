@@ -18,6 +18,7 @@ import {
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
 import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
+import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -4796,13 +4797,29 @@ describe("adeRpcServer", () => {
     const agentHandler = createAdeRpcRequestHandler({ runtime: agentFixture.runtime, serverVersion: "test" });
     await initialize(agentHandler, { callerId: "agent-1", role: "cto", chatSessionId: "chat-1" });
 
+    // A stamp naming the person's desktop would steer where "show this"
+    // requests open; an agent may not claim to be that desktop.
+    const desktopStamp = { clientId: "macbook-desktop", local: false };
     for (const action of ["sendMessage", "steer", "messageSession"] as const) {
       await callTool(agentHandler, "run_ade_action", {
         domain: "chat",
         action,
-        args: { sessionId: "chat-1", text: "hello", includeThreadComments: true },
+        args: { sessionId: "chat-1", text: "hello", includeThreadComments: true, inputOrigin: desktopStamp },
       });
     }
+    expect(getSessionInputOrigin("chat-1")).toBeNull();
+    // An ordinary agent's send is rebuilt by the chat scoping; the stamp must
+    // not survive that either.
+    const plainFixture = createRuntime();
+    const plainHandler = createAdeRpcRequestHandler({ runtime: plainFixture.runtime, serverVersion: "test" });
+    await initialize(plainHandler, { callerId: "agent-2", role: "agent", chatSessionId: "chat-1" });
+    await callTool(plainHandler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-1", text: "hello", inputOrigin: desktopStamp },
+    });
+    expect(plainFixture.runtime.agentChatService.sendMessage).toHaveBeenCalled();
+    expect(getSessionInputOrigin("chat-1")).toBeNull();
     expect(agentFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
       expect.not.objectContaining({ includeThreadComments: true }),
     );
@@ -4829,11 +4846,12 @@ describe("adeRpcServer", () => {
     await callTool(userHandler, "run_ade_action", {
       domain: "chat",
       action: "sendMessage",
-      args: { sessionId: "chat-1", text: "hello", includeThreadComments: true },
+      args: { sessionId: "chat-1", text: "hello", includeThreadComments: true, inputOrigin: desktopStamp },
     });
     expect(userFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ includeThreadComments: true }),
     );
+    expect(getSessionInputOrigin("chat-1")).toEqual(desktopStamp);
   });
 
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
@@ -5989,9 +6007,13 @@ describe("adeRpcServer", () => {
 
     const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    const listDevServers = vi.fn(async (args: unknown) => args);
+    Object.assign(fixture.runtime.workToolsStateService, { listDevServers });
     for (const [action, args] of [
       ["getLaneState", { laneId: "lane-b" }],
       ["readObservationPreview", { path: "/tmp/obs.png", callerLaneId: "lane-b" }],
+      // Without a lane, "every lane" would list other lanes' server URLs.
+      ["listDevServers", {}],
     ] as const) {
       const denied = await callTool(stepHandler, "run_ade_action", {
         domain: "work_tools",
@@ -6002,6 +6024,7 @@ describe("adeRpcServer", () => {
     }
     expect(getLaneState).not.toHaveBeenCalled();
     expect(readObservationPreview).not.toHaveBeenCalled();
+    expect(listDevServers).not.toHaveBeenCalled();
 
     // Same shape for a bound chat the daemon cannot resolve to a lane.
     const staleHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

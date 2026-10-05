@@ -867,6 +867,8 @@ export type IosSimulatorEventPayload =
     mode: IosSimulatorDrawerMode;
     chatSessionId?: string | null;
     laneId?: string | null;
+    /** The desktop that sent the chat its last message; null opens it on every desktop. */
+    targetClientId?: string | null;
   }
   | { type: "session-started"; session: IosSimulatorSession }
   | { type: "session-updated"; session: IosSimulatorSession | null }
