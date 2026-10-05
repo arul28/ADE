@@ -184,7 +184,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
-import { GoalChip } from "./GoalChip";
+import { setChatGoal } from "../terminals/sessionLifecycleActions";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
@@ -14480,6 +14480,22 @@ export function AgentChatPane({
       sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
+      onEditClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? (condition) => { void sendClaudeGoalCommand(selectedSessionId, condition); }
+          : undefined
+      }
+      onClearClaudeGoal={
+        selectedSession?.provider === "claude" && selectedSessionId
+          ? () => { void sendClaudeGoalCommand(selectedSessionId, "clear"); }
+          : undefined
+      }
+      claudeGoalLocked={selectedSession?.provider === "claude" && turnActive}
+      onSetGoal={
+        selectedSessionId && (selectedSession?.provider === "claude" || selectedSession?.provider === "codex")
+          ? () => { void setChatGoal({ id: selectedSessionId, toolType: selectedSession.provider === "codex" ? "codex-chat" : "claude-chat" }, chatRuntimePinRef.current); }
+          : undefined
+      }
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
@@ -15359,48 +15375,6 @@ export function AgentChatPane({
   // capped column the prompt box uses so the two share an edge. It is an
   // ordinary flow child (its popover is the absolutely-positioned part), so it
   // moves the composer by its own height and by nothing else.
-  // The chat's goal as a chip above the prompt box (Codex `thread/goal/*`,
-  // Claude's native `/goal`). Codex goals that finished drop the chip.
-  const goalChipContent = (() => {
-    if (!composerSessionId || !selectedSession) return null;
-    if (selectedSession.provider === "codex" && selectedCodexGoal?.objective?.trim()
-      && selectedCodexGoal.status !== "complete" && selectedCodexGoal.status !== "cancelled") {
-      const sessionId = composerSessionId;
-      return (
-        <GoalChip
-          variant="codex"
-          goal={selectedCodexGoal}
-          pending={selectedCodexGoalPending}
-          onEdit={(objective) => { void setCodexGoalFromPanel(sessionId, objective); }}
-          onClear={() => { void clearCodexGoalFromPanel(sessionId); }}
-          onSetStatus={(status) => { void setCodexGoalStatusFromPanel(sessionId, status); }}
-        />
-      );
-    }
-    if (selectedSession.provider === "claude" && selectedClaudeGoal?.condition?.trim()) {
-      const sessionId = composerSessionId;
-      return (
-        <GoalChip
-          variant="claude"
-          goal={selectedClaudeGoal}
-          turnActive={turnActive}
-          onEdit={(condition) => { void sendClaudeGoalCommand(sessionId, condition); }}
-          onClear={() => { void sendClaudeGoalCommand(sessionId, "clear"); }}
-        />
-      );
-    }
-    return null;
-  })();
-  const goalChip = goalChipContent ? (
-    <div
-      className={cn(
-        "flex px-1 pb-1",
-        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-      )}
-    >
-      {goalChipContent}
-    </div>
-  ) : null;
   const usageLimitPill = usageLimitResume && composerSessionId ? (
     <div
       className={cn(
@@ -16168,8 +16142,7 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
-      {goalChip}
-      {usageLimitPill}
+            {usageLimitPill}
       {composerElement}
     </div>
   );
@@ -16588,8 +16561,7 @@ export function AgentChatPane({
                         ) : appPanelLifecyclePill}
                         {takeoverBanner}
                         {stalledTurnBanner}
-                        {goalChip}
-                        {usageLimitPill}
+                                                {usageLimitPill}
                         {composerElement}
                       </div>
                     ) : null}

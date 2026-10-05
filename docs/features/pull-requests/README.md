@@ -2009,11 +2009,14 @@ are how a chat asks to be woken when its PR changes. Source:
 `main/services/prs/prChatWatchStore.ts` (rows), `main/services/prs/prWatchService.ts`
 (reactor), `renderer/components/chat/PrWatchPill.tsx` (header control).
 
-- **Turning it on.** The chat header shows an Off / Watch / Ship pill beside
-  the PR pill while the PR is open. Agents arm it themselves with
+- **Turning it on.** Beside the header PR pill, while the PR is open, sits
+  one icon button with a caret: a slashed eye (off), an eye (Watch, sky) or a
+  rocket (Ship, amber), with a pulsing dot while Ship holds news. Clicking it
+  opens a small menu: Off / Watch / Ship, each with a two-word hint, and one
+  status line ("Told 6m ago: …", "Holding for CI and reviews"). Agents arm it themselves with
   `ade prs watch|ship|unwatch <pr>` (defaults to `$ADE_CHAT_SESSION_ID`; `<pr>`
   is an ADE PR id, a PR number, or a PR URL) or the CTO tool
-  `watchPullRequest`; the pill then says it was turned on by the agent.
+  `watchPullRequest`; the status line then adds "on by agent".
   Actions: `pr.setChatWatch` (`mode: null` stops it) and `pr.getChatWatches`,
   through IPC, preload, the web adapter, and sync remote commands
   (`prs.setChatWatch`, `prs.getChatWatches`). Watching links the chat to the

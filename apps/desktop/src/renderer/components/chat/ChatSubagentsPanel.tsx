@@ -53,7 +53,7 @@ import type {
 } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
-import { GoalCard } from "./GoalCard";
+import { GoalCard, GoalEmptyRow } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -1113,6 +1113,10 @@ export function ChatSubagentsPanel({
   onClose,
   goal,
   claudeGoal,
+  onEditClaudeGoal,
+  onClearClaudeGoal,
+  claudeGoalLocked = false,
+  onSetGoal,
   onEditGoal,
   onClearGoal,
   onSetGoalStatus,
@@ -1151,8 +1155,14 @@ export function ChatSubagentsPanel({
   variant?: "drawer" | "pane";
   onClose?: () => void;
   goal?: CodexThreadGoal | null;
-  /** Read-only Claude goal (owned by the CLI's /goal loop); Claude sessions only. */
+  /** Claude's `/goal`; edited and cleared by sending `/goal …` between turns. */
   claudeGoal?: ClaudeActiveGoal | null;
+  onEditClaudeGoal?: (condition: string) => void;
+  onClearClaudeGoal?: () => void;
+  /** A Claude turn is running; its goal changes wait for the turn boundary. */
+  claudeGoalLocked?: boolean;
+  /** Set when this chat can take a goal and has none: shows the "Set a goal" row. */
+  onSetGoal?: () => void;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
@@ -1542,7 +1552,8 @@ export function ChatSubagentsPanel({
   const hasSubagents = subagents.length > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  // The "Set a goal" row counts: the goal section stays put even before a goal exists.
+  const hasAnything = hasGoal || hasClaudeGoal || Boolean(onSetGoal) || hasTasks || hasSubagents || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1593,7 +1604,15 @@ export function ChatSubagentsPanel({
           pending={goalPending}
         />
       ) : hasClaudeGoal && claudeGoal ? (
-        <GoalCard variant="claude" goal={claudeGoal} />
+        <GoalCard
+          variant="claude"
+          goal={claudeGoal}
+          onEdit={onEditClaudeGoal}
+          onClear={onClearClaudeGoal}
+          locked={claudeGoalLocked}
+        />
+      ) : onSetGoal ? (
+        <GoalEmptyRow onSet={onSetGoal} />
       ) : null}
 
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}

@@ -5,25 +5,14 @@ import type { OpenProjectBinding, PrSummary } from "../../../shared/types";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
+import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 
-type Choice = { mode: PrWatchMode | null; label: string; description: string };
+type Choice = { mode: PrWatchMode | null; label: string; hint: string };
 
 const CHOICES: readonly Choice[] = [
-  {
-    mode: null,
-    label: "Off",
-    description: "PR events show as cards. The agent is not woken.",
-  },
-  {
-    mode: "watch",
-    label: "Watch",
-    description: "Wake the agent once per change: a failed check, checks passing, new comments, a conflict, a merge.",
-  },
-  {
-    mode: "ship",
-    label: "Ship",
-    description: "Watch, plus standing orders to land it: fix CI and review in one push, rebase only on a conflict, merge when green. Waits for CI and review bots to finish.",
-  },
+  { mode: null, label: "Off", hint: "Cards only" },
+  { mode: "watch", label: "Watch", hint: "Wake on changes" },
+  { mode: "ship", label: "Ship", hint: "Fix and merge" },
 ];
 
 function relativeTime(iso: string | null): string | null {
@@ -38,12 +27,18 @@ function relativeTime(iso: string | null): string | null {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/** One short line under the choices, only while a watch is on. */
 function statusLine(watch: PrChatWatchSummary | null): string | null {
   if (!watch || watch.status === "stopped") return null;
-  if (watch.holding) return "Holding news until CI and the review bots finish";
+  if (watch.holding) return "Holding for CI and reviews";
   const told = relativeTime(watch.lastToldAt);
-  if (watch.lastToldSummary && told) return `Last told the agent: ${watch.lastToldSummary} · ${told}`;
-  return "Nothing new since it started";
+  const by = watch.armedBy === "agent" ? " · on by agent" : "";
+  if (watch.lastToldSummary && told) return `Told ${told}: ${watch.lastToldSummary}${by}`;
+  return `No changes yet${by}`;
+}
+
+function modeIcon(mode: PrWatchMode | null) {
+  return mode === "ship" ? RocketLaunch : mode === "watch" ? Eye : EyeSlash;
 }
 
 /**
@@ -116,9 +111,9 @@ export function PrWatchPill({
 
   const active = watch && watch.status !== "stopped" ? watch : null;
   const mode = active?.mode ?? null;
-  const Icon = mode === "ship" ? RocketLaunch : mode === "watch" ? Eye : EyeSlash;
-  const label = mode === "ship" ? "Shipping" : mode === "watch" ? "Watching" : "Watch";
+  const Icon = modeIcon(mode);
   const status = statusLine(active);
+  const label = mode === "ship" ? "Shipping" : mode === "watch" ? "Watching" : "Watch";
 
   return (
     <>
@@ -127,23 +122,22 @@ export function PrWatchPill({
         type="button"
         data-testid="chat-header-pr-watch"
         className={cn(
-          "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-sans text-[10px] font-medium transition-all disabled:opacity-40",
-          mode === "ship"
-            ? "border-amber-400/30 bg-amber-500/[0.08] text-amber-100/90 hover:bg-amber-500/[0.12]"
-            : mode === "watch"
-              ? "border-sky-400/30 bg-sky-500/[0.08] text-sky-100/90 hover:bg-sky-500/[0.12]"
-              : "border-white/[0.06] bg-white/[0.02] text-fg/50 hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80",
+          "relative inline-flex h-6 items-center gap-0.5 rounded-md px-1.5 transition-colors disabled:opacity-40",
+          open ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
+          mode === "ship" ? "text-amber-300" : mode === "watch" ? "text-sky-300" : "text-fg/40 hover:text-fg/70",
         )}
         onClick={() => setOpen((value) => !value)}
         disabled={busy}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={error ?? status ?? `Have the agent woken when PR #${pr.githubPrNumber} changes`}
+        aria-label={`${label} PR #${pr.githubPrNumber}`}
+        title={error ?? (status ? `${label} · ${status}` : `${label} #${pr.githubPrNumber}`)}
       >
-        <Icon size={11} weight={mode ? "fill" : "regular"} aria-hidden />
-        <span>{label}</span>
-        {active?.holding ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300/80" aria-label="holding" /> : null}
-        <CaretDown size={8} weight="bold" className="opacity-60" aria-hidden />
+        <Icon size={13} weight={mode ? "fill" : "regular"} aria-hidden />
+        <CaretDown size={8} weight="bold" className="opacity-50" aria-hidden />
+        {active?.holding ? (
+          <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300" aria-hidden />
+        ) : null}
       </button>
       <AnchoredMenu
         open={open}
@@ -153,41 +147,43 @@ export function PrWatchPill({
         zIndex={Z_LAYERS.popover}
         role="menu"
         aria-label={`Watch PR #${pr.githubPrNumber}`}
-        className="w-[300px] rounded-lg border border-white/[0.10] bg-[#17171b] p-1.5 shadow-2xl shadow-black/30"
+        className={cn(MENU_SURFACE_CLASS, "w-[208px]")}
       >
-        <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/50">
-          PR #{pr.githubPrNumber} · tell the agent when it changes
-        </div>
+        <div className={MENU_LABEL_CLASS}>PR #{pr.githubPrNumber}</div>
         {CHOICES.map((choice) => {
           const selected = choice.mode === mode;
-          const ChoiceIcon = choice.mode === "ship" ? RocketLaunch : choice.mode === "watch" ? Eye : EyeSlash;
+          const ChoiceIcon = modeIcon(choice.mode);
           return (
             <button
               key={choice.label}
               type="button"
               role="menuitemradio"
               aria-checked={selected}
-              className={cn(
-                "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]",
-                selected && "bg-white/[0.04]",
-              )}
+              className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-white/[0.07]", selected && "text-fg")}
               onClick={() => void choose(choice.mode)}
             >
-              <ChoiceIcon size={13} weight={selected ? "fill" : "regular"} className="mt-0.5 shrink-0 text-fg/70" aria-hidden />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[11px] font-semibold text-fg/85">{choice.label}</span>
-                <span className="block text-[10px] leading-snug text-muted-fg/60">{choice.description}</span>
-              </span>
-              {selected ? <Check size={11} weight="bold" className="mt-0.5 shrink-0 text-emerald-300/80" aria-hidden /> : null}
+              <ChoiceIcon
+                size={13}
+                weight={selected ? "fill" : "regular"}
+                className={cn(
+                  "shrink-0",
+                  choice.mode === "ship" ? "text-amber-300/90" : choice.mode === "watch" ? "text-sky-300/90" : "text-fg/45",
+                )}
+                aria-hidden
+              />
+              <span className="font-medium">{choice.label}</span>
+              <span className="ml-auto text-[10.5px] text-muted-fg/55">{choice.hint}</span>
+              <Check size={10} weight="bold" className={cn("shrink-0 text-fg/70", !selected && "invisible")} aria-hidden />
             </button>
           );
         })}
-        {status || active?.armedBy === "agent" || error ? (
-          <div className="mt-1 border-t border-white/[0.06] px-2 pb-0.5 pt-1.5 text-[10px] leading-snug text-muted-fg/55">
-            {error ? <div className="text-amber-200/80">{error}</div> : null}
-            {status ? <div>{status}</div> : null}
-            {active?.armedBy === "agent" ? <div>Turned on by the agent.</div> : null}
-          </div>
+        {status || error ? (
+          <>
+            <div className={MENU_SEPARATOR_CLASS} />
+            <div className={cn("px-2 pb-1 pt-0.5 text-[10.5px] leading-snug", error ? "text-amber-200/80" : "text-muted-fg/55")}>
+              {error ?? status}
+            </div>
+          </>
         ) : null}
       </AnchoredMenu>
     </>

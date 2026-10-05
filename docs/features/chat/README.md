@@ -1026,14 +1026,16 @@ come):
   clears it. An interrupted or failed turn leaves it; a bare `/goal` turn only
   showed it.
 
-- **Goal chip.** While a goal is in play, a one-line chip sits above the prompt
-  box (`GoalChip.tsx`, next to the usage-limit pill): status dot, objective,
-  and the iteration (Claude) or tokens used (Codex). Clicking it opens a small
-  sheet with the full objective and its controls — Edit, Pause/Resume (Codex),
-  Clear. Claude's Edit and Clear send `/goal …` as a typed command and are
-  disabled mid-turn ("Claude takes goal changes between turns"). A Codex goal
-  that is complete or cancelled drops the chip. The full card stays in Chat
-  Info.
+- **Goal section (desktop).** The chat actions drawer opens with a Goal
+  section (`ChatSubagentsPanel` → `GoalCard`). With no goal, a Claude or Codex
+  chat shows one quiet "Set a goal" row (`GoalEmptyRow`). A Claude goal shows
+  its condition and iteration, with Edit (inline; Enter saves, Esc cancels)
+  and Clear icons. Both send `/goal …` as a typed command, and both are
+  disabled mid-turn ("Changes apply between turns"). Codex keeps its full
+  card (Edit, Pause/Resume, Clear).
+- **Goal chip (iOS).** The phone has no drawer, so a small "Goal" chip with
+  the target icon sits above the composer; tapping it opens the details and
+  controls.
 - **Setting one.** Type `/goal …`, or use **Set goal…** in the command palette
   for the chat in front of you (Claude and Codex).
 - **Work rows.** `projectActiveGoal` projects the live goal onto the session
