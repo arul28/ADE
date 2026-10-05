@@ -2,7 +2,10 @@ import { useEffect } from "react";
 import type { Icon } from "@phosphor-icons/react";
 
 import type { OpenPathInEditorRemote } from "../../../shared/editorTargets";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { OpenLinkInSubmenu } from "./OpenLinkInSubmenu";
+import { ViewportOverlayPortal } from "./ViewportOverlayHost";
 import {
   DESTRUCTIVE_ITEM_CLASS,
   MENU_ITEM_CLASS,
@@ -49,6 +52,17 @@ export type ContextMenuEntry =
       rootPath: string;
       remote?: OpenPathInEditorRemote | null;
     }
+  | {
+      /**
+       * "Open this URL in ▸", listing ADE's own browser, the system default,
+       * and every browser installed on this machine with its real app icon.
+       */
+      kind: "open-link-in";
+      key: string;
+      url: string;
+      /** The pin of the chat or terminal the link came from, for `localhost`. */
+      runtimePin?: OpenProjectBinding | null;
+    }
   | { kind: "separator"; key: string };
 
 /** Where the menu opens, in client pixels; null when it is closed. */
@@ -93,6 +107,15 @@ function EntryRows({
                 key={entry.key}
                 rootPath={entry.rootPath}
                 remote={entry.remote ?? null}
+                onClose={onClose}
+              />
+            );
+          case "open-link-in":
+            return (
+              <OpenLinkInSubmenu
+                key={entry.key}
+                url={entry.url}
+                runtimePin={entry.runtimePin ?? null}
                 onClose={onClose}
               />
             );
@@ -150,6 +173,7 @@ export function ContextMenu({
   onClose,
   label,
   testId,
+  portal = false,
 }: {
   menu: ContextMenuState;
   entries: ContextMenuEntry[];
@@ -157,6 +181,16 @@ export function ContextMenu({
   /** Accessible name for the menu. */
   label: string;
   testId?: string;
+  /**
+   * Move the menu to a body-level overlay layer.
+   *
+   * A `position: fixed` menu is only viewport-anchored while no ancestor has a
+   * transform. Chat rows animate with `motion`, which puts one there — so a
+   * menu opened from inside a transcript row has to leave the row's subtree to
+   * land under the pointer. Page-root hosts, which have no such ancestor, keep
+   * rendering inline.
+   */
+  portal?: boolean;
 }) {
   const { ref, position } = useClampedFixedPosition(menu);
   useEffect(() => {
@@ -170,11 +204,17 @@ export function ContextMenu({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menu, onClose]);
   if (!menu) return null;
-  return (
+  // The overlay host is click-through; the menu's own layers opt back in.
+  const pointerEvents = portal ? ("auto" as const) : undefined;
+  const content = (
     <>
       <div
         className="fixed inset-0"
-        style={{ WebkitAppRegion: "no-drag", zIndex: Z_LAYERS.contextMenu } as React.CSSProperties}
+        style={{
+          WebkitAppRegion: "no-drag",
+          zIndex: Z_LAYERS.contextMenu,
+          pointerEvents,
+        } as React.CSSProperties}
         onClick={onClose}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -193,6 +233,7 @@ export function ContextMenu({
           top: position?.top ?? menu.y,
           visibility: position ? "visible" : "hidden",
           WebkitAppRegion: "no-drag",
+          pointerEvents,
         } as React.CSSProperties}
         onPointerDown={(event) => event.stopPropagation()}
       >
@@ -200,4 +241,5 @@ export function ContextMenu({
       </div>
     </>
   );
+  return portal ? <ViewportOverlayPortal layer="contextMenu">{content}</ViewportOverlayPortal> : content;
 }

@@ -4,6 +4,8 @@ export const IPC = {
   appSetIgnoreMenuShortcuts: "ade.app.setIgnoreMenuShortcuts",
   appGetInfo: "ade.app.getInfo",
   appGetInstalledEditors: "ade.app.getInstalledEditors",
+  appGetInstalledBrowsers: "ade.app.getInstalledBrowsers",
+  appOpenInBrowser: "ade.app.openInBrowser",
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",

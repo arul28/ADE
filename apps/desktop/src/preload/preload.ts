@@ -13,6 +13,7 @@ import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gi
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type { SceneStillRecord } from "../shared/chatScene";
 import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
+import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
@@ -4467,6 +4468,10 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
+    getInstalledBrowsers: async (): Promise<InstalledBrowser[]> =>
+      ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
+    openInBrowser: async (args: { url: string; browserId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.appOpenInBrowser, args),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

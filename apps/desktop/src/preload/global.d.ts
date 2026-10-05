@@ -86,6 +86,7 @@ import type {
   BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
+import type { InstalledBrowser } from "../shared/browserTargets";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type {
   AdeCleanupResult,
@@ -1073,6 +1074,14 @@ declare global {
         setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
+        /**
+         * The browsers this machine can open a link in, each with its app icon
+         * as a data URL. Desktop only — the hosted-web client has no OS apps to
+         * detect, so callers feature-detect before offering the choice.
+         */
+        getInstalledBrowsers?: () => Promise<InstalledBrowser[]>;
+        /** Open a URL in one of the browsers `getInstalledBrowsers` returned. */
+        openInBrowser?: (args: { url: string; browserId: string }) => Promise<void>;
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;

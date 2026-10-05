@@ -55,6 +55,9 @@ import {
   type OpenPathTarget,
 } from "../../../shared/editorTargets";
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
+import { browserIconDataUrl, detectBrowsersCached } from "../browsers/browserDetection";
+import { openUrlInBrowser } from "../browsers/browserLauncher";
+import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {
   openLocalWorkspaceInEditor,
   openRemoteWorkspaceInEditor,
@@ -4270,6 +4273,38 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetInstalledEditors, async (): Promise<EditorTarget[]> => {
     return await detectInstalledEditorTargets();
   });
+
+  /**
+   * The browsers this machine can open a link in, each with its real app icon.
+   *
+   * A detection failure is not worth failing the menu over: the renderer still
+   * offers ADE's own browser and the system default, so the answer degrades to
+   * "no extra browsers" rather than to an error row.
+   */
+  ipcMain.handle(IPC.appGetInstalledBrowsers, async (): Promise<InstalledBrowser[]> => {
+    try {
+      const detected = await detectBrowsersCached();
+      return await Promise.all(
+        detected.map(async (browser) => ({
+          id: browser.id,
+          label: browser.label,
+          iconDataUrl: await browserIconDataUrl(browser.appPath),
+        })),
+      );
+    } catch (error) {
+      getCtx().logger.warn("app.get_installed_browsers_failed", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  });
+
+  ipcMain.handle(
+    IPC.appOpenInBrowser,
+    async (_event, arg: { url?: string; browserId?: string }): Promise<void> => {
+      await openUrlInBrowser(typeof arg?.url === "string" ? arg.url : "", arg?.browserId);
+    },
+  );
 
   ipcMain.handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
     const ctx = getCtx();
