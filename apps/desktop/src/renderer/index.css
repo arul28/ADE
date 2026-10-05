@@ -6248,12 +6248,58 @@ html[data-motion="reduced"] *::after {
 }
 
 /* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   single-column list, top to bottom. The even two-column grid was tried and
-   read as two columns of uneven height, so it is gone. */
+   single-column list of named blocks, top to bottom. The even two-column grid
+   was tried and read as two columns of uneven height, so it is gone. */
 .ade-settings-flow {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 48px;
+}
+
+/* One named block: a heading with its icon and one line, then its sections. */
+.ade-settings-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  scroll-margin-top: 12px;
+}
+
+.ade-settings-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-settings-group-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.ade-settings-group-description {
+  margin: 3px 0 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-muted-fg);
+}
+
+/* The danger zone says so before anything in it is read. */
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head {
+  border-bottom-color: color-mix(in srgb, var(--color-error) 35%, transparent);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
+  color: var(--color-error);
+}
+
+.ade-settings-rail svg {
+  width: 14px;
+  height: 14px;
 }
 
 .ade-settings-flow-item {

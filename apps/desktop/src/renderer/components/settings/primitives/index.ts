@@ -9,6 +9,7 @@ export {
   SettingsColumn,
   SettingsPanel,
   SettingsRow,
+  SettingsRowIcon,
   SettingsSection,
   SettingsSectionAction,
   SettingsSplit,

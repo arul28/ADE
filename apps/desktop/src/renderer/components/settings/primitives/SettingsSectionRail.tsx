@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 
-export type SettingsRailEntry = { id: string; title: string };
+export type SettingsRailEntry = { id: string; title: string; icon?: ReactNode };
 
 /**
  * A sticky list of the sections on one settings page, with the one you are
@@ -41,6 +41,11 @@ export function SettingsSectionRail({ entries }: { entries: readonly SettingsRai
         const element = document.getElementById(entry.id);
         if (element && element.getBoundingClientRect().top <= threshold) current = entry.id;
       }
+      // A short last block can never reach the line, so the end of the page
+      // is the last block.
+      const atEnd = scroller.scrollTop > 0
+        && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+      if (atEnd) current = sections[sections.length - 1]?.id ?? current;
       setActiveId(current);
     };
     update();
@@ -68,7 +73,9 @@ export function SettingsSectionRail({ entries }: { entries: readonly SettingsRai
                 onClick={() => jump(entry.id)}
                 aria-current={active ? "true" : undefined}
                 style={{
-                  display: "block",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
                   width: "100%",
                   textAlign: "left",
                   padding: "5px 10px",
@@ -83,7 +90,12 @@ export function SettingsSectionRail({ entries }: { entries: readonly SettingsRai
                   cursor: "pointer",
                 }}
               >
-                {entry.title}
+                {entry.icon ? (
+                  <span aria-hidden style={{ display: "inline-flex", opacity: active ? 1 : 0.7 }}>{entry.icon}</span>
+                ) : null}
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {entry.title}
+                </span>
               </button>
             </li>
           );

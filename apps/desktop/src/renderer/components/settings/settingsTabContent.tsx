@@ -1,12 +1,23 @@
 import React, { useCallback } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
+  Desktop,
+  FolderOpen,
+  GitBranch,
+  GithubLogo,
+  HardDrives,
+  Info,
+  Kanban,
+  ShieldCheck,
+  Stack,
+  Timer,
   UsersThree,
+  Warning,
 } from "@phosphor-icons/react";
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "./AppearanceSection";
 import { AppleDevicesSection } from "./AppleDevicesSection";
-import { SettingsColumn, SettingsSectionRail } from "./primitives";
+import { SettingsColumn, SettingsRowIcon, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
 import { BudgetCapSettings } from "./BudgetCapEditor";
 import { AboutSection } from "./AboutSection";
@@ -210,7 +221,93 @@ type TabSection = {
   machine?: MachineSectionKind;
   /** How the section is named in "not available here" notes. */
   title?: string;
+  /** The block it sits in on a section-list page (`TAB_GROUPS`). */
+  group?: TabGroupId;
 };
+
+/**
+ * The blocks a section-list page is organised into: a handful per page, each
+ * with a title, an icon and one line, and the rail lists these, not the cards.
+ * Ten loose cards on General read as a wall; four or five named blocks read
+ * as a page.
+ */
+type TabGroup = {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  tone: SettingsTone;
+};
+
+const TAB_GROUPS = {
+  ade: {
+    title: "ADE",
+    description: "The app and its background service, updates, and the ade command.",
+    icon: <Info size={15} weight="duotone" />,
+    tone: "blue",
+  },
+  project: {
+    title: "This project",
+    description: "The .ade folder in this repository.",
+    icon: <FolderOpen size={15} weight="duotone" />,
+    tone: "green",
+  },
+  computer: {
+    title: "This computer",
+    description: "Sleep, screen capture, the ADE browser, and where links open.",
+    icon: <Desktop size={15} weight="duotone" />,
+    tone: "violet",
+  },
+  privacy: {
+    title: "Privacy",
+    description: "What ADE may send, and when.",
+    icon: <ShieldCheck size={15} weight="duotone" />,
+    tone: "teal",
+  },
+  danger: {
+    title: "Danger zone",
+    description: "Can't be undone. Read what it removes before you go on.",
+    icon: <Warning size={15} weight="duotone" />,
+    tone: "red",
+  },
+  lanes: {
+    title: "How lanes behave",
+    description: "Where new lanes start, staying current with the base, and PR transcripts.",
+    icon: <GitBranch size={15} weight="duotone" />,
+    tone: "accent",
+  },
+  templates: {
+    title: "Templates",
+    description: "Setups a new lane can start from.",
+    icon: <Stack size={15} weight="duotone" />,
+    tone: "amber",
+  },
+  github: {
+    title: "GitHub",
+    description: "Pull requests, checks and reviews.",
+    icon: <GithubLogo size={15} weight="duotone" />,
+    tone: "slate",
+  },
+  linear: {
+    title: "Linear",
+    description: "Issues, and the agent that works them.",
+    icon: <Kanban size={15} weight="duotone" />,
+    tone: "violet",
+  },
+  disk: {
+    title: "Disk",
+    description: "What ADE keeps on this machine, and what you can clear.",
+    icon: <HardDrives size={15} weight="duotone" />,
+    tone: "orange",
+  },
+  sessions: {
+    title: "Sessions",
+    description: "When finished chats and terminals are put away.",
+    icon: <Timer size={15} weight="duotone" />,
+    tone: "pink",
+  },
+} satisfies Record<string, TabGroup>;
+
+type TabGroupId = keyof typeof TAB_GROUPS;
 
 /**
  * What each tab renders, as data rather than as an eleven-arm switch.
@@ -248,27 +345,30 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       ),
       machine: "local",
       title: "About ADE and updates",
+      group: "ade",
     },
-    { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health" },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line" },
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "ade" },
+    { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health", group: "project" },
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake", group: "computer" },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", group: "computer" },
     {
       entryIds: ["general.browser-agent-access"],
       render: () => <BrowserAgentAccessSection />,
       machine: "local",
       title: "ADE browser access",
+      group: "computer",
     },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
-    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
+    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links", group: "computer" },
     // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics" },
+    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", group: "privacy" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
       title: "Diagnostics sharing",
+      group: "privacy",
     },
     // Last on purpose: the hard reset is its own section at the very bottom of
     // General, never a routine control beside About.
@@ -277,6 +377,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <ResetAdeSection />,
       machine: "local",
       title: "Reset ADE",
+      group: "danger",
     },
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
@@ -298,22 +399,24 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <LaneBehaviorSection />,
       machine: "routed",
       title: "Lane behaviour",
+      group: "lanes",
     },
     {
       entryIds: ["lanes-git.pr-chat-transcripts"],
       render: () => <PrChatTranscriptsSection />,
       machine: "routed",
       title: "PR chat transcripts",
+      group: "lanes",
     },
     // The template manager sits under the two behaviour sections.
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates" },
+    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", group: "templates" },
   ],
   // Connections live in the machine's credential store and are read by its
   // runtime. Their calls follow the tab's binding (no pin yet), so they are
   // shown for the machine the tab is bound to.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "bound", title: "GitHub" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear" },
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "bound", title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear", group: "linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
@@ -323,12 +426,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <StorageSection />,
       machine: "routed",
       title: "Disk usage and cleanup",
+      group: "disk",
     },
     {
       entryIds: ["storage.session-lifecycle"],
       render: () => <SessionLifecycleSection />,
       machine: "routed",
       title: "Session lifecycle",
+      group: "sessions",
     },
   ],
   // Archived lanes and sessions belong to one machine's checkout, so the page
@@ -415,9 +520,6 @@ export function TabContent({
     return {
       section,
       entryIds,
-      // The rail's anchor. Named after the section's first setting, not its
-      // position, so it stays put when another section is hidden on a machine.
-      id: `settings-section-${entryIds[0] ?? tab}`,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
           {section.render()}
@@ -437,16 +539,55 @@ export function TabContent({
       </>
     );
   }
-  // Otherwise the sections run as one single-column list top to bottom. On a
-  // page wide enough for it, a sticky rail beside the list names each section
-  // and scrolls to it.
-  const railEntries = items.flatMap((item) => (item.section.title ? [{ id: item.id, title: item.section.title }] : []));
+  // Otherwise the sections are gathered into their named blocks, in the order
+  // each block first appears, and the blocks run top to bottom. A sticky rail
+  // beside them names each block and scrolls to it.
+  const blocks: { id: string; group: TabGroup | null; items: typeof items }[] = [];
+  for (const item of items) {
+    const groupId = item.section.group ?? null;
+    const existing = groupId ? blocks.find((block) => block.id === `settings-group-${groupId}`) : undefined;
+    if (existing) {
+      existing.items.push(item);
+      continue;
+    }
+    blocks.push({
+      // The rail's anchor: named after the block, so it stays put when a
+      // section is hidden on another machine.
+      id: groupId ? `settings-group-${groupId}` : `settings-section-${item.entryIds[0] ?? tab}`,
+      group: groupId ? TAB_GROUPS[groupId] : null,
+      items: [item],
+    });
+  }
+  const railEntries = blocks.flatMap((block) => {
+    const title = block.group?.title ?? block.items[0]?.section.title;
+    return title ? [{ id: block.id, title, icon: block.group?.icon }] : [];
+  });
   const list = (
     <div className="ade-settings-flow">
-      {items.map((item) => (
-        <div key={item.entryIds.join(",")} id={item.id} className="ade-settings-flow-item">
-          {item.node}
-        </div>
+      {blocks.map((block) => (
+        <section
+          key={block.id}
+          id={block.id}
+          className="ade-settings-group-block"
+          // The settings search hides a block whose cards all filtered out.
+          data-settings-group={block.group?.title ?? block.id}
+          data-tone={block.group?.tone}
+        >
+          {block.group ? (
+            <header className="ade-settings-group-head">
+              <SettingsRowIcon icon={block.group.icon} tone={block.group.tone} />
+              <div style={{ minWidth: 0 }}>
+                <h2 className="ade-settings-group-title">{block.group.title}</h2>
+                <p className="ade-settings-group-description">{block.group.description}</p>
+              </div>
+            </header>
+          ) : null}
+          {block.items.map((item) => (
+            <div key={item.entryIds.join(",")} className="ade-settings-flow-item">
+              {item.node}
+            </div>
+          ))}
+        </section>
       ))}
     </div>
   );

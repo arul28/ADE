@@ -857,12 +857,14 @@ Renderer — settings:
   anchor `reset-ade`, legacy `#about.reset` still resolves). It mounts
   `ResetAdeButton` from `app/ResetAdeDialog.tsx`.
 - `apps/desktop/src/renderer/components/settings/settingsTabContent.tsx`
-  — the tab-section layer: `TAB_SECTIONS`, `TabContent`, and the Providers
+  — the tab-section layer: `TAB_SECTIONS`, the named blocks each section-list
+  page is organised into (`TAB_GROUPS`), `TabContent`, and the Providers
   sub-view. `SettingsPage.tsx` only lays out the page around it.
 - `apps/desktop/src/renderer/components/settings/primitives/SettingsSectionRail.tsx`
-  — the sticky in-page rail of section titles. Rendered when a page has two or
-  more sections; a CSS container query shows it only at 900px or wider.
-  `AdeCliSection.tsx` is rendered in General too, directly under Project —
+  — the sticky in-page rail of a page's blocks, with their icons. Rendered when
+  a page has two or more blocks; a CSS container query shows it only at 900px
+  or wider. At the end of the page it marks the last block.
+  `AdeCliSection.tsx` is rendered in General too, in the ADE block —
   CLI availability is app basics, not an integration. The
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
@@ -1859,8 +1861,12 @@ local-only and bound-runtime sections on the machine they can actually reach.
 GitHub and Linear integrations are still managed on the selected machine that
 owns those credentials.
 
-Section pages are one column. When a page has two or more sections, a sticky
-rail (`SettingsSectionRail`) lists their titles and scrolls to them; it appears
+Section pages are one column of a few named blocks, each with an icon, a
+title and one line: General is **ADE**, **This project**, **This computer**,
+**Privacy** and a red **Danger zone** holding Reset ADE; Lanes is **How lanes
+behave** and **Templates**; Integrations is **GitHub** and **Linear**;
+Diagnostics is **Disk** and **Sessions**. When a page has two or more blocks, a
+sticky rail (`SettingsSectionRail`) lists them and scrolls to each; it appears
 only when the page container is 900px or wider.
 
 ### Settings with no project
