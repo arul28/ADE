@@ -384,6 +384,8 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const enqueue = (sourceKind: SourceKind, id: string, debounceMs?: number): void => {
     if (disposed) return;
+    // A PR that changed after this pass read the list must not be indexed from it.
+    if (sourceKind === "pr") prSummariesPass = null;
     const key = `${sourceKind}:${id}`;
     const dueAt = Date.now() + (debounceMs ?? DEBOUNCE_MS[sourceKind]);
     if (unavailable) return;

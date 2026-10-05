@@ -1171,8 +1171,12 @@ export class LocalRuntimeConnectionPool {
   private slowActionSamples: SlowActionSample[] = [];
   /** Lanes whose App Control frames this desktop's windows show. */
   private appControlFrameLanes: AppControlFrameDemand = [];
-  /** projectId → the client that project's event subscription runs on. */
-  private readonly frameDemandClients = new Map<string, RuntimeRpcClient>();
+  /**
+   * projectId → the client that project's event subscriptions run on, and how
+   * many are live. Several subscriptions to one project share a connection;
+   * the project stops being declared only when the last one ends.
+   */
+  private readonly frameDemandClients = new Map<string, { client: RuntimeRpcClient; refs: number }>();
 
   constructor(
     private readonly appVersion: string,
@@ -2140,14 +2144,31 @@ export class LocalRuntimeConnectionPool {
     // The subscription asks for frames. Saying first which lanes are actually
     // shown keeps the brain from treating this as a client from before frame
     // demand and streaming every lane's screencast until the declaration lands.
-    this.frameDemandClients.set(project.projectId, entry.client);
-    await this.declareAppControlFrameDemand(entry.client, project.projectId);
-    const unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
-    return () => {
-      unsubscribe();
-      if (this.frameDemandClients.get(project.projectId) === entry.client) {
+    const held = this.frameDemandClients.get(project.projectId);
+    // A different client is a reconnect: the old connection's subscriptions are gone with it.
+    const holder = held?.client === entry.client ? held : { client: entry.client, refs: 0 };
+    holder.refs += 1;
+    this.frameDemandClients.set(project.projectId, holder);
+    const release = (): void => {
+      holder.refs -= 1;
+      if (holder.refs <= 0 && this.frameDemandClients.get(project.projectId) === holder) {
         this.frameDemandClients.delete(project.projectId);
       }
+    };
+    let unsubscribe: () => void;
+    try {
+      await this.declareAppControlFrameDemand(entry.client, project.projectId);
+      unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      unsubscribe();
+      release();
     };
   }
 
@@ -2157,7 +2178,7 @@ export class LocalRuntimeConnectionPool {
    */
   setAppControlFrameLanes(lanes: AppControlFrameDemand): void {
     this.appControlFrameLanes = lanes;
-    for (const [projectId, client] of this.frameDemandClients) {
+    for (const [projectId, { client }] of this.frameDemandClients) {
       void this.declareAppControlFrameDemand(client, projectId);
     }
   }

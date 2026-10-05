@@ -4044,8 +4044,18 @@ describe("local runtime connection pool", () => {
       expect.anything(),
     );
 
+    // A second subscription to the same project shares the connection; ending
+    // the first must not stop this desktop's lanes reaching the brain.
+    const second = await pool.subscribeEventsForRoot(rootPath, { cursor: 22, category: "runtime" }, vi.fn());
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+    pool.setAppControlFrameLanes(["lane-3"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-3"] },
+      expect.anything(),
+    );
+    second();
     const callsAfterCleanup = call.mock.calls.length;
     pool.setAppControlFrameLanes(["lane-2"]);
     expect(call.mock.calls.length).toBe(callsAfterCleanup);
