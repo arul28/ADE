@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { terminateProcessTree } from "../shared/processExecution";
+import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
 import {
   resolveExecutableCandidatesFromKnownLocations,
@@ -262,6 +263,19 @@ function appendChunkWithCap(args: {
   };
 }
 
+/** What runGitOnce needs from a child; ChildProcess and OffThreadChild both fit. */
+type GitChild = {
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  stdout: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stderr: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stdin: { on(event: "error", listener: () => void): unknown; end(text: string): unknown };
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "close", listener: (code: number | null) => void): unknown;
+  once(event: "spawn", listener: () => void): unknown;
+};
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -275,15 +289,30 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn(executable, args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (typeof child.pid === "number" && child.pid > 0) {
-      activeGitPids.add(child.pid);
-    }
+    const hasEnvOverrides = opts.env !== undefined && Object.keys(opts.env).length > 0;
+    // On Windows, CreateProcess runs on the calling thread, so a git spawned
+    // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
+    const child: GitChild = offThreadSpawnEnabled()
+      ? spawnOffThread(executable, args, {
+        cwd: opts.cwd,
+        env: hasEnvOverrides ? { ...process.env, ...opts.env } : undefined,
+      })
+      : spawn(executable, args, {
+        cwd: opts.cwd,
+        env: { ...process.env, ...(opts.env ?? {}) },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    const terminateChildTree = () => {
+      if (child instanceof OffThreadChild) terminateOffThreadChildTree(child, "SIGKILL");
+      else terminateProcessTree(child, "SIGKILL");
+    };
+    // An off-thread child learns its pid with the "spawn" event; a direct one
+    // has it already. Adding it twice is harmless.
+    const trackPid = () => {
+      if (!settled && typeof child.pid === "number" && child.pid > 0) activeGitPids.add(child.pid);
+    };
+    child.once("spawn", trackPid);
     // Closed at once: git sees EOF on stdin exactly as it did with "ignore",
     // unless the caller has input for it (`check-ignore --stdin`). EPIPE when
     // git exits before reading it all is reported by the exit code instead.
@@ -291,6 +320,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     child.stdin.end(opts.stdin ?? "");
 
     let settled = false;
+    trackPid();
     let stdout = "";
     let stderr = "";
     let stdoutBytes = 0;
@@ -310,7 +340,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     };
 
     const onTimeout = setTimeout(() => {
-      terminateProcessTree(child, "SIGKILL");
+      terminateChildTree();
       finish({
         exitCode: 124,
         stdout,
@@ -378,7 +408,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     const onAbort = () => {
       if (aborted) return;
       aborted = true;
-      terminateProcessTree(child, "SIGKILL");
+      terminateChildTree();
       if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
         finishAborted();
         return;
