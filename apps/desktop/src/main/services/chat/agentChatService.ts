@@ -62028,6 +62028,8 @@ export function createAgentChatService(args: {
     noteExternalParentUnreachable: (input: {
       childSessionId: string;
       parentSessionId: string;
+      /** The parent's machine, when it is another one; named in the notice. */
+      parentMachineName?: string | null;
       childTurnId: string | null;
       reason: "parent_gone" | "gave_up" | "refused";
     }): void => {
@@ -62051,7 +62053,7 @@ export function createAgentChatService(args: {
             childTurnId: turnId,
             parentSessionId: input.parentSessionId,
             error: input.reason === "refused"
-              ? "The machine of the chat that started this one does not accept its reports."
+              ? `${input.parentMachineName?.trim() || "The other machine"} didn't accept this chat's report, so the chat that started it won't hear back.`
               : "The chat that started this one could not be reached for a day.",
           },
         },

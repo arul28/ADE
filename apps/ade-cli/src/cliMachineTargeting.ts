@@ -278,7 +278,9 @@ export async function createMachineRemoteConnection(
    * App Control files its proof where it runs (`captureProof`), which on
    * another machine is that machine's drawer. Instead, observe the app there
    * (a capture registered to this caller), read the frame back, and file it
-   * here like any other remote capture.
+   * here like any other remote capture. This lives in the connection rather
+   * than the `app-control proof` plan because plan builders are deliberately
+   * unaware of machines: the same plan runs here or anywhere.
    */
   const fileRemoteAppControlProofHere = async (params: JsonObject): Promise<unknown> => {
     const toolArgs = isRecord(params.arguments) ? params.arguments : {};

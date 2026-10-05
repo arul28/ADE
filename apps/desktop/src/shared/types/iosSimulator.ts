@@ -62,6 +62,12 @@ export type IosSimulatorShutdownArgs = {
    * un-evictable.
    */
   ignoreOwnership?: boolean | null;
+  /**
+   * End the session only if THIS chat still holds it; otherwise release
+   * nothing (`released: false`). For a person freeing the device from a
+   * session they saw, which may have changed hands while they decided.
+   */
+  expectedChatSessionId?: string | null;
 };
 
 export type IosSimulatorShutdownResult = {

@@ -370,7 +370,9 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       { payload },
       MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
     );
-    return answer === "delivered" || answer === "parent_gone" || answer === "refused" ? answer : "failed";
+    return answer === "delivered" || answer === "parent_gone" || answer === "refused" || answer === "pending"
+      ? answer
+      : "failed";
   };
 
   return { call, listMachines, deliverWake };

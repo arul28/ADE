@@ -192,6 +192,8 @@ export type ExternalWakeDeliveryResult =
   | "parent_gone"
   /** The parent's machine will never take it: it did not start this child. */
   | "refused"
+  /** Not yet: the child's start has not been recorded on both ends. Retry. */
+  | "pending"
   /** Not now (offline, busy, transport); try again later. */
   | "failed";
 

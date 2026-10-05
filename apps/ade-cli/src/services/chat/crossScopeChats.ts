@@ -308,7 +308,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     // still be on its way back here while its first, fast turn already
     // reported. The sender retries; a wake for a child that never appears
     // runs out with the sender's 24 h limit.
-    if (wake && !child) return "failed";
+    if (wake && !child) return "pending";
     if (!wake || !child || !wakeToken || !tokensMatch(child.wakeToken, wakeToken)) {
       logger?.warn("cross_scope_chats.remote_wake_refused", {
         parentChatSessionId,
@@ -333,6 +333,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       located?.runtime.agentChatService?.noteExternalParentUnreachable({
         childSessionId: entry.wake.childSessionId,
         parentSessionId: entry.wake.parentSessionId,
+        parentMachineName: externalChatContext(entry.wake.parentSessionId)?.machineName ?? null,
         childTurnId: entry.wake.spawnCompletion.childTurnId ?? null,
         reason,
       });
@@ -350,11 +351,12 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
         externalChatContext(entry.wake.parentSessionId)?.scope ?? null,
       );
     }
-    if (!deps.deliverRemote) return "refused";
+    // No bridge on this brain: it can never reach another machine.
+    if (!deps.deliverRemote) return "failed";
     // No token yet: the create that brings it may not have returned here, while
     // the child's first turn already ended. Try again later.
     const token = childWakeToken(entry.wake.childSessionId);
-    if (!token) return "failed";
+    if (!token) return "pending";
     return await deps.deliverRemote(entry.target.machineKey, {
       parentChatSessionId: entry.target.parentChatSessionId,
       wakeToken: token,
@@ -380,17 +382,19 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
           logger?.warn("cross_scope_chats.delivery_error", { key: entry.key, error: errorMessage(error) });
           result = "failed";
         }
+        // Only a transport failure says the machine is dark; "pending" is one
+        // child waiting on its own handshake.
         if (result === "failed" && entry.target.kind === "remote") unreachable.add(targetKey);
       }
       if (result === "delivered") {
         outbox = outbox.filter((candidate) => candidate.key !== entry.key);
         logger?.info("cross_scope_chats.delivered", { key: entry.key, target: entry.target.kind, attempts: entry.attempts + 1 });
-      } else if (result === "failed" && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS) {
+      } else if ((result === "failed" || result === "pending") && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS) {
         entry.attempts += 1;
         entry.nextAttemptAt = now() + Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, entry.attempts - 1));
       } else {
         outbox = outbox.filter((candidate) => candidate.key !== entry.key);
-        await noteOnChild(entry, result === "failed" ? "gave_up" : result);
+        await noteOnChild(entry, result === "parent_gone" || result === "refused" ? result : "gave_up");
         logger?.info("cross_scope_chats.dropped", { key: entry.key, reason: result });
       }
       saveOutbox();

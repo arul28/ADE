@@ -482,14 +482,16 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     entry.inFlight += 1;
     touch(entry);
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // One deadline, owned here: the client's own timer is set later, so the
+    // caller always hears "it may still have run there", never a bare refusal.
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new MachineCallTimeoutError(
         `${machineName(machine)} did not answer ${label} within ${Math.round(timeoutMs / 1000)}s. It may still have run there.`,
-      )), timeoutMs + 1_000);
+      )), timeoutMs);
       timer.unref?.();
     });
     try {
-      return await Promise.race([entry.client.call(method, params, { timeoutMs }), timedOut]);
+      return await Promise.race([entry.client.call(method, params, { timeoutMs: timeoutMs + 5_000 }), timedOut]);
     } catch (error) {
       if (error instanceof MachineCallTimeoutError) throw error;
       if (entry.client.isClosed()) {

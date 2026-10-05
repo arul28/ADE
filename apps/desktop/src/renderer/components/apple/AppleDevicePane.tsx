@@ -956,13 +956,18 @@ export function AppleDevicePane({
     return { family: identity.family, model: identity.renamed ? identity.model : null };
   }
 
-  const remoteHolder = status?.remoteHolder ?? null;
+  // Only this pane's lane: the status read falls back across lanes.
+  const remoteHolder = status?.remoteHolder
+    && (!status.activeSession?.laneId || !laneId || status.activeSession.laneId === laneId)
+    ? status.remoteHolder
+    : null;
   // "An agent on Mac mini": the wording the phone's owner ribbon uses too.
   const remoteHolderLabel = remoteHolder
     ? remoteAgentHolderLabel(remoteHolder.machineName, { sentenceStart: true })
     : null;
   async function freeDeviceFromRemoteAgent(): Promise<void> {
     const holderSessionId = status?.activeSession?.chatSessionId ?? null;
+    if (!holderSessionId) return;
     const confirmed = await confirmDialog({
       title: "Free this device?",
       message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
@@ -972,14 +977,16 @@ export function AppleDevicePane({
     if (!confirmed) return;
     setEndingRemoteSession(true);
     try {
-      // The dialog took time: end the session only if that same agent still
-      // holds the device, never a chat that took it over meanwhile.
-      const current = await window.ade.iosSimulator.getStatus(runtimePinRef.current);
-      if (!current.remoteHolder || current.activeSession?.chatSessionId !== holderSessionId) {
-        refreshList();
-        return;
+      // The service checks that the same agent still holds the device and
+      // ends it in one step, so a session that changed hands while the dialog
+      // was open is never ended by mistake.
+      const result = await window.ade.iosSimulator.shutdown(
+        { laneId: laneId ?? null, ignoreOwnership: true, expectedChatSessionId: holderSessionId },
+        runtimePinRef.current,
+      );
+      if (!result.released) {
+        showToast({ tone: "info", title: "The device changed hands first; nothing was freed." });
       }
-      await window.ade.iosSimulator.shutdown({ laneId: laneId ?? null, ignoreOwnership: true }, runtimePinRef.current);
       refreshList();
     } catch (cause: unknown) {
       setError(cause);
