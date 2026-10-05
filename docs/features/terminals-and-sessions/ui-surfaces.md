@@ -165,7 +165,10 @@ marker so a Settled destination cannot remain hidden.
 In by-lane list mode the funnel's **Fold busy lanes** chip
 (persisted as `workFoldBusyLanes`) moves every lane whose live rows are all
 Working or Waiting — or Done in a way the user has already left — onto a
-collapsed **Working** shelf between the inbox and the quiet zone. The rule lives
+collapsed **Working** shelf, the first shelf inside the quiet zone (above
+Snoozed and Settled, still drawn in the working colour with the working glyph).
+Only the user opens or closes it: the open chat's lane folds like any other, so
+its card is hidden until the user unfolds the shelf. The rule lives
 in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
 cannot disagree with the board's columns. A lane folds only when at least one
 live row is actually busy: a raised hand (`needs_you`), a stale run, or a

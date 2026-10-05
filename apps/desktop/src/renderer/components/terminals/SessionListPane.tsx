@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -1610,12 +1610,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     workSeenAtBySessionId,
   ]);
   const foldBusyLanesActive = workFoldBusyLanes && isByLane;
-  const selectedLaneId = useMemo(
-    () => (selectedSessionId
-      ? allSessionsUnfiltered.find((session) => session.id === selectedSessionId)?.laneId ?? null
-      : null),
-    [allSessionsUnfiltered, selectedSessionId],
-  );
   /** Local lanes in the Working shelf. Pins and the primary lane never fold. */
   const foldedLaneIds = useMemo(() => {
     const set = new Set<string>();
@@ -2269,8 +2263,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         const collapsed = isQuietShelfCollapsed(workCollapsedSectionIds, `lane-shelf:${shelf}`);
         for (const lane of orderedLanes) {
           if (shelfOf(lane.id) !== shelf) continue;
-          // The open lane stays on screen under a collapsed Working shelf.
-          if (collapsed && !(shelf === "working" && lane.id === selectedLaneId)) continue;
+          if (collapsed) continue;
           walkLane(lane, shelf);
         }
       }
@@ -2305,7 +2298,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     missingLaneSessionGroups,
     orderedLanes,
     quietIdSet,
-    selectedLaneId,
     sharedBranchInboxKeepIds,
     runningFiltered,
     sessionsGroupedByLane,
@@ -3442,14 +3434,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     entry.shelf === "working" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
   ));
   const workingShelfCount = shelfLaneCount(workingShelfLanes) + workingShelfForeignRows.length;
+  // Only the user opens or closes the Working shelf. The open lane folds into
+  // it like any other busy lane: the chat stays open in the main pane, and its
+  // card shows again when the user unfolds the shelf.
   const workingShelfCollapsed = isQuietShelfCollapsed(workCollapsedSectionIds, "lane-shelf:working");
-  // The open lane never vanishes: under a collapsed shelf it stays on screen.
-  const workingShelfOpenLane = workingShelfCollapsed && selectedLaneId
-    ? workingShelfLanes.find((lane) => lane.id === selectedLaneId) ?? null
-    : null;
-  const workingShelfOpenForeignRow = workingShelfCollapsed && selectedSessionId
-    ? workingShelfForeignRows.find((entry) => entry.row.sessions.some((session) => session.id === selectedSessionId)) ?? null
-    : null;
 
   /**
    * Is this shelved row actually showing cards? A shelved lane is quiet by
@@ -3651,45 +3639,35 @@ export const SessionListPane = React.memo(function SessionListPane({
           </StickyGroupHeader>
         );
       })}
-      <StickyGroupHeader
-        sectionId="lane-shelf:working"
-        icon={(
-          <span
-            className="h-2 w-2 shrink-0 rounded-full"
-            style={{ background: "var(--color-info)" }}
-            aria-hidden
-          />
-        )}
-        label="Working"
-        tone="working"
-        heading
-        count={workingShelfCount}
-        // Collapsed unless explicitly opened, like the quiet shelves: the point
-        // is to stop looking at busy lanes until they need you.
-        collapsed={workingShelfCollapsed}
-        onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:working"))}
-      >
-        <div className={GROUP_STACK_CLASS} data-testid="shelf-body-working">
-          {renderSharedBranchClusters(
-            clusterLaneItems(workingShelfLanes, workingShelfForeignRows),
-            GROUP_STACK_CLASS,
-          )}
-        </div>
-      </StickyGroupHeader>
-      {workingShelfOpenLane ? (
-        <div data-testid="shelf-working-open-lane">{renderLaneGroup(workingShelfOpenLane)}</div>
-      ) : workingShelfOpenForeignRow ? (
-        <div data-testid="shelf-working-open-lane">{renderForeignLaneGroup(workingShelfOpenForeignRow)}</div>
-      ) : null}
-      {/* The two shelves close the column, hidden-for-now above done, inside the
-          quiet zone's single heavier rule. A demoted lane keeps its group — a
-          quiet header, or none at all for a singleton — so it is filed, not
+      {/* The shelves close the column inside the quiet zone's single heavier
+          rule: Working first (live, so it keeps its colour), then
+          hidden-for-now above done. A demoted lane keeps its group — a quiet
+          header, or none at all for a singleton — so it is filed, not
           flattened; only its BODY goes flat, because the shelf above it has
           already said what tier every row in it is in. */}
       {renderQuietZone(
-        snoozedShelfCount + settledShelfCount > 0,
+        workingShelfCount + snoozedShelfCount + settledShelfCount > 0,
         (
           <>
+            <StickyGroupHeader
+              sectionId="lane-shelf:working"
+              icon={<CircleDashed size={12} weight="bold" aria-hidden className="shrink-0 text-[var(--color-info)]" />}
+              label="Working"
+              tone="working"
+              heading
+              count={workingShelfCount}
+              // Collapsed unless explicitly opened, like the quiet shelves: the point
+              // is to stop looking at busy lanes until they need you.
+              collapsed={workingShelfCollapsed}
+              onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:working"))}
+            >
+              <div className={GROUP_STACK_CLASS} data-testid="shelf-body-working">
+                {renderSharedBranchClusters(
+                  clusterLaneItems(workingShelfLanes, workingShelfForeignRows),
+                  GROUP_STACK_CLASS,
+                )}
+              </div>
+            </StickyGroupHeader>
             <StickyGroupHeader
               sectionId="lane-shelf:snoozed"
               icon={snoozedSectionIcon}
