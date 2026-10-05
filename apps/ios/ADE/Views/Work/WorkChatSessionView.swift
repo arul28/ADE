@@ -1442,6 +1442,7 @@ struct WorkChatSessionView: View {
           onSetPaused: goal.provider == .codex ? onSetCodexGoalPaused : nil
         )
         .workChatGlass(in: Capsule(style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
 
       if !pendingSteers.isEmpty {

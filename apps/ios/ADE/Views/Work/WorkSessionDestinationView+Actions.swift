@@ -1490,6 +1490,7 @@ extension WorkSessionDestinationView {
       prNumber: pr.githubPrNumber,
       mode: watch?.mode,
       holding: watch?.holding ?? false,
+      lastToldAt: watch?.lastToldAt,
       lastToldSummary: watch?.lastToldSummary,
       armedByAgent: watch?.armedBy == "agent",
       busy: prChatWatchBusy,

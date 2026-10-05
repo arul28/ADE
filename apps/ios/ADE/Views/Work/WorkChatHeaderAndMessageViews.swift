@@ -1517,46 +1517,39 @@ struct WorkChatGoalChip: View {
   var onSetPaused: ((Bool) -> Void)? = nil
 
   @State private var sheetPresented = false
+  @State private var pulse = false
 
-  private var tint: Color { goal.paused ? ADEColor.textMuted : ADEColor.warning }
+  /// Amber while working toward the goal, grey when paused.
+  private var dotColor: Color { goal.paused ? ADEColor.textMuted : ADEColor.warning }
 
   var body: some View {
     Button {
       ADEHaptics.light()
       sheetPresented = true
     } label: {
-      HStack(spacing: 7) {
-        Circle()
-          .fill(tint.opacity(goal.paused ? 0.6 : 0.9))
-          .frame(width: 6, height: 6)
+      HStack(spacing: 5) {
         Image(systemName: "target")
           .font(.caption2.weight(.bold))
-          .foregroundStyle(tint)
-        Text(goal.objective)
-          .font(.caption.weight(.medium))
+          .foregroundStyle(ADEColor.warning)
+        Text("Goal")
+          .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-        if let progress = goal.progressLabel {
-          Text("· \(progress)")
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .fixedSize()
-        }
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.up")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
+        Circle()
+          .fill(dotColor)
+          .frame(width: 5, height: 5)
+          .opacity(!goal.paused && pulse ? 0.35 : 1)
+          .animation(goal.paused ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+          .onAppear { pulse = true }
+          .accessibilityHidden(true)
       }
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(tint.opacity(0.07), in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.18), lineWidth: 0.5))
+      .background(ADEColor.warning.opacity(0.07), in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.5))
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Goal: \(goal.objective). \(goal.statusLabel).\(goal.progressLabel.map { " \($0)." } ?? "")")
+    .accessibilityLabel("Goal, \(goal.statusLabel): \(goal.objective)")
     .accessibilityHint("Opens goal controls")
     .accessibilityIdentifier("Work.Chat.GoalChip")
     .sheet(isPresented: $sheetPresented) {
@@ -1567,7 +1560,7 @@ struct WorkChatGoalChip: View {
         onClear: onClear,
         onSetPaused: onSetPaused
       )
-      .presentationDetents([.medium])
+      .presentationDetents([.height(340), .medium])
       .presentationDragIndicator(.visible)
     }
   }
@@ -1603,10 +1596,6 @@ private struct WorkChatGoalSheet: View {
         } footer: {
           if claudeLocked {
             Text("Claude takes goal changes between turns.")
-          } else if goal.provider == .claude {
-            Text("Claude keeps working across turns until this is true.")
-          } else {
-            Text("Codex keeps working toward this until it is met, paused, or cleared.")
           }
         }
 

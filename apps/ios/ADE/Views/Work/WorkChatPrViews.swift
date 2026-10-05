@@ -817,18 +817,11 @@ struct WorkChatPrWatchModel: Equatable {
   let mode: String?
   /// Ship: news found and held until CI and the review bots finish.
   let holding: Bool
+  let lastToldAt: String?
   let lastToldSummary: String?
   let armedByAgent: Bool
   let busy: Bool
   let error: String?
-
-  var label: String {
-    switch mode {
-    case "ship": return "Shipping"
-    case "watch": return "Watching"
-    default: return "Watch"
-    }
-  }
 
   var systemImage: String {
     switch mode {
@@ -838,94 +831,109 @@ struct WorkChatPrWatchModel: Equatable {
     }
   }
 
-  var statusLine: String? {
+  /// One short line, only while a watch is on (desktop `PrWatchPill.statusLine`).
+  func statusLine(now: Date = Date()) -> String? {
     guard mode != nil else { return nil }
-    if holding { return "Holding until CI and review bots finish" }
-    if let lastToldSummary, !lastToldSummary.isEmpty { return "Last told the agent: \(lastToldSummary)" }
-    return "Nothing new since it started"
+    if holding { return "Holding for CI and reviews" }
+    let by = armedByAgent ? " · on by agent" : ""
+    if let summary = lastToldSummary, !summary.isEmpty,
+       let told = workPrWatchRelativeTime(lastToldAt, now: now) {
+      return "Told \(told): \(summary)\(by)"
+    }
+    return "No changes yet\(by)"
   }
 }
 
-/// Off / Watch / Ship beside the composer PR chip (desktop `PrWatchPill`).
-/// Watch wakes the agent with PR news; Ship adds standing orders to land it.
+func workPrWatchRelativeTime(_ iso: String?, now: Date = Date()) -> String? {
+  guard let iso, let date = workParsedDate(iso) else { return nil }
+  let seconds = now.timeIntervalSince(date)
+  guard seconds.isFinite, seconds >= 0 else { return nil }
+  let minutes = Int((seconds / 60).rounded())
+  if minutes < 1 { return "just now" }
+  if minutes < 60 { return "\(minutes)m ago" }
+  let hours = Int((Double(minutes) / 60).rounded())
+  if hours < 24 { return "\(hours)h ago" }
+  return "\(Int((Double(hours) / 24).rounded()))d ago"
+}
+
+/// Icon-only Off / Watch / Ship beside the composer PR chip (desktop
+/// `PrWatchPill`). Watch wakes the agent with PR news; Ship adds standing
+/// orders to land it.
 struct WorkChatPrWatchChip: View {
   let model: WorkChatPrWatchModel
   let onSelect: (String?) -> Void
 
+  @State private var pulse = false
+
   private var tint: Color {
     switch model.mode {
     case "ship": return ADEColor.warning
-    case "watch": return ADEColor.accent
+    case "watch": return Color.blue
     default: return ADEColor.textMuted
     }
   }
 
-  private struct Choice: Identifiable {
-    let mode: String?
-    let title: String
-    let detail: String
-    let systemImage: String
-    var id: String { mode ?? "off" }
-  }
-
-  private let choices: [Choice] = [
-    Choice(mode: nil, title: "Off", detail: "PR events show as cards. The agent is not woken.", systemImage: "eye.slash"),
-    Choice(mode: "watch", title: "Watch", detail: "Wake the agent once per change: a failed check, checks passing, new comments, a conflict, a merge.", systemImage: "eye"),
-    Choice(mode: "ship", title: "Ship", detail: "Watch, plus standing orders to land it: fix CI and review, rebase on a conflict, merge when green. Waits for CI and review bots.", systemImage: "paperplane"),
+  private static let choices: [(mode: String?, label: String, hint: String)] = [
+    (nil, "Off", "Cards only"),
+    ("watch", "Watch", "Wake on changes"),
+    ("ship", "Ship", "Fix and merge"),
   ]
+
+  private var modeName: String {
+    switch model.mode {
+    case "ship": return "shipping"
+    case "watch": return "watching"
+    default: return "off"
+    }
+  }
 
   var body: some View {
     Menu {
-      Section("PR #\(model.prNumber) · tell the agent when it changes") {
-        // Written bottom-up: the menu opens upward from the composer row.
-        ForEach(choices.reversed()) { choice in
+      // Written bottom-up: the menu opens upward from the composer row.
+      if let error = model.error {
+        Section { Text(error) }
+      }
+      if let status = model.statusLine() {
+        Section { Text(status) }
+      }
+      Section("PR #\(model.prNumber)") {
+        ForEach(Self.choices.reversed(), id: \.label) { choice in
           Button {
             guard choice.mode != model.mode else { return }
             ADEHaptics.light()
             onSelect(choice.mode)
           } label: {
-            Label {
-              Text(choice.title)
-              Text(choice.detail)
-            } icon: {
-              Image(systemName: choice.mode == model.mode ? "checkmark" : choice.systemImage)
+            if choice.mode == model.mode {
+              Label("\(choice.label) — \(choice.hint)", systemImage: "checkmark")
+            } else {
+              Text("\(choice.label) — \(choice.hint)")
             }
           }
         }
       }
-      if model.statusLine != nil || model.armedByAgent || model.error != nil {
-        Section {
-          if let error = model.error {
-            Text(error)
-          }
-          if let status = model.statusLine {
-            Text(status)
-          }
-          if model.armedByAgent {
-            Text("Turned on by the agent.")
-          }
-        }
-      }
     } label: {
-      HStack(spacing: 5) {
+      HStack(spacing: 4) {
         if model.busy {
           ProgressView().controlSize(.mini)
         } else {
           Image(systemName: model.systemImage)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
         }
-        Text(model.label)
-          .font(.caption2.weight(.semibold))
-          .lineLimit(1)
         if model.holding {
           Circle()
             .fill(ADEColor.warning)
             .frame(width: 5, height: 5)
+            .opacity(pulse ? 0.35 : 1)
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+            .onAppear { pulse = true }
             .accessibilityHidden(true)
         }
+        Image(systemName: "chevron.down")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .foregroundStyle(tint)
-      .padding(.horizontal, 10)
+      .padding(.horizontal, 9)
       .frame(minHeight: workChatComposerChipRowHeight)
       .workChatGlass(in: Capsule(style: .continuous), interactive: true)
       .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.24), lineWidth: 0.75))
@@ -933,10 +941,7 @@ struct WorkChatPrWatchChip: View {
     }
     .disabled(model.busy)
     .accessibilityLabel(
-      [
-        "PR #\(model.prNumber) watch: \(model.mode == nil ? "off" : model.label)",
-        model.statusLine,
-      ].compactMap { $0 }.joined(separator: ". ")
+      ["PR #\(model.prNumber) watch: \(modeName)", model.statusLine()].compactMap { $0 }.joined(separator: ". ")
     )
     .accessibilityIdentifier("Work.Chat.PrWatch")
   }
