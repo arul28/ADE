@@ -15406,22 +15406,29 @@ final class SyncService: ObservableObject {
     )
   }
 
-  /// A paired viewer may stop its lane's private Windows screen. The host
-  /// advertises this separately from controller-only desktop actions.
-  var supportsWindowsDesktopStop: Bool {
-    supportsViewerRemoteAction("macDesktop.stopPrivate")
+  /// A paired viewer may stop its lane's Windows screen. The host advertises
+  /// this separately from controller-only desktop actions: `stopSeat` stops
+  /// either seat (private, or the user's main desktop); an older host has only
+  /// `stopPrivate`, for the private screen. A Mac lane is never a viewer's to stop.
+  func canStopWindowsDesktop(seat: String?) -> Bool {
+    switch seat {
+    case "shared": return supportsViewerRemoteAction("macDesktop.stopSeat")
+    case "private":
+      return supportsViewerRemoteAction("macDesktop.stopSeat") || supportsViewerRemoteAction("macDesktop.stopPrivate")
+    default: return false
+    }
   }
 
-  func windowsDesktopStop(laneId: String) async throws {
-    guard supportsWindowsDesktopStop else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the private screen from here."])
+  func windowsDesktopStop(laneId: String, seat: String?) async throws {
+    guard canStopWindowsDesktop(seat: seat) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the Windows screen from here."])
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
     }
     _ = try await sendCommand(
-      action: "macDesktop.stopPrivate",
+      action: supportsViewerRemoteAction("macDesktop.stopSeat") ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,

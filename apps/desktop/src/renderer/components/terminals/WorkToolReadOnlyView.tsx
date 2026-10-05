@@ -765,8 +765,10 @@ function MacDesktopPanel({
     setActionError(null);
     try {
       if (action === "start") await api.start?.({ laneId });
-      // A Windows private screen has a viewer-allowed stop, so a watch-only
-      // phone or browser tab stops it too; macOS keeps the controller stop.
+      // A Windows screen has a viewer-allowed stop on either seat, so a
+      // watch-only phone or browser tab can always end it (an older host only
+      // has the private screen's); macOS keeps the controller stop.
+      else if (macDesktop.windowsDesktop && api.stopSeat && api.supportsStopSeat?.()) await api.stopSeat({ laneId });
       else if (macDesktop.windowsDesktop && display?.mode === "virtual" && api.stopPrivate) await api.stopPrivate({ laneId });
       else await api.stop?.({ laneId });
       onRefresh();

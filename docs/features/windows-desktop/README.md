@@ -8,6 +8,40 @@ differs, so read that page first. This page covers what Windows adds or changes.
 The neutral command family is `ade screen`. `ade windows-desktop` and
 `ade mac-desktop` are aliases, and the verbs are the Mac Desktop verbs.
 
+## Source file map
+
+Only the Windows-specific files; the shared service, lease, ownership,
+streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-file-map).
+
+| Path | Role |
+|---|---|
+| `apps/desktop/native/ADEDesktopDriverWin/src/` | The native driver, `ade-desktop-driver.exe` (C++). Same NDJSON wire, ops and error codes as the Mac driver. |
+| `.../src/modes.h`, `main.cpp` | One binary, three process modes: `host` (the brain's child in the console session), `child` (the engine inside the private screen, serving it to the host over named pipes) and `setup-elevated` (the one-time admin step). |
+| `.../src/host.cpp`, `hostwindow.cpp/.h` | The console-side lifecycle and NDJSON bridge on an STA thread; the host's own window (the Remote Desktop control's frame, kept shown outside every monitor). The hard-deadline retire lives here. |
+| `.../src/rdp.cpp/.h` | The Remote Desktop ActiveX control that opens the private child session. |
+| `.../src/childtask.cpp/.h`, `child.cpp` | Starting the engine inside the child session through a one-use logon task (the Run entry is the fallback), and the child-mode engine process. |
+| `.../src/ownedchild.cpp/.h` | `owned-child.json`: the child session this driver started, so a replacement driver signs out exactly that one and never a session ADE did not start. |
+| `.../src/parkedwindows.cpp/.h` | `parked-windows.json`: the shared seat's parked windows on disk, so a host restores them at its hard deadline and at every start. |
+| `.../src/engine.cpp/.h`, `engineLane.h`, `engineInput.cpp`, `engineLaunch.cpp`, `engineMedia.cpp` | The per-lane op table for one session (Mode A private, Mode B shared): lifecycle, input, app launch (including apps that hand a second launch to a running instance), and capture/recording. |
+| `.../src/desk.cpp/.h` | Top-level windows, processes, app launch and `SendInput` for the session the process runs in. |
+| `.../src/uia.cpp/.h` | UI Automation: the cached element walk behind `observe`, and element actions. |
+| `.../src/capture.cpp/.h`, `video.cpp/.h` | GDI `BitBlt` (private) and `PrintWindow` (shared) frames; Media Foundation H.264 for the live view and the MP4 recording. |
+| `.../src/credentials.cpp/.h`, `setup.cpp` | The saved Windows password in Credential Manager (never on the wire), and the bounded admin prompt that starts `setup-elevated`. |
+| `.../src/common.cpp/.h`, `json.cpp/.h` | Error codes, logging, the line writer, and the JSON value. |
+| `apps/desktop/scripts/build-windows-desktop-driver.mjs` | Builds `ade-desktop-driver.exe` into `resources/native`. |
+| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | `resolveWindowsDesktopDriverBinary`, beside the Mac resolver. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider.ts` | The Windows `DesktopSeatProvider`: the Mac op set plus `windows.status` / `windows.setup` and the `seatMode` + consent fields on `display.create`. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopDriverClient.ts` | The NDJSON client for the `.exe`, reusing the Mac client (`macDesktopDriverClient.ts`) for the protocol, backoff, health, and the retire (exit 75) restart that replays queued requests. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopOperations.ts` | The Windows-only service parts: the setup / save-password / start operation record (`windowsDesktop.operation`, `phase`, `lastOperation`), the shared seat's per-host lease, and the window-verb gate. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | `askChatAllowDeny`: the button-only Allow / Don't allow card behind both the Mac input lease and the shared-seat request. |
+| `apps/desktop/src/shared/desktopSeat.ts` | `desktopSeatKind`, `describeDesktopSeat` (the status JSON's `seat`) and `WINDOWS_DESKTOP_NEXT_STEP`; every text surface reads it. Re-exported from `shared/types/macDesktop.ts`, which also holds `isUserOnlyConsentCard`. |
+| `apps/desktop/src/main/services/demoVideo/demoMp4Source.ts` | Reads the driver's MP4 for the desktop app's Chromium demo engine. |
+| `apps/ade-cli/src/cliMacDesktop.ts`, `cliMacDesktopFormat.ts` | The `ade screen` plan builder (`start --shared`, `focus`/`minimize`/`close`, `setup`, `takeover`) and the host-aware text formatters and error hints. |
+| `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | The `ade code` right pane's host-aware screen block. |
+| `apps/desktop/src/renderer/components/chat/WindowsDesktopStateCard.tsx` | The pane's no-picture states: setup, password, sign-in progress, a failed step, held, locked, unavailable, ready. |
+| `apps/desktop/src/renderer/components/terminals/LaneMacDesktopMarker.tsx` | The lane mark: the Windows logo on a Windows host, with the seat in the tooltip. |
+| `apps/desktop/src/renderer/components/app/AppShell.tsx` | The elevated-app warning banner (`ade.app.getElevatedDesktop` / `elevatedDesktopChanged`). |
+
 ## The two seats
 
 | Seat | When | What the agent gets | Effect on the user |
@@ -30,7 +64,13 @@ for the user's screen.
 - **Shared:** real input is under the lease, and the user's shared-seat consent
   covers it: the acting chat takes the lane's lease on its first real action
   instead of showing a second card. The consent covers the chats of that lane
-  only; a caller with no chat (a plain `ade` shell) is refused with
+  and the user's own trusted `ade` (`ade --role cto screen …`, the same role
+  that may run `screen start --shared --consent`): with no chat, the RPC layer
+  gives it one stable holder of its own (`ade-cli-user`), so it drives the
+  shared seat it started, still one lane per host, and a person who took
+  control in the pane still wins. An agent cannot claim that holder: the RPC
+  scope strips `holderId` from every agent caller. Any other caller with no
+  chat (a plain `ade` shell, which may be an agent's) is refused with
   `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Keys on the shared seat are always real
   input. Two shared lanes share one pointer and foreground, so every action
   that takes the foreground on a shared seat — Accessibility (UI Automation)
@@ -237,8 +277,14 @@ Policy lives at the service and action boundaries, never in prompts:
   4,000 characters (`WINDOWS_DESKTOP_MAX_TYPED_CHARS`; the driver refuses more
   too). If the budget runs out the error says the driver may still be typing.
 - A watch-only client (the phone, or a browser tab without control) gets a
-  **Stop** that signs the private screen out through the viewer-allowed
-  `macDesktop.stopPrivate` command.
+  **Stop** for the lane's Windows screen on either seat, through the
+  viewer-allowed `macDesktop.stopSeat` command: it signs the private screen
+  out, or ends "Using your main Windows desktop", so the user always has the
+  way out from any trusted device. It asks first, with the desktop's words for
+  that seat. A Mac lane's display is refused (that stays the controller-only
+  `macDesktop.stop`), and so is a lane with no Windows screen. The older
+  `macDesktop.stopPrivate` (private screen only) stays for phones that predate
+  `stopSeat`; a host that advertises neither shows no **Stop**.
 - Proof, recording, streaming and the turn time-lapse are the Mac Desktop
   contract, unchanged, so a phone or browser can watch a Windows lane with the
   same viewers.

@@ -3525,8 +3525,10 @@ describe("local runtime connection pool", () => {
 
   it("codes a missing unowned primary endpoint as socket_stale_no_owner", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-stale-socket-"));
-    const originalAdeHome = process.env.ADE_HOME;
-    process.env.ADE_HOME = adeHome;
+    vi.stubEnv("ADE_HOME", adeHome);
+    // Hermetic: a shell (or an ADE chat) that exports its live brain's socket
+    // would otherwise point the owner probe at that brain.
+    vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
     try {
       const pool = new LocalRuntimeConnectionPool("1.2.3", {
         debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
@@ -3552,8 +3554,7 @@ describe("local runtime connection pool", () => {
       const error = await internals.createConnection().catch((caught) => caught) as Error & { code?: string };
       expect(error.code).toBe("socket_stale_no_owner");
     } finally {
-      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = originalAdeHome;
+      vi.unstubAllEnvs();
       removeTempDir(adeHome);
     }
   });

@@ -165,11 +165,20 @@ function requiredTargetOf(source: unknown, label: string, action: string): MacDe
   return target;
 }
 
-function windowActionArgs(args: unknown, action: string): { laneId: string; windowId: number; chatSessionId?: string } {
+/**
+ * The trusted chat-less caller's holder (`MacDesktopTrustedHolderArgs`). Set
+ * only by the RPC layer, which strips it from every agent caller.
+ */
+function trustedHolderId(args: unknown): { holderId?: string } {
+  const value = optionalString(args, "holderId");
+  return value ? { holderId: value } : {};
+}
+
+function windowActionArgs(args: unknown, action: string): { laneId: string; windowId: number; chatSessionId?: string; holderId?: string } {
   const windowId = optionalNumber(args, "windowId");
   if (windowId == null) throw new Error(`macDesktop.${action} requires windowId.`);
   const chat = optionalString(args, "chatSessionId");
-  return { laneId: requiredLaneId(args, action), windowId, ...(chat ? { chatSessionId: chat } : {}) };
+  return { laneId: requiredLaneId(args, action), windowId, ...(chat ? { chatSessionId: chat } : {}), ...trustedHolderId(args) };
 }
 
 export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): OpaqueService | null {
@@ -201,9 +210,9 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
    * has to be able to say which holder it is. It authorizes nothing by itself —
    * the service still refuses an id that does not hold the lease.
    */
-  const controllerId = (args: unknown): { controllerId?: string } => {
+  const controllerId = (args: unknown): { controllerId?: string; holderId?: string } => {
     const value = optionalString(args, "controllerId");
-    return value ? { controllerId: value } : {};
+    return { ...(value ? { controllerId: value } : {}), ...trustedHolderId(args) };
   };
   return {
     getStatus: (args?: unknown) => service.getStatus({
@@ -293,6 +302,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         target: requiredString(args, "target", "open"),
         args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
         ...chatSessionId(args),
+        ...trustedHolderId(args),
       });
     }),
     claimWindow: (args?: unknown) => gated(() => {

@@ -46,7 +46,7 @@ promotes any of them after the fact.
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
 | `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
-| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, and the two engine clients. |
+| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the two engine clients, and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
 
 ## Runtime ownership

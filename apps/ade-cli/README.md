@@ -714,7 +714,7 @@ ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text  
 ade --socket ios-sim assert-visible --label "Order confirmed" --text
 ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
 ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
-ade mac-desktop start --text                          # create the lane's virtual display (macOS runtime host only)
+ade mac-desktop start --text                          # create the lane's virtual display (on a Windows host this is Windows Desktop; see ade screen)
 ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
 ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
 ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
@@ -727,6 +727,11 @@ ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --t
 ade mac-desktop record stop --text                    # duration, real time, and idle cut
 ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
 ade mac-desktop actions --text                        # full mac_desktop action inventory
+ade screen status --text                              # host-neutral name: Mac Desktop on macOS, Windows Desktop on Windows (aliases mac-desktop, windows-desktop); product, seat, holder, next step
+ade screen start --text                               # Windows: the private seat (a separate session of the user's account)
+ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
+ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
+ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

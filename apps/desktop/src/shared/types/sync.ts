@@ -2785,6 +2785,9 @@ export type SyncRemoteCommandAction =
   | "macDesktop.start"
   | "macDesktop.stop"
   | "macDesktop.stopPrivate"
+  // A trusted viewer's Stop for the lane's Windows screen on either seat
+  // (private or the user's main desktop). Never a Mac lane's display.
+  | "macDesktop.stopSeat"
   | "macDesktop.streamSubscribe"
   | "macDesktop.streamUnsubscribe"
   // Takeover from the hosted web client. Deliberately NOT viewer-allowed: a

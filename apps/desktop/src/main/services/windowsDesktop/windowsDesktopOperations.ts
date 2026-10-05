@@ -93,14 +93,17 @@ export function createWindowsDesktopOperations(deps: WindowsDesktopOperationsDep
      * main desktop, one pointer and one foreground, so a live lease on any other
      * shared lane refuses this one until it lapses.
      *
-     * The consent was given in a chat of this lane, so a caller with no chat
-     * (the anonymous holder) is refused rather than riding on it.
+     * The consent was given in a chat of this lane, so the anonymous holder (a
+     * caller with no chat, e.g. an agent's `ade` shell) is refused rather than
+     * riding on it. A trusted caller with no chat (`ade --role cto`) arrives
+     * under its own stable holder (`MAC_DESKTOP_USER_CLI_HOLDER_ID`, set by the
+     * RPC layer) and takes the lease like a chat does.
      */
     async takeSharedSeatLease(laneId: string, holderId: string): Promise<void> {
       if (holderId === MAC_DESKTOP_ANONYMOUS_HOLDER_ID) {
         throw deps.serviceError(
           MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
-          "This call has no chat, so it cannot act on the user's main Windows desktop. The user's consent covers the chats of this lane only.",
+          "This call has no chat, so it cannot act on the user's main Windows desktop. The user's consent covers the chats of this lane, and the user's own trusted ade client (ade --role cto).",
         );
       }
       for (const other of deps.ownership.listDisplays()) {

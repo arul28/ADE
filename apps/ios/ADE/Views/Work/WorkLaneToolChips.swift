@@ -49,6 +49,13 @@ struct WorkToolChip: Equatable, Identifiable {
     }
   }
 
+  /// The chip's SF Symbol: the kind's, except a Windows host's screen, which
+  /// takes the four-pane mark the desktop uses for Windows.
+  var symbolName: String {
+    if case .macDesktop = kind, desktopPlatformLabel == "Windows" { return windowsDesktopSymbolName }
+    return kind.symbolName
+  }
+
   /// The text on the chip. The simulator chip already shows the device icon,
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
   /// still reads the full `label`.
@@ -111,6 +118,37 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
   ), desktopPlatformLabel: macDesktop.windowsDesktop == nil ? nil : "Windows")
+}
+
+/// The SF Symbol for a Windows host's screen: four panes, the shape of the
+/// Windows mark the desktop shows (SF Symbols has no Windows logo).
+let windowsDesktopSymbolName = "square.grid.2x2.fill"
+
+/// Which Windows seat the lane's screen is: `private` or `shared`. Nil on a Mac
+/// host (no `windowsDesktop`) and when the lane has no screen.
+///
+/// Reads the display's `seatMode`, then the host's, and on an older Windows
+/// host that sends neither falls back to the display mode the host itself
+/// checks before a viewer's Stop: `virtual` is the private seat.
+func windowsDesktopSeat(_ windowsDesktop: WindowsDesktopHostState?, display: WorkToolsMacDesktopDisplay?) -> String? {
+  guard let windowsDesktop, let display else { return nil }
+  for candidate in [display.seatMode, windowsDesktop.seatMode] {
+    if let seat = candidate?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+       seat == "private" || seat == "shared" {
+      return seat
+    }
+  }
+  return display.mode == "virtual" ? "private" : "shared"
+}
+
+/// The seat in the desktop's words, so nobody mistakes the private screen
+/// (the user's own wallpaper and taskbar) for their real one. Nil off Windows.
+func windowsDesktopSeatLabel(_ seat: String?) -> String? {
+  switch seat {
+  case "private": return "Private Windows screen"
+  case "shared": return "Using your main Windows desktop"
+  default: return nil
+  }
 }
 
 /// The lane state the chips show after one poll.
@@ -392,7 +430,7 @@ struct WorkLaneToolChipView: View {
     }
   }
 
-  private var symbol: String { chip.kind.symbolName }
+  private var symbol: String { chip.symbolName }
 
   private var showsLiveDot: Bool {
     switch chip.kind {
@@ -431,7 +469,7 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
       ? "\(chip.label) on your Mac, live. Tap to watch."
       : "\(chip.label) on your Mac. Tap for details."
   case .macDesktop(let streamLive, let agentDriving):
-    var text = "This lane's macOS desktop"
+    var text = chip.desktopPlatformLabel == "Windows" ? "This lane's Windows desktop" : "This lane's macOS desktop"
     if streamLive { text += ", live" }
     if agentDriving { text += ". An agent is driving it" }
     return text + ". Tap to watch."

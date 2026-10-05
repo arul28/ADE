@@ -41,7 +41,7 @@ func macDesktopStartDisplay(
       try await syncService.macDesktopStart(laneId: laneId, hostIsWindows: hostIsWindows)
       await refresh()
     } catch {
-      errorText.wrappedValue = macDesktopVisibleMessage(for: error)
+      errorText.wrappedValue = macDesktopVisibleMessage(for: error, hostIsWindows: hostIsWindows)
     }
     starting.wrappedValue = false
   }

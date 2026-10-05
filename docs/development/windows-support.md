@@ -1,10 +1,10 @@
 # Windows support and troubleshooting
 
 ADE supports the packaged Windows 10/11 x64 desktop, shipped as a public beta.
-Windows ARM64, native Windows OS computer use, and iOS Simulator remain out of
-scope. App Control over CDP, the built-in Browser, proof-file ingestion, phone
-pairing, the local Windows brain, and Windows as an SSH-bootstrap runtime target
-are supported.
+Windows ARM64 and iOS Simulator remain out of scope. App Control over CDP, the
+built-in Browser, proof-file ingestion, phone pairing, the local Windows brain,
+Windows as an SSH-bootstrap runtime target, and a per-lane Windows screen
+([Windows Desktop](../features/windows-desktop/README.md)) are supported.
 
 Public Windows installers ship. v1.2.52 was the first signed public release;
 downloads are served from `https://ade-app.dev/download/windows` and the
@@ -25,7 +25,8 @@ all and the surface does not exist.
 
 | Capability | Outcome | What Windows does | Why |
 | --- | --- | --- | --- |
-| Native OS computer use — screenshot, video, GUI automation | Blocked | App Control over CDP, the built-in Browser, and proof-file ingestion all work. Only OS-level capture is gated. | Backed by `screencapture` and `osascript`. The Windows equivalent is Windows.Graphics.Capture plus UI Automation, which is a separate project. |
+| Native OS computer use — screenshot, video, GUI automation | Degraded | [Windows Desktop](../features/windows-desktop/README.md) gives each lane a Windows screen through `ade screen`: a private Remote Desktop child session of the user's account after a one-time admin setup, or the user's main desktop when they tap Allow on the card in the chat. Screenshots, recordings, UI Automation and real input work on both seats. Codex Computer Use and Ghost OS stay macOS-only. | The private seat needs the one-time setup, the brain in the console session, an unlocked PC and a free holder (one lane at a time); the shared seat takes the user's foreground. |
+| ADE desktop app started as administrator | Degraded | Agents get no built-in browser, App Control recording or demo videos while it runs; the app docks a warning banner. Recordings are filed as recorded. | Windows refuses the medium-integrity brain access to the elevated app's desktop-bridge pipe. Quit ADE and open it normally. |
 | iOS Simulator drawer, Xcode Preview | Unavailable | Hidden. | Requires macOS and Xcode. |
 | Native Notch | Unavailable | Hidden. | macOS window-server feature with no counterpart. |
 | Claude Code background-job reattach | Degraded | Each follow-up prompt respawns the CLI instead of replying into the live background job. Turns are slower and in-flight context is lost. | Claude Code ships no `control.sock` on Windows, and `os.userInfo().uid` is `-1`, so there is nothing to attach to. |

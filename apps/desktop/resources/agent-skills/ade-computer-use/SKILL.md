@@ -126,7 +126,9 @@ the real-input lease card) is refused. If nobody answers within about three
 minutes the card is withdrawn and the command fails; ask again later. The same
 chat is not asked twice. Never pass `--consent` or `--allow-prompt`: those are
 the user's clients' flags and an agent is refused. A command with no chat (a
-plain shell outside one) cannot act on the main desktop at all.
+plain shell outside one) cannot act on the main desktop at all; only the
+user's own `ade --role cto` can. Never use that role yourself; a `holderId`
+you pass is stripped.
 
 ## Windows specifics
 

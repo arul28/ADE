@@ -203,6 +203,17 @@ describe("Windows background service helpers", () => {
       expect.stringContaining(`$_.TaskName -eq '${taskName}'`),
     ]);
     expect(buildWindowsDeleteTaskArgs(taskName)).toEqual(["/Delete", "/TN", taskName, "/F"]);
+
+    // The one-shot start task runs the supervisor, and the brain and the
+    // desktop driver inherit its priority. Task Scheduler's default (7) is
+    // below normal with low memory and I/O priority, which paged the brain out
+    // for 2-45 s at a time on a real PC; the task must ask for normal (4).
+    const startTask = buildWindowsStartTaskArgs("C:\\Users\\arul\\.ade\\runtime\\brain-service.ps1", resolveWindowsStartTaskName(taskName));
+    const program = startTask[startTask.indexOf("-Command") + 1] ?? "";
+    const settings = program.match(/\$settings = New-ScheduledTaskSettingsSet ([^;]*)/)?.[1] ?? "";
+    expect(settings.match(/-Priority (\d+)/)?.[1]).toBe("4");
+    expect(program).toMatch(/Register-ScheduledTask [^;]*-Settings \$settings/);
+    expect(settings).toContain("-ExecutionTimeLimit ([TimeSpan]::Zero)");
   });
 
   it("keeps the user identity stable across SSH and desktop domain labels", () => {
@@ -1910,6 +1921,7 @@ describe("generated PowerShell parses", () => {
     const builders: Array<[string, string[]]> = [
       ["supervisor-query.ps1", buildWindowsSupervisorQueryArgs(1234, "C:\\ade\\brain-service.ps1")],
       ["runtime-query.ps1", buildWindowsRuntimeQueryArgs(1234, command)],
+      ["start-task.ps1", buildWindowsStartTaskArgs("C:\\ade\\brain-service.ps1", "ADE Runtime Start")],
     ];
 
     for (const [name, args] of builders) {

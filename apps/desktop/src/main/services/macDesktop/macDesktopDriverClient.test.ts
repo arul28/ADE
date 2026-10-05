@@ -42,7 +42,7 @@ function createChild(pid: number, options: { ignoresTerm?: boolean } = {}) {
     once: emitter.once.bind(emitter),
     off: emitter.off.bind(emitter),
     emitSpawn: () => emitter.emit("spawn"),
-    exit: () => { child.exitCode = 0; emitter.emit("close", 0, null); },
+    exit: (code = 0) => { child.exitCode = code; emitter.emit("close", code, null); },
   };
   // After the synchronous `start()` has attached its listeners.
   process.nextTick(() => child.emitSpawn());
@@ -182,6 +182,51 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
     }
     await vi.advanceTimersByTimeAsync(5_000);
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("hands a retired Windows driver's queued requests to a fresh one, with no backoff and no crash loop", async () => {
+    // Exit 75 is the Windows host retiring itself on purpose (a wedged UI
+    // thread, an operation past its deadline). What it had queued never ran, so
+    // the same request goes to a driver started at once; five in a row is not a
+    // crash loop, because none of them crashed.
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const children: Array<ReturnType<typeof createChild>> = [];
+    const spawnProcess = vi.fn(() => {
+      const next = createChild(500 + children.length);
+      children.push(next);
+      return next;
+    });
+    const lost: string[] = [];
+    const client = createMacDesktopDriverClient({
+      logger, platform: "win32", supportedPlatforms: ["win32"],
+      resolveExecutablePath: binaryPath,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+      onDriverLost: (reason) => lost.push(reason),
+    });
+    await client.ensureStarted();
+
+    for (let round = 0; round < 5; round += 1) {
+      const retiring = children.at(-1)!;
+      const reply = client.request("window.focus", { laneId: "lane-1", windowId: round });
+      await settle();
+      const sent = retiring.stdin.read()?.toString() ?? "";
+      expect(JSON.parse(sent)).toMatchObject({ op: "window.focus", windowId: round });
+
+      retiring.exit(75);
+      await settle();
+      const fresh = children.at(-1)!;
+      expect(fresh, `round ${round}`).not.toBe(retiring);
+      // The very request, not a new one: its id is what the reply answers.
+      expect(fresh.stdin.read()?.toString()).toBe(sent);
+      fresh.stdout.write(`${JSON.stringify({ id: JSON.parse(sent).id, ok: true, result: { windowId: round } })}\n`);
+      await expect(reply).resolves.toEqual({ windowId: round });
+    }
+
+    expect(spawnProcess).toHaveBeenCalledTimes(6);
+    expect(client.getHealth().state).toBe("running");
+    // The service decides whether a retirement took a screen with it.
+    expect(lost).toEqual(["retired", "retired", "retired", "retired", "retired"]);
+    client.dispose();
   });
 
   it("logs each stderr line, and a request the helper never answered", async () => {

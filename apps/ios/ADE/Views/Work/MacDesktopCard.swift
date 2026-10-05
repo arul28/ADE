@@ -26,6 +26,7 @@ struct MacDesktopCard: View {
   @State private var macDesktopStarting = false
   @State private var macDesktopStartError: String?
   @State private var stopping = false
+  @State private var confirmingStop = false
   @State private var stopError: String?
 
   var body: some View {
@@ -104,19 +105,36 @@ struct MacDesktopCard: View {
             }
             HStack {
               macDesktopWatchButton
-              if macDesktop.windowsDesktop != nil && display.mode == "virtual" && syncService.supportsWindowsDesktopStop {
+              if let seat = windowsDesktopSeat(macDesktop.windowsDesktop, display: display),
+                 syncService.canStopWindowsDesktop(seat: seat) {
+                let copy = windowsDesktopStopCopy(seat: seat)
+                // Asks first, like every Stop on the desktop.
                 Button(stopping ? "Stopping…" : "Stop", role: .destructive) {
-                  Task {
-                    stopping = true
-                    stopError = nil
-                    defer { stopping = false }
-                    do {
-                      try await syncService.windowsDesktopStop(laneId: laneId)
-                      await refreshLane()
-                    } catch { stopError = macDesktopVisibleMessage(for: error) }
-                  }
+                  confirmingStop = true
                 }
                 .disabled(stopping)
+                .frame(minHeight: 44)
+                .accessibilityLabel(copy.action)
+                .confirmationDialog(
+                  "\(copy.action)?",
+                  isPresented: $confirmingStop,
+                  titleVisibility: .visible
+                ) {
+                  Button(copy.action, role: .destructive) {
+                    Task {
+                      stopping = true
+                      stopError = nil
+                      defer { stopping = false }
+                      do {
+                        try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+                        await refreshLane()
+                      } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
+                    }
+                  }
+                  Button("Keep running", role: .cancel) {}
+                } message: {
+                  Text(copy.consequence)
+                }
               }
             }
             macDesktopErrorLine(stopError)
@@ -137,11 +155,17 @@ struct MacDesktopCard: View {
       if macDesktopStarting {
         ProgressView()
       }
-      Text(macDesktopOffCardMessage(starting: macDesktopStarting, error: macDesktopStartError, canStart: canStart, hostIsWindows: macDesktop?.windowsDesktop != nil))
+      Text(macDesktopOffCardMessage(
+        starting: macDesktopStarting,
+        error: macDesktopStartError,
+        canStart: canStart,
+        hostIsWindows: macDesktop?.windowsDesktop != nil,
+        pcOperation: macDesktop?.windowsDesktop?.operation?.kind
+      ))
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .frame(maxWidth: .infinity, alignment: .leading)
-      if canStart && !macDesktopStarting {
+      if canStart && !macDesktopStarting && macDesktop?.windowsDesktop?.operation == nil {
         Button {
           ADEHaptics.light()
           startMacDesktop()
@@ -156,7 +180,9 @@ struct MacDesktopCard: View {
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
-        .accessibilityHint("Starts this lane's macOS desktop on your Mac")
+        .accessibilityHint(macDesktop?.windowsDesktop == nil
+          ? "Starts this lane's macOS desktop on your Mac"
+          : "Starts this lane's private Windows screen on the PC")
       }
     }
   }
@@ -191,7 +217,12 @@ struct MacDesktopCard: View {
 
   private func macDesktopChips(_ macDesktop: WorkToolsMacDesktopState, display: WorkToolsMacDesktopDisplay) -> some View {
     HStack(spacing: 6) {
-      macDesktopChip(text: display.name, systemImage: "desktopcomputer")
+      macDesktopChip(text: display.name, systemImage: macDesktop.windowsDesktop == nil ? "desktopcomputer" : windowsDesktopSymbolName)
+      // Windows: which seat, in words. The private screen shows the user's own
+      // wallpaper and taskbar, so the picture alone does not say whose it is.
+      if let seat = windowsDesktopSeatLabel(windowsDesktopSeat(macDesktop.windowsDesktop, display: display)) {
+        macDesktopChip(text: seat, systemImage: "person.crop.rectangle")
+      }
       let windowCount = macDesktop.windows?.count ?? 0
       if windowCount > 0 {
         macDesktopChip(text: windowCount == 1 ? "1 window" : "\(windowCount) windows", systemImage: "macwindow")

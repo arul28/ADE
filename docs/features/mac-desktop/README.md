@@ -89,10 +89,10 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`, beside the notch helper. |
-| `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface a later Linux seat backend implements. |
+| `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. | 
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the one `DesktopSeatProvider` implementation. One method per driver op; the only file that knows the op names. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the macOS `DesktopSeatProvider`. One method per driver op; the only file that knows the op names. The Windows sibling is `windowsDesktop/windowsDesktopSeatProvider.ts` (see [Windows Desktop](../windows-desktop/README.md#source-file-map)). |
 | `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
@@ -107,8 +107,9 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
 | `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where both native helpers are. `resolveMacDesktopDriverBinary` sits beside the notch resolver because both binaries come from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
 | `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
-| `apps/ade-cli/src/cli.ts` | The `ade mac-desktop` dispatch case and the output switch. |
-| `apps/ade-cli/src/cliMacDesktop.ts` | The `ade mac-desktop` plan builder and the text formatters. |
+| `apps/ade-cli/src/cli.ts` | The `ade screen` / `ade mac-desktop` dispatch case and the output switch. |
+| `apps/ade-cli/src/cliMacDesktop.ts` | The `ade screen` / `ade mac-desktop` plan builder. |
+| `apps/ade-cli/src/cliMacDesktopFormat.ts` | The text formatters (status, observation, action, recording), the host-aware title, and the error-hint table. |
 | `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. A thin wrapper: the controller hook renders `MacDesktopPaneView`. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopPanelController.ts` | The pane's state and actions: live view, lease, input, recording, and full screen. |
 | `apps/desktop/src/renderer/components/chat/MacDesktopPaneView.tsx` | The pane's picture, chrome, Apps section, and empty-state cards. |
@@ -668,7 +669,9 @@ Only the newest clip of each lane and chat is kept, because the thread card
 shows only that one: publishing a clip deletes the one before it, a clip closed
 without being published (a recording took the recorder, the stop failed, the
 lane's screen went away) is deleted at once, and the first clip after a start
-sweeps clips over an hour old that an earlier run left.
+sweeps clips over an hour old that an earlier run left. A clip a proof
+artifact points at is never deleted, and neither is any clip when the artifact
+index cannot be read. This holds on both hosts.
 
 **Where the files live.** Observation frames and element maps go to
 `.ade/cache/mac-desktop-observations/<laneId>/`, with a `<name>.json` sidecar

@@ -270,7 +270,7 @@ export type MacDesktopWindow = {
   iconPng?: string | null;
 };
 
-export type MacDesktopOpenArgs = {
+export type MacDesktopOpenArgs = MacDesktopTrustedHolderArgs & {
   laneId: string;
   /** An app name, a bundle id, a filesystem path, or a URL. */
   target: string;
@@ -305,7 +305,7 @@ export type MacDesktopOpenResult = {
 /** `ade screen focus|minimize|close --window <id>`. Windows hosts only. */
 export type MacDesktopWindowAction = "focus" | "minimize" | "close";
 
-export type MacDesktopWindowActionArgs = {
+export type MacDesktopWindowActionArgs = MacDesktopTrustedHolderArgs & {
   laneId: string;
   windowId: number;
   chatSessionId?: string | null;
@@ -470,9 +470,26 @@ export type MacDesktopTarget = {
  * `chatSessionId` when checking the lease, and it authorizes nothing on its
  * own — an id that does not hold the lease is refused exactly as before.
  */
-export type MacDesktopControllerArgs = {
+export type MacDesktopControllerArgs = MacDesktopTrustedHolderArgs & {
   controllerId?: string | null;
 };
+
+/**
+ * The lease holder a trusted caller with no chat acts as: an `ade` process
+ * with an elevated role (`ade --role cto screen …`) and no chat, run, step or
+ * attempt. The RPC layer sets it ({@link MAC_DESKTOP_USER_CLI_HOLDER_ID}) and
+ * strips `holderId` from every agent caller, bound or not, and the sync input
+ * path strips it too, so an agent cannot wear it. It is one stable holder, so
+ * the per-host shared-seat lease still serialises it against other lanes and a
+ * person who took control in the pane still wins. A caller with no chat and no
+ * holder stays the anonymous holder, which the shared seat refuses.
+ */
+export type MacDesktopTrustedHolderArgs = {
+  holderId?: string | null;
+};
+
+/** The holder id the RPC layer gives a trusted `ade` caller with no chat. */
+export const MAC_DESKTOP_USER_CLI_HOLDER_ID = "ade-cli-user";
 
 /**
  * "Act, and do not look."

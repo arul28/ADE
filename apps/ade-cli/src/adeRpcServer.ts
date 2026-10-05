@@ -5,7 +5,12 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
-import { desktopProductName, USER_ONLY_CONSENT_CARD_REFUSAL, WINDOWS_DESKTOP_NEXT_STEP } from "../../desktop/src/shared/types/macDesktop";
+import {
+  desktopProductName,
+  MAC_DESKTOP_USER_CLI_HOLDER_ID,
+  USER_ONLY_CONSENT_CARD_REFUSAL,
+  WINDOWS_DESKTOP_NEXT_STEP,
+} from "../../desktop/src/shared/types/macDesktop";
 import {
   createSessionHomeResolver,
   type SessionHomeLane,
@@ -3736,6 +3741,29 @@ export async function scopeUnboundMacDesktopAdeActionArgs(
   return { ...rest, ...(laneId ? { laneId } : {}) };
 }
 
+/**
+ * `mac_desktop` for a trusted `ade` process with no chat: `ade --role cto …`
+ * from the user's terminal, the same elevated role that makes the CTO-only
+ * `useSharedDesktop` reachable.
+ *
+ * With no chat it would act as the anonymous holder, which the Windows shared
+ * seat refuses (no consent covers an agent shell with no chat), so `screen start
+ * --shared --consent` worked and every `open`/`click`/`type` after it did not.
+ * It acts instead under one stable holder of its own,
+ * `MAC_DESKTOP_USER_CLI_HOLDER_ID`: the per-host shared-seat lease still
+ * serialises it against other lanes, and a person who took control in the pane
+ * still wins. Whatever `holderId` it sent is replaced. An agent never gets
+ * here: a bound agent goes through `scopeMacDesktopAdeActionArgs` and an
+ * agent-role shell with no chat through `scopeUnboundMacDesktopAdeActionArgs`,
+ * and both strip `holderId`.
+ */
+export function scopeTrustedChatlessMacDesktopAdeActionArgs(
+  macDesktopArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const { holderId: _callerHolder, ...rest } = macDesktopArgs;
+  return { ...rest, holderId: MAC_DESKTOP_USER_CLI_HOLDER_ID };
+}
+
 /** `ios_simulator` reads an agent may make without a lane: listings and status. */
 const APPLE_LANE_FREE_ACTIONS = new Set<string>([
   "getStatus",
@@ -4099,6 +4127,23 @@ function firstDispatchedAdeActionArg(args: {
   if (args.argsList) return args.argsList[0];
   if (args.hasScalarArg) return args.scalarArg;
   return args.objectArgs;
+}
+
+/**
+ * The direct `ade` client at an elevated role with no chat, run, step or
+ * attempt: the user's own terminal (`ade --role cto …`). See
+ * `scopeTrustedChatlessMacDesktopAdeActionArgs`.
+ */
+function isTrustedChatlessAdeCliCaller(session: SessionState): boolean {
+  const caller = resolveCallerContext(session);
+  return caller.role !== "agent"
+    && callerHasRoleAtLeast(caller.role, "cto")
+    && /^(?:ade-cli|ade-rpc-stdio-proxy):\d+$/.test(caller.callerId ?? "")
+    && !caller.chatSessionId
+    && !caller.runId
+    && !caller.stepId
+    && !caller.attemptId
+    && !caller.ownerId;
 }
 
 function isUnboundAdeCliCaller(session: SessionState): boolean {
@@ -5462,6 +5507,16 @@ async function runTool(args: {
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
         toolArgs.callerRoot,
       );
+    } else if (
+      domain === "mac_desktop"
+      && isUserClient
+      && !argsList
+      && !hasScalarArg
+      && isTrustedChatlessAdeCliCaller(session)
+    ) {
+      // The user's own terminal with no chat: one stable holder of its own,
+      // so the shared Windows seat it started is one it can drive.
+      scopedObjectArgs = scopeTrustedChatlessMacDesktopAdeActionArgs(rawObjectArgs);
     } else if (domain === "app_control" && !isUserClient) {
       // A bound agent acts only on its chat's lane session, as its own chat.
       scopedObjectArgs = scopeAppControlAdeActionArgs(

@@ -328,9 +328,6 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     });
   };
 
-  const leaseHolderId = (chatSessionId: string | null | undefined): string =>
-    chatSessionId?.trim() || MAC_DESKTOP_ANONYMOUS_HOLDER_ID;
-
   /**
    * Who this call claims to be, for the lease check.
    *
@@ -342,9 +339,14 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
    * does not hold the lease is refused exactly as before, and the RPC scope
    * strips the field entirely from an agent's call so a holder id it read out of
    * `getStatus` is not a holder id it can wear.
+   *
+   * After the chat comes `holderId`: the one stable holder a trusted caller
+   * with no chat acts as (`MacDesktopTrustedHolderArgs`), which the RPC scope
+   * also strips from every agent. With none of the three, the caller is the
+   * anonymous holder, which no consent covers.
    */
-  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null }): string =>
-    args.controllerId?.trim() || leaseHolderId(args.chatSessionId);
+  const inputHolderId = (args: { controllerId?: string | null; chatSessionId?: string | null; holderId?: string | null }): string =>
+    args.controllerId?.trim() || args.chatSessionId?.trim() || args.holderId?.trim() || MAC_DESKTOP_ANONYMOUS_HOLDER_ID;
 
   /**
    * May this call skip its own observation?
@@ -419,7 +421,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
    */
   const claimSharedSeatForeground = async (
     laneId: string,
-    args: { chatSessionId?: string | null; controllerId?: string | null },
+    args: { chatSessionId?: string | null; controllerId?: string | null; holderId?: string | null },
   ): Promise<void> => {
     if (args.controllerId?.trim() || seatOf(laneId) !== "windows-shared") return;
     const holderId = inputHolderId(args);
@@ -439,6 +441,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     resolved: MacDesktopElement | null;
     chatSessionId?: string | null;
     controllerId?: string | null;
+    holderId?: string | null;
     caption: string;
     target: Record<string, unknown> | null;
     /** A human takeover: act, and do not look. */
@@ -642,6 +645,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `click · ${label}`,
         demo: { kind: "click", label: label === "point" ? null : label },
@@ -688,6 +692,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent,
         skipObservation: submit,
         caption,
@@ -724,6 +729,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent,
         caption: `${caption} · return`,
         target: { ...target.payload, key: "return" },
@@ -747,6 +753,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
         demo: { kind: "key", label: [...(args.modifiers ?? []), args.key].join("+") },
@@ -771,6 +778,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `scroll · ${args.direction}`,
         demo: { kind: "scroll", label: null },
@@ -797,6 +805,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: from.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: isSilent(args, "real"),
         caption: "drag",
         demo: { kind: "drag", label: null },
@@ -824,6 +833,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         resolved: null,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,
+        holderId: args.holderId ?? null,
         silent: args.silent !== false,
         caption: "move",
         target: { x: args.x, y: args.y },

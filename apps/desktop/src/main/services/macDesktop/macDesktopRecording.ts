@@ -56,6 +56,7 @@ import {
 } from "../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
+import { pathsEqual } from "../shared/pathCompare";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import { clampFps } from "./macDesktopStreamServer";
 
@@ -202,8 +203,15 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
    * `.ade/artifacts/computer-use` for good (both platforms).
    */
   const publishedClips = new Map<string, string>();
+  /**
+   * One file, whichever way it is spelled: the driver may name a clip with
+   * another case or separator than ADE did (Windows and macOS fold case).
+   * Both are absolute: ADE builds one under the project, the driver reports
+   * the other.
+   */
+  const sameFile = (left: string, right: string): boolean => pathsEqual(left, right, deps.seatPlatform);
   const isPublishedClip = (filePath: string): boolean =>
-    [...publishedClips.values()].some((published) => path.resolve(published) === path.resolve(filePath));
+    [...publishedClips.values()].some((published) => sameFile(published, filePath));
   /** A clip a card still plays, or a proof row points at, is kept. */
   const mustKeepClip = (filePath: string): boolean => {
     if (isPublishedClip(filePath)) return true;
@@ -503,7 +511,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     }
     const kept = options.keep?.(ended, reply) ?? null;
     await discardClipFiles(
-      ended.map((entry) => entry.filePath).filter((filePath) => !kept || path.resolve(filePath) !== path.resolve(kept)),
+      ended.map((entry) => entry.filePath).filter((filePath) => !kept || !sameFile(filePath, kept)),
     );
   };
 

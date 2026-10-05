@@ -139,6 +139,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "macDesktop.stop",
   "macDesktop.streamSubscribe",
   "macDesktop.streamUnsubscribe",
+  // A watch-only viewer's Stop for the lane's Windows screen: `stopPrivate`
+  // (private screen only, older phones) and `stopSeat` (either seat). Never a
+  // Mac lane's display. Optional: the phone shows no Stop when the host does
+  // not advertise them.
+  "macDesktop.stopPrivate",
+  "macDesktop.stopSeat",
   // Web takeover. Controller-only (never viewer-allowed), and advertised as
   // optional so a phone on an older build — or the phone at all, which is
   // view-only by product decision — simply never calls them. A host with no

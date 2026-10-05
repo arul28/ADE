@@ -58,6 +58,14 @@ export type MacDesktopWebApi = {
    */
   stopPrivate: (args: { laneId: string }) => Promise<MacDesktopStopResult | null>;
   /**
+   * The watch-only Stop for the lane's Windows screen on either seat (private
+   * or the user's main desktop), through the viewer-allowed
+   * `macDesktop.stopSeat`. A Mac lane's display is refused by the host.
+   */
+  stopSeat: (args: { laneId: string }) => Promise<MacDesktopStopResult | null>;
+  /** The host advertises `macDesktop.stopSeat`; an older one only has `stopPrivate`. */
+  supportsStopSeat: () => boolean;
+  /**
    * Both halves of the host contract — the `macDesktopStream` feature bit and
    * the `macDesktop.streamSubscribe` command — because either one missing
    * means the live view would mount and then fail its first RPC.
@@ -121,6 +129,13 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
         { laneId: args.laneId },
         { fallback: null as MacDesktopStopResult | null, idempotent: false },
       ),
+    stopSeat: (args) =>
+      commands.call(
+        "macDesktop.stopSeat",
+        { laneId: args.laneId },
+        { fallback: null as MacDesktopStopResult | null, idempotent: false },
+      ),
+    supportsStopSeat: () => commands.hasAction("macDesktop.stopSeat"),
     supportsLiveStream: () => client.supportsMacDesktopStream(),
     streamSubscribe: (args) =>
       commands.call(
