@@ -313,6 +313,10 @@ vi.mock("node:child_process", () => ({
       queueMicrotask(() => stdout.emit("data", Buffer.from(`server listening on http://127.0.0.1:${port}\n`)));
       return proc;
     }
+    // `once("exit")` listeners hear the exit a real app-server makes when its
+    // stdin closes (the short-lived fork process waits on it). `on` stays
+    // inert, so a long-lived runtime's exit handling never runs in tests.
+    const exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
     const proc: any = {
       stdin: {
         writable: true,
@@ -424,11 +428,20 @@ vi.mock("node:child_process", () => ({
           }
           return true;
         }),
-        end: vi.fn(),
+        end: vi.fn(() => {
+          queueMicrotask(() => {
+            for (const listener of exitListeners.splice(0)) listener(0, null);
+          });
+        }),
+        on: vi.fn(),
       },
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on: vi.fn(),
+      once: vi.fn((event: string, listener: (code: number | null, signal: string | null) => void) => {
+        if (event === "exit") exitListeners.push(listener);
+        return proc;
+      }),
       kill: vi.fn(),
       pid: 99999,
     };
