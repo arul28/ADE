@@ -25,6 +25,7 @@ import {
   type ProviderGroupKey,
 } from "../../../../shared/modelCatalog";
 import { cn } from "../../ui/cn";
+import { POPOVER_SURFACE_CLASS } from "../../ui/paneMenuTokens";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { isPiRoutedModel, providerLabel, subProviderKey, subProviderLabel } from "./modelFacts";
@@ -896,8 +897,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     <div
       data-model-picker-content="true"
       className={cn(
-        "flex w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-xl border border-fg/[0.08]",
-        "bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+        "flex w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden",
+        POPOVER_SURFACE_CLASS,
       )}
       onKeyDown={handleListKeyDown}
     >

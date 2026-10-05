@@ -2,7 +2,7 @@ import React from "react";
 import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText, fgTint } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneChip } from "../../terminals/LaneChip";
 import { useAppStore } from "../../../state/appStore";
@@ -337,8 +337,8 @@ function PrRowAuthorAvatar({ item, accentBg }: { item: GitHubPrListItem; accentB
       className="ade-pr-row-avatar"
       style={{
         ...base,
-        background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)",
+        background: fgTint(5),
+        border: `1px solid ${fgTint(8)}`,
       }}
     />
   );
@@ -442,14 +442,14 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           textAlign: "left",
           border: "none",
           borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-          borderBottom: "1px solid color-mix(in srgb, var(--color-fg) 4%, transparent)",
+          borderBottom: `1px solid ${fgTint(4)}`,
           background: selected
             ? `linear-gradient(90deg, ${sc.bg} 0%, color-mix(in srgb, var(--color-fg) 2%, transparent) 100%)`
             : "transparent",
           cursor: "pointer",
           transition: "background 150ms ease",
         }}
-        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "color-mix(in srgb, var(--color-fg) 2.5%, transparent)"; }}
+        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = fgTint(2.5); }}
         onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
       >
       {/* The author, pinned to the card's top-right gutter and out of the headline's
@@ -481,7 +481,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
               padding: "1px 5px",
               marginRight: 5,
               borderRadius: 3,
-              background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+              background: COLORS.hoverBg,
               color: COLORS.textDim,
               letterSpacing: "0.3px",
               whiteSpace: "nowrap",
@@ -620,7 +620,7 @@ export function PrListGroupHeaderRow({ header }: { header: PrListGroupHeaderMode
         gap: 8,
         padding: "6px 14px",
         background: COLORS.prSurface,
-        borderBottom: "1px solid color-mix(in srgb, var(--color-fg) 5%, transparent)",
+        borderBottom: `1px solid ${fgTint(5)}`,
         fontFamily: SANS_FONT,
         fontSize: 10,
         fontWeight: 600,

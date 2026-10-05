@@ -43,6 +43,7 @@ import { useCommitViewPrefs } from "./commitViewPrefs";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { showToast } from "../app/toast/toastStore";
 import { useAppStore } from "../../state/appStore";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const PAGE_SIZE = 100;
 /** Search keeps reading older pages until it has this many matches… */
@@ -430,8 +431,8 @@ export function CommitHistoryView({
       const lane = laneColor.get(owner);
       if (lane) return lane;
     }
-    if (owner.startsWith("col:")) return "color-mix(in srgb, var(--color-fg) 24%, transparent)";
-    return "color-mix(in srgb, var(--color-fg) 46%, transparent)";
+    if (owner.startsWith("col:")) return fgTint(24);
+    return fgTint(46);
   }, [baseLinePrimaryId, laneColor]);
 
   /* ── Refs and PRs ── */

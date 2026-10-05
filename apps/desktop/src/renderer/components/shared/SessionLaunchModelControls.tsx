@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
@@ -116,7 +117,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {claudeOpen ? (
-          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
+          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CLAUDE_PERMISSION_OPTIONS.map((option) => {
                 const active = option.value === claudeSelectionMode(nativeControls);
@@ -164,7 +165,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {codexOpen ? (
-          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
+          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CODEX_PERMISSION_PRESETS.map((option) => {
                 const active = preset === option.value;

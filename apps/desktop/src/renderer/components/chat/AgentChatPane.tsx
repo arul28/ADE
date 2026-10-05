@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { toneText } from "../lanes/laneDesignTokens";
+import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { useNavigate } from "react-router-dom";
 import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
@@ -16867,7 +16867,7 @@ export function AgentChatPane({
                             )}
                             <span
                               className="text-[11px] font-medium"
-                              style={laneAccentColor ? { color: toneText(laneAccentColor) } : { color: "color-mix(in srgb, var(--color-fg) 60%, transparent)" }}
+                              style={laneAccentColor ? { color: toneText(laneAccentColor) } : { color: fgTint(60) }}
                             >
                               {laneDisplayLabel}
                             </span>

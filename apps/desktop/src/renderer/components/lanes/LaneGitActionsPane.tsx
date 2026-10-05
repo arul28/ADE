@@ -2477,7 +2477,7 @@ export function LaneGitActionsPane({
               ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
               ...SKIN.cardFill,
             }}
-            headerStyle={{ background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+            headerStyle={{ background: COLORS.cardBg }}
             bodyStyle={
               diffViewActive
                 ? {

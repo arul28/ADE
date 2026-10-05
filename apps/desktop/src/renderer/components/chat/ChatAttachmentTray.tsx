@@ -10,6 +10,7 @@ import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { fgTint } from "../lanes/laneDesignTokens";
 /**
  * The preview popup pulls in the whole Files viewer platform — Monaco, the PDF
  * and document renderers, the CSV grid. That is a large amount of code for a
@@ -179,7 +180,7 @@ function LinearIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "color-mix(in srgb, var(--color-fg) 8%, transparent)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
+        style={{ background: fgTint(8), color: LINEAR_BRAND.text, padding: "1px 4px" }}
       >
         {attachment.issue.identifier}
       </span>
@@ -189,7 +190,7 @@ function LinearIssueContextChip({
       {projectLabel ? (
         <span
           className="hidden shrink-0 rounded font-mono text-[9px] sm:inline"
-          style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
+          style={{ background: fgTint(5), color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
         >
           {projectLabel}
         </span>
@@ -248,7 +249,7 @@ function GitHubIssueContextChip({
       </span>
       <span
         className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "color-mix(in srgb, var(--color-fg) 8%, transparent)", color: GITHUB_BRAND.text, padding: "1px 4px" }}
+        style={{ background: fgTint(8), color: GITHUB_BRAND.text, padding: "1px 4px" }}
       >
         {identifier}
       </span>

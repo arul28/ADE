@@ -15,6 +15,7 @@ import {
 } from "./commitRowModel";
 import { copyText } from "./historyClipboard";
 import type { CommitColumns } from "./commitViewPrefs";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 function AuthorAvatar({ name, email }: { name: string; email?: string }) {
   const [failed, setFailed] = useState(false);
@@ -27,7 +28,7 @@ function AuthorAvatar({ name, email }: { name: string; email?: string }) {
         loading="lazy"
         onError={() => setFailed(true)}
         className="h-4 w-4 shrink-0 rounded-full"
-        style={{ boxShadow: "0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent)" }}
+        style={{ boxShadow: `0 0 0 1px ${fgTint(12)}` }}
       />
     );
   }

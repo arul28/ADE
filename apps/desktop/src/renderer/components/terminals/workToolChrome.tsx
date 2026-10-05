@@ -72,7 +72,7 @@ export const WORK_TOOL_CHROME_ROW = cn(
  *
  * Split out from the button below because the browser pane's controls are the
  * same square with a different disabled treatment, and two hand-typed copies of
- * `h-7 w-7 … rounded-[7px] … hover:bg-fg/[0.06]` is exactly how the two
+ * `h-7 w-7 … rounded-[7px] … hover:bg-white/[0.06]` is exactly how the two
  * toolbars drifted apart the first time.
  */
 export const WORK_TOOL_CHROME_GHOST = cn(

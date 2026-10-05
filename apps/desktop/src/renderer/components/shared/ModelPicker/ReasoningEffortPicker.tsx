@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
@@ -79,15 +80,17 @@ const REASONING_TONE_STYLES: Record<
   }
 > = {
   auto: {
-    color: "var(--color-zinc-400, #A1A1AA)",
+    color: "#A1A1AA",
     rgb: "161 161 170",
     trigger: "border-fg/[0.06] bg-fg/[0.03] text-fg/80 hover:border-fg/[0.10] hover:bg-fg/[0.055]",
     chip: "border-fg/[0.08] bg-fg/[0.055] text-muted-fg/78",
+    // Pinned hexes: the light-mode palette remap would turn zinc-200 deep while
+    // zinc-950 text stays deep. A pale chip with dark text reads on any theme.
     thumb: "border-[#e4e4e7]/70 bg-[#e4e4e7] text-[#09090b]",
     ridge: "bg-fg/20",
   },
   low: {
-    color: "var(--color-emerald-300, #6EE7B7)",
+    color: "#6EE7B7",
     rgb: "52 211 153",
     trigger: "border-emerald-300/22 bg-emerald-500/[0.075] text-emerald-100 hover:border-emerald-300/32 hover:bg-emerald-500/[0.11]",
     chip: "border-emerald-300/26 bg-emerald-500/[0.14] text-emerald-100",
@@ -95,7 +98,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-emerald-200",
   },
   steady: {
-    color: "var(--color-cyan-300, #67E8F9)",
+    color: "#67E8F9",
     rgb: "34 211 238",
     trigger: "border-cyan-300/22 bg-cyan-500/[0.075] text-cyan-100 hover:border-cyan-300/32 hover:bg-cyan-500/[0.11]",
     chip: "border-cyan-300/26 bg-cyan-500/[0.14] text-cyan-100",
@@ -103,7 +106,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-cyan-200",
   },
   smart: {
-    color: "var(--color-blue-300, #93C5FD)",
+    color: "#93C5FD",
     rgb: "96 165 250",
     trigger: "border-sky-300/22 bg-sky-500/[0.075] text-sky-100 hover:border-sky-300/32 hover:bg-sky-500/[0.11]",
     chip: "border-sky-300/26 bg-sky-500/[0.14] text-sky-100",
@@ -111,7 +114,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-sky-200",
   },
   deep: {
-    color: "var(--color-violet-300, #C4B5FD)",
+    color: "#C4B5FD",
     rgb: "167 139 250",
     trigger: "border-violet-300/24 bg-violet-500/[0.08] text-violet-100 hover:border-violet-300/34 hover:bg-violet-500/[0.12]",
     chip: "border-violet-300/28 bg-violet-500/[0.15] text-violet-100",
@@ -119,7 +122,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-violet-200",
   },
   max: {
-    color: "var(--color-purple-300, #D8B4FE)",
+    color: "#D8B4FE",
     rgb: "192 132 252",
     trigger: "border-fuchsia-300/28 bg-fuchsia-500/[0.09] text-fuchsia-100 hover:border-fuchsia-300/38 hover:bg-fuchsia-500/[0.13]",
     chip: "border-fuchsia-300/30 bg-fuchsia-500/[0.17] text-fuchsia-100",
@@ -127,7 +130,7 @@ const REASONING_TONE_STYLES: Record<
     ridge: "bg-fuchsia-100",
   },
   ultra: {
-    color: "var(--color-fuchsia-200, #F5D0FE)",
+    color: "#F5D0FE",
     rgb: "232 121 249",
     trigger: "border-fuchsia-200/45 bg-fuchsia-500/[0.14] text-fuchsia-50 hover:border-fuchsia-100/60 hover:bg-fuchsia-500/[0.2]",
     chip: "border-fuchsia-100/45 bg-fuchsia-400/[0.22] text-fuchsia-50",
@@ -501,7 +504,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                   key={displayedEffort ?? "auto"}
                   className="ade-reasoning-effort-word font-semibold"
                   data-direction={effortTransitionDirection}
-                  style={{ color: activeTone.color }}
+                  style={{ color: toneText(activeTone.color) }}
                 >
                   {activeLabel}
                 </span>
@@ -642,7 +645,7 @@ const ReasoningEffortTrigger = memo(
               "shrink-0 font-medium leading-none",
               compact ? "text-[9px]" : "text-[11px] sm:text-[12px]",
             )}
-            style={{ color: tone.color }}
+            style={{ color: toneText(tone.color) }}
           >
             <span className="hidden @sm:inline">{label}</span>
             <span className="@sm:hidden">{shortLabel}</span>

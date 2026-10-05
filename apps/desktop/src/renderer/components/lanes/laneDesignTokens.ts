@@ -99,7 +99,15 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
  * toward the theme's text colour until it reads.
  */
 export function toneText(color: string): string {
-  return `color-mix(in srgb, ${color} var(--ade-tone-text-strength, 100%), var(--color-fg))`;
+  return `color-mix(in srgb, ${color} var(--ade-tone-text-strength), var(--color-fg))`;
+}
+
+/**
+ * A faint wash or hairline of the theme's text colour: white-ish on dark
+ * pages, ink on light ones. `pct` is the share of text colour, 0-100.
+ */
+export function fgTint(pct: number): string {
+  return `color-mix(in srgb, var(--color-fg) ${pct}%, transparent)`;
 }
 
 /**

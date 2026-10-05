@@ -54,11 +54,11 @@ const AMBER_ACCENT: AccentTokens = {
 const CLAUDE_ACCENT: AccentTokens = {
   cardBorder: "border-[#d97757]/16",
   cardBg: "bg-[#d97757]/[0.06]",
-  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-[color:color-mix(in_srgb,#f3b79b_var(--ade-tone-text-strength,100%),var(--color-fg))]",
-  title: "text-[color:color-mix(in_srgb,#f5cbb6_var(--ade-tone-text-strength,100%),var(--color-fg))]",
+  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-tone-[#f3b79b]",
+  title: "text-tone-[#f5cbb6]",
   label: "text-[#d97757]/65",
   runButton:
-    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-[color:color-mix(in_srgb,#ffd9c6_var(--ade-tone-text-strength,100%),var(--color-fg))] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
+    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-tone-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
 };
 
 function CommandCopyButton({ command, label }: { command: string; label: string }) {

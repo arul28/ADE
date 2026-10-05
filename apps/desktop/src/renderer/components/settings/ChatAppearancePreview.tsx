@@ -119,7 +119,7 @@ const PREVIEW_USAGE_MODEL: Record<
 /** Mirrors `event.type === "done"` usage footer in `AgentChatMessageList` (completed turn). */
 function PreviewUsageRow({ provider }: { provider: PreviewProviderKey }) {
   const { Logo, label } = PREVIEW_USAGE_MODEL[provider];
-  const statusTone = "border-fg/[0.04] bg-(color:--color-surface-recessed)/60 text-fg/45";
+  const statusTone = "border-fg/[0.04] bg-surface-recessed/60 text-fg/45";
   return (
     <div className="flex w-full min-w-0 justify-center">
       <div

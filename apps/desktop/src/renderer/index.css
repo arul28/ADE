@@ -131,18 +131,20 @@
   --chat-block-border: rgba(255, 255, 255, 0.06);
   --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
   --chat-table-bg: rgba(10, 9, 14, 0.6);
+  --chat-table-border: rgba(255, 255, 255, 0.08);
   /* The text colour of the "No tint" chat palette and of anything printed on
      the user's accent bubble. White on dark pages; light pages switch it to
      the theme's text colour, and the bubble pins it back to white. */
   --chat-ink: #ffffff;
-  /* Text on a solid status-tone fill (an amber button, a violet checkbox).
-     Dark pages fill with pale tones, so the ink is near-black; light pages
-     fill with deep tones, so it turns white. */
+
+  /* Tone ink. `--ade-on-tone-ink` is text on a solid status-tone fill (an
+     amber button, a violet checkbox): dark pages fill with pale tones, so it
+     is near-black; light pages fill with deep tones, so it turns white.
+     `--ade-tone-text-strength` is how much of a lane or status colour
+     survives when it is used as text (`toneText()`, `text-tone-[#hex]`);
+     dark pages keep it whole. */
   --ade-on-tone-ink: #0F0D14;
-  /* How much of a lane or status colour survives when it is used as text
-     (`toneText()` in laneDesignTokens.ts). Dark pages keep it whole. */
   --ade-tone-text-strength: 100%;
-  --chat-table-border: rgba(255, 255, 255, 0.08);
   --chat-copy-button-bg: rgba(255, 255, 255, 0.03);
   --chat-copy-button-border: rgba(255, 255, 255, 0.08);
   --chat-copy-button-fg: rgba(240, 240, 242, 0.45);
@@ -329,10 +331,14 @@
   --chat-block-border: rgba(15, 23, 42, 0.08);
   --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
   --chat-table-bg: var(--chat-block-bg);
+  --chat-table-border: rgba(15, 23, 42, 0.10);
   --chat-ink: var(--color-fg);
+  /* ADE's shell popovers read this with a dark fallback; light pages need a
+     light plate under their `text-fg` content. Dark leaves it unset. */
+  --ade-shell-surface: var(--color-popup-bg);
+
   --ade-on-tone-ink: #ffffff;
   --ade-tone-text-strength: 50%;
-  --chat-table-border: rgba(15, 23, 42, 0.10);
   --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
   --chat-copy-button-border: rgba(15, 23, 42, 0.10);
   --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
@@ -442,8 +448,9 @@
    utility to `var(--color-<hue>-<shade>)`, so restating the pale shades as
    their deep counterparts here repaints every one of those utilities in light
    mode at once, for every light theme (each sets `data-theme="light"`). The
-   500 and 600 midpoints are untouched; 900 and 950 turn pale, so a dark-mode
-   "pale chip with deep text" stays a readable "deep chip with pale text". */
+   500 and 600 midpoints are untouched. In the colour families 900 and 950
+   turn pale, so a dark-mode "pale chip with deep text" stays a readable "deep
+   chip with pale text"; the grey families only remap 50-400. */
 [data-theme="light"] {
   --color-red-50: oklch(39.6% 0.141 25.723);
   --color-red-100: oklch(44.4% 0.177 26.899);
@@ -589,6 +596,15 @@
   --color-stone-200: oklch(37.4% 0.01 67.558);
   --color-stone-300: oklch(44.4% 0.011 73.639);
   --color-stone-400: oklch(55.3% 0.013 58.071);
+}
+
+/* `text-tone-[#hex]`: a status or brand colour used as text, the class form
+   of `toneText()` in laneDesignTokens.ts. Dark pages keep the colour whole;
+   light pages pull it toward the theme's text colour. Takes an opacity
+   modifier (`text-tone-[#hex]/65`). */
+@utility text-tone-* {
+  color: color-mix(in srgb, --value([color]) var(--ade-tone-text-strength), var(--color-fg));
+  color: color-mix(in srgb, color-mix(in srgb, --value([color]) var(--ade-tone-text-strength), var(--color-fg)) --modifier([percentage], integer)%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -3737,7 +3753,11 @@ button, [role="button"] {
 }
 
 .ade-chat-message-card-user {
+  /* The bubble is the accent colour on every theme, so what sits on it keeps
+     the dark-page ink and chip backing. */
   --chat-ink: #ffffff;
+  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
+  --chat-table-bg: rgba(10, 9, 14, 0.6);
   /* Kept in sync with CHAT_USER_BUBBLE_GRADIENT_DEFAULT in chatSurfaceTheme.ts. */
   background: var(--chat-user-bubble-gradient,
     linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));

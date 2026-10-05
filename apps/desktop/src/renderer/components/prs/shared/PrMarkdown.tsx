@@ -21,7 +21,7 @@ import {
   SAFE_PREVIEW_SCHEMA,
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { MermaidDiagram } from "../../shared/MermaidDiagram";
@@ -602,7 +602,7 @@ function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; c
   const { icon: Glyph, color } = getFileIcon(fileName);
   return (
     <div className="mb-3 overflow-hidden rounded-[8px] last:mb-0" style={{ background: "rgba(0,0,0,0.25)" }} data-testid="pr-md-code-file">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", color: COLORS.textSecondary }}>
+      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: fgTint(3.5), color: COLORS.textSecondary }}>
         <Glyph size={12} style={{ color }} />
         <span className="min-w-0 flex-1 truncate font-mono">{fileName}</span>
         <button

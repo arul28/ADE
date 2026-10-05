@@ -15,6 +15,7 @@ import {
   outlineButton,
   primaryButton,
   toneText,
+  fgTint,
 } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
@@ -131,7 +132,7 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
               width: INLINE_LIST_WIDTH_PX,
               flexShrink: 0,
               minHeight: 0,
-              borderRight: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)",
+              borderRight: `1px solid ${fgTint(6)}`,
             }}
           >
             {listColumn}
@@ -226,7 +227,7 @@ function GitHubTabListColumn({
           padding: "0 6px",
           flexShrink: 0,
           overflow: "hidden",
-          borderBottom: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)",
+          borderBottom: `1px solid ${fgTint(6)}`,
         }}
       >
         {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
@@ -306,7 +307,7 @@ function GitHubTabListColumn({
             padding: blockedCompact ? "0 5px" : "0 7px",
             marginRight: 4,
             borderRadius: 6,
-            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : "color-mix(in srgb, var(--color-fg) 8%, transparent)"}`,
+            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : fgTint(8)}`,
             background: list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 14%, transparent)` : "transparent",
             color: list.sort === "blocked" ? COLORS.warning : COLORS.textMuted,
             fontFamily: SANS_FONT,
@@ -383,7 +384,7 @@ function GitHubTabListColumn({
           />
         )}
         {list.canLoadOlderHistory ? (
-          <div style={{ padding: "12px 12px 16px", borderTop: "1px solid color-mix(in srgb, var(--color-fg) 4%, transparent)" }}>
+          <div style={{ padding: "12px 12px 16px", borderTop: `1px solid ${fgTint(4)}` }}>
             <button
               type="button"
               aria-label="Load older pull requests"
@@ -401,7 +402,7 @@ function GitHubTabListColumn({
       </div>
 
       {chrome.repoLabel ? (
-        <div style={{ flexShrink: 0, padding: "4px 8px 4px 12px", borderTop: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+        <div style={{ flexShrink: 0, padding: "4px 8px 4px 12px", borderTop: `1px solid ${fgTint(6)}` }}>
           <GitHubRepoSyncBar
             repoLabel={chrome.repoLabel}
             syncing={chrome.syncing}

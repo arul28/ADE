@@ -31,6 +31,7 @@ import {
   SANS_FONT,
   outlineButton,
   primaryButton,
+  fgTint,
 } from "../lanes/laneDesignTokens";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
@@ -82,7 +83,7 @@ const inputStyle: CSSProperties = {
   fontSize: 13,
   fontFamily: SANS_FONT,
   color: COLORS.textPrimary,
-  background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+  background: fgTint(4),
   border: `1px solid ${COLORS.border}`,
   borderRadius: 8,
   outline: "none",
@@ -455,7 +456,7 @@ function FormBody({
           gap: 12,
           padding: "8px 10px",
           borderRadius: 8,
-          background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          background: COLORS.cardBg,
           border: `1px solid ${COLORS.border}`,
         }}
       >
@@ -811,7 +812,7 @@ function VisibilityRadio({
         padding: "10px 12px",
         background: selected
           ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
-          : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          : fgTint(3),
         border: `1px solid ${
           selected
             ? "color-mix(in srgb, var(--color-accent) 50%, var(--color-border))"

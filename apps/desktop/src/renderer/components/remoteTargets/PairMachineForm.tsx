@@ -16,7 +16,7 @@ const fieldStyle: CSSProperties = {
   height: 38,
   borderRadius: 8,
   border: `1px solid ${COLORS.border}`,
-  background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+  background: COLORS.cardBg,
   color: COLORS.textPrimary,
   fontFamily: MONO_FONT,
   fontSize: 12,

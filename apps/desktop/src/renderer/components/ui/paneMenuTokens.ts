@@ -28,6 +28,15 @@ export const MENU_SURFACE_CLASS = cn(
 );
 
 /**
+ * The floating popover surface for composer and chat menus (permission mode,
+ * send options, machine picker, thread comments). The fill is the theme's
+ * Work popover colour, so the menu is a light panel on a light theme. Add
+ * positioning, sizing and padding at the call site.
+ */
+export const POPOVER_SURFACE_CLASS =
+  "rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md";
+
+/**
  * One width for both menus. Radix's portalled content may grow past it for a
  * long item; the anchored App Control menu is exactly it, because it is inside
  * the pane and has nowhere to grow into.

@@ -11,7 +11,7 @@ import {
 } from "@phosphor-icons/react";
 
 import type { PrTimelineEvent } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import { PrAgentAvatar } from "./PrAgentAvatar";
 import { describeBotGroup, digestPreview, type PrNeedsAttentionItem } from "../../../../shared/prConversationDigest";
@@ -299,7 +299,7 @@ export function BotGroupRow({
       data-testid="pr-digest-bot-group"
       data-agent={group.key}
       className="rounded-[10px] transition-colors"
-      style={{ background: expanded ? "color-mix(in srgb, var(--color-fg) 3%, transparent)" : "transparent" }}
+      style={{ background: expanded ? fgTint(3) : "transparent" }}
     >
       <button
         type="button"

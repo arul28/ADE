@@ -97,7 +97,7 @@ import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getEffectiveBinding } from "../../lib/keybindings";
-import { laneRailTint, laneSurfaceTint, toneText } from "../lanes/laneDesignTokens";
+import { laneRailTint, laneSurfaceTint, toneText, fgTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
@@ -426,8 +426,8 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
       <div
         className="relative w-full overflow-hidden rounded-lg text-left"
         style={{
-          border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)",
-          background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)",
+          border: `1px solid ${fgTint(8)}`,
+          background: fgTint(3.5),
         }}
         aria-label={`${title}: ${status}`}
       >
@@ -437,7 +437,7 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
           animate={{ opacity: [0.2, 0.42, 0.2] }}
           transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
           style={{
-            background: "linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-fg) 8%, transparent), transparent)",
+            background: `linear-gradient(90deg, transparent, ${fgTint(8)}, transparent)`,
           }}
         />
         <div className="relative flex items-stretch gap-2.5 px-2.5 py-2">

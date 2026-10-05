@@ -25,7 +25,7 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../../ui/
 /**
  * The control fill, as a tint of the foreground rather than white.
  *
- * `bg-fg/[0.06]` is invisible on the light theme's white card — it was
+ * `bg-white/[0.06]` is invisible on the light theme's white card — it was
  * readable in round 3 only because the drawer was dark-only in practice. A
  * `--color-fg` mix darkens on light and lightens on dark, which is the same
  * control in both.

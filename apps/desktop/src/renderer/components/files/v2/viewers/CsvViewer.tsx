@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CaretDown, CaretUp, Code, MagnifyingGlass, Table } from "@phosphor-icons/react";
-import { COLORS } from "../../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
 import { CodeViewer } from "./CodeViewer";
 import type { ViewerProps } from "./types";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
@@ -178,7 +178,7 @@ export function CsvViewer(props: ViewerProps) {
       {/* Frozen header */}
       <div
         className="grid shrink-0 border-b text-xs font-semibold"
-        style={{ gridTemplateColumns: gridTemplate, borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+        style={{ gridTemplateColumns: gridTemplate, borderColor: COLORS.border, background: COLORS.cardBg }}
       >
         {header.map((cell, col) => (
           <button
@@ -208,7 +208,7 @@ export function CsvViewer(props: ViewerProps) {
                   top: vItem.start,
                   height: ROW_HEIGHT,
                   gridTemplateColumns: gridTemplate,
-                  borderColor: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                  borderColor: fgTint(4),
                 }}
               >
                 {header.map((_, col) => (

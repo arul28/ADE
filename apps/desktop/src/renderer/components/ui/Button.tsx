@@ -35,7 +35,7 @@ export const Button = React.forwardRef<
     primary:
       "bg-accent text-accent-fg hover:brightness-110",
     outline:
-      "border border-border bg-transparent text-(color:--color-secondary-fg) hover:text-fg hover:border-accent/30",
+      "border border-border bg-transparent text-secondary-fg hover:text-fg hover:border-accent/30",
     ghost:
       "bg-transparent text-muted-fg hover:text-fg hover:bg-muted",
     danger:

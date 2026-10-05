@@ -929,7 +929,7 @@ function ChatOriginDivider({ icon, label, className, testId }: {
   return (
     <div
       className={cn(
-        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]",
+        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--color-fg))]",
         className,
       )}
       data-testid={testId}
@@ -2688,7 +2688,7 @@ function renderEvent(
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
-                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-[#fef3c7] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
                 title="Undo the file changes the agent made after this message. Conversation stays intact."
                 aria-label="Undo file changes after this message"
                 onClick={() => options.onRewindFiles?.({
@@ -2746,7 +2746,7 @@ function renderEvent(
                     {parsed.chips.map((label, idx) => (
                       <span
                         key={`ios-chip-${idx}`}
-                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
+                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
                         title={label}
                         data-testid="user-message-ios-context-chip"
                       >
@@ -4519,7 +4519,7 @@ function DoneTurnDivider({
           aria-label="Fork from here"
           title="Fork from here: a new chat with the conversation up to this point"
           onClick={() => onForkFromTurn({ turnId: event.turnId!, timestamp })}
-          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-fg/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--chat-fg,#e6e6e6))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-fg/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--color-fg))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
         >
           <GitFork size={11} weight="bold" aria-hidden />
         </button>

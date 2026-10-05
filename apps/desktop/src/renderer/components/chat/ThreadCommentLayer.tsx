@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { ChatTeardropText } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -481,7 +482,7 @@ export function ThreadCommentLayer({
             <div
               data-thread-comment-ignore=""
               data-testid="thread-comment-popover"
-              className="pointer-events-auto absolute rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute", POPOVER_SURFACE_CLASS, "p-1")}
               style={{ ...placeNear(openRange.getBoundingClientRect(), "below"), width: POPOVER_WIDTH_PX }}
               onMouseDown={(event) => event.stopPropagation()}
             >

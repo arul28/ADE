@@ -99,8 +99,8 @@ export const USAGE_PANEL_HEADER_CLASS =
  * used it. It is the same mistake that made the top-bar usage popover
  * see-through. Anything that floats over content uses this instead.
  *
- * `--ade-shell-surface` is the hook ADE's own popovers read; it is currently
- * undefined, so the fallback is what renders. The fallback here is the theme's
+ * `--ade-shell-surface` is the hook ADE's own popovers read; light themes set
+ * it, dark leaves it unset, so on dark pages the fallback is what renders. The fallback here is the theme's
  * opaque raised token rather than the shell's hardcoded `#121019`, because
  * these readouts carry `text-fg` and a fixed dark plate would be dark-on-dark
  * text under the light theme.

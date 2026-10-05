@@ -50,6 +50,7 @@ import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -604,7 +605,7 @@ export function LinearQuickViewButton({
       panelStyle={{
         background: "var(--ade-shell-surface, #121019)",
         borderRadius: 12,
-        borderColor: "color-mix(in srgb, var(--color-fg) 12%, transparent)",
+        borderColor: fgTint(12),
       }}
     >
       <div className="flex items-start gap-3 border-b border-fg/10 px-4 py-3">

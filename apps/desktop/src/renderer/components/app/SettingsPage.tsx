@@ -52,7 +52,7 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, LABEL_STYLE, fgTint } from "../lanes/laneDesignTokens";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "./projectSidebar/ProjectSidebarSlot";
 import {
   BOUND_MACHINE_ENTRY_IDS,
@@ -167,7 +167,7 @@ function CrossTabResults({
               padding: "5px 10px",
               fontFamily: SANS_FONT,
               fontSize: 11,
-              background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+              background: fgTint(4),
               border: `1px solid ${COLORS.borderMuted}`,
               borderRadius: 999,
               cursor: "pointer",

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { motion } from "motion/react";
 import { ArrowSquareOut, ChatTeardropText, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -355,7 +356,7 @@ export function ComposerThreadCommentsButton({
               role="dialog"
               aria-label="Thread comments"
               data-testid="composer-thread-comments-menu"
-              className="pointer-events-auto absolute flex max-h-[min(60vh,520px)] flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute flex max-h-[min(60vh,520px)] flex-col overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={menuStyleAbove(rect)}
             >
               <div className="flex items-center justify-between border-b border-fg/[0.06] px-3 py-2">

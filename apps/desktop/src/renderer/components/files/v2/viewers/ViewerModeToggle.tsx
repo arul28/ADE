@@ -1,5 +1,5 @@
 import React from "react";
-import { COLORS } from "../../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
 
 /** Shared pill button for viewer mode toggles (markdown Preview↔Source, CSV Table↔Source). */
 export function ViewerModeToggleButton({
@@ -20,7 +20,7 @@ export function ViewerModeToggleButton({
       className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
       style={{
         color: active ? COLORS.textPrimary : COLORS.textMuted,
-        background: active ? "color-mix(in srgb, var(--color-fg) 7%, transparent)" : "transparent",
+        background: active ? fgTint(7) : "transparent",
       }}
     >
       {icon} {label}

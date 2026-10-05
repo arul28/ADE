@@ -395,7 +395,7 @@ function BoardCard({
         // separated by the pane, these float on a column).
         //
         // The fill is mixed off `--color-fg`, not a white alpha, for the same
-        // reason the accents are variables: a `bg-fg/2` surface is invisible
+        // reason the accents are variables: a `bg-white/2` surface is invisible
         // on the light theme's near-white pane. This is `COLORS.hoverBg`'s
         // formula, one step quieter for the resting state.
         "group/board-card relative overflow-hidden rounded-md border transition-colors duration-100",

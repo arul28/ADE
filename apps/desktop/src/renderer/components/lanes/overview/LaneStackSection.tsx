@@ -1,5 +1,5 @@
 import React from "react";
-import { toneText } from "../laneDesignTokens";
+import { toneText, fgTint } from "../laneDesignTokens";
 import type { LaneSummary } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { LaneIcon } from "../../ui/vcsIcons";
@@ -46,7 +46,7 @@ function StackRow({
     return (
       <div
         className={cn(OVERVIEW_ROW, "h-8")}
-        style={{ ...style, background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+        style={{ ...style, background: fgTint(4) }}
         data-testid="lane-stack-row"
         data-current=""
       >

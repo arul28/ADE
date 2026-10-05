@@ -39,8 +39,8 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
  * `prs.onEvent` poll just enriches the same row with checks/review state).
  */
 
-// --color-accent is #A78BFA (== Tailwind violet-400); use the named color so the
-// /opacity focus modifier resolves (Tailwind can't apply opacity to a var() color).
+// The focus ring is Tailwind's violet-400, ADE's dark accent. On light pages
+// the palette remap in index.css deepens it so the ring still shows.
 /** Shared with the pane's "Link a PR" row so the two inputs cannot drift apart. */
 export const inputBase =
   "w-full rounded-lg border border-fg/[0.07] bg-fg/[0.03] px-2.5 py-1.5 text-[12px] text-fg/85 outline-none transition-colors placeholder:text-fg/30 focus:border-violet-400/55 focus:bg-fg/[0.05]";

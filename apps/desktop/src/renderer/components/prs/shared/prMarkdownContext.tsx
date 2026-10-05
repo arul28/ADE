@@ -2,7 +2,7 @@ import React from "react";
 import { GitMerge, GitPullRequest, Info, Lightbulb, Warning, WarningOctagon, XCircle, Megaphone, type Icon } from "@phosphor-icons/react";
 import type { PrState } from "../../../../shared/types/prs";
 import { getFileIcon } from "../../files/filePresentation";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { noticeTone, type NoticeTone } from "../../ui/notice";
 
 /**
@@ -59,7 +59,7 @@ export function PrFileChip({ path, line, inPr, onOpen }: { path: string; line: n
       data-in-pr={inPr || undefined}
       className="inline-flex max-w-full items-center gap-1 rounded-[5px] px-1.5 align-baseline font-mono text-[11.5px] leading-[1.6] transition-colors hover:brightness-125"
       style={{
-        background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
+        background: fgTint(7),
         color: "var(--color-fg)",
         border: "none",
         cursor: onOpen ? "pointer" : "default",

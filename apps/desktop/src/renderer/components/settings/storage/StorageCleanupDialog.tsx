@@ -6,7 +6,7 @@ import type {
   StorageCleanupResult,
   StorageCleanupTarget,
 } from "../../../../shared/types/storage";
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
@@ -95,7 +95,7 @@ function Row({
         background:
           tone === "blocked"
             ? "color-mix(in srgb, var(--color-warning) 8%, transparent)"
-            : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+            : fgTint(3),
       }}
     >
       <div style={{ minWidth: 0 }}>
@@ -375,7 +375,7 @@ export function StorageCleanupDialog({
                         padding: "8px 11px",
                         borderRadius: 9,
                         border: `1px solid ${COLORS.borderMuted}`,
-                        background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+                        background: COLORS.cardBg,
                       }}
                     >
                       <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>{row.label}</span>
@@ -406,7 +406,7 @@ export function StorageCleanupDialog({
                 gap: 6,
                 padding: "12px 14px",
                 borderRadius: 10,
-                background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+                background: fgTint(2.5),
                 border: `1px solid ${COLORS.borderMuted}`,
               }}
             >

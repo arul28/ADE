@@ -1,10 +1,11 @@
 import { cn } from "../ui/cn";
 import { formatCost, formatTokens } from "../../lib/format";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const CARD_SHADOW_STYLE: React.CSSProperties = {
-  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
-  border: "1px solid rgba(87, 108, 128, 0.22)",
-  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 color-mix(in srgb, var(--color-fg) 4%, transparent)",
+  background: "linear-gradient(180deg, var(--color-card) 0%, var(--color-surface) 100%)",
+  border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
+  boxShadow: `0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 ${fgTint(4)}`,
 };
 
 export function CostSummaryCard({
@@ -49,7 +50,7 @@ export function CostSummaryCard({
         <div className="space-y-1 pt-1" style={{ borderTop: "1px solid #2D284060" }}>
           <div className="font-mono text-[9px] font-bold uppercase tracking-[1px] text-muted-fg">Tokens</div>
           {Object.entries(tokenBreakdown).map(([model, tokens]) => (
-            <div key={model} className="flex items-center justify-between font-mono text-[9px] text-[color:color-mix(in_srgb,#8B8B9A_var(--ade-tone-text-strength,100%),var(--color-fg))]">
+            <div key={model} className="flex items-center justify-between font-mono text-[9px] text-muted-fg">
               <span>{model}</span>
               <span>
                 {formatTokens(tokens.input)} in / {formatTokens(tokens.output)} out

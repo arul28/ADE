@@ -41,7 +41,7 @@ import {
  * The row action idiom, shared with `SessionSnoozeControl`'s trigger.
  *
  * The hover FILL is the load-bearing part: text that merely brightens reads as
- * text, not as a control you can press. `bg-fg/[0.06]` is the same pill the
+ * text, not as a control you can press. `bg-white/[0.06]` is the same pill the
  * sidebar's own bare buttons and group-header actions use, so a row action and
  * a header action feel like the same kind of thing. Focus-visible gets the same
  * fill for keyboard users, who never see hover at all.

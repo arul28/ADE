@@ -6,6 +6,7 @@ import { openLinkFromUi } from "../../lib/openExternal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
 import { LinearPaneModal } from "./LinearPaneModal";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 export function LinearIssueSelectModal({
   open,
@@ -119,7 +120,7 @@ function LinearIssueDetails({
           </span>
           <span className="font-mono text-[12px] text-fg/80">{issue.identifier}</span>
           {issue.stateName ? (
-            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted-fg/70" style={{ background: fgTint(6) }}>
               {issue.stateName}
             </span>
           ) : null}

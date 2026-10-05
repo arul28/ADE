@@ -6,6 +6,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 type MenuPosition = { top: number; left?: number; right?: number } | null;
 
@@ -121,7 +122,7 @@ export function HelpMenu({
                 padding: 4,
                 borderRadius: 10,
                 background: "var(--color-popup-bg, #141022)",
-                border: "1px solid color-mix(in srgb, var(--color-fg) 12%, transparent)",
+                border: `1px solid ${fgTint(12)}`,
                 boxShadow: "0 16px 40px -10px rgba(0,0,0,0.55), 0 0 0 1px rgba(167,139,250,0.05)",
                 color: "var(--color-fg, #F0F0F2)",
                 fontSize: 12.5,
@@ -253,7 +254,7 @@ function MenuDivider() {
       style={{
         height: 1,
         margin: "4px 0",
-        background: "color-mix(in srgb, var(--color-fg) 8%, transparent)",
+        background: fgTint(8),
       }}
     />
   );

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
@@ -1005,7 +1006,7 @@ function ComposerIdleSendButton({
                 setMenuOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {rows.map((row, index) => (
@@ -1178,7 +1179,7 @@ function ComposerOverflowMenu({
                 setOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="pointer-events-auto absolute flex flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute flex flex-col overflow-hidden", POPOVER_SURFACE_CLASS, "p-1")}
               style={composerSplitMenuPosition(caretRef.current)}
             >
                 {items.map((item) => (
@@ -1694,7 +1695,7 @@ function ActiveTurnSendButton({
               data-active-send-menu
               role="menu"
               aria-label="Send options"
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {offeredModes.map((option, index) => {
@@ -1825,7 +1826,7 @@ function ActiveTurnStopButton({
               data-active-stop-menu
               role="menu"
               aria-label="Stop options"
-              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {visibleModes.map((option, index) => {
@@ -6792,7 +6793,7 @@ export function AgentChatComposer({
               );
             })()}
             {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-(color:--color-surface-recessed) p-0.5">
+              <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-surface-recessed p-0.5">
                 {parallelSlotExecutionModeOptions.map((option) => {
                   const active = parallelSlotExecutionMode === option.value;
                   return (

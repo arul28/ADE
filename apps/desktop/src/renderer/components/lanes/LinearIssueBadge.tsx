@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowSquareOut, ChatCircleText, Check, Clipboard, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue } from "../../../shared/types";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 
 function priorityLabel(issue: LaneLinearIssue): string {
@@ -125,7 +125,7 @@ export function LinearIssueBadge({
         <span
           className="flex items-center gap-2 border-b px-3 py-2"
           style={{
-            borderColor: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+            borderColor: fgTint(5),
             background: LINEAR_BRAND.surface,
           }}
         >
@@ -190,7 +190,7 @@ export function LinearIssueBadge({
                 <span
                   key={label}
                   className="rounded-full px-2 py-0.5 text-[9.5px] text-muted-fg/80"
-                  style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+                  style={{ background: fgTint(4) }}
                 >
                   {label}
                 </span>
@@ -202,7 +202,7 @@ export function LinearIssueBadge({
         {(onStartChatWithIssue || issue.url) ? (
           <span
             className="flex items-center gap-1.5 border-t px-3 py-2"
-            style={{ borderColor: "color-mix(in srgb, var(--color-fg) 5%, transparent)", background: "rgba(0,0,0,0.20)" }}
+            style={{ borderColor: fgTint(5), background: "rgba(0,0,0,0.20)" }}
           >
             {onStartChatWithIssue ? (
               <button

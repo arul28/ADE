@@ -9,6 +9,7 @@ import type { LaneGitHubIssue } from "../../../shared/types";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 type IssueStateFilter = "open" | "closed" | "all";
 
@@ -199,7 +200,7 @@ export function GitHubIssueBrowser({
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
                       <span className="font-mono text-[11px] text-fg/80">{githubIssueIdentifier(issue)}</span>
-                      <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+                      <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: fgTint(6) }}>
                         {issue.state}
                       </span>
                     </span>
@@ -245,7 +246,7 @@ function IssueDetails({
             <GithubLogo size={13} weight="fill" />
           </span>
           <span className="font-mono text-[12px] text-fg/80">{githubIssueIdentifier(issue)}</span>
-          <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+          <span className="rounded px-1.5 py-0.5 text-[10px] capitalize text-muted-fg/70" style={{ background: fgTint(6) }}>
             {issue.state}
           </span>
         </div>
@@ -253,7 +254,7 @@ function IssueDetails({
         {issue.labels.length ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {issue.labels.map((label) => (
-              <span key={label} className="rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-fg/80" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+              <span key={label} className="rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-fg/80" style={{ background: fgTint(6) }}>
                 {label}
               </span>
             ))}

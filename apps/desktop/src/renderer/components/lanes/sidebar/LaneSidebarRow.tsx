@@ -7,7 +7,7 @@ import { ToolLogo } from "../../terminals/ToolLogos";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
-import { COLORS, toneText } from "../laneDesignTokens";
+import { COLORS, toneText, fgTint } from "../laneDesignTokens";
 import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
@@ -83,7 +83,7 @@ function IndentGuides({ indentLevel }: { indentLevel: number }) {
           className="pointer-events-none absolute inset-y-0 w-px"
           style={{
             left: ROW_PAD_X + 5 + index * LANE_SIDEBAR_INDENT_PX,
-            background: "color-mix(in srgb, var(--color-fg) 10%, transparent)",
+            background: fgTint(10),
           }}
         />
       ))}

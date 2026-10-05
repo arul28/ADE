@@ -52,6 +52,7 @@ import {
   dangerButton,
   outlineButton,
   primaryButton,
+  fgTint,
 } from "../lanes/laneDesignTokens";
 import type { SyncConnections } from "./useSyncConnections";
 
@@ -74,7 +75,7 @@ const detailBlockStyle: React.CSSProperties = {
   border: `1px solid ${COLORS.border}`,
   borderRadius: 12,
   padding: 14,
-  background: "color-mix(in srgb, var(--color-fg) 1.5%, transparent)",
+  background: fgTint(1.5),
 };
 
 const panelStyle: React.CSSProperties = {
@@ -649,7 +650,7 @@ function MachineNameRow({
             height: 28,
             borderRadius: 8,
             border: `1px solid ${COLORS.accentBorder}`,
-            background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+            background: COLORS.hoverBg,
             color: COLORS.textPrimary,
             fontFamily: SANS_FONT,
             fontSize: 13,
@@ -1451,13 +1452,13 @@ function PinEditor({
                 color: COLORS.textPrimary,
                 background: filled
                   ? "rgba(167, 139, 250, 0.10)"
-                  : "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+                  : fgTint(6),
                 border: `1px solid ${
                   isFocused
                     ? COLORS.accent
                     : filled
                       ? COLORS.accentBorder
-                      : "color-mix(in srgb, var(--color-fg) 18%, transparent)"
+                      : fgTint(18)
                 }`,
                 borderRadius: 10,
                 outline: "none",

@@ -4,7 +4,7 @@ import type {
   MaintenanceRunReport,
   StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { PANEL_STYLE } from "./storageUiConstants";
 import { journalEntries, maintenanceActionLines, maintenanceHeadline } from "./storageView";
 
@@ -57,7 +57,7 @@ function JournalRow({ run }: { run: MaintenanceRunReport }) {
         padding: "10px 12px",
         borderRadius: 10,
         border: `1px solid ${COLORS.borderMuted}`,
-        background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+        background: fgTint(2.5),
       }}
     >
       <div style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>

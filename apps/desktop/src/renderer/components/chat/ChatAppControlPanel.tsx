@@ -1806,7 +1806,7 @@ export function ChatAppControlPanel({
                 />
                 {screenshotBlank ? (
                   <div className="absolute inset-0 flex items-center justify-center rounded-[9px] border border-amber-300/18 bg-black/70 px-4 text-center backdrop-blur-sm">
-                    <div className="max-w-[360px] text-[11px] leading-5 text-amber-100/85">
+                    <div className="max-w-[360px] text-[11px] leading-5 text-[#fef3c7]/85">
                       Renderer attached, but the screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
                     </div>
                   </div>

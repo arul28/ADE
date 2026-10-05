@@ -345,7 +345,7 @@ function AppleInspectOverlayInner({
       ) : null}
       {chip && chipRect ? (
         <div
-          className="pointer-events-none absolute z-[1] max-w-[220px] truncate rounded-md border border-cyan-300/30 bg-black/72 px-1.5 py-0.5 font-sans text-[10px] text-cyan-100/95 shadow-lg backdrop-blur"
+          className="pointer-events-none absolute z-[1] max-w-[220px] truncate rounded-md border border-cyan-300/30 bg-black/72 px-1.5 py-0.5 font-sans text-[10px] text-[#cffafe]/95 shadow-lg backdrop-blur"
           style={{
             left: chipRect.left,
             top: Math.max(0, chipRect.top - 22),

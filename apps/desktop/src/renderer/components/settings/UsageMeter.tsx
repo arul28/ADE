@@ -52,7 +52,7 @@ export function UsageMeter({
   return (
     <div className={cn("space-y-1.5", className)}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-(color:--color-secondary-fg)">
+        <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-secondary-fg">
           {label}
         </span>
         <span className="font-mono text-[10px] font-bold text-fg">
@@ -107,7 +107,7 @@ export function UsageMeter({
                 className="h-1.5 w-1.5"
                 style={{ background: modelColor(i) }}
               />
-              <span className="font-mono text-[9px] text-[color:color-mix(in_srgb,#8B8B9A_var(--ade-tone-text-strength,100%),var(--color-fg))]">
+              <span className="font-mono text-[9px] text-muted-fg">
                 {model} {pct.toFixed(1)}% {mode}
               </span>
             </div>

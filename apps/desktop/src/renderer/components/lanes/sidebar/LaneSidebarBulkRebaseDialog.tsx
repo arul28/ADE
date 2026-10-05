@@ -109,7 +109,7 @@ export function LaneSidebarBulkRebaseDialog({
           <li
             key={target.lane.id}
             className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
-            style={{ background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+            style={{ background: COLORS.cardBg }}
           >
             <span
               aria-hidden

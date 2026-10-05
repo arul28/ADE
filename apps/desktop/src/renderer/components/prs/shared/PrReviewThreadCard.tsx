@@ -31,6 +31,7 @@ import {
   cardStyle,
   inlineBadge,
   outlineButton,
+  fgTint,
 } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
@@ -639,7 +640,7 @@ export const PrReviewThreadCard = memo(
         {thread.path || canMutate ? (
           <div
             className="flex flex-wrap items-center gap-2 border-t px-4 py-2"
-            style={{ borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-fg) 1%, transparent)" }}
+            style={{ borderColor: COLORS.border, background: fgTint(1) }}
           >
             {thread.path ? (
               <button

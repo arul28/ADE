@@ -20,6 +20,7 @@ import {
   ADE_GITHUB_URL,
   ADE_MOBILE_TESTFLIGHT_URL,
 } from "../../../shared/productLinks";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 type WelcomeVideoGateProps = {
   onVisibilityChange?: (visible: boolean, checking: boolean) => void;
@@ -201,11 +202,11 @@ export function WelcomeVideoGate({ onVisibilityChange, onDismissed }: WelcomeVid
             overflow: "auto",
             transform: "translate(-50%, -50%)",
             borderRadius: 16,
-            border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 22%, var(--color-border, color-mix(in srgb, var(--color-fg) 14%, transparent)))",
+            border: `1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 22%, var(--color-border, ${fgTint(14)}))`,
             background:
               "linear-gradient(180deg, color-mix(in srgb, var(--color-card, #171326) 95%, var(--color-accent, #A78BFA) 5%), var(--color-card, #12101D))",
             boxShadow:
-              "0 24px 80px -24px rgba(0,0,0,0.78), 0 0 0 1px color-mix(in srgb, var(--color-fg) 4%, transparent)",
+              `0 24px 80px -24px rgba(0,0,0,0.78), 0 0 0 1px ${fgTint(4)}`,
             color: "var(--color-fg, #F5F3FF)",
             outline: "none",
           }}
@@ -291,8 +292,8 @@ export function WelcomeVideoGate({ onVisibilityChange, onDismissed }: WelcomeVid
                     width: 30,
                     height: 30,
                     borderRadius: 8,
-                    border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)",
-                    background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                    border: `1px solid ${fgTint(8)}`,
+                    background: fgTint(4),
                     color: "var(--color-muted-fg, #A8A4B8)",
                     cursor: "pointer",
                   }}
@@ -362,7 +363,7 @@ function VideoPanel() {
         border: "1px solid color-mix(in srgb, var(--color-fg, #fff) 12%, transparent)",
         background: "#050507",
         aspectRatio: "16 / 9",
-        boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 4%, transparent)",
+        boxShadow: `inset 0 0 0 1px ${fgTint(4)}`,
         padding: 0,
         cursor: "pointer",
       }}
@@ -655,7 +656,7 @@ function MacBookFrame({ src }: { src: string }) {
           background: "linear-gradient(180deg, #51515d, #26262e)",
           borderRadius: "1px 1px 8px 8px",
           position: "relative",
-          boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--color-fg) 20%, transparent)",
+          boxShadow: `inset 0 1px 0 ${fgTint(20)}`,
         }}
       >
         <div

@@ -22,6 +22,7 @@ import {
   SANS_FONT,
   outlineButton,
   primaryButton,
+  fgTint,
 } from "../lanes/laneDesignTokens";
 
 export type CreateProjectFormProps = {
@@ -78,7 +79,7 @@ const inputStyle: CSSProperties = {
   fontSize: 14,
   fontFamily: SANS_FONT,
   color: COLORS.textPrimary,
-  background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+  background: fgTint(4),
   border: `1px solid ${COLORS.border}`,
   borderRadius: 10,
   outline: "none",

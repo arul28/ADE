@@ -1,4 +1,5 @@
 import { LINEAR_BRAND } from "./linearBrand";
+import { fgTint } from "./laneDesignTokens";
 
 const LINEAR_ICON_ALIASES: Record<string, string> = {
   robot_face: "🤖",
@@ -87,7 +88,7 @@ function projectIconBackground(color: string | null | undefined): string {
     const [r, g, b] = normalized.slice(1).split("");
     return `#${r}${r}${g}${g}${b}${b}30`;
   }
-  return "color-mix(in srgb, var(--color-fg) 8%, transparent)";
+  return fgTint(8);
 }
 
 export function resolveLinearProjectIcon(icon: string | null | undefined): string | null {

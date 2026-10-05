@@ -1,4 +1,5 @@
 import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -247,7 +248,7 @@ export function DraftMachinePicker({
                   role="menu"
                   aria-label="Choose a machine"
                   onKeyDown={handleMenuKeyDown}
-                  className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+                  className={cn("fixed z-[100] flex flex-col overflow-hidden", POPOVER_SURFACE_CLASS, "p-1")}
                   style={{
                     width: placement?.width ?? MENU_WIDTH,
                     left: placement?.left ?? 0,

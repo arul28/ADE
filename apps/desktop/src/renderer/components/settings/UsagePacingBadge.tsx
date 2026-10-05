@@ -60,7 +60,7 @@ export function UsagePacingBadge({
 
       {/* Detailed pacing info */}
       {pacing && pacing.weekElapsedPercent > 0 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[9px] text-[color:color-mix(in_srgb,#8B8B9A_var(--ade-tone-text-strength,100%),var(--color-fg))]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[9px] text-muted-fg">
           {/* Expected vs actual */}
           <span>
             {pacing.deltaPercent > 0 ? "+" : ""}{pacing.deltaPercent.toFixed(1)}% vs expected

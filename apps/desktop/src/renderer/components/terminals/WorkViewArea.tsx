@@ -25,6 +25,7 @@ import { useAppStore, type WorkDraftKind, type WorkGridSet } from "../../state/a
 import { findGridSetForSession } from "../../lib/workGrid";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { TerminalView } from "./TerminalView";
@@ -989,13 +990,13 @@ function SessionSurface({
     <div
       className="flex h-full w-full items-center justify-center px-6"
       style={{
-        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-fg) 5%, transparent) 0%, transparent 42%), var(--color-card)",
+        background: `radial-gradient(circle at top, ${fgTint(5)} 0%, transparent 42%), var(--color-card)`,
       }}
     >
       <div className="ade-liquid-glass-menu flex w-full max-w-md flex-col gap-4 rounded-lg px-5 py-5">
         {/* Header: tool logo + session name */}
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}>
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: fgTint(5) }}>
             <ToolLogo toolType={session.toolType} size={16} />
           </div>
           <div className="min-w-0 flex-1">

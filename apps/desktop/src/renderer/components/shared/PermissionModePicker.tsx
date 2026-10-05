@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
@@ -247,7 +248,7 @@ export function PermissionModePicker<Value extends string>({
                 aria-label={ariaLabel}
                 data-permission-mode-picker-dropdown
                 className={cn(
-                  "absolute overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+                  "absolute overflow-hidden", POPOVER_SURFACE_CLASS,
                 )}
                 style={{
                   ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),

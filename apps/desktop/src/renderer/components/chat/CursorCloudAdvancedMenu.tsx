@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 
 import type { CursorCloudExistingPr } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import {
   computeLanePopoverPlacement,
@@ -136,7 +137,7 @@ export function CursorCloudAdvancedMenu({
             role="menu"
             aria-label="Cursor Cloud advanced"
             data-cursor-cloud-advanced-menu
-            className="fixed z-[100] overflow-hidden rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+            className={cn("fixed z-[100] overflow-hidden", POPOVER_SURFACE_CLASS, "p-1.5")}
             style={{
               width: placement?.width ?? MENU_WIDTH,
               left: placement?.left ?? 0,

@@ -10,7 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
-import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, fgTint } from "../lanes/laneDesignTokens";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   SettingsManagerPage,
@@ -604,7 +604,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             }}>
               <div style={{
                 width: 40, height: 40, borderRadius: 10,
-                background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                background: fgTint(4),
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}>
                 <Key size={20} weight="duotone" style={{ color: COLORS.textMuted }} />
@@ -632,7 +632,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   }}
                   style={{
                     flex: 1, height: 36, borderRadius: 8,
-                    background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+                    background: COLORS.cardBg,
                     border: `1px solid ${COLORS.border}`,
                     padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT,
                     color: COLORS.textPrimary, outline: "none",
@@ -708,7 +708,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             gap: 12,
             padding: "9px 11px",
             borderRadius: 8,
-            background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+            background: COLORS.cardBg,
             border: `1px solid ${COLORS.border}`,
             marginBottom: 10,
           }}>

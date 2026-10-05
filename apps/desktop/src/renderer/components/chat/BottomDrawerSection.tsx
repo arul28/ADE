@@ -22,7 +22,7 @@ export function BottomDrawerSection({
   className?: string;
 }) {
   return (
-    <div className={cn("border-t border-fg/[0.06] bg-(color:--color-surface-recessed)/60", className)}>
+    <div className={cn("border-t border-fg/[0.06] bg-surface-recessed/60", className)}>
       <button
         type="button"
         className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"

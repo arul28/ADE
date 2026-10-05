@@ -300,7 +300,7 @@ export function AboutSection() {
                 padding: "10px 12px",
                 borderRadius: 9,
                 border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
-                background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+                background: COLORS.cardBg,
               }}
             >
               <div style={{ minWidth: 0 }}>

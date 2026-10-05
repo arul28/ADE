@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { PaperPlaneTilt, Paperclip } from "@phosphor-icons/react";
 import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
-import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ChatAttachmentTray } from "../chat/ChatAttachmentTray";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 
@@ -261,7 +261,7 @@ export function MentionInput({
                 disabled={disabled}
                 className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] transition-opacity hover:opacity-90 disabled:opacity-40"
                 style={{
-                  border: "1px solid color-mix(in srgb, var(--chat-accent) 18%, color-mix(in srgb, var(--color-fg) 8%, transparent))",
+                  border: `1px solid color-mix(in srgb, var(--chat-accent) 18%, ${fgTint(8)})`,
                   background: "color-mix(in srgb, var(--chat-accent) 10%, rgba(16,12,24,0.92))",
                   color: "color-mix(in srgb, var(--color-fg) 85%, var(--color-bg))",
                   fontFamily: MONO_FONT,

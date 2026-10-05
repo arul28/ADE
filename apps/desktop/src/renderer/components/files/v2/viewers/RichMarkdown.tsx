@@ -29,6 +29,7 @@ import type { Root, Element as HastElement, Text as HastText } from "hast";
 import { cn } from "../../../ui/cn";
 import { openUrlInAdeBrowser } from "../../../../lib/openExternal";
 import { MermaidDiagram } from "../../../shared/MermaidDiagram";
+import { fgTint } from "../../../lanes/laneDesignTokens";
 
 export type RichMarkdownProps = {
   source: string;
@@ -220,7 +221,7 @@ function buildComponents({
     th: ({ children }) => (
       <th
         className="break-words px-2 py-1 font-semibold text-fg/80"
-        style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 8%, transparent)" }}
+        style={{ border: `1px solid ${fgTint(8)}` }}
       >
         {children}
       </th>
@@ -228,7 +229,7 @@ function buildComponents({
     td: ({ children }) => (
       <td
         className="break-words px-2 py-1 align-top text-fg/70"
-        style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)" }}
+        style={{ border: `1px solid ${fgTint(6)}` }}
       >
         {children}
       </td>
@@ -268,8 +269,8 @@ function buildComponents({
         <pre
           className="mb-3 overflow-auto rounded-md p-3 font-mono text-[11px] leading-[1.55]"
           style={{
-            background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-fg) 6%, transparent)",
+            background: fgTint(2.5),
+            border: `1px solid ${fgTint(6)}`,
           }}
         >
           {children}
@@ -283,7 +284,7 @@ function buildComponents({
       return (
         <code
           className="rounded-sm px-1 py-0.5 font-mono text-[11px] text-fg/80"
-          style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}
+          style={{ background: fgTint(5) }}
         >
           {children}
         </code>

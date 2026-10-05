@@ -12,7 +12,7 @@ import {
   SCENE_SETTLE_QUIET_MS,
   type SceneTheme,
 } from "../../../shared/chatScene";
-import { COLORS } from "../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../lanes/laneDesignTokens";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { HighlightedCode } from "./CodeHighlighter";
 import { rememberSceneStill } from "./sceneStillStore";
@@ -71,7 +71,7 @@ function readSceneTheme(): SceneTheme {
     };
     return {
       bg: read("--color-bg", SCENE_FALLBACK_THEME.bg),
-      surface: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)",
+      surface: fgTint(3.5),
       border: read("--color-border", SCENE_FALLBACK_THEME.border),
       fg: read("--color-fg", SCENE_FALLBACK_THEME.fg),
       fgMuted: read("--color-muted-fg", SCENE_FALLBACK_THEME.fgMuted),

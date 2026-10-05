@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { TerminalWindow, ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
 import type { AdeCliStatus } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import { rendererPlatformAttribute } from "../../lib/platform";
 import { SettingsCard, SettingsGroup } from "./primitives";
 import { Banner } from "../ui/notice";
@@ -185,7 +185,7 @@ function codeStyle(): CSSProperties {
     fontSize: 11,
     padding: "1px 4px",
     borderRadius: 4,
-    background: "color-mix(in srgb, var(--color-fg) 8%, transparent)",
+    background: fgTint(8),
     color: COLORS.textPrimary,
   };
 }

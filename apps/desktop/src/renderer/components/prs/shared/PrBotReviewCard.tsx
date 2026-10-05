@@ -9,7 +9,7 @@ import devinMark from "../../../assets/provider-logos/devin.svg";
 
 import type { PrReview } from "../../../../shared/types";
 import { classifyPrAuthor } from "../../../../shared/prBotIdentity";
-import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, inlineBadge, fgTint } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
@@ -224,7 +224,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
       {open && body ? (
         <div
           className="border-t px-4 py-3"
-          style={{ borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-fg) 1%, transparent)" }}
+          style={{ borderColor: COLORS.border, background: fgTint(1) }}
         >
           <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
             {body}

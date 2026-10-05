@@ -14,7 +14,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeTarget,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { ThisComputerStatus } from "../remoteTargets/ThisComputerStatus";
 import {
@@ -69,7 +69,7 @@ function tabStyle(active: boolean): CSSProperties {
     fontWeight: 600,
     color: active ? COLORS.textPrimary : COLORS.textMuted,
     background: active
-      ? "color-mix(in srgb, var(--color-fg) 10%, transparent)"
+      ? fgTint(10)
       : "transparent",
     transition: "background-color 120ms, color 120ms",
   };

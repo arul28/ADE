@@ -2849,7 +2849,7 @@ function ProjectLocationChooser({
                   : "Projects on this computer"}
               </span>
               {isRemote ? (
-                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:color-mix(in_srgb,#FBBF24_var(--ade-tone-text-strength,100%),var(--color-fg))]">
+                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-tone-[#FBBF24]">
                   Connected
                 </span>
               ) : null}
