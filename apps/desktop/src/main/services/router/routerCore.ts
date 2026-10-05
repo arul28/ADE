@@ -91,12 +91,13 @@ const TEST_WORDS = /\b(run (the )?(tests?|suite|ci)|typecheck|lint|test shard|fl
  * A brief that forbids all edits: the strongest signal a prompt carries. A
  * scoped ban ("do not edit anything under apps/ios", "never touch the owner's
  * machines") is an edit brief with a fence, so the object must be every file.
- */const NO_EDIT_BAN = /\b(report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
+ */
+const NO_EDIT_BAN = /\b(report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
 /** "Read-only research", "read-only:": a no-edit rule, but often about one step ("start by doing read-only analysis"). */
-const READ_ONLY_PHRASE = /(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])/i;
+const READ_ONLY_PHRASE = /(?<!\b(doing|by|with)\s)\bread[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])/i;
 /** "Read-only" in a brief's opening lines is a whole-task rule; later it is about one command or file. */
-const OPENING_READ_ONLY = /^[\s\S]{0,160}(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\b/i;
-const OPENING_READ_ONLY_WORD = /(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\b/i;
+const OPENING_READ_ONLY = /^[\s\S]{0,160}(?<!\b(doing|by|with)\s)\bread[- ]only\b/i;
+const OPENING_READ_ONLY_WORD = /(?<!\b(doing|by|with)\s)\bread[- ]only\b/i;
 /** Boilerplate every ADE brief carries; it says nothing about the task. */
 const BRIEF_BOILERPLATE = /do not start subagents or parallel reviewers; do all the work yourself\.?/gi;
 /** "Read /tmp/brief.md and follow it": an instruction to load the brief, not a read task. */

@@ -60,6 +60,8 @@ const MAX_PENDING = 500;
 /** A subagent with no result after this long is logged without an outcome. */
 const PENDING_GIVE_UP_MS = 6 * 3_600_000;
 const STALE_SWEEP_MS = 60_000;
+/** How often the timer checks, so a quiet brain logs a stale subagent within an hour of its give-up time. */
+const STALE_TIMER_MS = 3_600_000;
 /** Briefs kept for classification; only the opening matters. */
 const PROMPT_KEEP_CHARS = 4_000;
 const MAX_PROMPTS = 200;
@@ -267,9 +269,6 @@ export function createModelRouterService(args: {
    */
   const settled = new Map<string, { runs: number; prompt: string | null; description: string; agentType: string | null }>();
   let lastSweepMs = 0;
-  // A quiet brain sends no events, so a timer also gives up on stale subagents.
-  const sweepTimer = enabled ? setInterval(() => sweepStale(), PENDING_GIVE_UP_MS / 6) : null;
-  sweepTimer?.unref?.();
   let warnedWrite = false;
 
   const append = (row: RouterShadowDecisionRow | RouterShadowOutcomeRow): void => {
@@ -507,8 +506,19 @@ export function createModelRouterService(args: {
     while (pending.size > MAX_PENDING) settle(pending.values().next().value!, null);
   };
 
-  const onSubagentResult = (sessionId: string, event: Extract<AgentChatEvent, { type: "subagent_result" }>): void => {
+  /**
+   * The pending run an event belongs to. A result or progress row from a run
+   * that a follow-up already replaced (another tool call) is not this run's.
+   */
+  const pendingRunFor = (sessionId: string, event: { taskId: string; parentToolUseId?: string | null }): PendingSubagent | undefined => {
     const entry = pending.get(`${sessionId}:${event.taskId}`);
+    const toolUse = event.parentToolUseId ?? null;
+    if (entry && toolUse && entry.parentToolUseId && toolUse !== entry.parentToolUseId) return undefined;
+    return entry;
+  };
+
+  const onSubagentResult = (sessionId: string, event: Extract<AgentChatEvent, { type: "subagent_result" }>): void => {
+    const entry = pendingRunFor(sessionId, event);
     if (!entry) return;
     mergeFacts(entry, event);
     settle(entry, event);
@@ -537,6 +547,9 @@ export function createModelRouterService(args: {
       if (nowMs - entry.startedAtMs > PENDING_GIVE_UP_MS) settle(entry, null);
     }
   };
+  // A quiet brain sends no events, so a timer also gives up on stale subagents.
+  const sweepTimer = enabled ? setInterval(sweepStale, STALE_TIMER_MS) : null;
+  sweepTimer?.unref?.();
 
   const readShadowRows = async (sinceMs: number): Promise<Array<RouterShadowDecisionRow | RouterShadowOutcomeRow>> => {
     const rows: Array<RouterShadowDecisionRow | RouterShadowOutcomeRow> = [];
@@ -580,7 +593,7 @@ export function createModelRouterService(args: {
             onSubagentStarted(sessionId, event, session);
             break;
           case "subagent_progress": {
-            const entry = pending.get(`${sessionId}:${event.taskId}`);
+            const entry = pendingRunFor(sessionId, event);
             if (entry) mergeFacts(entry, event);
             break;
           }

@@ -25574,14 +25574,13 @@ export function createAgentChatService(args: {
         parentToolUseId,
         background: patch.is_backgrounded === true || existing?.background === true,
         finalSummary: existing?.finalSummary,
-        ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
         ...(agentType ? { agentType } : {}),
         ...(agentId ? { agentId } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...(workflowProgress ? { workflowProgress } : {}),
-        ...(model ? { model } : {}),
+        ...optionalSubagentModelFields(model, existing?.reasoningEffort),
       });
       closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
         workflowName,
@@ -25644,14 +25643,13 @@ export function createAgentChatService(args: {
       parentToolUseId,
       background: patch.is_backgrounded === true || existing?.background === true,
       finalSummary: existing?.finalSummary,
-      ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
       ...(agentType ? { agentType } : {}),
       ...(agentId ? { agentId } : {}),
       ...(parentAgentId ? { parentAgentId } : {}),
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
       ...(workflowProgress ? { workflowProgress } : {}),
-      ...(model ? { model } : {}),
+      ...optionalSubagentModelFields(model, existing?.reasoningEffort),
     });
     emitChatEvent(managed, {
       type: "subagent_progress",
@@ -27543,7 +27541,6 @@ export function createAgentChatService(args: {
             parentToolUseId,
             background: existing?.background,
             finalSummary: existing?.finalSummary,
-            ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
             ...(parentAgentId ? { parentAgentId } : {}),
@@ -27552,7 +27549,7 @@ export function createAgentChatService(args: {
             ...(workflowProgress ?? existing?.workflowProgress
               ? { workflowProgress: workflowProgress ?? existing?.workflowProgress }
               : {}),
-            ...(model ? { model } : {}),
+            ...optionalSubagentModelFields(model, existing?.reasoningEffort),
             ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
           });
           emitChatEvent(managed, {
@@ -27667,14 +27664,13 @@ export function createAgentChatService(args: {
               parentToolUseId,
               background,
               finalSummary: existing?.finalSummary,
-              ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
               ...(agentType ? { agentType } : {}),
               ...(agentId ? { agentId } : {}),
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(workflowProgress ? { workflowProgress } : {}),
-              ...(model ? { model } : {}),
+              ...optionalSubagentModelFields(model, existing?.reasoningEffort),
             });
             closeClaudeWorkflowAgentTracker(managed, runtime, taskId, {
               workflowName,
@@ -27736,14 +27732,13 @@ export function createAgentChatService(args: {
               parentToolUseId,
               background,
               finalSummary: existing?.finalSummary,
-              ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
               ...(agentType ? { agentType } : {}),
               ...(agentId ? { agentId } : {}),
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(workflowProgress ? { workflowProgress } : {}),
-              ...(model ? { model } : {}),
+              ...optionalSubagentModelFields(model, existing?.reasoningEffort),
               ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             });
             emitChatEvent(managed, {
@@ -37478,8 +37473,7 @@ export function createAgentChatService(args: {
                 ...(existing?.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
                 ...(existing?.taskType ? { taskType: existing.taskType } : {}),
                 ...(existing?.workflowName ? { workflowName: existing.workflowName } : {}),
-                ...(resolvedModel ? { model: resolvedModel } : {}),
-                ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
+                ...optionalSubagentModelFields(resolvedModel, existing?.reasoningEffort),
               });
             }
             return { continue: true };
@@ -37511,8 +37505,7 @@ export function createAgentChatService(args: {
                   ...(existing?.agentType ? { agentType: existing.agentType } : {}),
                   ...(existing?.taskType ? { taskType: existing.taskType } : {}),
                   ...(existing?.command ? { command: existing.command } : {}),
-                  ...(existing?.model ? { model: existing.model } : {}),
-                  ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
+                  ...optionalSubagentModelFields(existing?.model, existing?.reasoningEffort),
                   finalSummary,
                 });
                 for (const [key, entry] of runtime.activeSubagents) {
