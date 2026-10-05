@@ -125,17 +125,28 @@ function laneForLocation(
   location: ProcessLocation | undefined,
   roots: Array<{ laneId: string; root: string }>,
   platform: NodeJS.Platform,
+  adePids: ReadonlySet<number>,
 ): string | null {
   if (!location) return null;
   if (location.cwd) {
     return roots.find((entry) => isPathInside(location.cwd, entry.root, platform))?.laneId ?? null;
   }
-  if (location.commandLine) {
-    // Windows exposes no other process's cwd; a dev server's command line
-    // names its worktree (`node C:\…\lane\node_modules\vite\bin\vite.js`).
-    const unified = platform === "win32" ? location.commandLine.replace(/\//g, "\\") : location.commandLine;
+  // Windows exposes no other process's cwd. A dev server's own command line
+  // usually names its worktree (`node C:\…\lane\node_modules\vite\bin\vite.js`);
+  // when it does not (`node server.js`), the nearest parent that does decides.
+  // The walk stops at ADE itself, whose command line names the project root
+  // and would claim every process it ever launched for the primary lane.
+  const lines = [location.commandLine];
+  for (const ancestor of location.ancestors ?? []) {
+    if (adePids.has(ancestor.pid)) break;
+    lines.push(ancestor.commandLine);
+  }
+  for (const raw of lines) {
+    if (!raw) continue;
+    const unified = platform === "win32" ? raw.replace(/\//g, "\\") : raw;
     const commandLine = pathComparisonKey(unified, platform);
-    return roots.find((entry) => commandLineNamesPath(commandLine, pathKey(entry.root, platform)))?.laneId ?? null;
+    const lane = roots.find((entry) => commandLineNamesPath(commandLine, pathKey(entry.root, platform)));
+    if (lane) return lane.laneId;
   }
   return null;
 }
@@ -173,7 +184,7 @@ export function createDevServerWatcher(args: {
       if (excludePids.has(socket.pid)) continue;
       if (socket.port < MIN_DEV_SERVER_PORT || NON_PAGE_PORTS.has(socket.port)) continue;
       if (socket.command && NON_PAGE_COMMANDS.test(socket.command)) continue;
-      const laneId = laneForLocation(result.locations.get(socket.pid), roots, platform);
+      const laneId = laneForLocation(result.locations.get(socket.pid), roots, platform, excludePids);
       if (!laneId) continue;
       found.set(devServerKey(laneId, socket.port), { laneId, port: socket.port });
     }

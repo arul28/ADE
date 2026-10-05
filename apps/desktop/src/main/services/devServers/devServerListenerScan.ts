@@ -27,6 +27,12 @@ export type ProcessLocation = {
   cwd: string | null;
   /** Full command line (Windows, which does not expose another process's cwd). */
   commandLine: string | null;
+  /**
+   * Windows: the process's parents, nearest first. A
+   * `node server.js` started from a shell in the lane names no path itself,
+   * but the shell or script that launched it often does.
+   */
+  ancestors?: Array<{ pid: number; commandLine: string | null }>;
 };
 
 export type RunText = (command: string, args: string[], timeoutMs: number) => Promise<string>;
@@ -104,12 +110,20 @@ function parseLsofCwds(text: string): Map<number, string> {
   return cwds;
 }
 
+/** How far up the parent chain a Windows listener is traced to find its lane. */
+const WINDOWS_ANCESTOR_DEPTH = 6;
+
 const WINDOWS_LISTENER_QUERY = [
   "$ErrorActionPreference = 'SilentlyContinue'",
+  "$procs = @{}",
+  "foreach ($p in @(Get-CimInstance Win32_Process)) { $procs[[int]$p.ProcessId] = $p }",
   "$rows = @(Get-NetTCPConnection -State Listen | Group-Object -Property OwningProcess | ForEach-Object {",
-  "  $proc = Get-CimInstance Win32_Process -Filter \"ProcessId = $($_.Name)\"",
+  "  $proc = $procs[[int]$_.Name]",
   "  $ports = @($_.Group | Select-Object -ExpandProperty LocalPort | Sort-Object -Unique)",
-  "  [ordered]@{ pid = [int]$_.Name; ports = $ports; name = [string]$proc.Name; commandLine = [string]$proc.CommandLine }",
+  "  $chain = @()",
+  "  $parent = if ($proc) { $procs[[int]$proc.ParentProcessId] } else { $null }",
+  `  for ($i = 0; $i -lt ${WINDOWS_ANCESTOR_DEPTH} -and $parent; $i++) { $chain += [ordered]@{ pid = [int]$parent.ProcessId; commandLine = [string]$parent.CommandLine }; $parent = $procs[[int]$parent.ParentProcessId] }`,
+  "  [ordered]@{ pid = [int]$_.Name; ports = $ports; name = [string]$proc.Name; commandLine = [string]$proc.CommandLine; ancestors = $chain }",
   "})",
   "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress -Depth 3))",
 ].join("; ");
@@ -119,6 +133,7 @@ type WindowsListenerRow = {
   ports?: unknown;
   name?: unknown;
   commandLine?: unknown;
+  ancestors?: unknown;
 };
 
 /**
@@ -165,9 +180,18 @@ export async function scanListeningProcesses(input: {
           sockets.push({ pid, port, command: typeof row.name === "string" ? row.name : null });
         }
       }
+      const ancestors = (Array.isArray(row.ancestors) ? row.ancestors : [row.ancestors])
+        .flatMap((value) => {
+          const ancestor = value as { pid?: unknown; commandLine?: unknown } | null;
+          const ancestorPid = Number(ancestor?.pid);
+          if (!Number.isInteger(ancestorPid) || ancestorPid <= 0) return [];
+          const line = typeof ancestor?.commandLine === "string" ? ancestor.commandLine.trim() : "";
+          return [{ pid: ancestorPid, commandLine: line || null }];
+        });
       locations.set(pid, {
         cwd: null,
         commandLine: typeof row.commandLine === "string" && row.commandLine.trim() ? row.commandLine : null,
+        ancestors,
       });
     }
     return { sockets, locations };

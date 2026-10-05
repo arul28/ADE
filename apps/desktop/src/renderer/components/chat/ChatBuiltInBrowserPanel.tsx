@@ -1017,6 +1017,12 @@ export function ChatBuiltInBrowserPanel({
           pin,
         ).catch(() => {});
       };
+      // `ade browser panel` with no URL: the pane is on screen (Work opened it
+      // for this request), and there is nothing to load.
+      if (!request.url.trim()) {
+        await acknowledge({ accepted: true, reason: null });
+        return;
+      }
       /*
         The requester gives up after 5 seconds, and nobody answers an approval
         bar in 5 seconds. So the moment a bar goes up the desktop says "I took

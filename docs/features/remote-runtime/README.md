@@ -725,8 +725,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     **A machine WITH a desktop also reaches the user's other screen.** When the
     Mac Studio runs ADE Desktop, its bridge takes every browser call, because an
     agent drives the tab it opened through that bridge (`observe`, `click`). A
-    call that asks to show the user (`openPanel: true`, which is what
-    `ade browser open --panel` sends) is also forwarded as a
+    call that asks to show the user (`showPanel`, which `ade browser panel`
+    sends, or `openPanel: true`, which `ade browser open --panel` sends) is
+    also forwarded as a
     `built_in_browser_remote_request`, addressed to the desktop that sent the
     chat its last message (see "Which desktop shows it" below). When that
     desktop is another machine, the Studio's own copy loads without revealing
@@ -1371,6 +1372,12 @@ screen of the person talking to the chat, not on both.
   (`renderer/lib/desktopClient.ts`). An `ade ui show` that the target does not
   answer within 4 s goes out again with no target. It keeps the same request
   id, so the target ignores the repeat if it was only slow.
+- **Unacknowledged requests only follow a recent sender.** Automatic float
+  offers and Apple drawer reveals have no answer to fall back on, so they are
+  addressed to the sender only while its last message is under 10 minutes old
+  (`RECENT_INPUT_ORIGIN_MS`), and to every desktop after that. When the
+  addressed desktop answers `held`, `ade ui show` asks every desktop at once
+  and waits 3.5 s for one of them to show it.
 - **Unknown means everywhere.** After a runtime restart, or for a chat nobody
   has messaged from a desktop, requests carry no target and every desktop
   showing the chat acts, as before.

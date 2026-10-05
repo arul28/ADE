@@ -9,7 +9,13 @@ import { parseSessionInputOrigin, type SessionInputOrigin } from "../../../share
  */
 
 const MAX_SESSIONS = 512;
-const origins = new Map<string, SessionInputOrigin>();
+/**
+ * How long a sender is trusted for requests nobody acknowledges (automatic
+ * float offers, Apple drawer reveals). Those cannot fall back when the desktop
+ * is gone, so after a quiet spell they go to every desktop instead.
+ */
+export const RECENT_INPUT_ORIGIN_MS = 10 * 60_000;
+const origins = new Map<string, { origin: SessionInputOrigin; at: number }>();
 
 /**
  * Record the stamp a message carried. A message without one (the phone, the
@@ -22,14 +28,21 @@ export function noteSessionInputOrigin(sessionId: string | null | undefined, val
   origins.delete(id);
   const origin = parseSessionInputOrigin(value);
   if (!origin) return;
-  origins.set(id, origin);
+  origins.set(id, { origin, at: Date.now() });
   if (origins.size > MAX_SESSIONS) {
     const oldest = origins.keys().next().value;
     if (oldest) origins.delete(oldest);
   }
 }
 
-export function getSessionInputOrigin(sessionId: string | null | undefined): SessionInputOrigin | null {
+/** The last sender; with `maxAgeMs`, only when that message is that recent. */
+export function getSessionInputOrigin(
+  sessionId: string | null | undefined,
+  options: { maxAgeMs?: number } = {},
+): SessionInputOrigin | null {
   const id = sessionId?.trim();
-  return id ? origins.get(id) ?? null : null;
+  const entry = id ? origins.get(id) : undefined;
+  if (!entry) return null;
+  if (options.maxAgeMs != null && Date.now() - entry.at > options.maxAgeMs) return null;
+  return entry.origin;
 }

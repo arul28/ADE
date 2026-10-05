@@ -50,6 +50,12 @@ export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
 export const WORK_TOOL_SHOW_RETARGET_MS = 4_000;
 
 /**
+ * After the targeted desktop answers `held`, how long the others get to answer
+ * `shown`: their own on-screen wait is up to 3 s.
+ */
+export const WORK_TOOL_SHOW_RETARGET_HELD_GRACE_MS = 3_500;
+
+/**
  * One automatic float offer per chat and device in this window. An agent taps
  * many times a second; the renderer only needs to hear "an agent is driving the
  * device" again after it had a chance to change its mind.
@@ -128,8 +134,12 @@ function trimmedOrNull(value: unknown): string | null {
 export function createWorkToolShowRequests(args: {
   emitEvent: (payload: Record<string, unknown>) => void;
   logger?: Logger | null;
-  /** The desktop that sent a chat its last message, when one is known. */
-  resolveTargetClientId?: (chatSessionId: string) => string | null;
+  /**
+   * The desktop that sent a chat its last message, when one is known. `auto`
+   * requests are never acknowledged, so the resolver may answer null for a
+   * sender that has gone quiet.
+   */
+  resolveTargetClientId?: (chatSessionId: string, kind: "show" | "auto") => string | null;
   ackTimeoutMs?: number;
   heldGraceMs?: number;
   retargetMs?: number;
@@ -157,7 +167,7 @@ export function createWorkToolShowRequests(args: {
     laneId,
     auto,
     requestedAt: new Date(now()).toISOString(),
-    targetClientId: args.resolveTargetClientId?.(chatSessionId) ?? null,
+    targetClientId: args.resolveTargetClientId?.(chatSessionId, auto ? "auto" : "show") ?? null,
   });
 
   const publish = (request: WorkToolShowRequest): boolean => {
@@ -253,7 +263,7 @@ export function createWorkToolShowRequests(args: {
         const retargetTimer = request.targetClientId
           ? setTimeout(() => {
             const entry = pending.get(request.requestId);
-            if (!entry || entry.held) return;
+            if (!entry) return;
             entry.retargetTimer = null;
             publish({ ...request, targetClientId: null });
           }, retargetMs)
@@ -277,7 +287,16 @@ export function createWorkToolShowRequests(args: {
       if (!entry.held) {
         const held: HeldAnswer = { desktopLabel, opened };
         entry.held = held;
-        const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), heldGraceMs);
+        // The targeted desktop cannot show it now. Ask every desktop at once,
+        // and wait long enough for one of them to put it on screen.
+        let graceMs = heldGraceMs;
+        if (entry.retargetTimer) {
+          clearTimeout(entry.retargetTimer);
+          entry.retargetTimer = null;
+          publish({ ...entry.request, targetClientId: null });
+          graceMs = Math.max(heldGraceMs, WORK_TOOL_SHOW_RETARGET_HELD_GRACE_MS);
+        }
+        const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), graceMs);
         heldTimer.unref?.();
         entry.heldTimer = heldTimer;
       } else if (opened && !entry.held.opened) {

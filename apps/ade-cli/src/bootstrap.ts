@@ -214,7 +214,10 @@ import {
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
 import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
-import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import {
+  getSessionInputOrigin,
+  RECENT_INPUT_ORIGIN_MS,
+} from "../../desktop/src/main/services/chat/sessionInputOrigins";
 import { probeLocalhostPort } from "../../desktop/src/main/services/probeLocalhostPort";
 import {
   DEV_SERVER_EVENT,
@@ -1599,7 +1602,10 @@ export async function createAdeRuntime(args: {
           type: "ios_simulator_event",
           // An agent revealing the device opens it where the user is talking from.
           event: event.type === "drawer-open-requested" && event.chatSessionId
-            ? { ...event, targetClientId: getSessionInputOrigin(event.chatSessionId)?.clientId ?? null }
+            ? {
+              ...event,
+              targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
+            }
             : event,
         }),
         // Lane-device cleanup and idle power-off for this project.
@@ -1891,7 +1897,10 @@ export async function createAdeRuntime(args: {
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
         // Show it on the screen of whoever is talking to the chat.
-        resolveTargetClientId: (chatSessionId) => getSessionInputOrigin(chatSessionId)?.clientId ?? null,
+        resolveTargetClientId: (chatSessionId, kind) => getSessionInputOrigin(
+          chatSessionId,
+          kind === "auto" ? { maxAgeMs: RECENT_INPUT_ORIGIN_MS } : {},
+        )?.clientId ?? null,
       }),
       devServers: devServerWatcher
         ? {
