@@ -8,9 +8,12 @@ import {
   defaultLockPath,
   ensureDirMode700,
   ensureMode600,
+  type CredentialFileStatSnapshot,
   isEnoent,
   isEexist,
+  isSameCredentialFileStat,
   isSamePath,
+  readCredentialFileStatSnapshot,
   readJsonObject,
   readJsonObjectAsync,
   unlinkIfExists,
@@ -745,6 +748,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastQuarantineProbeAt = 0;
   private pendingRebind: NodeJS.Timeout | null = null;
   private lastAsyncKeyMaterial: Buffer | null = null;
+  /** Whether the latest synchronous read had nothing left to write. */
+  private lastReadSettled = false;
+  /** See {@link readSettledCache}. */
+  private settledRead: {
+    stat: NonNullable<CredentialFileStatSnapshot>;
+    values: Record<string, string>;
+    expiresAt: number;
+  } | null = null;
 
   constructor(args: {
     secretsDir?: string;
@@ -834,12 +845,56 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeCredentialKey(key);
+    const settled = this.readSettledCache();
+    if (settled) return settled[normalized] ?? null;
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
     // exclude concurrent writers.
-    return this.withLock(
-      () => this.readAll({ forWrite: false, rebind: true })[normalized] ?? null,
-    );
+    return this.withLock(() => {
+      const values = this.readAll({ forWrite: false, rebind: true });
+      this.rememberSettledRead(values);
+      return values[normalized] ?? null;
+    });
+  }
+
+  /**
+   * The values of the last locked read, while the file is provably unchanged.
+   *
+   * Every locked read creates, writes and deletes a lock file, re-reads the
+   * machine key and decrypts the whole store. On Windows, where file creation
+   * and deletion pass through Defender, a CPU profile of the brain spent about
+   * 13 s of every 10 minutes on exactly that for `getSync` alone, and the brain
+   * calls it several times a second (account lease, session reads).
+   *
+   * Reusing a read is safe only while it has nothing left to do: it opened the
+   * store, the store was already sealed to the machine key (no rebind owed),
+   * and no quarantined store was merged in. Any write by any process replaces
+   * the file by rename, which changes its `ino`/`mtime`/`size` — the same
+   * signal {@link CredentialFileStatWatcher} relies on — so one `stat` proves
+   * the values current. The entry also expires with the quarantine probe
+   * interval, so a quarantined store is still looked for as often as before.
+   */
+  private readSettledCache(): Record<string, string> | null {
+    const entry = this.settledRead;
+    if (!entry) return null;
+    const stat = Date.now() < entry.expiresAt
+      ? readCredentialFileStatSnapshot(this.credentialsPath)
+      : undefined;
+    if (!stat || !isSameCredentialFileStat(stat, entry.stat)) {
+      this.settledRead = null;
+      return null;
+    }
+    this.lastReadState = "available";
+    this.lastReadFailureReason = null;
+    return entry.values;
+  }
+
+  private rememberSettledRead(values: Record<string, string>): void {
+    this.settledRead = null;
+    if (this.lastReadState !== "available" || !this.lastReadSettled) return;
+    const stat = readCredentialFileStatSnapshot(this.credentialsPath);
+    if (!stat) return;
+    this.settledRead = { stat, values, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS };
   }
 
   getLastReadState(): CredentialStoreReadState {
@@ -997,6 +1052,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readAll(
     args: { forWrite: boolean; rebind?: boolean },
   ): Record<string, string> {
+    this.lastReadSettled = false;
     const credentialsExist = fs.existsSync(this.credentialsPath);
     let raw: Record<string, unknown> | null;
     try {
@@ -1080,6 +1136,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       }
       const recovered = this.recoverQuarantinedStore(values, machineKey, material);
       if (recovered) values = recovered;
+      this.lastReadSettled = attempt.sealedBinding === "machine" && !recovered;
     }
     return values;
   }
@@ -1283,6 +1340,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
    * machine key is the one key all three can derive. See `CredentialStoreBinding`.
    */
   private writeAll(values: Record<string, string>): void {
+    this.settledRead = null;
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     writeFileAtomic(
       this.credentialsPath,
