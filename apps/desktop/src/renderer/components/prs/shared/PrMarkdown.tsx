@@ -24,7 +24,7 @@ import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
-import { PrMermaid } from "./PrMermaid";
+import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
   GITHUB_ALERT,
   PrAlertCallout,
@@ -713,7 +713,7 @@ function buildPrOverrides({
         const language = match ? match[1] : "text";
         const codeText = extractLinkText(props?.children).replace(/\n$/, "");
         if (language === "mermaid") {
-          return <PrMermaid source={codeText} />;
+          return <MermaidDiagram source={codeText} variant="pr" renderCode={(code) => <HighlightedCode code={code} language="mermaid" />} />;
         }
         // ```ts apps/desktop/src/foo.ts — the info string after the language
         // names the file, so the block gets a file header and a copy button.
@@ -736,7 +736,7 @@ function buildPrOverrides({
       // (instead of `pre > code`), still render the diagram rather than raw
       // source. The `pre` override normally intercepts this first.
       if (className && /language-mermaid\b/.test(className)) {
-        return <PrMermaid source={extractLinkText(children).replace(/\n$/, "")} />;
+        return <MermaidDiagram source={extractLinkText(children).replace(/\n$/, "")} variant="pr" renderCode={(code) => <HighlightedCode code={code} language="mermaid" />} />;
       }
       // Fenced blocks are handled by `pre`. Inline code stays small & mono.
       if (className && /language-/.test(className)) {

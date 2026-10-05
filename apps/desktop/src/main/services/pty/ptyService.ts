@@ -28,6 +28,7 @@ import {
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
+import { signalProcessGroup } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
 import type { OpenCodeServerLease } from "../opencode/openCodeServer";
@@ -348,7 +349,7 @@ function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals):
     // a new session, making the child both session and process-group leader.
     // Targeting `-pid` therefore signals the PTY group in one syscall, instead
     // of recursively running synchronous `pgrep` calls on the main thread.
-    process.kill(-Math.trunc(rootPid), signal);
+    signalProcessGroup(Math.trunc(rootPid), signal);
     return true;
   } catch {
     return false;
@@ -460,7 +461,7 @@ function signalPtyTreeProcesses(
     .filter((processGroupId) => processGroupId > 1 && processGroupId !== process.pid));
   for (const processGroupId of processGroups) {
     try {
-      process.kill(-processGroupId, signal);
+      signalProcessGroup(processGroupId, signal);
     } catch {
       // A group may have exited between the process scan and signal.
     }

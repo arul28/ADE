@@ -1842,6 +1842,21 @@ declare global {
         consumeResetCredit?: (args: {
           accountId: string;
         }) => Promise<import("../shared/types").UsageResetCreditResult>;
+        /**
+         * Spend by chat, lane, or account, and one model's detail and price.
+         * Optional on the bridge: an older preload or web host may not expose
+         * them, and the Usage page hides what it cannot read.
+         */
+        getCostBreakdown?: (
+          args: import("../shared/types").GetAdeUsageCostBreakdownArgs,
+        ) => Promise<import("../shared/types").AdeUsageCostBreakdown | null>;
+        getModelDetail?: (
+          args: import("../shared/types").GetAdeUsageModelDetailArgs,
+        ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        setModelPriceOverride?: (
+          args: import("../shared/types").SetAdeUsageModelPriceArgs,
+        ) => Promise<import("../shared/types").AdeUsagePriceOverrides>;
         checkBudget: (args: BudgetCheckArgs) => Promise<BudgetCheckResult>;
         getCumulativeUsage: (args: {
           scope: BudgetCapScope;
@@ -3543,6 +3558,15 @@ declare global {
           args: GetDiffChangesArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<DiffChanges>;
+        /**
+         * Every file the lane changed since its base (commits, uncommitted and
+         * untracked). Rejects when the base cannot be resolved; null, or a
+         * rejection naming an unknown action, from a host that predates it.
+         */
+        getBranchChanges?: (
+          args: GetDiffChangesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").BranchDiffChanges | null>;
         getFile: (
           args: GetFileDiffArgs,
           pin?: OpenProjectBinding | null,

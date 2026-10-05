@@ -13555,6 +13555,15 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.getChanges", args: ["laneId": laneId], as: DiffChanges.self)
   }
 
+  /// Whether the host understands `mode: "branch"`. An older host reads an
+  /// unknown mode as "unstaged" without complaint, so the Branch section and
+  /// its diffs are offered only when this is advertised.
+  var supportsBranchDiff: Bool { supportsRemoteAction("git.getBranchChanges") }
+
+  func fetchBranchChanges(laneId: String) async throws -> BranchDiffChanges {
+    try await sendDecodableCommand(action: "git.getBranchChanges", args: ["laneId": laneId], as: BranchDiffChanges.self)
+  }
+
   func fetchFileDiff(workspaceId: String? = nil, laneId: String, path: String, mode: String, compareRef: String? = nil, compareTo: String? = nil) async throws -> FileDiff {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -21531,6 +21540,58 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: 8_000_000_000,
       as: MobileAdeUsageStats.self
     )
+  }
+
+  /// ADE chat spend by chat, lane, or account (`usage.getCostBreakdown`).
+  /// Nil when the host predates it, so the page offers only the Models view.
+  func fetchUsageCostBreakdown(by: String, preset: String, laneId: String? = nil) async throws -> MobileAdeUsageCostBreakdown? {
+    guard supportsRemoteAction("usage.getCostBreakdown") else { return nil }
+    var args: [String: Any] = ["by": by, "preset": preset]
+    if let laneId { args["laneId"] = laneId }
+    return try await sendDecodableCommand(
+      action: "usage.getCostBreakdown",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageCostBreakdown.self
+    )
+  }
+
+  /// One model's detail (`usage.getModelDetail`). Nil when the host predates it.
+  func fetchUsageModelDetail(provider: String, model: String, preset: String) async throws -> MobileAdeUsageModelDetail? {
+    guard supportsRemoteAction("usage.getModelDetail") else { return nil }
+    return try await sendDecodableCommand(
+      action: "usage.getModelDetail",
+      args: ["provider": provider, "model": model, "preset": preset],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      as: MobileAdeUsageModelDetail.self
+    )
+  }
+
+  var canSetUsageModelPrices: Bool { supportsRemoteAction("usage.setModelPriceOverride") }
+
+  /// Sets or clears the host's price for a model, or its "Map to". `price: nil`
+  /// with `clearPrice` goes back to automatic; `mapTo: ""` removes a mapping.
+  func setUsageModelPrice(model: String, otherModelIds: [String] = [], price: MobileAdeUsageModelPrice?, clearPrice: Bool = false, mapTo: String? = nil) async throws {
+    guard canSetUsageModelPrices else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [
+        NSLocalizedDescriptionKey: "Model prices can't be changed on this machine version. Update ADE on the machine and reconnect.",
+        "ADEErrorCode": "unsupported_action",
+      ])
+    }
+    var args: [String: Any] = ["model": model]
+    if !otherModelIds.isEmpty { args["models"] = otherModelIds }
+    if clearPrice {
+      args["price"] = NSNull()
+    } else if let price {
+      var body: [String: Any] = ["input": price.input, "output": price.output]
+      if let cacheRead = price.cacheRead { body["cacheRead"] = cacheRead }
+      if let cacheWrite = price.cacheWrite { body["cacheWrite"] = cacheWrite }
+      args["price"] = body
+    }
+    if let mapTo { args["mapTo"] = mapTo.isEmpty ? NSNull() : mapTo }
+    _ = try await sendCommand(action: "usage.setModelPriceOverride", args: args)
   }
 
   func fetchUsageQuotaSnapshot(refresh: Bool = false) async throws -> MobileUsageQuotaSnapshot {

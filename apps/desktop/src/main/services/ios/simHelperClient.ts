@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isRecord } from "../shared/utils";
+import { signalProcessGroup, isRecord } from "../shared/utils";
 
 /**
  * Supervisor and NDJSON client for the vendored simulator helper
@@ -465,7 +465,7 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
         // the leader if the group is already gone.
         const pid = active.pid;
         try {
-          if (pid != null) process.kill(-pid, "SIGKILL");
+          if (pid != null) signalProcessGroup(pid, "SIGKILL");
           else active.kill("SIGKILL");
         } catch {
           try {

@@ -700,6 +700,12 @@ import type {
   CtoSetLinearOAuthClientArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  SetAdeUsageModelPriceArgs,
+  AdeUsageCostBreakdown,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
   UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
@@ -6954,6 +6960,39 @@ export function registerIpc({
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
 
+  ipcMain.handle(
+    IPC.usageGetCostBreakdown,
+    async (_event, arg: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> => {
+      if (!isRecord(arg)) throw new Error("usage cost breakdown expects an object payload.");
+      return (await getCtx().usageTrackingService?.getCostBreakdown(arg)) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelDetail,
+    async (_event, arg: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> => {
+      if (!isRecord(arg) || typeof arg.provider !== "string" || typeof arg.model !== "string") {
+        throw new Error("usage model detail needs a provider and a model.");
+      }
+      return getCtx().usageTrackingService?.getModelDetail(arg) ?? null;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.usageGetModelPriceOverrides,
+    async (): Promise<AdeUsagePriceOverrides | null> => getCtx().usageTrackingService?.getModelPriceOverrides() ?? null,
+  );
+
+  ipcMain.handle(
+    IPC.usageSetModelPriceOverride,
+    async (_event, arg: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> => {
+      const service = getCtx().usageTrackingService;
+      if (!service) throw new Error("Model prices are not available on this host.");
+      if (!isRecord(arg)) throw new Error("usage set model price expects an object payload.");
+      return service.setModelPriceOverride(arg);
+    },
+  );
+
   /**
    * Spend one banked reset credit.
    *
@@ -10595,6 +10634,13 @@ export function registerIpc({
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
+  });
+
+  ipcMain.handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
+    const ctx = ensureDiffContext();
+    return await withIpcTiming(ctx, "diff.getBranchChanges", async () => await ctx.diffService.getBranchChanges(arg.laneId), {
       laneId: arg.laneId,
     });
   });

@@ -117,12 +117,15 @@ export const stripHostAuthoredMessageProvenance = (metadata: Record<string, unkn
  * prompt ADE composed itself (`hostContinuation`), or a durable scheduler
  * firing (`scheduledWake`) would otherwise wipe a real "Needs you" the user
  * has not seen — the child's report masks the parent's raised hand, and the
- * row goes quiet with a question still open.
+ * row goes quiet with a question still open. A message another bound agent
+ * sent (`agentRelay`: a grandchild reporting in, a sibling) is the same case:
+ * an agent wrote it, so it is not the user answering.
  */
 const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
   "scheduledWake",
   "spawnCompletion",
   "hostContinuation",
+  "agentRelay",
 ] as const;
 
 /**

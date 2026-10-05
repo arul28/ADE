@@ -332,6 +332,7 @@ import type {
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
+  BranchDiffChanges,
   DockLayout,
   FileChangeEvent,
   FileContent,
@@ -808,6 +809,12 @@ import type {
   WriteTextAtomicArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  SetAdeUsageModelPriceArgs,
+  AdeUsageCostBreakdown,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
   UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
@@ -6095,6 +6102,22 @@ const adeBridge = {
       callProjectRuntimeActionOr("usage", "consumeResetCredit", { args }, () =>
         ipcRenderer.invoke(IPC.usageConsumeResetCredit, args),
       ),
+    getCostBreakdown: async (args: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> =>
+      callProjectRuntimeActionOr("usage", "getCostBreakdown", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetCostBreakdown, args),
+      ),
+    getModelDetail: async (args: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> =>
+      callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetModelDetail, args),
+      ),
+    getModelPriceOverrides: async (): Promise<AdeUsagePriceOverrides | null> =>
+      callProjectRuntimeActionOr("usage", "getModelPriceOverrides", {}, () =>
+        ipcRenderer.invoke(IPC.usageGetModelPriceOverrides),
+      ),
+    setModelPriceOverride: async (args: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> =>
+      callProjectRuntimeActionOr("usage", "setModelPriceOverride", { args }, () =>
+        ipcRenderer.invoke(IPC.usageSetModelPriceOverride, args),
+      ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),
@@ -10301,6 +10324,17 @@ const adeBridge = {
       );
       if (runtime.handled) return runtime.result;
       return diffChangesCache.get(boundReadCacheKey(args));
+    },
+    getBranchChanges: async (
+      args: GetDiffChangesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BranchDiffChanges | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<BranchDiffChanges>(pin, "diff", "getBranchChanges", { arg: args.laneId });
+      }
+      const runtime = await callProjectRuntimeActionIfBound<BranchDiffChanges>("diff", "getBranchChanges", { arg: args.laneId });
+      if (runtime.handled) return runtime.result;
+      return await ipcRenderer.invoke(IPC.diffGetBranchChanges, args);
     },
     getFile: async (
       args: GetFileDiffArgs,

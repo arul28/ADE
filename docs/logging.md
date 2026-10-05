@@ -253,6 +253,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `proxy` | `sign_in` | `success` | Claude/Codex family |
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | Claude/Codex family; omitted when no account was named |
+| `usage` | `model_price_changed`, `model_mapping_changed` | `enabled` (set), `disabled` (cleared) | omitted; never the model id or the rates |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
@@ -264,6 +265,13 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+Saving a model price or "Map to" on the Usage page (desktop, web, phone or
+`ade usage prices set`) records `model_price_changed` or
+`model_mapping_changed` at the brain's `usage.setModelPriceOverride`, with
+`enabled` for a set and `disabled` for a clear. The model id and rates never
+leave the machine. The one-hour dedupe per action and outcome caps it at four
+events an hour, within the existing `ade_feature_used` ceilings.
 
 A Codex voice conversation records one `voice_conversation_started` fact after
 the realtime offer receives an answer. The event is scoped to the chat session

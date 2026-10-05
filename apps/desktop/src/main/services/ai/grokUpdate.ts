@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import { spawn } from "node:child_process";
+import { signalProcessGroup } from "../shared/utils";
 
 import type {
   AcpProviderUpdateInfo,
@@ -239,7 +240,7 @@ function killGrokUpdateTree(child: ReturnType<typeof spawn>): void {
   const pid = child.pid;
   if (process.platform !== "win32" && typeof pid === "number") {
     try {
-      process.kill(-pid, "SIGKILL");
+      signalProcessGroup(pid, "SIGKILL");
     } catch {
       // The group already exited.
     }

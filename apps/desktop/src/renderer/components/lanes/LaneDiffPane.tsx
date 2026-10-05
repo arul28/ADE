@@ -5,7 +5,7 @@ import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
-import type { FileDiff, FilePatch, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
+import type { FileDiff, FilePatch, GitCommitSummary, LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
@@ -69,7 +69,7 @@ export function LaneDiffPane({
 }: {
   laneId: string | null;
   selectedPath: string | null;
-  selectedFileMode: "staged" | "unstaged" | null;
+  selectedFileMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
   liveSync?: boolean;
   /**
@@ -406,11 +406,11 @@ export function LaneDiffPane({
             <span
               className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[11px] font-medium"
               style={{
-                color: selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success,
-                background: `color-mix(in srgb, ${selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success} 13%, transparent)`,
+                color: selectedFileMode === "unstaged" ? COLORS.warning : selectedFileMode === "branch" ? COLORS.accent : COLORS.success,
+                background: `color-mix(in srgb, ${selectedFileMode === "unstaged" ? COLORS.warning : selectedFileMode === "branch" ? COLORS.accent : COLORS.success} 13%, transparent)`,
               }}
             >
-              {selectedFileMode === "unstaged" ? "Unstaged" : "Staged"}
+              {selectedFileMode === "unstaged" ? "Unstaged" : selectedFileMode === "branch" ? "Branch" : "Staged"}
             </span>
             <span className="min-w-0 truncate" title={displayPath}>
               <span style={{ color: COLORS.textDim }}>{splitPath(displayPath).dir}</span>

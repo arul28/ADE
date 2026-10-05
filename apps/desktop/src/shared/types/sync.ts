@@ -2437,6 +2437,10 @@ export type SyncRemoteCommandAction =
   | "usage.getUsageRollup"
   | "usage.refreshQuota"
   | "usage.consumeResetCredit"
+  | "usage.getCostBreakdown"
+  | "usage.getModelDetail"
+  | "usage.getModelPriceOverrides"
+  | "usage.setModelPriceOverride"
   | "proxy.status"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
@@ -2631,6 +2635,7 @@ export type SyncRemoteCommandAction =
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
   | "git.getChanges"
+  | "git.getBranchChanges"
   | "git.getFile"
   | "git.getFilePatch"
   | "git.getUserIdentity"
