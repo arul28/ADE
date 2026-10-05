@@ -37,6 +37,7 @@ import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteS
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { cn } from "../ui/cn";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
@@ -1507,7 +1508,13 @@ export function App() {
     <LaunchGate>
       <Router>
         <div
-          className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
+          className={cn(
+            "h-full bg-bg text-fg font-sans antialiased",
+            // See `.ade-app-selection` in index.css. Browsers that serve the
+            // hosted web client may not inherit ::selection, so it keeps the
+            // descendant rule.
+            isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
+          )}
         >
           <OnboardingBootstrap />
           {/* Windows beta notice: shown on every start of every Windows install

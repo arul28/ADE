@@ -503,6 +503,16 @@ samp {
   animation-delay: -750ms !important;
 }
 
+/* The app's text selection color. Chromium inherits ::selection from the
+   parent's ::selection, so one rule on the app root colors every descendant,
+   and a nested `selection:` class still wins for its own subtree. Tailwind's
+   `selection:bg-accent/30` compiles to `.x *::selection`, a descendant rule
+   matched against every element on every restyle: 40% of all selector time
+   when a project surface holding a long chat was restyled. */
+.ade-app-selection::selection {
+  background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+}
+
 /* Keep xterm glyph metrics isolated from global typography rules. */
 .xterm,
 .xterm .xterm-helper-textarea,
