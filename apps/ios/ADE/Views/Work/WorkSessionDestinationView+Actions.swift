@@ -1517,13 +1517,20 @@ extension WorkSessionDestinationView {
     prChatWatchBusy = true
     prChatWatchError = nil
     defer { prChatWatchBusy = false }
+    let session = sessionId
     do {
-      let next = try await syncService.setPrChatWatch(prId: pr.id, sessionId: sessionId, mode: mode)
+      let next = try await syncService.setPrChatWatch(prId: pr.id, sessionId: session, mode: mode)
+      // The chat's PR may have changed while this was in flight; its own
+      // refresh owns what the control shows now.
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
       prChatWatch = next.flatMap { $0.isLive ? $0 : nil }
       ADEHaptics.success()
     } catch {
       ADEHaptics.error()
-      prChatWatchError = SyncUserFacingError.message(for: error)
+      let message = SyncUserFacingError.message(for: error)
+      prChatWatchError = message
+      // The menu is closed by now; say it where the chat shows its errors.
+      errorMessage = "Couldn't change the PR watch: \(message)"
     }
   }
 

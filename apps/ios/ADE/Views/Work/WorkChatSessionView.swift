@@ -1417,7 +1417,9 @@ struct WorkChatSessionView: View {
   /// between turns (desktop `sendClaudeGoalCommand`).
   func sendClaudeGoalCommand(_ argument: String) {
     Task { @MainActor in
-      _ = await onSend("/goal \(argument)", [], .queue)
+      if await !onSend("/goal \(argument)", [], .queue), $errorMessage.wrappedValue == nil {
+        $errorMessage.wrappedValue = "Couldn't send the goal change to the chat."
+      }
     }
   }
 

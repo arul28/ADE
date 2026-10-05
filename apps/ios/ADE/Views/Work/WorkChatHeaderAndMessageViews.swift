@@ -1603,15 +1603,15 @@ private struct WorkChatGoalSheet: View {
           Section("Edit goal") {
             TextField("Goal", text: $draft, axis: .vertical)
               .lineLimit(2...6)
+            let normalizedDraft = draft
+              .replacingOccurrences(of: "\\s*[\\r\\n]+\\s*", with: " ", options: .regularExpression)
+              .trimmingCharacters(in: .whitespacesAndNewlines)
             Button("Set goal") {
-              let trimmed = draft
-                .replacingOccurrences(of: "\\s*[\\r\\n]+\\s*", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-              guard !trimmed.isEmpty, trimmed != goal.objective else { return }
-              onEdit(trimmed)
+              guard !normalizedDraft.isEmpty, normalizedDraft != goal.objective else { return }
+              onEdit(normalizedDraft)
               dismiss()
             }
-            .disabled(claudeLocked || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(claudeLocked || normalizedDraft.isEmpty || normalizedDraft == goal.objective)
           }
         } else {
           Section {

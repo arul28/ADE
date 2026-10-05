@@ -306,13 +306,13 @@ function branchDisplayLabel(branchName: string): string {
   return branchName.startsWith("ade/") ? branchName.slice("ade/".length) : branchName;
 }
 
-/** `·` between the adaptive "where" line's parts. Decoration, never read out. */
 /** "Goal: <objective>", with the status when it is not plain active. */
 function sessionGoalTitle(goal: NonNullable<TerminalSessionSummary["activeGoal"]>): string {
   const status = goal.status !== "active" ? ` (${goal.status.replace(/_/g, " ")})` : "";
   return `Goal${status}: ${goal.objective}`;
 }
 
+/** `·` between the adaptive "where" line's parts. Decoration, never read out. */
 function WhereSeparator() {
   return (
     <span aria-hidden className="shrink-0 text-muted-fg/25">

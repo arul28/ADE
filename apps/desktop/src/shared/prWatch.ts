@@ -199,6 +199,35 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
  * comments are not ignored: a reviewer who is also the account owner still
  * gets heard.
  */
+/** Remarks newer than what the watch already told, and the new high-water mark. */
+function readFreshRemarks(
+  previous: PrWatchState,
+  remarks: PrWatchRemark[] | null,
+  ignoredRemarkIds: ReadonlySet<string> | undefined,
+): { fresh: PrWatchRemark[]; remarksThrough: string | null; remarkIds: string[] } {
+  const unchanged = { fresh: [], remarksThrough: previous.remarksThrough, remarkIds: previous.remarkIds };
+  if (!remarks) return unchanged;
+  const through = timeMs(previous.remarksThrough);
+  const ignored = ignoredRemarkIds ?? new Set<string>();
+  const fresh = remarks.filter((remark) => {
+    if (ignored.has(remark.id)) return false;
+    if (!isPrWatchRemarkAuthorRelevant(remark.author, remark.authorIsBot)) return false;
+    const at = timeMs(remark.createdAt);
+    // GitHub times are per second; remarks on the boundary are told apart by id.
+    return at > through || (at === through && !previous.remarkIds.includes(remark.id));
+  }).sort((left, right) => timeMs(left.createdAt) - timeMs(right.createdAt));
+  if (fresh.length === 0) return unchanged;
+  const latest = Math.max(through, ...fresh.map((remark) => timeMs(remark.createdAt)));
+  const atLatest = fresh.filter((remark) => timeMs(remark.createdAt) === latest);
+  return {
+    fresh,
+    remarksThrough: latest === through ? previous.remarksThrough : (atLatest[0]?.createdAt ?? previous.remarksThrough),
+    remarkIds: latest === through
+      ? [...previous.remarkIds, ...atLatest.map((remark) => remark.id)]
+      : atLatest.map((remark) => remark.id),
+  };
+}
+
 export function evaluatePrWatch(args: {
   mode: PrWatchMode;
   state: PrWatchState;
@@ -214,9 +243,15 @@ export function evaluatePrWatch(args: {
 
   if (pr.state === "merged" || pr.state === "closed") {
     const kind = pr.state === "merged" ? "merged" : "closed";
+    // Remarks left on the way out (a "thanks", a follow-up ask) still go out.
+    const last = readFreshRemarks(previous, args.remarks, args.ignoredRemarkIds);
+    const heldRemarks = previous.held.filter((change) => change.kind === "remarks");
+    const remarks = last.fresh.length > 0
+      ? mergeHeld(heldRemarks, [{ kind: "remarks", remarks: last.fresh }])
+      : heldRemarks;
     return {
-      changes: [...previous.held.filter((change) => change.kind === "remarks"), { kind }],
-      next: { ...previous, held: [] },
+      changes: [...remarks, { kind }],
+      next: { ...previous, held: [], remarksThrough: last.remarksThrough, remarkIds: last.remarkIds },
       exhausted: false,
       stop: kind,
     };
@@ -249,28 +284,8 @@ export function evaluatePrWatch(args: {
   if (passedNow && !passed) found.push({ kind: "checks_passed" });
   passed = passedNow;
 
-  let remarksThrough = previous.remarksThrough;
-  let remarkIds = previous.remarkIds;
-  if (args.remarks) {
-    const through = timeMs(previous.remarksThrough);
-    const ignored = args.ignoredRemarkIds ?? new Set<string>();
-    const fresh = args.remarks.filter((remark) => {
-      if (ignored.has(remark.id)) return false;
-      if (!isPrWatchRemarkAuthorRelevant(remark.author, remark.authorIsBot)) return false;
-      const at = timeMs(remark.createdAt);
-      // GitHub times are per second; remarks on the boundary are told apart by id.
-      return at > through || (at === through && !previous.remarkIds.includes(remark.id));
-    }).sort((left, right) => timeMs(left.createdAt) - timeMs(right.createdAt));
-    if (fresh.length > 0) {
-      found.push({ kind: "remarks", remarks: fresh });
-      const latest = Math.max(through, ...fresh.map((remark) => timeMs(remark.createdAt)));
-      const atLatest = fresh.filter((remark) => timeMs(remark.createdAt) === latest);
-      remarksThrough = latest === through ? previous.remarksThrough : (atLatest[0]?.createdAt ?? previous.remarksThrough);
-      remarkIds = latest === through
-        ? [...previous.remarkIds, ...atLatest.map((remark) => remark.id)]
-        : atLatest.map((remark) => remark.id);
-    }
-  }
+  const { fresh, remarksThrough, remarkIds } = readFreshRemarks(previous, args.remarks, args.ignoredRemarkIds);
+  if (fresh.length > 0) found.push({ kind: "remarks", remarks: fresh });
 
   // `null` is GitHub still computing after a push: only a clean answer clears it.
   const conflictingNow = pr.mergeConflicts == null ? previous.conflicting : pr.mergeConflicts === true;
@@ -293,12 +308,15 @@ export function evaluatePrWatch(args: {
   let changes: PrWatchChange[];
   if (mode === "ship") {
     held = mergeHeld(held, found);
+    const graceOver = headSeenAt === null || nowMs - timeMs(headSeenAt) >= PR_SHIP_REVIEW_BOT_GRACE_MS;
+    // No checks yet right after a push means CI has not registered, not that
+    // it finished; a repo with no CI at all is released by the grace.
     const checksTerminal = args.checks !== null
+      && (args.checks.length > 0 || graceOver)
       && args.checks.every((check) => check.status === "completed");
     const botsHeard = headSeenAt !== null && held.some((change) =>
       change.kind === "remarks" && change.remarks.some((remark) =>
         isAgentReviewer(remark) && timeMs(remark.createdAt) >= timeMs(headSeenAt)));
-    const graceOver = headSeenAt === null || nowMs - timeMs(headSeenAt) >= PR_SHIP_REVIEW_BOT_GRACE_MS;
     // A conflict blocks CI from ever settling, so it never waits.
     const urgent = held.some((change) => change.kind === "conflicting");
     const release = held.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));

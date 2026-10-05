@@ -124,6 +124,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
   const now = deps.now ?? (() => Date.now());
   const memory = new Map<string, WatchMemory>();
   const inFlight = new Set<string>();
+  /** Watches poked mid-pass (armed, switched): they run again right after. */
+  const rerun = new Set<string>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
 
@@ -321,7 +323,10 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     if (records.length === 0) return;
     const prs = new Map(prService.listAll().map((pr) => [pr.id, pr] as const));
     await Promise.all(records.map(async (record) => {
-      if (inFlight.has(record.id)) return;
+      if (inFlight.has(record.id)) {
+        if (options.force) rerun.add(record.id);
+        return;
+      }
       inFlight.add(record.id);
       try {
         await runPass(record, prs, options.force === true);
@@ -330,6 +335,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       } finally {
         inFlight.delete(record.id);
       }
+      if (rerun.delete(record.id)) void evaluate({ prIds: [record.prId], force: true });
     }));
   };
 

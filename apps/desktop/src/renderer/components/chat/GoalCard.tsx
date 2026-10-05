@@ -42,14 +42,23 @@ function ClaudeGoalCard({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(condition);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Set once the editor is done (saved, or Escape): the blur that closing
+  // can fire must not save again.
+  const closedRef = useRef(false);
   useEffect(() => {
     if (!editing) setDraft(condition);
   }, [condition, editing]);
   useEffect(() => {
-    if (editing) textareaRef.current?.select();
+    if (editing) {
+      closedRef.current = false;
+      textareaRef.current?.select();
+    }
   }, [editing]);
   useEffect(() => {
-    if (locked) setEditing(false);
+    if (locked) {
+      closedRef.current = true;
+      setEditing(false);
+    }
   }, [locked]);
   if (!condition) return null;
   const lastReason = goal.lastReason?.trim();
@@ -57,6 +66,8 @@ function ClaudeGoalCard({
   const lockedTitle = "Claude takes goal changes between turns";
 
   const submit = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
     const next = draft.replace(/\s*[\r\n]+\s*/g, " ").trim();
     setEditing(false);
     if (next && next !== condition) onEdit?.(next);
@@ -118,6 +129,7 @@ function ClaudeGoalCard({
                   submit();
                 } else if (e.key === "Escape") {
                   e.preventDefault();
+                  closedRef.current = true;
                   setEditing(false);
                 }
               }}

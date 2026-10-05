@@ -1996,6 +1996,21 @@ export function createPrService({
   const getRow = (prIdOrLocator: string): PullRequestRow | null =>
     getRowById(prIdOrLocator) ?? getRowByLocator(prIdOrLocator);
 
+  /**
+   * Remember a comment ADE posted so PR Watch never wakes a chat over it. Keyed
+   * by the canonical row id the watch reads; a PR ADE has no row for has no
+   * watch, so there is nothing to record.
+   */
+  const recordAdeCommentForPr = (prIdOrLocator: string, commentId: string | null | undefined): void => {
+    let row: PullRequestRow | null = null;
+    try {
+      row = getRow(prIdOrLocator);
+    } catch {
+      return;
+    }
+    if (row) chatWatchStore.recordAdeComment(row.id, commentId);
+  };
+
   const requireRow = (prId: string): PullRequestRow => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
@@ -12554,7 +12569,7 @@ export function createPrService({
         const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
         const candidates = Number.isInteger(number)
           ? db.all<PullRequestRow>(
-            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ?`,
+            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and detached_at is null`,
             [projectId, number],
           )
           : [];
@@ -12582,6 +12597,9 @@ export function createPrService({
         }
         if (pr.state === "merged" || pr.state === "closed") {
           throw new Error(`PR #${pr.github_pr_number} is ${pr.state}; there is nothing left to watch.`);
+        }
+        if (pr.detached_at) {
+          throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
         }
         // An explicit watch is an explicit link, even over an earlier unlink.
         if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
@@ -12938,7 +12956,7 @@ export function createPrService({
       });
       forgetActivityInputs(repo, prNumber);
       const comment = toPrComment("issue", data);
-      chatWatchStore.recordAdeComment(args.prId, comment.id);
+      recordAdeCommentForPr(args.prId, comment.id);
       return comment;
     },
 
@@ -13037,7 +13055,7 @@ export function createPrService({
       forgetActivityInputsForPr(args.prId);
       // ADE posted it for an agent: a PR watch must not wake that agent with
       // its own reply.
-      chatWatchStore.recordAdeComment(args.prId, asString(comment.id));
+      recordAdeCommentForPr(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -13105,7 +13123,7 @@ export function createPrService({
       forgetActivityInputsForPr(args.prId);
       // ADE posted it for an agent: a PR watch must not wake that agent with
       // its own reply.
-      chatWatchStore.recordAdeComment(args.prId, asString(comment.id));
+      recordAdeCommentForPr(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -13284,7 +13302,7 @@ export function createPrService({
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
       const result = await submitReviewRequest(args);
-      if (result.submittedAt) chatWatchStore.recordAdeComment(args.prId, adeReviewRemarkKey(result.submittedAt));
+      if (result.submittedAt) recordAdeCommentForPr(args.prId, adeReviewRemarkKey(result.submittedAt));
       return result;
     },
 

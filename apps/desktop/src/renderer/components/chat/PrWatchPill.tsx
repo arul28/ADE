@@ -47,6 +47,10 @@ export function PrWatchPill({
   const [watch, setWatch] = useState<PrChatWatchSummary | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The watch could not be read: the pill cannot claim Off, so Off still sends.
+  const [unknown, setUnknown] = useState(false);
+  // Bumped by every read and write; an older read that lands late is dropped.
+  const requestSeqRef = useRef(0);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
@@ -56,11 +60,14 @@ export function PrWatchPill({
 
   const load = useCallback(async () => {
     if (typeof window.ade.prs.getChatWatches !== "function") return;
+    const seq = ++requestSeqRef.current;
     try {
       const watches = await window.ade.prs.getChatWatches({ sessionId }, runtimePinRef.current);
+      if (seq !== requestSeqRef.current) return;
       setWatch(watches.find((entry) => entry.prId === prId) ?? null);
+      setUnknown(false);
     } catch {
-      // An older host has no watch; the pill reads Off.
+      if (seq === requestSeqRef.current) setUnknown(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, sessionId, runtimePinKey]);
@@ -74,6 +81,8 @@ export function PrWatchPill({
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "pr-chat-watch-changed") return;
       if (event.sessionId !== sessionId || event.prId !== prId) return;
+      requestSeqRef.current += 1;
+      setUnknown(false);
       setWatch(event.watch && event.watch.status !== "stopped" ? event.watch : null);
     }, runtimePinRef.current);
     return () => unsubscribe();
@@ -83,11 +92,15 @@ export function PrWatchPill({
   const choose = useCallback(async (mode: PrWatchMode | null) => {
     setOpen(false);
     const current = watch && watch.status !== "stopped" ? watch.mode : null;
-    if (mode === current) return;
+    if (mode === current && !unknown) return;
     setBusy(true);
+    const seq = ++requestSeqRef.current;
     try {
       const next = await window.ade.prs.setChatWatch({ prId, sessionId, mode }, runtimePinRef.current);
-      setWatch(next && next.status !== "stopped" ? next : null);
+      if (seq === requestSeqRef.current) {
+        setWatch(next && next.status !== "stopped" ? next : null);
+        setUnknown(false);
+      }
     } catch (cause) {
       showToast({
         title: `Couldn't change PR #${pr.githubPrNumber} watch`,
@@ -97,14 +110,14 @@ export function PrWatchPill({
     } finally {
       setBusy(false);
     }
-  }, [pr.githubPrNumber, prId, sessionId, watch]);
+  }, [pr.githubPrNumber, prId, sessionId, unknown, watch]);
 
   if (terminal || typeof window.ade.prs.setChatWatch !== "function") return null;
 
   const active = watch && watch.status !== "stopped" ? watch : null;
   const mode = active?.mode ?? null;
   const Icon = modeIcon(mode);
-  const status = statusLine(active);
+  const status = unknown ? "Couldn't read the watch. Pick one to set it." : statusLine(active);
   const label = mode === "ship" ? "Shipping" : mode === "watch" ? "Watching" : "Watch";
 
   return (
@@ -143,7 +156,7 @@ export function PrWatchPill({
       >
         <div className={MENU_LABEL_CLASS}>PR #{pr.githubPrNumber}</div>
         {CHOICES.map((choice) => {
-          const selected = choice.mode === mode;
+          const selected = !unknown && choice.mode === mode;
           const ChoiceIcon = modeIcon(choice.mode);
           return (
             <button

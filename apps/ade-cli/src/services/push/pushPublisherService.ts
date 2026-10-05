@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
 import {
@@ -65,7 +66,6 @@ import { deriveProjectId } from "../projects/projectRegistry";
  * else in that vocabulary has no importer outside the builder, so it stays
  * where it is defined — import it from `./attentionItemBuilder` directly.
  */
-import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 export type { PushPrNotification } from "./attentionItemBuilder";
 
 export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";

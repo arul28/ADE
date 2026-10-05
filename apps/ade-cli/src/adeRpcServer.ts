@@ -3306,9 +3306,10 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
-  if (action === "armWait" && !isUnboundAdeCliCaller(session)) {
-    // A wait wakes `callerSessionId` when it fires: a bound agent may only ask
-    // to be woken itself.
+  if (action === "armWait") {
+    // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
+    // ask to be woken itself. A send wait ("start B after A") wakes nobody.
+    if (isUnboundAdeCliCaller(session) || asOptionalTrimmedString(chatArgs.sendToSessionId)) return chatArgs;
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     const requestedCaller = asOptionalTrimmedString(chatArgs.callerSessionId);
     if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
@@ -5449,6 +5450,7 @@ async function runTool(args: {
       && domain === "chat"
       && (
         SCOPED_CHAT_ACTIONS.has(action)
+        || action === "armWait"
         || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
       )
     ) {

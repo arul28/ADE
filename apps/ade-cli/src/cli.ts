@@ -9438,6 +9438,8 @@ function buildChatPlan(args: string[]): CliPlan {
       );
     }
     const afterValue = readValue(args, ["--after"]);
+    // Read before the text: whatever flags are left become the prompt.
+    const afterWaitFor = afterValue ? readValue(args, ["--for", "--until"]) : null;
     const sendText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
@@ -9454,7 +9456,7 @@ function buildChatPlan(args: string[]): CliPlan {
           actionStep("result", "chat", "armWait", {
             targetSessionIds: afterIds,
             mode: "all",
-            waitFor: normalizeChatWaitTarget(readValue(args, ["--for", "--until"])),
+            waitFor: normalizeChatWaitTarget(afterWaitFor),
             sendToSessionId: targetSession,
             text: sendText,
             ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
