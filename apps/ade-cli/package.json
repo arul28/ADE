@@ -32,7 +32,7 @@
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.160.0",
-    "@opencode/cli": "2.0.18",
+    "@opencode/cli": "2.0.23",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
@@ -53,7 +53,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@opencode/client": "2.0.18",
+    "@opencode/client": "2.0.23",
     "@types/node": "^20.11.30",
     "@types/react": "^19.2.17",
     "@types/ws": "^8.18.1",
