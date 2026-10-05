@@ -1,4 +1,3 @@
-import { Banner } from "../../ui/notice";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpinnerGap, X } from "@phosphor-icons/react";
 import type { AppleLaneDevice, OpenProjectBinding } from "../../../../shared/types";
@@ -197,46 +196,6 @@ export function AppleToolsDrawer({
 
   useEffect(() => { setShowDetail(false); }, [actions.error]);
 
-  /*
-   * An agent on another machine driving this device (`ade apple … --machine`)
-   * is named here, so the person at this Mac knows why the simulator moves on
-   * its own, and can end that session.
-   */
-  const [remoteHolder, setRemoteHolder] = useState<{ machineName: string | null } | null>(null);
-  // Event-driven, never polled: the drawer reads nothing on a timer unless the
-  // App group asks for the foreground app. A session event naming a remote
-  // owner costs one status read, for the machine's name.
-  useEffect(() => {
-    if (!visible) return undefined;
-    let cancelled = false;
-    const onThisDevice = (session: { laneId?: string | null; deviceUdid?: string | null } | null | undefined) =>
-      Boolean(session && (!session.laneId || session.laneId === laneId) && session.deviceUdid === device.udid);
-    const unsubscribe = window.ade.iosSimulator.onEvent?.((event) => {
-      if (event.type === "session-released") {
-        if (onThisDevice(event.previousSession)) setRemoteHolder(null);
-        return;
-      }
-      if (event.type !== "session-started" && event.type !== "session-updated") return;
-      const session = event.session;
-      if (!onThisDevice(session)) return;
-      if (!session?.chatSessionId?.startsWith("remote:")) {
-        setRemoteHolder(null);
-        return;
-      }
-      void window.ade.iosSimulator.getStatus(pinRef.current).then((status) => {
-        if (!cancelled) setRemoteHolder(status.remoteHolder ?? { machineName: null });
-      }, () => {
-        if (!cancelled) setRemoteHolder({ machineName: null });
-      });
-    });
-    return () => { cancelled = true; unsubscribe?.(); };
-  }, [device.udid, laneId, visible]);
-  const endRemoteSession = () => {
-    void window.ade.iosSimulator
-      .shutdown({ laneId, ignoreOwnership: true }, pinRef.current)
-      .then(() => setRemoteHolder(null), (cause: unknown) => reportError(cause));
-  };
-
   const ctx: AppleDrawerContext = {
     scope,
     device,
@@ -266,18 +225,6 @@ export function AppleToolsDrawer({
         </PaneTooltip>
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        {remoteHolder ? (
-          <Banner
-            layout="inline"
-            testId="apple-drawer-remote-holder"
-            model={{
-              id: "apple-remote-holder",
-              tone: "info",
-              title: `Driven by an agent on ${remoteHolder.machineName ?? "another machine"}`,
-              actions: [{ label: "End its session", onClick: endRemoteSession }],
-            }}
-          />
-        ) : null}
         {described ? (
           <div
             role="alert"

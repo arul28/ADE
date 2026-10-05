@@ -10,7 +10,16 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
+import {
+  MACHINE_ROW_KEY,
+  createMachineRemoteConnection,
+  executePlanAcrossMachines,
+  extractMachineTargeting,
+  formatMachineFanOut,
+  formatMachinesRoster,
+  isMachineFanOutResult,
+  withMachineColumns,
+} from "./cliMachineTargeting";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -419,7 +428,7 @@ type SyncWebPairingCliOutput = {
   relayEnabled: boolean;
 };
 
-type GlobalOptions = {
+export type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
   role: "cto" | "agent" | "external" | "evaluator";
@@ -457,7 +466,7 @@ async function withAdeDefaultRole<T>(
   }
 }
 
-type ParsedCli = {
+export type ParsedCli = {
   options: GlobalOptions;
   command: string[];
 };
@@ -645,6 +654,13 @@ export type CliPlan =
        * and prints the full launch timeline once the action returns.
        */
       progressNotice?: string;
+      /**
+       * The list this plan returns, so `--all-machines` can merge it across
+       * the account's machines (see `cliMachineTargeting.ts`).
+       */
+      machineList?: "chats" | "lanes" | "projects";
+      /** `--machine a,b` starts this plan once per machine (`chat create`). */
+      machineFanOut?: boolean;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -751,7 +767,7 @@ export type CliPlan =
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
   | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
 
-type CliConnection = {
+export type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
   projectRoot: string;
   workspaceRoot: string;
@@ -4991,6 +5007,7 @@ function buildLanePlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "lanes list",
+      machineList: "lanes",
       steps: [actionCallStep("result", "list_lanes", input)],
       visualizer: visual || !noVisual ? "lanes" : undefined,
     };
@@ -8940,6 +8957,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat list",
+      machineList: "chats",
       steps: [
         actionStep(
           "result",
@@ -9269,6 +9287,7 @@ function buildChatPlan(args: string[]): CliPlan {
         return {
           kind: "execute",
           label: "chat create",
+          machineFanOut: true,
           steps: [
             { ...createStep, key: "session" },
             {
@@ -9297,7 +9316,7 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", steps: [createStep] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, steps: [createStep] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -9348,7 +9367,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -19680,6 +19699,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects list",
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     };
@@ -19810,179 +19830,6 @@ async function resolveDesktopSocketProjectId(
     }
     return null;
   }
-}
-
-/**
- * Where a request runs on the other machine. Personal-chat methods go to its
- * projectless scope, `projects.*` to the machine itself, and everything else to
- * a project there: the one named with `--project`, or by default the checkout
- * of this repository (matched by normalized git origin).
- */
-function machineCallScopeFor(
-  method: string,
-  options: GlobalOptions,
-  localOriginUrl: () => string | null,
-): JsonObject {
-  if (method.startsWith("personalChats.")) return { kind: "personal" };
-  if (method.startsWith("projects.")) return { kind: "machine" };
-  const selector = options.machineProject?.trim();
-  if (selector) return { kind: "project", selector };
-  const originUrl = localOriginUrl();
-  if (!originUrl) {
-    throw new CliUsageError(
-      "This directory has no git origin, so ADE can't tell which project to use on the other machine. Pass --project <name|path|id>.",
-    );
-  }
-  return { kind: "repo", originUrl };
-}
-
-/**
- * A connection whose every request runs on another machine on the account.
- *
- * It talks only to THIS machine's brain, which owns the agents' paired
- * connections: each request is wrapped in `machines.call` and the brain
- * forwards it unchanged. Nothing is registered here — the project lives on the
- * other machine. A request that needs this machine's own paths
- * (`injectProjectRootIntoArgs`) is refused by `executePlan` before it is sent.
- */
-async function createMachineRemoteConnection(
-  options: GlobalOptions,
-  machine: string,
-): Promise<CliConnection> {
-  if (options.headless) {
-    throw new CliUsageError("--machine needs this machine's ADE brain; remove --headless.");
-  }
-  const roots = resolveRoots(options);
-  const socketPathOverride = options.socketPath?.trim() || null;
-  const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
-  const socketClient = await connectMachineRuntimeDaemon(options, socketPathOverride);
-  let originCache: { value: string | null } | null = null;
-  const localOriginUrl = (): string | null => {
-    if (!originCache) {
-      const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
-        cwd: roots.projectRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5_000,
-        windowsHide: true,
-      });
-      const value = result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : "";
-      originCache = { value: value || null };
-    }
-    return originCache.value;
-  };
-  // Paths that name THIS machine's checkout mean nothing over there; the
-  // target resolves its own project and lane instead.
-  const LOCAL_PATH_KEYS = ["projectRoot", "workspaceRoot", "callerRoot", "callerRootSource"];
-  const withoutLocalPaths = (params: JsonObject | undefined): JsonObject => {
-    if (!params) return {};
-    const strip = (record: JsonObject): JsonObject => {
-      const copy: JsonObject = { ...record };
-      for (const key of LOCAL_PATH_KEYS) delete copy[key];
-      return copy;
-    };
-    if (!isRecord(params.arguments)) return strip(params);
-    const toolArgs = strip(params.arguments);
-    if (isRecord(toolArgs.args)) toolArgs.args = strip(toolArgs.args);
-    return { ...params, arguments: toolArgs };
-  };
-  const callRemote = async (method: string, params?: JsonObject): Promise<unknown> => {
-    const answer = await socketClient.request("machines.call", {
-      machine,
-      scope: machineCallScopeFor(method, options, localOriginUrl),
-      request: { method, params: withoutLocalPaths(params) },
-      timeoutMs: options.timeoutMs,
-      ...(options.machineClone ? { clone: true } : {}),
-    });
-    return isRecord(answer) && "result" in answer ? answer.result : answer;
-  };
-  // Proof is filed HERE, in this chat's drawer: the capture ran over there,
-  // and its bytes are read back. The local project id is resolved once.
-  let localProjectId: string | null = null;
-  const callLocalProject = async (method: string, params: JsonObject): Promise<unknown> => {
-    if (!localProjectId) {
-      const registered = await socketClient.request(
-        "projects.add",
-        automaticProjectRegistrationParams(roots.projectRoot),
-      );
-      localProjectId = isRecord(registered) ? asString(registered.projectId) : null;
-      if (!localProjectId) throw new Error("This machine's brain did not register the project to file proof in.");
-    }
-    return await socketClient.request(method, withProjectId(params, localProjectId));
-  };
-  const fetchRemoteCapture = async (remotePath: string, tempDir: string): Promise<string> => {
-    const localPath = path.join(tempDir, path.basename(remotePath.replace(/\\/g, "/")));
-    const handle = fs.openSync(localPath, "w");
-    try {
-      let offset = 0;
-      for (;;) {
-        const raw = await callRemote("ade/actions/call", {
-          name: "read_remote_caller_capture",
-          arguments: { path: remotePath, offset },
-        });
-        const chunk = unwrapToolResult(raw);
-        if (!isRecord(chunk) || typeof chunk.dataBase64 !== "string") {
-          throw new Error(`${machine} did not return the capture at ${remotePath}.`);
-        }
-        const bytes = Buffer.from(chunk.dataBase64, "base64");
-        fs.writeSync(handle, bytes, 0, bytes.length, offset);
-        offset += bytes.length;
-        if (chunk.done === true || bytes.length === 0) break;
-      }
-    } finally {
-      fs.closeSync(handle);
-    }
-    return localPath;
-  };
-  const fileRemoteCapturesHere = async (params: JsonObject): Promise<unknown> => {
-    const toolArgs = isRecord(params.arguments) ? params.arguments : {};
-    const inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.filter(isRecord) : [];
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-proof-"));
-    try {
-      const localInputs: JsonObject[] = [];
-      for (const input of inputs) {
-        const remotePath = asString(input.path);
-        if (!remotePath) {
-          localInputs.push(input);
-          continue;
-        }
-        const localPath = await fetchRemoteCapture(remotePath, tempDir);
-        localInputs.push({
-          ...input,
-          path: localPath,
-          metadata: { ...(isRecord(input.metadata) ? input.metadata : {}), capturedOnMachine: machine },
-        });
-      }
-      return await callLocalProject("ade/actions/call", {
-        ...params,
-        arguments: { ...toolArgs, inputs: localInputs, callerRoot: process.cwd() },
-      });
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  };
-  return {
-    mode: "runtime-socket",
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-    socketPath,
-    request: async (method, params) => {
-      if (isMachineRuntimeScopedMethod(method) && !method.startsWith("projects.") && !method.startsWith("personalChats.")) {
-        // Connection housekeeping (`ade/initialize`, `ping`, …) is this
-        // brain's business, not the other machine's.
-        return await socketClient.request(method, params);
-      }
-      if (method === "ade/actions/call" && params?.name === "ingest_computer_use_artifacts") {
-        return await fileRemoteCapturesHere(params);
-      }
-      if (method === "ade/actions/call" && params?.name === "list_computer_use_artifacts") {
-        // A proof command's verify step checks the drawer it filed into: this one.
-        return await callLocalProject(method, params);
-      }
-      return await callRemote(method, params);
-    },
-    close: () => socketClient.close(),
-  };
 }
 
 /** The one line a live-session command prints instead of going headless. */
@@ -28367,30 +28214,6 @@ function formatProviderAccounts(value: unknown): string {
   );
 }
 
-function formatMachinesRoster(value: unknown): string {
-  const record = isRecord(value) ? value : {};
-  const machines = firstArray(record, ["machines"]);
-  const notice = record.state && record.state !== "ok" && typeof record.message === "string"
-    ? `${record.message}\n`
-    : "";
-  const table = renderTable(
-    ["machine", "key", "online", "platform", "last seen", "projects"],
-    machines.map((machine) => [
-      machine.isThisMachine === true ? `${String(machine.name ?? "")} (this machine)` : machine.name,
-      machine.machineKey,
-      machine.online === true ? "yes" : String(machine.presence ?? "no"),
-      machine.platform,
-      machine.lastSeenAt,
-      Array.isArray(machine.projects)
-        ? machine.projects.filter(isRecord).map((project) => project.name ?? project.rootPath).join(", ")
-        : asString(machine.note) ?? "",
-    ]),
-    "ADE machines\n(no machines on this account)",
-    { fullColumns: ["key"] },
-  );
-  return `${notice}${table}`;
-}
-
 function formatProjectsList(value: unknown): string {
   const projects = Array.isArray(value)
     ? value.filter(isRecord)
@@ -28410,12 +28233,9 @@ function formatProjectsList(value: unknown): string {
         ? new Date(project.lastOpenedAt).toISOString()
         : "",
     ],
+    // A projects row is a project; it has no other project to name.
+    { projectColumn: false },
   );
-  // A projects row has no project of its own to name; drop that column.
-  if (table.headers[1] === "project" && table.headers[0] === "machine") {
-    table.headers.splice(1, 1);
-    for (const row of table.rows) row.splice(1, 1);
-  }
   return renderTable(table.headers, table.rows, "ADE projects\n(no projects registered)", { fullColumns: ["project"] });
 }
 
@@ -30304,171 +30124,12 @@ function createLinkEnvelopeResolver(
   };
 }
 
-/** Rows from another machine carry where they came from, for the merged table. */
-const MACHINE_ROW_KEY = "machine";
-const MACHINE_PROJECT_ROW_KEY = "machineProject";
-
-/** The list commands `--all-machines` can merge, by what they return. */
-type AllMachinesListKind = "chats" | "projects" | "lanes";
-
-function allMachinesListKind(plan: CliPlan & { kind: "execute" }): AllMachinesListKind | null {
-  if (plan.label === "chat list") return "chats";
-  if (plan.label === "projects list" || plan.formatter === "projects-list") return "projects";
-  if (plan.label === "lanes list") return "lanes";
-  return null;
-}
-
-function rowsOfListValue(kind: AllMachinesListKind, value: unknown): JsonObject[] {
-  if (kind === "chats") return firstArray(value, ["sessions", "chats", "items"]);
-  if (kind === "projects") return firstArray(value, ["projects", "items"]);
-  return firstArray(value, ["lanes", "items", "result"]);
-}
-
-/**
- * `--all-machines`: run one list command on this machine and on every online
- * machine on the account, and merge the rows into one list with a machine
- * column. An offline or failing machine is one row saying so, never a failed
- * command: the point is a picture of everything, and one dark laptop must not
- * blank it.
- */
-async function executePlanOnAllMachines(
-  plan: CliPlan & { kind: "execute" },
-  options: GlobalOptions,
-): Promise<unknown> {
-  const kind = allMachinesListKind(plan);
-  if (!kind) {
-    throw new CliUsageError(
-      "--all-machines works with `chat list`, `lanes list` and `projects list`. Use --machine <name> for one machine.",
-    );
-  }
-  const single = { ...options, allMachines: false, machine: null };
-  const roster = await withMachineBrain(options, (client) => client.request("machines.list", {}));
-  const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
-  if (isRecord(roster) && roster.state !== "ok") {
-    process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
-  }
-  const localName = asString(machines.find((machine) => machine.isThisMachine === true)?.name) ?? THIS_MACHINE_NAME;
-  const tag = (rows: JsonObject[], machineName: string, project: string | null): JsonObject[] =>
-    rows.map((row) => ({ [MACHINE_ROW_KEY]: machineName, [MACHINE_PROJECT_ROW_KEY]: project, ...row }));
-  const localProject = kind === "projects" ? null : path.basename(resolveRoots(options).projectRoot);
-  const results = await Promise.all([
-    executePlan(plan, single).then(
-      (value) => tag(rowsOfListValue(kind, value), localName, localProject),
-      (error) => [{ [MACHINE_ROW_KEY]: localName, unavailable: error instanceof Error ? error.message : String(error) }],
-    ),
-    ...machines
-      .filter((machine) => machine.isThisMachine !== true)
-      .map(async (machine): Promise<JsonObject[]> => {
-        const name = asString(machine.name) ?? asString(machine.machineKey) ?? "machine";
-        if (machine.online !== true) {
-          const lastSeen = asString(machine.lastSeenAt);
-          return [{ [MACHINE_ROW_KEY]: name, unavailable: `offline${lastSeen ? ` (last seen ${lastSeen})` : ""}` }];
-        }
-        try {
-          const value = await executePlan(plan, { ...single, machine: asString(machine.machineKey) ?? name });
-          return tag(rowsOfListValue(kind, value), name, kind === "projects" ? null : options.machineProject ?? null);
-        } catch (error) {
-          const message = error instanceof CliExecutionError && isRecord(error.details) && typeof error.details.cause === "string"
-            ? error.details.cause
-            : error instanceof Error ? error.message : String(error);
-          return [{ [MACHINE_ROW_KEY]: name, unavailable: message }];
-        }
-      }),
-  ]);
-  const rows = results.flat();
-  return kind === "chats" ? { sessions: rows } : kind === "projects" ? { projects: rows } : { lanes: rows };
-}
-
-/** One short-lived connection to this machine's brain, for machine-level calls. */
-async function withMachineBrain<T>(
-  options: GlobalOptions,
-  run: (client: SocketJsonRpcClient) => Promise<T>,
-): Promise<T> {
-  const client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null);
-  try {
-    return await run(client);
-  } finally {
-    client.close();
-  }
-}
-
-/**
- * A merged list's machine and project columns, ahead of the command's own.
- * Rows that are only "this machine is offline" fill the first content column.
- */
-function withMachineColumns(
-  headers: string[],
-  records: JsonObject[],
-  cells: (record: JsonObject) => unknown[],
-): { headers: string[]; rows: unknown[][] } {
-  const merged = records.some((record) => MACHINE_ROW_KEY in record);
-  if (!merged) return { headers, rows: records.map(cells) };
-  return {
-    headers: ["machine", "project", ...headers],
-    rows: records.map((record) => {
-      const unavailable = asString(record.unavailable);
-      if (unavailable) {
-        return [record[MACHINE_ROW_KEY], "-", unavailable, ...headers.slice(1).map(() => "")];
-      }
-      return [record[MACHINE_ROW_KEY], record[MACHINE_PROJECT_ROW_KEY] ?? "", ...cells(record)];
-    }),
-  };
-}
-
-type MachineFanOutResult = {
-  machineFanOut: Array<{ machine: string; sessionId: string | null; result?: unknown; error?: string }>;
-};
-
-function isMachineFanOutResult(value: unknown): value is MachineFanOutResult {
-  return isRecord(value) && Array.isArray(value.machineFanOut);
-}
-
-function formatMachineFanOut(value: MachineFanOutResult): string {
-  return renderTable(
-    ["machine", "session", "result"],
-    value.machineFanOut.map((row) => [row.machine, row.sessionId ?? "", row.error ? `failed: ${row.error}` : "started"]),
-    "ADE chats\n(no machines)",
-    { fullColumns: ["session"] },
-  );
-}
-
-/**
- * `ade chat create --machine a,b,c`: the same child on every named machine,
- * one call each, in parallel. One machine failing is its own row, never the
- * whole command: the others' children already exist.
- */
-async function executePlanOnMachines(
-  plan: CliPlan & { kind: "execute" },
-  options: GlobalOptions,
-  machines: string[],
-): Promise<MachineFanOutResult> {
-  if (!plan.label.startsWith("chat create")) {
-    throw new CliUsageError("Several machines in --machine work with `chat create` only. Use --all-machines for lists.");
-  }
-  const rows = await Promise.all(machines.map(async (machine) => {
-    try {
-      const result = await executePlan(plan, { ...options, machine });
-      return { machine, sessionId: sessionIdFromCreateChatValue(result) ?? null, result };
-    } catch (error) {
-      const message = error instanceof CliExecutionError && isRecord(error.details) && typeof error.details.cause === "string"
-        ? error.details.cause
-        : error instanceof Error ? error.message : String(error);
-      return { machine, sessionId: null, error: message };
-    }
-  }));
-  return { machineFanOut: rows };
-}
-
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
-  if (options.allMachines) return await executePlanOnAllMachines(plan, options);
-  const machineList = (options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
-  if (machineList.length > 1) return await executePlanOnMachines(plan, options, [...new Set(machineList)]);
-  if (options.machine && plan.steps.some((step) => step.injectProjectRootIntoArgs)) {
-    throw new CliUsageError(`${plan.label} reads this machine's files, so it can't run with --machine.`);
-  }
+  const acrossMachines = await executePlanAcrossMachines(plan, options);
+  if (acrossMachines) return acrossMachines.value;
   let connection: CliConnection;
   const baseConnectionOptions =
     plan.machineOnly
@@ -30955,103 +30616,17 @@ async function runResetCommand(
   };
 }
 
-/** Commands that can run on another machine with `--machine`. */
-const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
-  "chat",
-  "new",
-  "lanes",
-  "lane",
-  "projects",
-  "apple",
-  "mac-desktop",
-  "app-control",
-]);
-/** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
-const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
-/** Flags whose value is free text that may itself look like a flag. */
-const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--title", "--reason"]);
-
-/**
- * Pull `--machine <name>`, `--all-machines` and `--machine-project <sel>` (and,
- * for chat and lanes, `--project <sel>` while targeting a machine) out of a
- * supported command's own arguments into the global options, so every plan
- * builder stays unaware of machines. Unsupported commands keep their flags and
- * fail as they always did.
- */
-export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
-  const primary = parsed.command[0]?.toLowerCase() ?? "";
-  if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) return parsed;
-  const kept: string[] = [];
-  let machine: string | null = null;
-  let allMachines = false;
-  let machineProject: string | null = null;
-  let projectAlias: string | null = null;
-  let machineClone = false;
-  const command = parsed.command;
-  for (let index = 0; index < command.length; index += 1) {
-    const token = command[index]!;
-    if (token === "--") {
-      kept.push(...command.slice(index));
-      break;
-    }
-    if (FREE_TEXT_VALUE_FLAGS.has(token) && index + 1 < command.length) {
-      kept.push(token, command[index + 1]!);
-      index += 1;
-      continue;
-    }
-    const [flag, inline] = token.startsWith("--") && token.includes("=")
-      ? [token.slice(0, token.indexOf("=")), token.slice(token.indexOf("=") + 1)]
-      : [token, null];
-    const takeValue = (): string => {
-      const value = inline ?? command[index + 1];
-      if (inline == null) index += 1;
-      if (!value?.trim() || (inline == null && value.startsWith("--"))) {
-        throw new CliUsageError(`${flag} requires a value.`);
-      }
-      return value.trim();
-    };
-    if (flag === "--machine") { machine = takeValue(); continue; }
-    if (flag === "--machine-project") { machineProject = takeValue(); continue; }
-    if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
-    if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
-    if (flag === "--project" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) {
-      projectAlias = takeValue();
-      continue;
-    }
-    kept.push(token);
-  }
-  if (projectAlias && !machine && !allMachines) {
-    throw new CliUsageError(`--project picks the project on another machine; add --machine <name>, or use --project-root here.`);
-  }
-  if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
-  if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
-  if (!machine && !allMachines && !machineProject) return parsed;
-  if (machineProject && !machine && !allMachines) {
-    throw new CliUsageError("--machine-project needs --machine <name>.");
-  }
-  if (machine) {
-    // This shell's lane is a lane on THIS machine. Plan builders that default
-    // to it would name a lane the other machine has never heard of; there the
-    // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-    // target pick, as `ade chat launch` does with a new lane.
-    delete process.env.ADE_LANE_ID;
-  }
-  return {
-    command: kept,
-    options: {
-      ...parsed.options,
-      machine,
-      allMachines,
-      machineProject: machineProject ?? projectAlias,
-      machineClone,
-    },
-  };
-}
-
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
+  if (parsed.options.machine) {
+    // This shell's lane is a lane on THIS machine. Plan builders that default
+    // to it would name a lane the other machine has never heard of; there the
+    // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets
+    // the target pick, as `ade chat launch` does with a new lane.
+    delete process.env.ADE_LANE_ID;
+  }
   const primary = parsed.command[0]?.toLowerCase();
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
@@ -31595,4 +31170,13 @@ export {
   startHeadlessRpcTcpServer,
   summarizeExecution,
   unwrapToolResult,
+  CliExecutionError,
+  connectMachineRuntimeDaemon,
+  executePlan,
+  getGitRemote,
+  isMachineRuntimeScopedMethod,
+  resolveMachineRuntimeSocketPath,
+  sessionIdFromCreateChatValue,
+  withProjectId,
+  SocketJsonRpcClient,
 };

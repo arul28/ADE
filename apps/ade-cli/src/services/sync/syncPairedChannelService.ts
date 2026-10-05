@@ -760,9 +760,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
       // clients even after successful pairing. Defaults to false so callers
       // must opt in explicitly.
       authorizedForRuntimeHost = false,
-      // The paired record's device id, as the host authenticated it. Runtime
-      // handlers use it to attribute calls from another machine's brain.
-      peerDeviceId: string | null = null,
+      // What the host authenticated about this peer: the paired record's
+      // device id. Runtime handlers use it to attribute calls from another
+      // machine's brain.
+      peerIdentity: { peerDeviceId?: string | null } = {},
     ): Promise<boolean> {
       const value = payload && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -789,7 +790,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
       switch (type) {
         case "rpc_open":
-          openRpc(peer, { channelId: id }, { peerDeviceId: peerDeviceId?.trim() || null });
+          openRpc(peer, { channelId: id }, { peerDeviceId: peerIdentity.peerDeviceId?.trim() || null });
           break;
         case "rpc_data": {
           const bytes = decodeStrictBase64(value.data);

@@ -11,7 +11,10 @@ import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/dem
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { pathKey } from "../../desktop/src/main/services/shared/pathCompare";
+import {
+  createRemoteCallerCaptures,
+  type RemoteCallerCaptures,
+} from "./services/proof/remoteCallerCaptures";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
@@ -1889,17 +1892,12 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
 }
 
 /**
- * The brain's environment identity, unless the client disclaimed an identity
- * with a synthetic `<client>:<pid>` caller id. A dev brain started from an
- * agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it to an
- * unbound caller filed that caller's proof in the wrong chat and disabled its
- * lane inference.
- */
-/**
- * A synthetic caller (a process, not a chat) and a caller from another machine
- * (`remote:<device>:<chat>`) never inherit this brain's own environment
- * identity: a brain started from an agent's shell would otherwise attribute
- * every such call to that agent's chat.
+ * The brain's environment identity, unless the caller is not one of this
+ * brain's chats: a synthetic `<client>:<pid>` caller id (a process), or a
+ * caller from another machine (`remote:<device>:<chat>`). A dev brain started
+ * from an agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it
+ * to such a caller filed its proof in the wrong chat, disabled its lane
+ * inference, and would attribute another machine's calls to that agent.
  */
 function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
   return isSyntheticCallerId(callerId) || parseForeignCallerSessionId(callerId) !== null
@@ -2703,24 +2701,15 @@ export async function resolveIngestProvenance(
   };
 }
 
-/**
- * Captures a capture action wrote for a caller on ANOTHER machine, by path.
- * That caller files its proof in its own machine's drawer, so it reads the
- * bytes back (`read_remote_caller_capture`) — only its own, and only while
- * they are fresh.
- */
-const REMOTE_CALLER_CAPTURE_TTL_MS = 15 * 60_000;
-const remoteCallerCaptures = new WeakMap<AdeRuntime, Map<string, { owner: string; expiresAt: number }>>();
-/** One chunk of a remote caller's capture; the transport caps a reply at 25 MiB. */
-const REMOTE_CALLER_CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
+const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
 
-function remoteCallerCaptureMap(runtime: AdeRuntime): Map<string, { owner: string; expiresAt: number }> {
-  let map = remoteCallerCaptures.get(runtime);
-  if (!map) {
-    map = new Map();
-    remoteCallerCaptures.set(runtime, map);
+function remoteCallerCapturesFor(runtime: AdeRuntime): RemoteCallerCaptures {
+  let registry = remoteCallerCaptureRegistries.get(runtime);
+  if (!registry) {
+    registry = createRemoteCallerCaptures();
+    remoteCallerCaptureRegistries.set(runtime, registry);
   }
-  return map;
+  return registry;
 }
 
 /** Remember the file a capture action just wrote. Never fails the action. */
@@ -2736,11 +2725,8 @@ async function rememberCaptureActionResult(
   const filePath = asOptionalTrimmedString(result[capture.field]);
   if (!filePath) return;
   const foreignOwner = asOptionalTrimmedString(session?.identity.chatSessionId);
-  if (foreignOwner && parseForeignCallerSessionId(foreignOwner) && path.isAbsolute(filePath)) {
-    const map = remoteCallerCaptureMap(runtime);
-    const at = Date.now();
-    for (const [key, entry] of map) if (entry.expiresAt <= at) map.delete(key);
-    map.set(pathKey(filePath), { owner: foreignOwner, expiresAt: at + REMOTE_CALLER_CAPTURE_TTL_MS });
+  if (foreignOwner && parseForeignCallerSessionId(foreignOwner)) {
+    remoteCallerCapturesFor(runtime).remember(filePath, foreignOwner);
   }
   try {
     await captureRegistryFor(runtime).remember(filePath, capture.source);
@@ -6669,26 +6655,16 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     const requested = asOptionalTrimmedString(toolArgs.path);
-    const entry = requested && path.isAbsolute(requested)
-      ? remoteCallerCaptureMap(runtime).get(pathKey(requested))
-      : undefined;
-    if (!requested || !entry || entry.owner !== owner || entry.expiresAt <= Date.now()) {
+    const chunk = requested
+      ? remoteCallerCapturesFor(runtime).readChunk(owner, requested, asNumber(toolArgs.offset, 0))
+      : null;
+    if (!chunk) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
         "That file is not a capture this machine made for you in the last 15 minutes.",
       );
     }
-    const size = fs.statSync(requested).size;
-    const offset = Math.max(0, Math.floor(asNumber(toolArgs.offset, 0)));
-    const length = Math.min(REMOTE_CALLER_CAPTURE_CHUNK_BYTES, Math.max(0, size - offset));
-    const buffer = Buffer.alloc(length);
-    const fd = fs.openSync(requested, "r");
-    try {
-      fs.readSync(fd, buffer, 0, length, offset);
-    } finally {
-      fs.closeSync(fd);
-    }
-    return { size, offset, length, dataBase64: buffer.toString("base64"), done: offset + length >= size };
+    return chunk;
   }
 
   if (name === "ingest_computer_use_artifacts") {

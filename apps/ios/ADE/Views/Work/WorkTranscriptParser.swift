@@ -1208,7 +1208,7 @@ private func workSpawnCompletionEvent(
     status: status,
     summary: summary,
     label: optionalString(completion["childTitle"]).map { title in
-      optionalString(completion["childMachineName"]).map { "\(title) · on \($0)" } ?? title
+      spawnCompletionDisplayLabel(title: title, machineName: optionalString(completion["childMachineName"]))
     },
     model: nil,
     reasoningEffort: nil,

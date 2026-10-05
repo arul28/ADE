@@ -92,6 +92,12 @@ export type RemoteCallerClaim = {
    * here. Absent means unknown, and a child falls to the cautious default.
    */
   permissionLevel?: string | null;
+  /**
+   * Sent only with a request that starts the caller's own child. The target
+   * stores it with the child and returns it with every report, so the calling
+   * machine accepts the report from that machine and no other.
+   */
+  wakeToken?: string | null;
 };
 
 /**
@@ -130,4 +136,16 @@ export function parseForeignCallerSessionId(
   const [device, chat, ...rest] = raw.slice(FOREIGN_CALLER_PREFIX.length).split(":");
   if (rest.length || !device || !chat || !FOREIGN_SEGMENT.test(device) || !FOREIGN_SEGMENT.test(chat)) return null;
   return { peerDeviceId: device, chatSessionId: chat === "terminal" ? null : chat };
+}
+
+/**
+ * How a person is told that an agent on another machine holds something here
+ * (a simulator, a screen): "an agent on Mac mini". One wording for the desktop
+ * pane, the phone's owner ribbon, and anything after them.
+ */
+export function remoteAgentHolderLabel(
+  machineName: string | null | undefined,
+  options: { sentenceStart?: boolean } = {},
+): string {
+  return `${options.sentenceStart ? "An" : "an"} agent on ${machineName?.trim() || "another machine"}`;
 }

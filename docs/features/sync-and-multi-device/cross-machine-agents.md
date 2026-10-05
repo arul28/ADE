@@ -65,37 +65,61 @@ the trust boundary, as it is for the person's own desktop.
   inherits the brain's environment identity.
 - **Children and wakes.** A child started from another machine (or from another
   project, or a personal chat) records its parent's id as usual — the foreign id
-  for a remote parent. The brain's `externalChats` registry remembers where that
-  parent lives and its permission level, so the child is clamped to the real
-  level rather than `ask`. When the child's turn ends, its chat service hands the
-  completion to the brain's router (`services/chat/crossScopeChats.ts`): a
-  durable outbox delivers it into another scope on this machine, or over the
-  bridge (`machines.deliverWake`) to the parent's machine, retrying from 30 s to
-  5 min and giving up after 24 h with a notice on the child. The parent's machine
-  accepts a wake only for a child its own brain started there, and the parent
-  transcript dedupes a repeat by the child's turn id. The parent sees the usual
-  completion row with "· on <machine>", and its wake text names the
-  `ade chat read … --machine` command.
+  for a remote parent. A remote caller may parent a child only to itself; naming
+  any other chat as the parent is refused. The brain's `externalChats` registry
+  remembers where that parent lives and its permission level, so the child is
+  clamped to the real level rather than `ask`, and is not mistaken for an
+  orphan. When the child's turn ends, its chat service hands the completion to
+  the brain's router (`services/chat/crossScopeChats.ts`). Only a parent the
+  brain recorded is routed; any other missing parent was deleted, and the child
+  says so at once, as before. A durable outbox delivers it into another scope on
+  this machine (booting at most that one scope), or over the bridge
+  (`machines.deliverWake`) to the parent's machine, retrying from 30 s to 5 min,
+  skipping a dark machine for the rest of a pass, and giving up after 24 h with
+  a notice on the child.
+- **Who may wake a parent.** When an agent starts a child on another machine,
+  its brain issues a random wake token with the request. The target stores it
+  with the child and returns it with every report; the parent's machine accepts
+  a report only for a child it started there, carrying that token. Knowing the
+  ids (any machine on the account can list them) is not enough to inject a turn.
+  A refused report is not retried. The parent transcript dedupes a repeat by the
+  child's turn id. The parent sees the usual completion row with
+  "· on <machine>", and its wake text names the `ade chat read … --machine`
+  command.
 - **Devices and proof.** `ade apple`, `ade mac-desktop` and `ade app-control`
   run on the other machine under the foreign owner, so the existing single-owner
   checks arbitrate between agents. Paths that name this machine's checkout are
   stripped before sending. A proof command's capture runs there; its bytes are
   read back (`read_remote_caller_capture`: only that caller's own captures, only
   for 15 minutes) and filed in THIS chat's proof drawer. That machine's Apple
-  drawer and the phone's ownership ribbon say "an agent on <machine>" is driving,
-  with a control to end its session.
+  device pane says "An agent on <machine> is driving this device", with
+  **Free device** (confirmed first; it ends that agent's session only if the
+  same agent still holds the device, and the agent may take it again), and the
+  phone's ownership ribbon names the same "an agent on <machine>".
 - **Clone.** `--clone` asks the target to set the repository up
   (`machines.cloneForAgent`): GitHub only, the default projects folder, the
   handoff storage preflight, the target's own Git credentials.
 
 ## Limits
 
+- `ade machines list` from an agent's shell shows the agent-safe roster (name,
+  key, status, platform, last seen, projects with `--projects`), not the
+  account directory a person's terminal gets.
+- A person's terminal on another machine (no chat) starts children there at
+  the cautious `ask` level: there is no chat whose level to inherit.
+- `--personal` children on another machine do not report back; personal chats
+  take no parent.
+- If a remote `chat create` loses its answer (a timeout after the target
+  created the child), this machine never learned the child, so that child's
+  reports are refused and it says it could not reach its parent.
+
 - Both machines need this ADE version; an older target is reported as
   "update ADE there" (capability `agentRemoteCallers`).
 - Recordings started with `--machine` are filed on that machine; only stills
   (`proof`) are filed back here.
 - A remote device session is not released automatically when the calling turn
-  ends; the agent stops it, or the person ends it from that machine's drawer.
+  ends; the agent stops it, or the person frees the device from that machine's
+  pane.
 - Builds run where the lane is. To build an iOS app from a Linux box, start a
   subagent on the Mac (`ade chat create --machine …`) and let it build and drive.
 

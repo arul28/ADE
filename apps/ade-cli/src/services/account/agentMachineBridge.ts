@@ -28,7 +28,10 @@ import {
 } from "../../../../desktop/src/shared/runtimeClientNames";
 import type { AdeAccountMachine } from "../../../../desktop/src/shared/types/account";
 import { withTimeout } from "../../tuiClient/remoteLaunchBudget";
+import type { ExternalWakeDeliveryResult } from "../../../../desktop/src/main/services/chat/externalChats";
 import {
+  MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
+  MachineAccountSignedOutError,
   clampMachineCallTimeout,
   createMachineConnectionPool,
   errorMessage,
@@ -42,18 +45,6 @@ import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 
 const AGENT_PAIRED_STORE_FILE = "agent-paired-machines.json";
 
-/**
- * A root path on the target compares by the TARGET's rules (a Windows host
- * folds case and separators), whatever this machine is. The directory reports
- * either a Node platform or the sync spelling.
- */
-function targetPathPlatform(platform: string | null): ContainmentPlatform {
-  const value = platform?.trim().toLowerCase() ?? "";
-  if (value === "win32" || value === "windows") return "win32";
-  if (value === "darwin" || value === "macos" || value === "mac") return "darwin";
-  if (value === "linux") return "linux";
-  return "posix";
-}
 /** A first clone of a large repository over a slow link. */
 const MACHINE_CLONE_TIMEOUT_MS = 180_000;
 /** One slow machine must not hold the roster hostage. */
@@ -72,6 +63,18 @@ const FORWARDABLE_METHODS: ReadonlySet<string> = new Set([
 /** Methods that run in a project on the target and need one resolved. */
 const PROJECT_SCOPED_METHODS: ReadonlySet<string> = new Set(["ade/actions/call"]);
 
+/**
+ * A root path on the target compares by the TARGET's rules (a Windows host
+ * folds case and separators), whatever this machine is. The directory reports
+ * either a Node platform or the sync spelling.
+ */
+function targetPathPlatform(platform: string | null): ContainmentPlatform {
+  const value = platform?.trim().toLowerCase() ?? "";
+  if (value === "win32" || value === "windows") return "win32";
+  if (value === "darwin" || value === "macos" || value === "mac") return "darwin";
+  if (value === "linux") return "linux";
+  return "posix";
+}
 export type MachineCallScope =
   /** The project on the target that has this git origin (the caller's repo). */
   | { kind: "repo"; originUrl: string }
@@ -284,14 +287,18 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       : method;
     const timeoutMs = clampMachineCallTimeout(input.timeoutMs);
     const raw = await pool.request(machine, entry, label, method, params, timeoutMs);
+    // An action answer is checked (refusal and size) by the pool; any other
+    // answer gets the same size cap here.
     const result = method === "ade/actions/call"
       ? pool.checkActionResponse(machineName(machine), label, raw, machine.machineKey)
       : raw;
-    const bytes = resultByteLength(result);
-    if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {
-      throw new Error(
-        `${machineName(machine)} returned ${label} at ${bytes} bytes, over the ${SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES}-byte limit. Narrow the request.`,
-      );
+    if (method !== "ade/actions/call") {
+      const bytes = resultByteLength(result);
+      if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {
+        throw new Error(
+          `${machineName(machine)} returned ${label} at ${bytes} bytes, over the ${SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES}-byte limit. Narrow the request.`,
+        );
+      }
     }
     return {
       machine: { machineKey: machine.machineKey, name: machineName(machine) },
@@ -305,8 +312,11 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     try {
       machines = await pool.listAccountMachines(true);
     } catch (error) {
-      const message = errorMessage(error);
-      return { state: /not signed in/i.test(message) ? "signed_out" : "unavailable", message, machines: [] };
+      return {
+        state: error instanceof MachineAccountSignedOutError ? "signed_out" : "unavailable",
+        message: errorMessage(error),
+        machines: [],
+      };
     }
     const rows = await Promise.all(machines.map(async (machine): Promise<AgentMachineRosterEntry> => {
       const local = pool.isThisMachine(machine);
@@ -348,12 +358,19 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
   const deliverWake = async (
     machineKey: string,
     payload: unknown,
-  ): Promise<"delivered" | "parent_gone" | "failed"> => {
+  ): Promise<ExternalWakeDeliveryResult> => {
     const machine = await pool.selectMachine(machineKey);
     if (!machine.online) return "failed";
     const entry = await pool.acquire(machine);
-    const answer = await pool.request(machine, entry, "machines.deliverWake", "machines.deliverWake", { payload }, 30_000);
-    return answer === "delivered" || answer === "parent_gone" ? answer : "failed";
+    const answer = await pool.request(
+      machine,
+      entry,
+      "machines.deliverWake",
+      "machines.deliverWake",
+      { payload },
+      MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
+    );
+    return answer === "delivered" || answer === "parent_gone" || answer === "refused" ? answer : "failed";
   };
 
   return { call, listMachines, deliverWake };

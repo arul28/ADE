@@ -18,7 +18,6 @@
  * the desktop's, so looking at a machine never drops the user's own desktop
  * connection to it.
  */
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
@@ -26,6 +25,7 @@ import { RuntimeRpcClient } from "../../../../desktop/src/main/services/remoteRu
 import { PairedRuntimeCompatibilityError } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import { getOrCreateLocalAccountMachineIdentity } from "../../../../desktop/src/main/services/account/localMachineIdentity";
 import {
+  AmbiguousAccountMachineError,
   accountMachineDisplayName,
   selectAccountMachine,
 } from "../../../../desktop/src/shared/accountDirectory";
@@ -35,7 +35,7 @@ import {
   openPairedCandidate,
   type AccountRelayProof,
 } from "../../tuiClient/pairedRemoteConnector";
-import { createRemoteLaunchBudget, withTimeout } from "../../tuiClient/remoteLaunchBudget";
+import { createRemoteLaunchBudget } from "../../tuiClient/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
@@ -109,6 +109,16 @@ export type MachineConnectionPoolOptions = {
   requiredCapability?: string | null;
   logger?: MachineBridgeLogger | null;
 };
+
+/** This brain is not signed in to an ADE account, so no other machine is reachable. */
+export class MachineAccountSignedOutError extends Error {
+  readonly code = "account_signed_out";
+}
+
+/** A call to another machine did not answer in time; it may still have run there. */
+export class MachineCallTimeoutError extends Error {
+  readonly code = "machine_call_timeout";
+}
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -300,7 +310,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       : { state: "signed_out" as const };
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
       directoryCache = null;
-      throw new Error(`${notSignedInMessage} Sign in to ADE here, then try again.`);
+      throw new MachineAccountSignedOutError(`${notSignedInMessage} Sign in to ADE here, then try again.`);
     }
     if (listed.state !== "ok") {
       throw new Error(
@@ -322,7 +332,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   const signedInUserId = (): string => {
     const status = account().getStatus();
     const userId = status.signedIn ? status.userId?.trim() ?? "" : "";
-    if (!userId) throw new Error(notSignedInMessage);
+    if (!userId) throw new MachineAccountSignedOutError(notSignedInMessage);
     return userId;
   };
 
@@ -471,13 +481,17 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   ): Promise<unknown> => {
     entry.inFlight += 1;
     touch(entry);
-    try {
-      return await withTimeout(
-        entry.client.call(method, params, { timeoutMs }),
-        timeoutMs + 1_000,
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new MachineCallTimeoutError(
         `${machineName(machine)} did not answer ${label} within ${Math.round(timeoutMs / 1000)}s. It may still have run there.`,
-      );
+      )), timeoutMs + 1_000);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([entry.client.call(method, params, { timeoutMs }), timedOut]);
     } catch (error) {
+      if (error instanceof MachineCallTimeoutError) throw error;
       if (entry.client.isClosed()) {
         dropConnection(entry.hostDeviceId, entry);
         throw new Error(
@@ -485,9 +499,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
           { cause: error },
         );
       }
-      if (/did not answer .* within/.test(errorMessage(error))) throw error;
       throw new Error(`${machineName(machine)} refused ${label}: ${errorMessage(error)}`, { cause: error });
     } finally {
+      if (timer) clearTimeout(timer);
       entry.inFlight = Math.max(0, entry.inFlight - 1);
       if (!entry.client.isClosed()) touch(entry);
     }
@@ -531,13 +545,13 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       try {
         return selectAccountMachine(machines, trimmed);
       } catch (error) {
-        if (/ambiguous/i.test(errorMessage(error))) throw error;
+        if (error instanceof AmbiguousAccountMachineError) throw error;
         machines = await listAccountMachines(true);
         return selectAccountMachine(machines, trimmed);
       }
     } catch (error) {
       const message = errorMessage(error);
-      if (/ambiguous/i.test(message)) throw new Error(`${message} Pass the machine id from listMachines.`);
+      if (error instanceof AmbiguousAccountMachineError) throw new Error(`${message} Pass the machine id from listMachines.`);
       const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
       throw new Error(
         `No machine on your ADE account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
@@ -559,6 +573,5 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     request,
     checkActionResponse,
     selectMachine,
-    hostname: (): string => os.hostname(),
   };
 }

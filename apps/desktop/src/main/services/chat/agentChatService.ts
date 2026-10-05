@@ -260,7 +260,9 @@ import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
   externalChatContext,
   getExternalParentRouter,
+  spawnDeliveryKey,
   type ExternalParentWake,
+  type ExternalWakeDeliveryResult,
 } from "./externalChats";
 import {
   lowerPermissionCeiling,
@@ -40016,7 +40018,7 @@ export function createAgentChatService(args: {
       spawnCompletion,
     } = delivery;
     const childTurnId = spawnCompletion.childTurnId ?? "";
-    const deliveryKey = `${parentSessionId}:${childSessionId}:${childTurnId}`;
+    const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, childTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
     const parentShouldWake = spawnKind === "subagent" && delivery.routeQuietly !== true;
 
@@ -40200,7 +40202,7 @@ export function createAgentChatService(args: {
       source,
     });
     if (!resolvedTurnId) return;
-    const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
+    const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, resolvedTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
     // Subagent completions always wake the parent. Human messages no longer
@@ -40300,11 +40302,11 @@ export function createAgentChatService(args: {
    */
   const deliverExternalChildCompletion = (
     wake: Omit<ExternalParentWake, "childProjectRoot">,
-  ): Promise<"delivered" | "parent_gone" | "failed"> => {
+  ): Promise<ExternalWakeDeliveryResult> => {
     if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
     // The same turn already being delivered answers nothing; let the outbox
     // try again rather than wait on a callback that never comes.
-    const inFlightKey = `${wake.parentSessionId}:${wake.childSessionId}:${wake.spawnCompletion.childTurnId ?? ""}`;
+    const inFlightKey = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
     if (spawnCompletionDeliveriesInFlight.has(inFlightKey)) return Promise.resolve("failed");
     return new Promise((resolve) => {
       deliverChildCompletionToParent({
@@ -62027,7 +62029,7 @@ export function createAgentChatService(args: {
       childSessionId: string;
       parentSessionId: string;
       childTurnId: string | null;
-      reason: "parent_gone" | "gave_up";
+      reason: "parent_gone" | "gave_up" | "refused";
     }): void => {
       const child = managedSessions.get(input.childSessionId) ?? (() => {
         try { return ensureManagedSession(input.childSessionId); } catch { return null; }
@@ -62048,7 +62050,9 @@ export function createAgentChatService(args: {
           spawnCompletionDeliveryFailure: {
             childTurnId: turnId,
             parentSessionId: input.parentSessionId,
-            error: "The chat that started this one could not be reached for a day.",
+            error: input.reason === "refused"
+              ? "The machine of the chat that started this one does not accept its reports."
+              : "The chat that started this one could not be reached for a day.",
           },
         },
       });

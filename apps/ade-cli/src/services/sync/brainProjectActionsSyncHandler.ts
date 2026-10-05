@@ -711,7 +711,7 @@ export function createBrainProjectActionsSyncHandler(
         // Runtime RPC channel + port-forward are desktop-runtime-host only.
         peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
         // Paired auth looked the record up by this id and verified its secret.
-        peer.authKind === "paired" ? peer.metadata?.deviceId ?? null : null,
+        { peerDeviceId: peer.authKind === "paired" ? peer.metadata?.deviceId ?? null : null },
       );
       return;
     }

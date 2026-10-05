@@ -55,8 +55,9 @@ import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/
 import type { CtoActionCaller } from "../../adeRpcServer";
 import { withTimeout } from "../../tuiClient/remoteLaunchBudget";
 import {
-  MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS as DEFAULT_CALL_TIMEOUT_MS,
-  clampMachineCallTimeout as clampTimeout,
+  MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
+  MachineAccountSignedOutError,
+  clampMachineCallTimeout,
   createMachineConnectionPool,
   errorMessage,
   isRecord,
@@ -228,15 +229,13 @@ export function createCtoCrossMachineBridge(
     return { entry, project };
   };
 
-  const readActionResponse = pool.checkActionResponse;
-
   const requestOnMachine = async (
     machine: AdeAccountMachine,
     entry: PooledConnection,
     label: string,
     params: Record<string, unknown>,
     timeoutMs: number,
-  ): Promise<unknown> => readActionResponse(
+  ): Promise<unknown> => pool.checkActionResponse(
     machineName(machine),
     label,
     await pool.request(machine, entry, label, "ade/actions/call", params, timeoutMs),
@@ -252,7 +251,7 @@ export function createCtoCrossMachineBridge(
       projectId: project.projectId,
       name: "run_ade_action",
       arguments: runActionArguments(call),
-    }, clampTimeout(call.timeoutMs));
+    }, clampMachineCallTimeout(call.timeoutMs));
     return runActionResult(value);
   };
 
@@ -265,7 +264,7 @@ export function createCtoCrossMachineBridge(
       projectId: project.projectId,
       name: "list_ade_actions",
       arguments: { domain: domain ?? "all" },
-    }, DEFAULT_CALL_TIMEOUT_MS);
+    }, MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS);
     const rows = isRecord(value) && Array.isArray(value.actions) ? value.actions : [];
     return shapeActionList(rows, domain);
   };
@@ -279,18 +278,18 @@ export function createCtoCrossMachineBridge(
   const callLocally = async (call: CtoRemoteActionCall): Promise<unknown> => {
     const caller = await localCaller();
     const label = `${call.domain}.${call.action}`;
-    const timeoutMs = clampTimeout(call.timeoutMs);
+    const timeoutMs = clampMachineCallTimeout(call.timeoutMs);
     const value = await withTimeout(
       caller("run_ade_action", runActionArguments(call)),
       timeoutMs,
       `${label} did not finish within ${Math.round(timeoutMs / 1000)}s on this machine. It may still be running.`,
     );
-    return runActionResult(readActionResponse("This machine", label, value, null));
+    return runActionResult(pool.checkActionResponse("This machine", label, value, null));
   };
 
   const listLocally = async (domain: string | null): Promise<{ count: number; actions: CtoMachineActionInfo[] }> => {
     const caller = await localCaller();
-    const value = readActionResponse(
+    const value = pool.checkActionResponse(
       "This machine",
       "list_ade_actions",
       await caller("list_ade_actions", { domain: domain ?? "all" }),
@@ -390,7 +389,7 @@ export function createCtoCrossMachineBridge(
       } catch (error) {
         const message = errorMessage(error);
         return {
-          state: /not signed in/i.test(message) ? "signed_out" : "unavailable",
+          state: error instanceof MachineAccountSignedOutError ? "signed_out" : "unavailable",
           message,
           machines: [],
         };

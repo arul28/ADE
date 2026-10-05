@@ -3492,6 +3492,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       tools,
       activeDevice,
       activeSession: runtime.activeSession,
+      remoteHolder: remoteHolderOf(runtime.activeSession?.chatSessionId ?? null),
       deviceSession,
       laneDevice: laneDevice ?? null,
       laneId: runtime.laneId,
