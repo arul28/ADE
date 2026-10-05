@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppControlSession } from "../../../shared/types/appControl";
+import type { AppControlScreencastFrame, AppControlSession } from "../../../shared/types/appControl";
 import type { Logger } from "../logging/logger";
 import {
   APP_CONTROL_RECORDING_NOT_RUNNING_CODE,
@@ -89,7 +89,12 @@ afterEach(() => {
 });
 
 describe("createAppControlRecording", () => {
-  function harness(platform: NodeJS.Platform, recorder: AppControlWindowRecorder, screencast: ReturnType<typeof vi.fn> | null = null) {
+  function harness(
+    platform: NodeJS.Platform,
+    recorder: AppControlWindowRecorder,
+    screencast: ReturnType<typeof vi.fn> | null = null,
+    freshCapture: AppControlScreencastFrame | null = null,
+  ) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-recording-"));
     roots.push(root);
     let current: AppControlSession | null = { ...session };
@@ -100,6 +105,7 @@ describe("createAppControlRecording", () => {
       emit: () => undefined,
       getSession: () => current,
       getLastFrame: () => null,
+      getLatestFrame: async () => freshCapture,
       resolveAppProcessId: async () => 42,
       windowRecorder: platform === "darwin" ? recorder : recorder,
       screencastRecorder: () => screencast as never,
@@ -156,12 +162,16 @@ describe("createAppControlRecording", () => {
       stop: vi.fn(),
       cancel: vi.fn(),
     };
-    const { recording } = harness("win32", recorder, backend as never);
+    // A lane nobody watches streams no screencast, so it has no cached frame;
+    // the recording still opens on the app's picture, from a fresh capture.
+    const capture = { sessionId: session.id, laneId: "lane-1", data: "fresh", mimeType: "image/jpeg", width: 2, height: 2 } as AppControlScreencastFrame;
+    const { recording } = harness("win32", recorder, backend as never, capture);
     const status = await recording.startRecording("lane-1", {});
     expect(status.engine).toBe("screencast");
     expect(status.running).toBe(true);
     expect(backend.start).toHaveBeenCalledTimes(1);
     expect(recorder.start).not.toHaveBeenCalled();
+    expect(backend.pushFrame).toHaveBeenCalledWith(appControlRecordingKey("lane-1"), capture);
   });
 });
 

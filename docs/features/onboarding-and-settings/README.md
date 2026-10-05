@@ -296,7 +296,13 @@ Main process:
   implementations is dead in the shipping runtime-backed build.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
-  Linear sync resolver. ~3,150 lines, the largest service.
+  Linear sync resolver. ~3,150 lines, the largest service. The parsed
+  `local.yaml` is cached keyed by the file's identity (inode, size, mtime and
+  ctime of `local.yaml` and the legacy `ade.yaml`), because a chat list asks
+  for a snapshot per session row. Validation still runs on every read — it
+  checks paths the config names, which change without the file — and the
+  `test_suites` snapshot is rewritten only when the file changed or validation
+  first passes.
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.

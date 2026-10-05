@@ -90,6 +90,12 @@ them is the existing `ade_feature_used` `auto_sent` outcome when a sustained
 storage fault triggers an automatic diagnostic send through the unchanged
 consent, deduplication, and budget path.
 
+The brain's local RPC transport writes one raw stderr line when it drops a
+client that has stopped reading — `ade jsonrpc client dropped: <n> bytes
+unread` — before closing the socket, so the client reconnects from its event
+cursor instead of growing the brain's heap until V8 aborts. It is a local
+operational line, not a PostHog event, and it carries only a byte count.
+
 The desktop's runtime connection pool writes its own local lines around the
 update window and repair throttle: `local_runtime.update_window_started` /
 `_ended` / `_expired`, `local_runtime.connect_deferred_for_update`,

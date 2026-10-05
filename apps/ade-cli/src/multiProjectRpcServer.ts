@@ -37,15 +37,18 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
-import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
+import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
   type JsonRpcHandler,
+  type JsonRpcNotifyOptions,
   type JsonRpcRequest,
 } from "./jsonrpc";
+import { createConnectionFrameDemand } from "./connectionFrameDemand";
+import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   importProjectIconBytes,
@@ -129,7 +132,7 @@ type HandlerEntry = {
 };
 
 type RuntimeEventCategory = BufferedEvent["category"];
-type JsonRpcNotifier = (method: string, params?: unknown) => void;
+type JsonRpcNotifier = (method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void;
 type RuntimeEventSubscription = {
   id: string;
   /**
@@ -444,6 +447,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "appControl.setFrameDemand",
   "sync.switchHost",
   "sync.getStatus",
   "sync.runSelfProbe",
@@ -1110,7 +1114,9 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
+    frameDemand.forgetProject(projectId);
     const cached = handlers.get(projectId);
     handlers.delete(projectId);
     if (cached) {
@@ -1176,13 +1182,23 @@ export function createMultiProjectRpcRequestHandler(
     event: BufferedEvent,
     eventEpoch: string,
   ): void => {
-    notifier?.("runtime/event", {
+    const params = {
       subscriptionId,
       projectId,
       scope: projectId == null ? "personal" : "project",
       event,
       eventEpoch,
-    });
+    };
+    // A frame is skipped for a client that is behind; the newest skipped frame
+    // of each lane follows once it catches up.
+    if (isHighVolumeRuntimeEvent(event)) {
+      notifier?.("runtime/event", params, {
+        droppable: true,
+        supersedeKey: `${subscriptionId}:${runtimeEventFrameLaneId(event) ?? ""}`,
+      });
+    } else {
+      notifier?.("runtime/event", params);
+    }
   };
 
   const getProjectHandler = async (
@@ -1508,10 +1524,20 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
+    const frameService = scope.runtime.appControlService ?? null;
+    // A scope that restarted under this connection has a fresh service with no
+    // demand; this puts back what the connection last declared for it.
+    frameDemand.apply(projectId, frameService);
+    const releaseLegacyFrameDemand = includeHighVolumeEvents && frameService
+      ? frameDemand.holdForLegacySubscription(subscriptionId, frameService)
+      : null;
     eventSubscriptions.set(subscriptionId, {
       id: subscriptionId,
       projectId,
-      unsubscribe,
+      unsubscribe: () => {
+        unsubscribe();
+        releaseLegacyFrameDemand?.();
+      },
     });
 
     const replayResult = replay
@@ -1607,6 +1633,25 @@ export function createMultiProjectRpcRequestHandler(
       gap: subscribed.replay.gap === true,
       oldestCursor: subscribed.replay.oldestCursor ?? null,
     };
+  };
+
+  /** Which lanes' App Control frames this connection shows, for one project. */
+  const setAppControlFrameDemand = async (params: Record<string, unknown>) => {
+    const projectId = readProjectId(params);
+    if (!projectId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "appControl.setFrameDemand requires projectId.",
+      );
+    }
+    // Recorded before the scope lookup, so a slower lookup for an older call
+    // applies this newer demand rather than its own.
+    frameDemand.declare(projectId, readAppControlFrameDemand(params));
+    const scope = await scopeRegistry.get(projectId);
+    if (disposed) return { applied: false };
+    const service = scope.runtime.appControlService ?? null;
+    frameDemand.apply(projectId, service);
+    return { applied: service != null };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -2599,6 +2644,10 @@ export function createMultiProjectRpcRequestHandler(
       return unsubscribeRuntimeEvents(params);
     }
 
+    if (method === "appControl.setFrameDemand") {
+      return await setAppControlFrameDemand(params);
+    }
+
     if (method === "sync.getStatus") {
       const scope = await scopeRegistry.resolveActiveSyncHost();
       const syncService = scope?.runtime.syncService ?? null;
@@ -2910,6 +2959,7 @@ export function createMultiProjectRpcRequestHandler(
       subscription.unsubscribe();
     }
     eventSubscriptions.clear();
+    frameDemand.dispose();
     for (const cached of handlers.values()) {
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }

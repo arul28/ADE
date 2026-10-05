@@ -4028,8 +4028,44 @@ describe("local runtime connection pool", () => {
       payload: { type: "file_change" },
     }, "epoch-local-1");
 
+    // The lanes this desktop shows go first: subscribing with frames and no
+    // declaration reads as a client from before demand, which streams every lane.
+    const methods = call.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("appControl.setFrameDemand")).toBeLessThan(methods.indexOf("runtimeEvents.subscribe"));
+    expect(call).toHaveBeenCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
+    pool.setAppControlFrameLanes(["lane-1"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-1"] },
+      expect.anything(),
+    );
+
+    // A second subscription to the same project shares the connection; ending
+    // the first must not stop this desktop's lanes reaching the brain.
+    const second = await pool.subscribeEventsForRoot(rootPath, { cursor: 22, category: "runtime" }, vi.fn());
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+    pool.setAppControlFrameLanes(["lane-3"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-3"] },
+      expect.anything(),
+    );
+    second();
+    // The last subscription gone, the project's screencasts must not keep
+    // streaming for a desktop that no longer listens.
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
+    const callsAfterCleanup = call.mock.calls.length;
+    pool.setAppControlFrameLanes(["lane-2"]);
+    expect(call.mock.calls.length).toBe(callsAfterCleanup);
   });
 });
 

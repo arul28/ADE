@@ -819,8 +819,10 @@ After the passes that applied:
 ## Harvest and push (when an early PR exists)
 
 After verification, follow **Early PR and harvests → Harvest** in
-`docs/playbooks/ship-lane.md`. It reads round 1 leftovers or round 2 —
-whatever finished while this skill ran — and does not wait for the rest.
+`docs/playbooks/ship-lane.md`: run `node scripts/ship-poll.mjs --pr <n> --text`
+and act on all of it — CI, open review threads, review-body findings, new
+comments and bot notices. It reads round 1 leftovers or round 2 — whatever
+finished while this skill ran — and does not wait for the rest.
 
 - Rerun each failed CI test file locally and fix the real failures. Apply the
   Test value rules: when a failing test pins implementation, rewrite or

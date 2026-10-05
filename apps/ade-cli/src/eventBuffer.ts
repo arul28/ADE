@@ -48,6 +48,14 @@ export type EventBufferOptions = {
    * returns, so one large event cannot stall the stream.
    */
   drainMaxBytes?: number;
+  /**
+   * Events that are delivered to live listeners but never retained for replay.
+   * A screencast frame is one: replaying a stale frame is useless, and kept in
+   * the buffer each 80-350 KB frame pushes real state changes out of the byte
+   * budget within a second, so every reconnect read as a gap. A transient
+   * event still takes an id, and it is never measured.
+   */
+  isTransient?: (event: BufferedEvent) => boolean;
 };
 
 const DEFAULT_EVENT_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
@@ -75,25 +83,31 @@ export function createEventBuffer(
   let nextId = 1;
   let retainedBytes = 0;
   let lastSkippedCursor: number | null = null;
+  // The newest id a drain can no longer return: evicted, or never kept because
+  // the buffer retains nothing. Transient ids are not lost -- nobody replays
+  // them -- so ids are not contiguous and a gap is judged against this.
+  let lostThroughCursor = 0;
 
   const evictOldest = (): void => {
     const evicted = events.shift();
-    if (evicted) retainedBytes = Math.max(0, retainedBytes - evicted.bytes);
+    if (!evicted) return;
+    retainedBytes = Math.max(0, retainedBytes - evicted.bytes);
+    lostThroughCursor = evicted.event.id;
   };
 
   const drainMetadata = (cursor: number): Pick<EventBufferDrainResult, "gap" | "oldestCursor"> => {
     const oldest = events[0]?.event.id ?? null;
     const skippedGap = lastSkippedCursor != null && cursor < lastSkippedCursor;
+    const lostGap = cursor < lostThroughCursor;
     if (oldest == null) {
-      const gap = cursor < nextId - 1 || skippedGap;
+      const gap = lostGap || skippedGap;
       return {
         gap,
         oldestCursor: gap ? nextId : null,
       };
     }
-    const retainedGap = cursor < oldest - 1;
     return {
-      gap: retainedGap || skippedGap,
+      gap: lostGap || skippedGap,
       oldestCursor: skippedGap
         ? Math.max(oldest, (lastSkippedCursor ?? 0) + 1)
         : oldest,
@@ -103,15 +117,18 @@ export function createEventBuffer(
   return {
     push(event) {
       const entry: BufferedEvent = { id: nextId++, ...event };
-      const bytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
-      if (bytes > maxEventBytes) {
-        lastSkippedCursor = entry.id;
-      }
-      if (capacity > 0 && maxBytes > 0 && bytes <= maxEventBytes) {
-        events.push({ event: entry, bytes });
-        retainedBytes += bytes;
-        while (events.length > capacity || retainedBytes > maxBytes) {
-          evictOldest();
+      if (!options.isTransient?.(entry)) {
+        const bytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
+        if (bytes > maxEventBytes) {
+          lastSkippedCursor = entry.id;
+        } else if (capacity > 0 && maxBytes > 0) {
+          events.push({ event: entry, bytes });
+          retainedBytes += bytes;
+          while (events.length > capacity || retainedBytes > maxBytes) {
+            evictOldest();
+          }
+        } else {
+          lostThroughCursor = entry.id;
         }
       }
       for (const listener of [...listeners]) {

@@ -1,5 +1,5 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -143,6 +143,14 @@ import {
   setPtyDataSubscriptionsForSender,
   shouldSendPtyDataToWebContents,
 } from "./services/pty/ptyDataSubscriptions";
+import {
+  heldAppControlFrameLanes,
+  normalizeAppControlFrameLaneIds,
+  setAppControlFrameLanesForSender,
+  setAppControlFrameLanesListener,
+  shouldSendAppControlFrameToWebContents,
+} from "./services/appControl/appControlFrameSubscriptions";
+import { appControlFrameEventLaneId } from "../shared/appControlFrameDemand";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
@@ -434,6 +442,9 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
+
+/** The desktop's windows, in a project service's App Control frame demand. */
+const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
 
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
@@ -1743,6 +1754,13 @@ app.whenReady().then(async () => {
     );
   });
 
+  ipcMain.handle(IPC.appControlFrameSubscriptions, (event, arg: { laneIds?: unknown } | undefined) => {
+    setAppControlFrameLanesForSender(
+      event.sender,
+      normalizeAppControlFrameLaneIds(arg?.laneIds),
+    );
+  });
+
   const broadcastPtyData = (payload: PtyDataEvent) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!shouldSendPtyDataToWebContents(win.webContents, payload.ptyId)) continue;
@@ -2089,6 +2107,15 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  // App Control screencasts follow what the windows show: a lane no window
+  // holds streams no frames, in the brain or in a project hosted here.
+  setAppControlFrameLanesListener(() => {
+    const lanes = heldAppControlFrameLanes();
+    localRuntimePool.setAppControlFrameLanes(lanes);
+    for (const ctx of projectContexts.values()) {
+      ctx.appControlService?.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, lanes);
+    }
   });
   const accountVaultBridge = createAccountVaultBridge({
     getPool: () => localRuntimePool,
@@ -2627,12 +2654,14 @@ app.whenReady().then(async () => {
     projectRoot: string,
     channel: string,
     payload: unknown,
+    shouldSendTo?: (webContents: WebContents) => boolean,
   ): void => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     for (const win of BrowserWindow.getAllWindows()) {
       const isActiveInWindow = windowProjectRoots.get(win.id) === normalizedRoot;
       const isOpenTabInWindow = windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true;
       if (!isActiveInWindow && !isOpenTabInWindow) continue;
+      if (shouldSendTo && !shouldSendTo(win.webContents)) continue;
       try {
         win.webContents.send(channel, payload);
       } catch {
@@ -5088,7 +5117,17 @@ app.whenReady().then(async () => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
         }
-        emitProjectEvent(projectRoot, IPC.appControlEvent, payload);
+        emitProjectEvent(
+          projectRoot,
+          IPC.appControlEvent,
+          payload,
+          payload.type === "frame"
+            ? (webContents) => shouldSendAppControlFrameToWebContents(
+              webContents,
+              appControlFrameEventLaneId(payload),
+            )
+            : undefined,
+        );
       },
       // Recording: macOS records the app's window with the desktop helper
       // (the service's default); Windows/Linux use this desktop's encoder.
@@ -5104,6 +5143,7 @@ app.whenReady().then(async () => {
         return lane?.name ?? null;
       },
     });
+    appControlService.setFrameDemand(APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE, heldAppControlFrameLanes());
     // The session is per lane and owned by a chat: it goes when the chat ends
     // and when its lane is archived or deleted.
     agentChatService.registerChatSessionEndedListener((sessionId) => {

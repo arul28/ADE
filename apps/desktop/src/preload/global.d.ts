@@ -3214,13 +3214,14 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         /**
-         * Web client only: a view that shows live frames holds this while it
-         * is on screen. Frames stream over the relay only while one is held;
-         * status-only `onEvent` listeners do not keep them flowing. Returns
-         * the release. The desktop gets frames from the local screencast and
-         * has no such member.
+         * A view that shows live frames holds this while it is on screen.
+         * Status-only `onEvent` listeners do not keep frames flowing: the web
+         * client streams them over the relay, and the desktop sends a window
+         * frames, only while a view holds them. On the desktop the hold is for
+         * `laneId`, and omitting it holds every lane; the web client ignores
+         * the lane. Returns the release.
          */
-        holdFrames?: () => () => void;
+        holdFrames?: (laneId?: string | null) => () => void;
       };
       /**
        * Always local IPC scoped by `projectRoot`; the optional `pin` only

@@ -590,6 +590,7 @@ export const IPC = {
   appControlCaptureProof: "ade.appControl.captureProof",
   appControlGetLatestFrame: "ade.appControl.getLatestFrame",
   appControlEvent: "ade.appControl.event",
+  appControlFrameSubscriptions: "ade.appControl.frameSubscriptions",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
   builtInBrowserGetAgentPresence: "ade.builtInBrowser.getAgentPresence",
   builtInBrowserRequestOriginAccess: "ade.builtInBrowser.requestOriginAccess",

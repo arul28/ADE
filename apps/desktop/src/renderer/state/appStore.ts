@@ -1937,6 +1937,9 @@ function transitionFailureState(
   return { projectTransitionError: formatProjectTransitionError(kind, error) };
 }
 
+/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
+const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
+
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;
   /** Monotonic counter incremented before each lane refresh request.
@@ -2447,6 +2450,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
+      // A read that found nothing new still re-stamps the sync clocks. Their
+      // readers judge staleness on a minute scale, so a stamp-only change waits
+      // until it is worth a re-render of every surface that lists machines.
+      const stampCurrent = (prevMs: number | null, nextMs: number | null): boolean =>
+        prevMs === nextMs
+        || (prevMs != null && nextMs != null && nextMs - prevMs < CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS);
       const sliceUnchanged = (
         previous
         && previous.machineName === next.machineName
@@ -2457,8 +2466,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
-        && previous.lastSyncedAtMs === next.lastSyncedAtMs
-        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
+        && stampCurrent(previous.lastSyncedAtMs, next.lastSyncedAtMs)
+        && stampCurrent(previous.lanesSyncedAtMs, next.lanesSyncedAtMs)
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};
