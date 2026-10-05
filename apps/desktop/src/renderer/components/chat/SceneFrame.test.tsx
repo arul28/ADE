@@ -337,6 +337,20 @@ describe("SceneFrame", () => {
       expect(storeStill.mock.calls[0]?.[0]).toMatchObject({ dataUrl: SCENE_STILL_DATA_URL });
     });
 
+    /** A minimized or hidden window answers with no picture; nothing else would wake the capture. */
+    it("tries again after the host returns no picture", async () => {
+      stubShellRect({});
+      const snapshot = vi.fn<() => Promise<string | null>>()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(SCENE_STILL_DATA_URL);
+      const { storeStill, settle } = await renderSettlingScene({ snapshot });
+
+      settle();
+      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
+      expect(storeStill.mock.calls[0]?.[0]).toMatchObject({ dataUrl: SCENE_STILL_DATA_URL });
+    });
+
     /**
      * The case the owner asked for: a scene that had scrolled away by the end
      * of its turn used to freeze with NO picture and a live frame left running.

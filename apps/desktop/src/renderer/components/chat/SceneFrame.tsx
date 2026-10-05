@@ -520,15 +520,15 @@ export function SceneFrame({
           // Not a picture of this scene. Release the latch and look again
           // shortly: a re-pin or a re-measure is usually over within a frame
           // or two, and the scroll/intersection wait takes over if the scene
-          // has gone off screen meanwhile.
+          // has gone off screen meanwhile. An empty answer (a minimized or
+          // hidden window) retries on the same backoff; nothing else would
+          // ever wake this effect again.
           stillTakenRef.current = false;
-          if (result.kind !== "empty") {
-            const misses = captureMissesRef.current++;
-            retryTimer = window.setTimeout(
-              () => setStillAttempt((attempt) => attempt + 1),
-              Math.min(SCENE_CAPTURE_RETRY_MS * 2 ** misses, SCENE_CAPTURE_RETRY_MAX_MS),
-            );
-          }
+          const misses = captureMissesRef.current++;
+          retryTimer = window.setTimeout(
+            () => setStillAttempt((attempt) => attempt + 1),
+            Math.min(SCENE_CAPTURE_RETRY_MS * 2 ** misses, SCENE_CAPTURE_RETRY_MAX_MS),
+          );
           return;
         }
         captureMissesRef.current = 0;
