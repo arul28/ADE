@@ -29,8 +29,14 @@ import type { Logger } from "../logging/logger";
 
 /** How long a clean exit (stdin closed) may take before the process is killed. */
 const EXIT_GRACE_MS = 5_000;
+/** How long a killed process may take to report its exit before the fork gives up waiting. */
+const KILL_WAIT_MS = 5_000;
 
-export async function forkCodexThreadInEphemeralAppServer<T>(args: {
+/**
+ * Forks a Codex thread and returns the new thread's id ("" when Codex named
+ * none). Resolves only after the forking process has exited.
+ */
+export async function forkCodexThreadInEphemeralAppServer(args: {
   executable: string;
   env: NodeJS.ProcessEnv;
   cwd: string;
@@ -38,7 +44,7 @@ export async function forkCodexThreadInEphemeralAppServer<T>(args: {
   timeoutMs: number;
   logger: Logger;
   sessionId: string;
-}): Promise<T> {
+}): Promise<string> {
   const invocation = resolveCliSpawnInvocation(args.executable, ["-c", "mcp_servers={}", "app-server"], args.env);
   const proc = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
@@ -106,22 +112,23 @@ export async function forkCodexThreadInEphemeralAppServer<T>(args: {
   proc.on("error", (error) => failAll(new Error(`Could not start Codex to fork this chat: ${error.message}`)));
   proc.on("exit", (code, signal) => failAll(new Error(`Codex exited before the fork finished (${signal ?? code ?? "unknown"}).`)));
 
+  const fork = (async () => {
+    await request("initialize", {
+      clientInfo: { name: "ade_desktop_fork", title: "ADE Desktop", version: "1" },
+      capabilities: { experimentalApi: true },
+    });
+    write({ method: "initialized", params: {} });
+    const result = await request("thread/fork", args.forkParams) as { thread?: { id?: unknown } } | null;
+    return typeof result?.thread?.id === "string" ? result.thread.id.trim() : "";
+  })();
+  // When the deadline wins, the process exit below still rejects `fork`.
+  fork.catch(() => {});
   let timer: NodeJS.Timeout | null = null;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("Codex did not finish the fork in time.")), args.timeoutMs);
   });
   try {
-    return await Promise.race([
-      (async () => {
-        await request("initialize", {
-          clientInfo: { name: "ade_desktop_fork", title: "ADE Desktop", version: "1" },
-          capabilities: { experimentalApi: true },
-        });
-        write({ method: "initialized", params: {} });
-        return await request("thread/fork", args.forkParams) as T;
-      })(),
-      deadline,
-    ]);
+    return await Promise.race([fork, deadline]);
   } finally {
     if (timer) clearTimeout(timer);
     reader.close();
@@ -141,9 +148,14 @@ export async function forkCodexThreadInEphemeralAppServer<T>(args: {
       } catch {
         // Already gone.
       }
-      await exited;
-      if (killTimer) clearTimeout(killTimer);
-      args.logger.warn("agent_chat.codex_fork_host_killed", { sessionId: args.sessionId });
+      let killWaitTimer: NodeJS.Timeout | null = null;
+      const exitedAfterKill = await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => { killWaitTimer = setTimeout(() => resolve(false), KILL_WAIT_MS); }),
+      ]);
+      if (killWaitTimer) clearTimeout(killWaitTimer);
+      if (exitedAfterKill && killTimer) clearTimeout(killTimer);
+      args.logger.warn("agent_chat.codex_fork_host_killed", { sessionId: args.sessionId, exited: exitedAfterKill });
     }
   }
 }

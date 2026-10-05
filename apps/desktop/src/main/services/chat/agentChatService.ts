@@ -42234,7 +42234,7 @@ export function createAgentChatService(args: {
       // Not on `runtime`: the process that forks keeps the new thread's writer
       // lock, and the forked chat resumes it from its own app-server.
       const forkEnv = buildAgentRuntimeEnv(managed);
-      const forkResponse = await forkCodexThreadInEphemeralAppServer<CodexThreadLifecycleResponse>({
+      const forkedThreadId = await forkCodexThreadInEphemeralAppServer({
         executable: resolveCodexExecutable({ env: forkEnv }).path,
         env: forkEnv,
         cwd: managed.laneWorktreePath,
@@ -42250,7 +42250,6 @@ export function createAgentChatService(args: {
         logger,
         sessionId: managed.session.id,
       });
-      const forkedThreadId = typeof forkResponse?.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
       if (!forkedThreadId) {
         throw new Error(`Codex thread/fork did not return a new thread id for '${sourceThreadId}'.`);
       }
