@@ -3,6 +3,7 @@ import { CaretDown } from "@phosphor-icons/react";
 import { readDemoChapters } from "../../../shared/demoVideo/demoProofText";
 import { formatProofDuration } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
+import { seekVideoAndPlay } from "../ui/MediaLightbox";
 
 /**
  * A demo video's caption line, with its step captions as chapters.
@@ -43,12 +44,7 @@ export function DemoChapters({ metadata, videoRef, children }: {
               key={`${index}:${chapter.t}`}
               type="button"
               className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/70 hover:bg-white/[0.06] hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
-              onClick={() => {
-                const video = videoRef.current;
-                if (!video) return;
-                video.currentTime = chapter.t;
-                void video.play().catch(() => {});
-              }}
+              onClick={() => seekVideoAndPlay(videoRef.current, chapter.t)}
             >
               <span className="tabular-nums text-muted-fg">{formatProofDuration(chapter.t * 1000)}</span>
               <span className="truncate">{chapter.text}</span>

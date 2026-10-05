@@ -740,6 +740,55 @@ describe("ChatMacDesktopPanel Apps section", () => {
 
 });
 
+describe("ChatMacDesktopPanel window-move controls per seat", () => {
+  const parkedWindow = {
+    id: 7,
+    pid: 4242,
+    appName: "Notepad",
+    bundleId: null,
+    title: "notes.txt",
+    frame: { x: 0, y: 0, width: 800, height: 600 },
+    laneId: "lane-1",
+    origin: "claimed" as const,
+    onDisplayId: 31,
+    minimized: false,
+    singleInstance: false,
+    iconPng: null,
+  };
+
+  /**
+   * A private Windows screen is a separate session, so its windows cannot move
+   * to the user's desktop: Release, Add app and Bring to my screen are not
+   * drawn. A shared Windows seat and a Mac display can move windows, so all
+   * three stay. One table, because the rule is one rule.
+   */
+  it.each([
+    ["a private Windows seat", "win32" as NodeJS.Platform, "private" as const, false],
+    ["a shared Windows seat", "win32" as NodeJS.Platform, "shared" as const, true],
+    ["a Mac display", "darwin" as NodeJS.Platform, null, true],
+  ])("hides the window-move controls on %s and keeps them on a movable seat", async (_name, platform, seatMode, movable) => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({
+      platform,
+      hostIsLocal: true,
+      display: { ...makeDisplay(), seatMode },
+      windows: [parkedWindow],
+    }));
+
+    renderPanel();
+    await screen.findByTestId("mac-desktop-surface");
+
+    if (movable) {
+      expect(screen.getByTestId("mac-desktop-window-release")).toBeTruthy();
+      expect(screen.getByTestId("mac-desktop-add-app")).toBeTruthy();
+      expect(screen.getByTestId("mac-desktop-present").getAttribute("aria-label")).toBe("Bring to my screen");
+    } else {
+      expect(screen.queryByTestId("mac-desktop-window-release")).toBeNull();
+      expect(screen.queryByTestId("mac-desktop-add-app")).toBeNull();
+      expect(screen.queryByTestId("mac-desktop-present")).toBeNull();
+    }
+  });
+});
+
 describe("ChatMacDesktopPanel permission first screen", () => {
   const deniedStatus = (overrides: Partial<MacDesktopStatus> = {}) => makeStatus({
     display: null,

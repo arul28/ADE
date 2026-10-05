@@ -14,6 +14,16 @@ function Restore-ProcessValue([string]$Name, [string]$Value, [bool]$WasPresent) 
   [Environment]::SetEnvironmentVariable($Name, $(if ($WasPresent) { $Value } else { $null }), "Process")
 }
 
+# Runs the CLI with its stderr dropped and returns its stdout as one string.
+# Windows PowerShell 5.1 turns a redirected native stderr line into a
+# terminating error under "Stop"; a warning the CLI prints must not fail the
+# install, so the preference is "Continue" in this scope only. The exit code
+# decides: $LASTEXITCODE is still the CLI's when this returns.
+function Invoke-CliQuiet([string[]]$Arguments) {
+  $ErrorActionPreference = "Continue"
+  & $cliWrapper @Arguments 2>$null | Out-String
+}
+
 function Get-ShortSha256([string]$Value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
@@ -93,7 +103,7 @@ try {
   )
   $env:NODE_PATH = $nodePathEntries -join [IO.Path]::PathSeparator
 
-  $serviceStatusJson = (& $cliWrapper serve --service-status --json 2>$null | Out-String)
+  $serviceStatusJson = Invoke-CliQuiet @("serve", "--service-status", "--json")
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup state could not be read before setup."
   }
@@ -132,9 +142,9 @@ try {
     # Restoring an installed service goes through `brain start` for the same
     # `cto` reason as the install step above.
     if ($previousServiceInstalled) {
-      & $cliWrapper brain start 2>$null | Out-Null
+      Invoke-CliQuiet @("brain", "start") | Out-Null
     } else {
-      & $cliWrapper serve --uninstall-service 2>$null | Out-Null
+      Invoke-CliQuiet @("serve", "--uninstall-service") | Out-Null
     }
     if ($LASTEXITCODE -ne 0) {
       $rollbackErrors.Add("could not restore the previous brain startup state (exit $LASTEXITCODE)")

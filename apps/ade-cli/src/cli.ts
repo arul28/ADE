@@ -23312,8 +23312,8 @@ async function runServe(
       // another brain legitimately held the lease. Throwing here is correct:
       // the startup loop treats a conflict as retryable and waits the other
       // brain out.
-      const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
-      brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
+      const { acquireSyncHostSingletonAsync } = await import("./services/sync/syncHostSingleton");
+      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
       const listenerPort = await sharedSyncListener.ensureListening(
         Array.from(
           { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },

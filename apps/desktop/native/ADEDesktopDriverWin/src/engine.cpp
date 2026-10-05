@@ -10,7 +10,26 @@ namespace {
 
 constexpr int kShareGap = 200;       // px between the last monitor and a lane area
 constexpr int64_t kLaunchWatchMs = 20'000;
+// How long app.launch waits for the first window. A cold browser profile in a
+// session that is still signing in took more than 9 s on a loaded PC; the wait
+// ends as soon as a window appears. The brain allows app.launch 60 s.
+constexpr int64_t kLaunchWindowWaitMs = 15'000;
+// Once the launched process is gone (it handed the launch to a running
+// instance), how long one of the lane's own processes has to show the window.
+constexpr int64_t kHandOffWindowWaitMs = 4'000;
+constexpr DWORD kWindowPollMs = 100;
+// How long window.close waits for the window to go. A Chrome window on a
+// loaded PC took more than 2 s to go after WM_CLOSE.
+constexpr int64_t kWindowCloseWaitMs = 8'000;
 
+// Gone, or hidden on its way out: both mean the window closed for the user.
+bool windowGone(HWND hwnd) { return !IsWindow(hwnd) || !IsWindowVisible(hwnd); }
+
+bool sameProcess(DWORD pid, const FILETIME& created) {
+  if (!pid) return false;
+  FILETIME current = processCreationTime(pid);
+  return (current.dwLowDateTime || current.dwHighDateTime) && CompareFileTime(&current, &created) == 0;
+}
 
 
 const std::set<std::string>& engineOps() {
@@ -254,7 +273,7 @@ Json Engine::handle(const Json& req) {
   if (op == "stream.setRate") return setStreamRate(req);
   if (op == "stream.setCursorVisible") return setStreamCursor(req);
   if (op == "stream.stop") return stopStream(req);
-  if (op == "window.focus" || op == "window.minimize" || op == "window.close") return windowCommand(op, req);
+  if (op == "window.focus" || op == "window.minimize" || op == "window.close") return windowCommand(op, req, operation);
   // Both re-take the operation lock only for the short parts; opening and
   // finalizing an MP4 must not stall capture or queue window.list.
   if (op == "record.start") { operation.unlock(); return startRecording(req); }
@@ -590,30 +609,72 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
     lane->watches.push_back(watch);
   }
   touch(*lane);
-  // Wait briefly for the first window, so the reply can name it. The operation
-  // lock is released while sleeping so capture and other requests keep going.
+  // Wait for the first window so the reply can name it: until one appears, up
+  // to kLaunchWindowWaitMs (a deadline, not a count of polls: each poll costs
+  // a window walk and a process snapshot, far more on a loaded PC). The
+  // operation lock is released between polls so capture and other requests
+  // keep going. A new window counts when its process is this launch's or one
+  // the lane already owns: a second launch of the lane's browser hands its
+  // window to the lane's running instance and exits.
+  FILETIME rootCreated = {};
+  if (lane->launchedTimes.count(launched.pid)) rootCreated = lane->launchedTimes.at(launched.pid);
+  auto laneOwnsOtherLiveProcess = [&] {
+    for (const auto& [pid, created] : lane->launchedTimes)
+      if (pid != launched.pid && sameProcess(pid, created)) return true;
+    return false;
+  };
+  // `exeName` is lower-case with its extension; a bare name ("notepad") gets one.
+  std::wstring targetExe = lower(baseName(target));
+  if (targetExe.find(L'.') == std::wstring::npos) targetExe += L".exe";
   std::vector<WinInfo> fresh;
-  for (int i = 0; i < 40 && fresh.empty(); ++i) {
+  const int64_t deadline = nowMs() + kLaunchWindowWaitMs;
+  int64_t rootGoneAtMs = 0;
+  while (true) {
     operation.unlock();
-    Sleep(125);
+    Sleep(kWindowPollMs);
     operation.lock();
     if (!running_) fail(code::kCancelled, "The Windows screen stopped while the app was starting.");
-    std::set<DWORD> tree = launched.pid ? ownedProcesses(*lane, launched.pid) : std::set<DWORD>{};
-    for (auto& w : listAppWindows()) {
-      if (before.count(w.hwnd)) continue;
-      bool ours = tree.count(w.pid) > 0;
-      if (ours) fresh.push_back(w);
+    {
+      // The lock was free between polls: the lane's screen may have been stopped.
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto still = lanes_.find(lane->laneId);
+      if (still == lanes_.end() || still->second != lane)
+        fail(code::kCancelled, "The lane's Windows screen stopped while the app was starting.");
+    }
+    std::vector<WinInfo> appeared;
+    for (auto& w : listAppWindows()) if (!before.count(w.hwnd)) appeared.push_back(w);
+    if (!appeared.empty()) {
+      // This launch's own process tree, or (a hand-off) another process of the
+      // same app the lane already runs. Another app of the lane opening a
+      // window meanwhile is not this launch's window.
+      const auto tree = launched.pid ? ownedProcesses(*lane, launched.pid) : std::set<DWORD>{};
+      const auto owned = ownedProcesses(*lane);
+      for (auto& w : appeared) {
+        if (tree.count(w.pid) || (owned.count(w.pid) && w.exeName == targetExe)) fresh.push_back(w);
+      }
+      if (!fresh.empty()) break;
+    }
+    const int64_t now = nowMs();
+    if (now >= deadline) break;
+    // The launched process is gone (or was never ours to track): only a
+    // process the lane already owns can still show the window, and it does so
+    // promptly or not at all.
+    if (!sameProcess(launched.pid, rootCreated)) {
+      if (!rootGoneAtMs) rootGoneAtMs = now;
+      if (!laneOwnsOtherLiveProcess() || now - rootGoneAtMs >= kHandOffWindowWaitMs) break;
     }
   }
+  // No window, and nothing of the launch left running: Windows passed it to an
+  // instance that was already running (for the private seat, outside it).
+  // Read before the new windows' processes join the launch's tree below.
+  const bool rootGone = launched.pid && ownedProcesses(*lane, launched.pid).empty();
+  // A window of a process the lane already tracks keeps its original watch.
+  for (auto& w : fresh) if (!lane->launchedTimes.count(w.pid)) rememberProcess(*lane, w.pid, launched.pid);
   if (mode_ == Mode::Shared) {
-    for (auto& w : fresh) {
-      parkWindow(*lane, w.hwnd, "ade_launched");
-      rememberProcess(*lane, w.pid, launched.pid);
-    }
+    for (auto& w : fresh) parkWindow(*lane, w.hwnd, "ade_launched");
     // Launching takes the foreground on Windows. Give it back.
     if (userForeground && currentForeground() != userForeground) forceForeground(userForeground);
   } else {
-    for (auto& w : fresh) rememberProcess(*lane, w.pid, launched.pid);
     // The private session is the lane's own, but the driver there is not the
     // foreground process, so Windows may open the app behind whatever the
     // user's startup apps put in front (a WSL console took the clicks and the
@@ -628,15 +689,14 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
   }
   Json out = Json::object();
   out["laneId"] = lane->laneId;
-  out["pid"] = launched.pid ? Json(static_cast<int64_t>(launched.pid))
-                            : (fresh.empty() ? Json() : Json(static_cast<int64_t>(fresh.front().pid)));
+  // The launcher's pid while it runs; once it handed its window to one of the
+  // lane's running processes, that process's.
+  const DWORD replyPid = fresh.empty() || (launched.pid && !rootGone) ? launched.pid : fresh.front().pid;
+  out["pid"] = replyPid ? Json(static_cast<int64_t>(replyPid)) : Json();
   out["appName"] = fresh.empty() ? Json(narrow(target)) : Json(narrow(fresh.front().appName));
   out["bundleId"] = fresh.empty() ? Json() : Json(narrow(fresh.front().exeName));
   out["windows"] = windows;
   out["watching"] = true;
-  // No window, and nothing of the launch left running: Windows passed it to an
-  // instance that was already running (for the private seat, outside it).
-  const bool rootGone = launched.pid && ownedProcesses(*lane, launched.pid).empty();
   const bool handedOff = fresh.empty() && (rootGone || !launched.pid);
   out["handedOff"] = handedOff;
   out["message"] = handedOff
@@ -731,7 +791,7 @@ HWND Engine::requireLaneWindow(Lane& lane, int64_t windowId) {
 // the lane's own, so focus really activates the window there. On the shared
 // seat nothing may take the user's foreground: focus only raises the parked
 // window inside the lane's area (what the lane's view and capture show).
-Json Engine::windowCommand(const std::string& op, const Json& req) {
+Json Engine::windowCommand(const std::string& op, const Json& req, std::unique_lock<std::recursive_mutex>& operation) {
   auto lane = requireLane(requireString(req, "laneId"));
   const int64_t windowId = requireInt(req, "windowId");
   HWND hwnd = requireLaneWindow(*lane, windowId);
@@ -751,8 +811,21 @@ Json Engine::windowCommand(const std::string& op, const Json& req) {
     out["minimized"] = IsIconic(hwnd) != FALSE;
   } else {
     // WM_CLOSE asks; it never forces. An app with unsaved work may answer
-    // with its own prompt, which then shows on the lane's screen.
-    out["closed"] = closeWindowGracefully(hwnd, 2'000);
+    // with its own prompt, which then shows on the lane's screen, and the
+    // window stays: "closed" is false only then. A browser closes the one
+    // window it was asked to, but on a loaded PC it can take seconds to; the
+    // wait ends the moment the window goes, and capture and other requests
+    // keep going meanwhile.
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    const int64_t deadline = nowMs() + kWindowCloseWaitMs;
+    bool closed = windowGone(hwnd);
+    while (!closed && nowMs() < deadline) {
+      operation.unlock();
+      Sleep(kWindowPollMs);
+      operation.lock();
+      closed = windowGone(hwnd);
+    }
+    out["closed"] = closed;
   }
   touch(*lane);
   return out;

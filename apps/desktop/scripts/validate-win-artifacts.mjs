@@ -767,6 +767,20 @@ async function validatePackagedRuntime(appDir) {
   });
   assertAdeCliHelp(defaultHelp.stdout, "Bundled ADE CLI wrapper");
 
+  // Agents read the exit code. The wrapper once returned 0 for every command,
+  // so a failed one looked like a success.
+  const unknownCommand = await runCommand(adeCliBinPath, ["ade-validate-unknown-command"], {
+    cwd: resourcesPath,
+    env: { ...process.env },
+  }).then(() => null, (error) => error);
+  if (!unknownCommand) {
+    fail("Bundled ADE CLI wrapper returned exit code 0 for an unknown command.");
+  }
+  // The CLI exits 2 for an unknown command; a timeout or spawn error is not that.
+  if (!/Command failed \(2\)/.test(String(unknownCommand.message ?? unknownCommand))) {
+    fail(`Bundled ADE CLI wrapper did not return the CLI's exit code 2 for an unknown command: ${unknownCommand.message ?? unknownCommand}`);
+  }
+
   const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
   try {
     const tuiRunnerPath = path.join(tuiSmokeDir, "run-tui-help.mjs");

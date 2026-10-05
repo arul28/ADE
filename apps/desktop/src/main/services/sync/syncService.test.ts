@@ -89,6 +89,7 @@ vi.mock("../../../../../ade-cli/src/services/sync/syncHostService", () => ({
 
 vi.mock("../../../../../ade-cli/src/services/sync/syncHostSingleton", () => ({
   acquireSyncHostSingleton: acquireSyncHostSingletonMock,
+  acquireSyncHostSingletonAsync: async (...args: unknown[]) => (acquireSyncHostSingletonMock as (...a: unknown[]) => unknown)(...args),
 }));
 
 function createLogger() {
