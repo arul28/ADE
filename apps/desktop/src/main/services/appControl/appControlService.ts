@@ -106,6 +106,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     },
     getSession: (laneId) => controllers.get(laneId)?.getSession() ?? null,
     getLastFrame: (laneId) => controllers.get(laneId)?.getLastFrame() ?? null,
+    getLatestFrame: async (laneId) => await controllers.get(laneId)?.getLatestFrame() ?? null,
     resolveAppProcessId: async (laneId) => await controllers.get(laneId)?.resolveAppProcessId() ?? null,
     resolveTargetTitle: async (laneId) => await controllers.get(laneId)?.getTargetTitle() ?? null,
     windowRecorder: args.windowRecorder !== undefined

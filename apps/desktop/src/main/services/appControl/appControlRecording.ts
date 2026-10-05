@@ -196,6 +196,12 @@ export type AppControlRecordingDeps = {
   getSession: (laneId: string) => AppControlSession | null;
   /** The newest screencast frame of the lane, to seed a screencast recording. */
   getLastFrame: (laneId: string) => AppControlScreencastFrame | null;
+  /**
+   * One fresh capture when the lane has no cached frame. A lane nobody watches
+   * streams no screencast, so a recording started there would otherwise know
+   * neither the page's viewport nor its first picture.
+   */
+  getLatestFrame?: (laneId: string) => Promise<AppControlScreencastFrame | null>;
   /** The pid that owns the app's windows (Electron's main process). */
   resolveAppProcessId: (laneId: string) => Promise<number | null>;
   /** The page title the lane's session is attached to, to pick its window. */
@@ -295,6 +301,11 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
   const laneEpochs = new Map<string, number>();
   /** laneId → the screencast backend a running recording feeds. */
   const screencastBackends = new Map<string, AppControlScreencastRecorderBackend>();
+
+  const currentFrame = async (laneId: string): Promise<AppControlScreencastFrame | null> =>
+    deps.getLastFrame(laneId)
+    ?? await Promise.resolve(deps.getLatestFrame?.(laneId)).catch(() => null)
+    ?? null;
   /** laneId → the recorded window and the page viewport at the start, for a window capture. */
   const windowGeometry = new Map<string, { window: { width: number; height: number }; viewport: { width: number; height: number } | null }>();
   /** laneId → where the demo goes, whether it is plain, and the idle/disk watch. */
@@ -405,7 +416,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         permissions,
       ), args.chatSessionId);
     }
-    const frame = deps.getLastFrame(laneId);
+    const frame = await currentFrame(laneId);
     windowGeometry.set(laneId, {
       window: { width: window.width, height: window.height },
       viewport: frame?.viewportWidth && frame.viewportHeight
@@ -460,8 +471,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     const started = await backend.start({ key, filePath: args.filePath, fps: args.fps, keepIdle: args.keepIdle });
     screencastBackends.set(laneId, backend);
     // A still app sends no frames, so the recording would start black. Seed it
-    // with the newest frame the pane already has.
-    const seed = deps.getLastFrame(laneId);
+    // with the newest frame, or a fresh capture.
+    const seed = await currentFrame(laneId);
     if (seed) backend.pushFrame(key, seed);
     return started.filePath;
   };

@@ -19496,6 +19496,9 @@ function createHeadlessRpcServer(
         if (!conn.destroyed) conn.destroy();
       },
       pendingWriteBytes: () => conn.writableLength,
+      onDrain(callback) {
+        conn.on("drain", callback);
+      },
     };
     const stop = startJsonRpcServer(handler, transport, {
       nonFatal: true,

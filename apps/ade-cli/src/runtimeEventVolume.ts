@@ -1,3 +1,4 @@
+import { appControlFrameEventLaneId } from "../../desktop/src/shared/appControlFrameDemand";
 import type { BufferedEvent } from "./eventBuffer";
 
 /**
@@ -32,4 +33,15 @@ export function isHighVolumeRuntimeEvent(event: BufferedEvent): boolean {
   const inner = record.event;
   if (!inner || typeof inner !== "object" || Array.isArray(inner)) return false;
   return (inner as Record<string, unknown>).type === "frame";
+}
+
+/** The lane of a screencast frame event, for keeping each lane's newest frame apart. */
+export function runtimeEventFrameLaneId(event: BufferedEvent): string | null {
+  const inner = (event.payload as Record<string, unknown> | null)?.event;
+  if (!inner || typeof inner !== "object" || Array.isArray(inner)) return null;
+  const record = inner as { laneId?: unknown; frame?: { laneId?: unknown } | null };
+  return appControlFrameEventLaneId({
+    laneId: typeof record.laneId === "string" ? record.laneId : null,
+    frame: { laneId: typeof record.frame?.laneId === "string" ? record.frame.laneId : null },
+  });
 }

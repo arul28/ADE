@@ -37,7 +37,7 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
-import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
+import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -1114,7 +1114,9 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
+    frameDemand.forgetProject(projectId);
     const cached = handlers.get(projectId);
     handlers.delete(projectId);
     if (cached) {
@@ -1142,7 +1144,6 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
-  const frameDemand = createConnectionFrameDemand();
   /** The name this connection's client gave itself in `ade/initialize`. */
   const callerClientName = (): string | null =>
     isRecord(initializedParams) && typeof initializedParams.clientName === "string"
@@ -1188,9 +1189,16 @@ export function createMultiProjectRpcRequestHandler(
       event,
       eventEpoch,
     };
-    // A frame is skipped for a client that is behind; the next one replaces it.
-    if (isHighVolumeRuntimeEvent(event)) notifier?.("runtime/event", params, { droppable: true });
-    else notifier?.("runtime/event", params);
+    // A frame is skipped for a client that is behind; the newest skipped frame
+    // of each lane follows once it catches up.
+    if (isHighVolumeRuntimeEvent(event)) {
+      notifier?.("runtime/event", params, {
+        droppable: true,
+        supersedeKey: `${subscriptionId}:${runtimeEventFrameLaneId(event) ?? ""}`,
+      });
+    } else {
+      notifier?.("runtime/event", params);
+    }
   };
 
   const getProjectHandler = async (

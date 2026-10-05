@@ -124,10 +124,17 @@ const ENVIRONMENT_PROBE_CACHE_MAX = 32;
 const npmPrefixBinDirsCache = new Map<string, { at: number; value: string[] }>();
 const shellPathCache = new Map<string, { at: number; value: string | null }>();
 
-function memoizeProbe<T>(cache: Map<string, { at: number; value: T }>, key: string, read: () => T): T {
+/** `keep`: whether a result is worth reusing. A failed probe is retried next time. */
+function memoizeProbe<T>(
+  cache: Map<string, { at: number; value: T }>,
+  key: string,
+  read: () => T,
+  keep: (value: T) => boolean = () => true,
+): T {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.at < ENVIRONMENT_PROBE_TTL_MS) return cached.value;
   const value = read();
+  if (!keep(value)) return value;
   if (cache.size >= ENVIRONMENT_PROBE_CACHE_MAX && !cache.has(key)) cache.clear();
   cache.set(key, { at: Date.now(), value });
   return value;
@@ -404,7 +411,14 @@ function readShellPath(
 ): string | null {
   const source = env ?? process.env;
   const key = [shellPath, shellFlag, source.PATH ?? "", source.HOME ?? ""].join("\u0000");
-  return memoizeProbe(shellPathCache, key, () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env));
+  // A null is a timeout or a broken rc file -- most likely under exactly the
+  // load this cache is for -- so it is not kept: the next agent env retries.
+  return memoizeProbe(
+    shellPathCache,
+    key,
+    () => readShellPathUncached(shellPath, shellFlag, timeoutMs, env),
+    (resolved) => resolved !== null,
+  );
 }
 
 function readShellPathUncached(

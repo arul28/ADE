@@ -1089,6 +1089,8 @@ function serviceHealthState(
   return "unknown";
 }
 
+const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
+
 export class LocalRuntimeConnectionPool {
   private disposed = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
@@ -2135,11 +2137,12 @@ export class LocalRuntimeConnectionPool {
   ): Promise<() => void> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    const unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
-    // The subscription asks for frames; say at once which lanes are actually
-    // shown, so the brain does not stream every lane's screencast meanwhile.
+    // The subscription asks for frames. Saying first which lanes are actually
+    // shown keeps the brain from treating this as a client from before frame
+    // demand and streaming every lane's screencast until the declaration lands.
     this.frameDemandClients.set(project.projectId, entry.client);
-    this.declareAppControlFrameDemand(entry.client, project.projectId);
+    await this.declareAppControlFrameDemand(entry.client, project.projectId);
+    const unsubscribe = await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
     return () => {
       unsubscribe();
       if (this.frameDemandClients.get(project.projectId) === entry.client) {
@@ -2155,15 +2158,16 @@ export class LocalRuntimeConnectionPool {
   setAppControlFrameLanes(lanes: AppControlFrameDemand): void {
     this.appControlFrameLanes = lanes;
     for (const [projectId, client] of this.frameDemandClients) {
-      this.declareAppControlFrameDemand(client, projectId);
+      void this.declareAppControlFrameDemand(client, projectId);
     }
   }
 
-  private declareAppControlFrameDemand(client: RuntimeRpcClient, projectId: string): void {
-    void client.call(
+  private async declareAppControlFrameDemand(client: RuntimeRpcClient, projectId: string): Promise<void> {
+    await client.call(
       "appControl.setFrameDemand",
       appControlFrameDemandParams(projectId, this.appControlFrameLanes),
-      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+      // A subscription waits on this, so a slow brain costs it at most this long.
+      { timeoutMs: APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS },
     ).catch(() => {
       // An older brain has no demand and streams every lane, as before; a
       // closed client is replaced on the next subscription.

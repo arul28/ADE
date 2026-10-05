@@ -1849,7 +1849,14 @@ export function createAppControlLaneController(context: AppControlLaneController
     if (isFrameDemanded()) {
       clearFrameDemandPauseTimer();
       if (screencastStreaming) return;
-      void beginFrameStream(client, screencastGeneration);
+      const generation = screencastGeneration;
+      void beginFrameStream(client, generation).then((started) => {
+        // As on the first start: a client that cannot stream is torn down, so
+        // the reconnect paths attach afresh instead of finding it open.
+        if (!started && screencastGeneration === generation && screencastClient === client) {
+          void stopScreencast();
+        }
+      });
       return;
     }
     if (!screencastStreaming || frameDemandPauseTimer) return;
@@ -2576,7 +2583,9 @@ export function createAppControlLaneController(context: AppControlLaneController
             scaleY,
             capturedAt: nowIso(),
           };
-          lastScreencastFrame = frame;
+          // Kept only while the lane streams: a paused lane's capture would be
+          // served to the next screenshot as if it were the app as it is now.
+          if (screencastStreaming) lastScreencastFrame = frame;
           emit({ type: "frame", frame });
           return frame;
         });

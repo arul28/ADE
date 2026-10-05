@@ -58,6 +58,10 @@ export function createConnectionFrameDemand() {
       target.setFrameDemand(sourceId, demand);
       declaredReleases.set(projectId, () => target.setFrameDemand(sourceId, null));
     },
+    /** The project's scope is gone, and its service with it: nothing to release. */
+    forgetProject(projectId: string): void {
+      declaredReleases.delete(projectId);
+    },
     dispose(): void {
       releaseAll(legacyReleases);
       releaseAll(declaredReleases);

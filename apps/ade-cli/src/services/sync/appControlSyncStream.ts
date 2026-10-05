@@ -607,12 +607,18 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       });
       // The newest frame goes out on the next tick, after the command reply,
       // so the client has registered its handler for this subscription id.
-      if (latest && (!session || latest.frame.sessionId === session.id)) {
+      // A lane nobody was watching streamed nothing, so its cached frame can be
+      // minutes old; a fresh capture replaces it when one can be taken.
+      const latestUsable = latest
+        && (!session || latest.frame.sessionId === session.id)
+        && (now() - latest.receivedAtMs < APP_CONTROL_SYNC_STREAM_LIVE_WINDOW_MS || !deps.source.getLatestFrame);
+      if (latest && latestUsable) {
         subscription.pending = latest.frame;
         schedule(subscription, 1);
       } else if (session && deps.source.getLatestFrame) {
-        // No picture yet (a still app, or frames from before this module
-        // listened). Ask for one; it arrives as a frame event.
+        // No current picture (a still app, a lane that was paused, or frames
+        // from before this module listened). Ask for one; it arrives as a frame
+        // event.
         void Promise.resolve()
           .then(() => deps.source.getLatestFrame?.({ laneId }))
           .then((frame) => {
