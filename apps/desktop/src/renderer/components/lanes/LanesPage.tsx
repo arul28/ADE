@@ -1460,15 +1460,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     })();
   };
 
+  // Lanes a bulk action can act on: reachable, not primary, not being deleted.
+  // A mixed selection is fine: archive/delete split it per machine and pin each
+  // lane to its own.
+  const bulkActionableLaneIds = useCallback((laneIds: string[]) => laneIds.filter((id) => {
+    const foreignRow = foreignRowByKey.get(id);
+    if (foreignRow && machineBlockedReason(foreignRow)) return false;
+    const lane = lanesById.get(id);
+    return lane != null && lane.laneType !== "primary" && !deletingLaneIds.has(id);
+  }), [deletingLaneIds, foreignRowByKey, lanesById]);
+
   const openBatchManage = useCallback((laneIds: string[], initialTab: ManageLaneTab | null = null) => {
-    // A mixed selection is fine: archive/delete split it per machine and pin
-    // each lane to its own. Unreachable machines' lanes are left out.
-    const manageable = laneIds.filter((id) => {
-      const foreignRow = foreignRowByKey.get(id);
-      if (foreignRow && machineBlockedReason(foreignRow)) return false;
-      const lane = lanesById.get(id);
-      return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
-    });
+    const manageable = bulkActionableLaneIds(laneIds);
     if (manageable.length === 0) return;
     // One foreign lane alone gets the pinned single-lane dialog (its delete
     // risk, restack and appearance read from its machine).
@@ -1483,7 +1486,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
-  }, [foreignRowByKey, lanesById, deletingLaneIds]);
+  }, [bulkActionableLaneIds, foreignRowByKey]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -1569,17 +1572,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const handleGroupBulkAction = useCallback((action: LaneGroupBulkAction, laneIds: string[]) => {
     if (action === "rebase") {
       // Each lane rebases on its own machine (see `rebaseLaneForBulk`).
-      const targets = laneIds.filter((id) => {
-        const foreignRow = foreignRowByKey.get(id);
-        if (foreignRow && machineBlockedReason(foreignRow)) return false;
-        const lane = lanesById.get(id);
-        return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
-      });
+      const targets = bulkActionableLaneIds(laneIds);
       if (targets.length > 0) setBulkRebaseLaneIds(targets);
       return;
     }
     openBatchManage(laneIds, action);
-  }, [deletingLaneIds, foreignRowByKey, lanesById, openBatchManage]);
+  }, [bulkActionableLaneIds, openBatchManage]);
 
   // One lane of "Rebase all": the rebase the Git pane's "Rebase now" runs,
   // scoped to this lane only and without a push.
@@ -2486,10 +2484,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         )}
       </main>
 
-      {laneBulkMenu ? (
+      {laneBulkMenu && multiSelectedList.length > 1 ? (
         <LaneSidebarBulkContextMenu
           point={laneBulkMenu}
           laneIds={multiSelectedList}
+          actionableLaneIds={bulkActionableLaneIds(multiSelectedList)}
           lanesById={lanesById}
           onClose={() => setLaneBulkMenu(null)}
           onManage={(ids) => openBatchManage(ids)}
@@ -2501,10 +2500,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         <LaneSidebarContextMenu
           menu={laneContextMenu}
           lanesById={lanesById}
-          selectedLaneIds={multiSelectedList}
           onClose={closeContextMenu}
           onManage={openManageDialog}
-          onBatchManage={openBatchManage}
           selectLane={selectDetailLane}
           onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
@@ -2517,10 +2514,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         <LaneSidebarContextMenu
           menu={{ laneId: contextMenuForeignRow.lane.id, x: laneContextMenu.x, y: laneContextMenu.y }}
           lanesById={contextMenuForeignLanesById}
-          selectedLaneIds={EMPTY_LANE_IDS}
           onClose={closeContextMenu}
           onManage={() => openForeignManage(contextMenuForeignRow)}
-          onBatchManage={() => {}}
           selectLane={(realLaneId) => selectDetailLane(foreignLaneKey(contextMenuForeignRow.machineId, realLaneId))}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(contextMenuForeignRow.machineId)}
           onStartChatInLane={(realLaneId) => startChatInLane(realLaneId, { machineId: contextMenuForeignRow.machineId })}

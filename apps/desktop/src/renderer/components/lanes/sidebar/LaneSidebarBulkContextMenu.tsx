@@ -9,12 +9,13 @@ import { PointMenu } from "./PointMenu";
 /**
  * Right-click menu for a multi-selection in the Lanes sidebar. It acts on every
  * selected lane, local or on another machine; the batch dialogs split the
- * selection per machine. The primary lane is never managed, so the counts
- * leave it out.
+ * selection per machine. The counts are the lanes the actions will touch:
+ * the primary lane, unreachable machines and lanes being deleted are left out.
  */
 export function LaneSidebarBulkContextMenu({
   point,
   laneIds,
+  actionableLaneIds,
   lanesById,
   onClose,
   onManage,
@@ -24,6 +25,8 @@ export function LaneSidebarBulkContextMenu({
   point: { x: number; y: number };
   /** Selected row keys, in selection order. */
   laneIds: string[];
+  /** The selection filtered to what Manage/Rebase/Archive/Delete act on. */
+  actionableLaneIds: string[];
   lanesById: Map<string, LaneSummary>;
   onClose: () => void;
   onManage: (laneIds: string[]) => void;
@@ -34,8 +37,7 @@ export function LaneSidebarBulkContextMenu({
     const lane = lanesById.get(id);
     return lane ? [{ id, lane }] : [];
   });
-  const manageable = lanes.filter(({ lane }) => lane.laneType !== "primary").map(({ id }) => id);
-  const count = manageable.length;
+  const count = actionableLaneIds.length;
   const act = (run: () => void) => () => { onClose(); run(); };
   const copy = (text: string, what: string) => () => {
     onClose();
@@ -46,38 +48,22 @@ export function LaneSidebarBulkContextMenu({
 
   const manageEntries: LaneMenuEntry[] = count
     ? [
-        { kind: "action", key: "manage", label: `Manage ${count} lane${count === 1 ? "" : "s"}…`, icon: Gear, onSelect: act(() => onManage(manageable)) },
-        { kind: "action", key: "rebase", label: `Rebase ${count}`, icon: ArrowsClockwise, onSelect: act(() => onBulkAction("rebase", manageable)) },
-        { kind: "action", key: "archive", label: `Archive ${count}…`, icon: Archive, onSelect: act(() => onBulkAction("archive", manageable)) },
-        { kind: "action", key: "delete", label: `Delete ${count}…`, icon: Trash, onSelect: act(() => onBulkAction("delete", manageable)) },
+        { kind: "action", key: "manage", label: `Manage ${count} lane${count === 1 ? "" : "s"}…`, icon: Gear, onSelect: act(() => onManage(actionableLaneIds)) },
+        { kind: "action", key: "rebase", label: `Rebase ${count}`, icon: ArrowsClockwise, onSelect: act(() => onBulkAction("rebase", actionableLaneIds)) },
+        { kind: "action", key: "archive", label: `Archive ${count}…`, icon: Archive, onSelect: act(() => onBulkAction("archive", actionableLaneIds)) },
+        { kind: "action", key: "delete", label: `Delete ${count}…`, icon: Trash, onSelect: act(() => onBulkAction("delete", actionableLaneIds)) },
       ]
     : [];
-  const groups: LaneMenuGroup[] = [
-    ...(manageEntries.length
-      ? [{ key: "manage", label: `${lanes.length} lanes selected`, entries: manageEntries }]
-      : []),
-    {
-      key: "selection",
-      ...(manageEntries.length ? {} : { label: `${lanes.length} lanes selected` }),
-      entries: [
-        {
-          kind: "action",
-          key: "copy-names",
-          label: "Copy lane names",
-          icon: Copy,
-          onSelect: copy(lanes.map(({ lane }) => lane.name).join("\n"), "lane names"),
-        },
-        {
-          kind: "action",
-          key: "copy-branches",
-          label: "Copy branches",
-          icon: GitBranch,
-          onSelect: copy(lanes.map(({ lane }) => lane.branchRef).join("\n"), "branches"),
-        },
-        { kind: "action", key: "clear", label: "Clear selection", icon: X, onSelect: act(onClearSelection) },
-      ],
-    },
+  const selectionEntries: LaneMenuEntry[] = [
+    { kind: "action", key: "copy-names", label: "Copy lane names", icon: Copy, onSelect: copy(lanes.map(({ lane }) => lane.name).join("\n"), "lane names") },
+    { kind: "action", key: "copy-branches", label: "Copy branches", icon: GitBranch, onSelect: copy(lanes.map(({ lane }) => lane.branchRef).join("\n"), "branches") },
+    { kind: "action", key: "clear", label: "Clear selection", icon: X, onSelect: act(onClearSelection) },
   ];
+  // The header heads whichever group comes first.
+  const header = `${lanes.length} lanes selected`;
+  const groups: LaneMenuGroup[] = manageEntries.length
+    ? [{ key: "manage", label: header, entries: manageEntries }, { key: "selection", entries: selectionEntries }]
+    : [{ key: "selection", label: header, entries: selectionEntries }];
 
   return (
     <PointMenu
