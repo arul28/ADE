@@ -5432,6 +5432,9 @@ describe("AgentChatPane submit recovery", () => {
     window.ade.agentChat.updateSession = updateSession as any;
 
     renderPane(session);
+    // Model discovery finds other models but not the route's raw DeepSeek id.
+    await waitFor(() => expect(window.ade.agentChat.models).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude" })));
+    await act(async () => { await Promise.resolve(); });
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reply with two." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
@@ -5444,7 +5447,7 @@ describe("AgentChatPane submit recovery", () => {
     });
     expect(screen.queryByText("Select a model first")).toBeNull();
     // The chat keeps its route: sending is not a model switch.
-    expect(updateSession).not.toHaveBeenCalledWith(expect.objectContaining({ modelId: expect.anything() }), expect.anything());
+    expect(updateSession.mock.calls.map(([args]) => args?.modelId).filter(Boolean)).toEqual([]);
   });
 
   it("sends the selected Claude interaction mode with the next turn", async () => {

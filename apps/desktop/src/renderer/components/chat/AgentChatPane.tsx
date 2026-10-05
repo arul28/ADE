@@ -4807,6 +4807,7 @@ export function AgentChatPane({
     if (!selectedSession) return null;
     return resolveSessionComposerModelId(selectedSession, harnessPresets);
   }, [selectedSession, harnessPresets]);
+  const selectedSessionPresetId = selectedSession?.presetId ?? null;
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
   const selectedSessionModelIdRef = useRef(selectedSessionModelId);
@@ -8161,6 +8162,9 @@ export function AgentChatPane({
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
+    // A chat on a preset or route runs the preset's model, which discovery and
+    // the registry may not list (DeepSeek in Claude Code). Keep it.
+    if (selectedSessionPresetId && modelId === selectedSessionModelId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -8169,7 +8173,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId, selectedSessionPresetId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
