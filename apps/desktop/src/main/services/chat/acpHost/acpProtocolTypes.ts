@@ -289,26 +289,6 @@ const ACP_CONTENT_BLOCK_NAMES: ReadonlySet<string> = new Set([
   "resource",
 ]);
 
-const ACP_TOOL_KINDS: ReadonlySet<string> = new Set([
-  "read",
-  "edit",
-  "delete",
-  "move",
-  "search",
-  "execute",
-  "think",
-  "fetch",
-  "switch_mode",
-  "other",
-]);
-
-const ACP_TOOL_STATUSES: ReadonlySet<string> = new Set([
-  "pending",
-  "in_progress",
-  "completed",
-  "failed",
-]);
-
 const ACP_PERMISSION_KINDS: ReadonlySet<string> = new Set([
   "allow_once",
   "allow_always",
@@ -358,8 +338,10 @@ function isAcpContentBlock(raw: unknown): boolean {
 
 function isAcpToolCallUpdate(raw: unknown): raw is AcpToolCallUpdate {
   if (!isRecord(raw) || typeof raw.toolCallId !== "string" || !raw.toolCallId.length) return false;
-  if (raw.kind != null && (typeof raw.kind !== "string" || !ACP_TOOL_KINDS.has(raw.kind))) return false;
-  if (raw.status != null && (typeof raw.status !== "string" || !ACP_TOOL_STATUSES.has(raw.status))) return false;
+  // A kind or status from a newer schema keeps the update: the translator
+  // degrades unknown values, and dropping the update would lose its content.
+  if (raw.kind != null && typeof raw.kind !== "string") return false;
+  if (raw.status != null && typeof raw.status !== "string") return false;
   if (raw.title != null && typeof raw.title !== "string") return false;
   if (raw.name != null && typeof raw.name !== "string") return false;
   return raw.content == null || (Array.isArray(raw.content) && raw.content.every(isRecord));
@@ -723,3 +705,9 @@ export type AcpRpcFrame = AcpRpcRequestFrame | AcpRpcNotificationFrame | AcpRpcR
 export const ACP_RPC_METHOD_NOT_FOUND = -32601;
 /** JSON-RPC "invalid request". Some agents answer an unknown notification with it. */
 export const ACP_RPC_INVALID_REQUEST = -32600;
+/**
+ * ACP "resource not found". Copilot and Qwen answer `session/load` and
+ * `session/resume` with it for a session id they never persisted, such as one
+ * that never finished a turn.
+ */
+export const ACP_RPC_RESOURCE_NOT_FOUND = -32002;

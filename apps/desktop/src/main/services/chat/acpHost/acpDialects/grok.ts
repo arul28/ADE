@@ -103,9 +103,6 @@ export { GROK_CLAUDE_MARKER_OVERRIDE_ENV, grokSupervisionEnv } from "../../../..
 /** Extension notification that switches Grok's auto-approve mode off. */
 export const GROK_YOLO_MODE_CHANGED_METHOD = "x.ai/yolo_mode_changed";
 
-/** Lowest Grok version this dialect is written against. */
-export const GROK_MINIMUM_VERSION = "1.0.13";
-
 /** Every xAI extension method, under both spellings (1.0.40 adds the underscore). */
 const GROK_EXTENSION_NOTIFICATIONS: Record<string, AcpExtensionNotificationReader> = {
   ...extensionMethodVariants(GROK_SESSION_NOTIFICATION_METHOD, readGrokSessionNotification),

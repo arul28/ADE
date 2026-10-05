@@ -78,6 +78,7 @@ import {
 } from "./acpSupervisionGuard";
 import {
   ACP_METHOD,
+  ACP_RPC_RESOURCE_NOT_FOUND,
   hasAcpLoadSessionCapability,
   hasAcpSessionCapability,
   normalizeAcpConfigOptions,
@@ -465,7 +466,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     }),
   );
 
-  const entryPlan = resolveAcpSessionEntry({
+  let entryPlan = resolveAcpSessionEntry({
     dialect,
     existingSessionId: args.existingSessionId ?? null,
     adeHasTranscript: args.adeHasTranscript ?? false,
@@ -475,18 +476,22 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   let initialConfigOptions: AcpSessionConfigOption[] = [];
   let initialModeId: string | null = null;
 
+  const openNewSession = async (): Promise<void> => {
+    const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, {
+      cwd: args.cwd,
+      mcpServers: effectiveMcpServers,
+    });
+    sessionId = response.sessionId;
+    initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
+    initialModeId = response.modes?.currentModeId ?? null;
+    for (const notification of dialect.postSessionNewNotifications({ sessionId })) {
+      connection.notify(notification.method, { sessionId, ...notification.params });
+    }
+  };
+
   try {
     if (entryPlan.mode === "new") {
-      const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, {
-        cwd: args.cwd,
-        mcpServers: effectiveMcpServers,
-      });
-      sessionId = response.sessionId;
-      initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
-      initialModeId = response.modes?.currentModeId ?? null;
-      for (const notification of dialect.postSessionNewNotifications({ sessionId })) {
-        connection.notify(notification.method, { sessionId, ...notification.params });
-      }
+      await openNewSession();
     } else {
       const storedId = args.existingSessionId as string;
       const behavior =
@@ -498,13 +503,29 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       }
       const call = behavior({ sessionId: storedId, cwd: args.cwd, mcpServers: effectiveMcpServers });
       suppressUpdates = entryPlan.suppressReplay;
+      let agentLostSession = false;
       try {
         const response = await connection.request<AcpNewSessionResponse>(call.method, call.params);
         sessionId = response.sessionId ?? storedId;
         initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
         initialModeId = response.modes?.currentModeId ?? null;
+      } catch (error) {
+        // The agent has no such session: it never persisted one that did not
+        // finish a turn, or its store was cleared. There is nothing left to
+        // rejoin, so open a new session rather than leave the chat unopenable.
+        if (!(error instanceof AcpRpcError) || error.code !== ACP_RPC_RESOURCE_NOT_FOUND) throw error;
+        agentLostSession = true;
+        args.logger?.warn("agent_chat.acp_rejoin_session_missing", {
+          provider: dialect.providerId,
+          mode: entryPlan.mode,
+          error: getErrorMessage(error),
+        });
       } finally {
         suppressUpdates = false;
+      }
+      if (agentLostSession) {
+        entryPlan = { mode: "new", suppressReplay: false, reason: `agent has no stored session for ${entryPlan.mode}` };
+        await openNewSession();
       }
     }
   } catch (error) {

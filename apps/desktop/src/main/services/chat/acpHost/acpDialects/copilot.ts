@@ -44,8 +44,10 @@
  *   `trusted_folders` (snake_case). Do not add either back.
  * - `--add-dir` on the spawn plan is the session path gate. It is argv, not a
  *   rewrite of user state, so it stays.
- * - `COPILOT_HOME` names the config directory, and `--config-dir` is the flag
- *   form. Sessions live at `<config home>/session-state/<uuid>/`.
+ * - `COPILOT_HOME` names the config directory. ADE sets only the variable:
+ *   1.0.89 warns that the `--config-dir` flag is deprecated, and 1.0.91 keeps
+ *   its sessions under `$COPILOT_HOME` without it. Sessions live at
+ *   `<config home>/session-state/<uuid>/`.
  * - Usage: `usage_update { used, size }` is context occupancy, and the prompt
  *   result `usage` is the turn's tokens. The model Copilot actually picked,
  *   its premium requests, its AI units, and subagent usage are only in
@@ -170,7 +172,6 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args = ["--acp"];
   const model = resolveCopilotCliModelForLaunch(context.modelId);
   if (model) args.push("--model", model);
-  if (context.configHome?.length) args.push("--config-dir", context.configHome);
   // `--add-dir` is the session path gate. It is argv only — it does not
   // rewrite config.json, which is why it survived the removal of the trust
   // pre-seed. Live 1.0.82 ACP writes did not emit

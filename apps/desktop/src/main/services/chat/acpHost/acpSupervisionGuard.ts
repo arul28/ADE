@@ -53,7 +53,6 @@
  */
 
 import type { AgentChatEvent } from "../../../../shared/types";
-import type { AcpToolKind } from "./acpProtocolTypes";
 
 /**
  * Whether a permission mode promises the user a prompt.
@@ -74,9 +73,14 @@ export function acpSupervisionModeFor(permissionMode: string | null | undefined)
   return ASK_STYLE_PERMISSION_MODES.has(permissionMode) ? "ask" : "auto";
 }
 
-/** Tool kinds an ask-style mode is supposed to gate. */
-const GATED_TOOL_KINDS: ReadonlySet<AcpToolKind> = new Set<AcpToolKind>([
+/**
+ * Tool kinds an ask-style mode is supposed to gate. Kept as strings: Grok
+ * reports file writes as `write`, which is not an ACP tool kind, and the
+ * safety net must still count them as edits.
+ */
+const GATED_TOOL_KINDS: ReadonlySet<string> = new Set<string>([
   "edit",
+  "write",
   "delete",
   "move",
   "execute",
@@ -85,8 +89,8 @@ const GATED_TOOL_KINDS: ReadonlySet<AcpToolKind> = new Set<AcpToolKind>([
 export type AcpSupervisionGuard = {
   /** True once ADE has concluded this session is not gated. */
   readonly unsupervised: boolean;
-  /** Record a tool call the agent reported. Kind may be absent on the wire. */
-  noteToolCall(kind: AcpToolKind | null | undefined): void;
+  /** Record a tool call the agent reported. Kind may be absent or non-standard on the wire. */
+  noteToolCall(kind: string | null | undefined): void;
   /** Record that the agent asked ADE for permission. Disarms the invariant. */
   notePermissionRequest(): void;
   /**
