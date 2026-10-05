@@ -1,6 +1,9 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
-import { COPILOT_NPM_PACKAGE_SPEC } from "../../../desktop/src/shared/acpProviderMetadata";
+import {
+  ACP_PROVIDER_METADATA,
+  type AcpProviderInstallSource,
+} from "../../../desktop/src/shared/acpProviderMetadata";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
@@ -35,6 +38,17 @@ function npmGlobalInstallCommand(packageName: string): string {
     return `npm install -g ${packageName}`;
   }
   return `mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g ${packageName}`;
+}
+
+/**
+ * Wrap one ACP provider's install source for the shell this registry's callers
+ * use. The source itself (package name or vendor installer) belongs to
+ * `acpProviderMetadata.ts`; only the shell framing is added here. npm packages
+ * land in a writable prefix, while the native installers are already shell
+ * commands and run as written.
+ */
+function acpInstallCommand(source: AcpProviderInstallSource): string {
+  return source.kind === "npm" ? npmGlobalInstallCommand(source.packageName) : source.command;
 }
 
 /**
@@ -154,7 +168,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "qwen",
     displayName: "Qwen Code",
     binaryNames: ["qwen"],
-    installCommand: npmGlobalInstallCommand("@qwen-code/qwen-code"),
+    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.qwen.install),
     // 0.24.0 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
     authCommand: "qwen --auth-type=openai",
     notAuthErrorPatterns: [
@@ -169,7 +183,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     // Kimi ships a native binary rather than an npm package, so there is no
     // portable one-liner to print here. Point at the vendor's own installer
     // instead of guessing a package name that would fail on paste.
-    installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.kimi.install),
     authCommand: "kimi login",
     notAuthErrorPatterns: [
       /\bkimi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
@@ -181,7 +195,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "grok",
     displayName: "Grok CLI",
     binaryNames: ["grok"],
-    installCommand: npmGlobalInstallCommand("@xai-official/grok@1.0.34"),
+    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.grok.install),
     authCommand: "grok login",
     notAuthErrorPatterns: [
       /\bgrok\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
@@ -193,7 +207,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "copilot",
     displayName: "GitHub Copilot CLI",
     binaryNames: ["copilot"],
-    installCommand: npmGlobalInstallCommand(COPILOT_NPM_PACKAGE_SPEC),
+    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.copilot.install),
     authCommand: "copilot login",
     notAuthErrorPatterns: [
       /\bcopilot\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials)\b/i,
@@ -205,7 +219,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "devin",
     displayName: "Devin CLI",
     binaryNames: ["devin"],
-    installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.devin.install),
     authCommand: "devin auth login",
     notAuthErrorPatterns: [
       /\bdevin\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials|sign\s*in)\b/i,
