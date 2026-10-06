@@ -67,6 +67,7 @@ export type GithubStackMergeDeps = {
   forgetActivityInputs: (repo: GitHubRepoRef, prNumber: number) => void;
   markHotRefresh: (prIds: string[]) => void;
   refreshOne: (prId: string) => Promise<unknown>;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   invalidateGithubSnapshotCache: () => void;
   delay: (ms: number) => Promise<void>;
   headChange: PrHeadChangeDetector;
@@ -109,6 +110,25 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       if (row) {
         deps.markHotRefresh([row.id]);
         await deps.refreshOne(row.id).catch(() => {});
+      }
+    }
+    if (deps.refreshDefaultBranchAfterMerge) {
+      const mergedBaseBranches = new Set<string>();
+      for (const prNumber of prNumbers) {
+        const pull = await deps.fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+        const baseBranch = asString(pull?.base?.ref).trim();
+        if (baseBranch) mergedBaseBranches.add(baseBranch);
+      }
+      for (const baseBranch of mergedBaseBranches) {
+        try {
+          await deps.refreshDefaultBranchAfterMerge(baseBranch);
+        } catch (error) {
+          logger.warn("prs.default_branch_refresh_failed", {
+            stackNumber,
+            baseBranch,
+            error: getErrorMessage(error),
+          });
+        }
       }
     }
     deps.invalidateGithubSnapshotCache();
