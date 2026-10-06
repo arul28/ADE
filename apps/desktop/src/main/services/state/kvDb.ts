@@ -1986,12 +1986,14 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
 
 /**
  * Keep a change for a column this build lacks, for `replayDeferredColumnChanges`.
- * One row per cell: a write that would win replaces the kept one (cr-sqlite's
- * order, causal length then column version), so the table cannot grow with
- * every write while this device waits for an update.
+ * One row per cell per peer: a later write from the same peer replaces the
+ * kept one (cr-sqlite's order, causal length then column version), so the
+ * table cannot grow with every write while this device waits for an update.
+ * Peers are kept apart because cr-sqlite breaks an exact tie by value and site,
+ * not by arrival; the replay hands every peer's change to cr-sqlite to decide.
  */
 function deferColumnChange(db: DatabaseSyncType, change: CrsqlChangeRow): void {
-  const changeKey = JSON.stringify([change.table, change.pk, change.cid]);
+  const changeKey = JSON.stringify([change.table, change.pk, change.cid, change.site_id]);
   runStatement(
     db,
     `insert into ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}(change_key, table_name, cid, cl, col_version, change_json, deferred_at)
@@ -2006,6 +2008,15 @@ function deferColumnChange(db: DatabaseSyncType, change: CrsqlChangeRow): void {
             and excluded.col_version >= ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.col_version)`,
     [changeKey, change.table, change.cid, change.cl, change.col_version, JSON.stringify(change), new Date().toISOString()],
   );
+}
+
+/** A lock, busy timeout or read-only database: the write may work later. */
+function isTransientSqliteError(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message ?? error).toLowerCase();
+  return message.includes("database is locked")
+    || message.includes("sqlite_busy")
+    || message.includes("database is busy")
+    || isReadonlyDatabaseError(error);
 }
 
 /** Whether `table` has column `cid`, with one `pragma table_info` per table. */
@@ -2076,6 +2087,9 @@ function replayDeferredColumnChanges(db: DatabaseSyncType, logger: Logger): void
         applyCrsqlChange(db, JSON.parse(row.changeJson) as CrsqlChangeRow);
         replayed += 1;
       } catch (error) {
+        // A busy or read-only database is not this row's fault: stop, and
+        // keep it and the rest for the next open.
+        if (isTransientSqliteError(error)) throw error;
         runStatement(db, "rollback to ade_replay_deferred_column");
         dropped += 1;
         logger.warn("sync.deferred_column_replay_dropped", { table: row.tableName, column: row.cid, err: String(error) });
