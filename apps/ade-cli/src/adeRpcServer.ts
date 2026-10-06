@@ -6834,18 +6834,24 @@ async function runTool(args: {
     const loadOtherLaneRoots = () => {
       otherLaneRoots ??= runtime.laneService.list({ includeArchived: false, includeStatus: false })
         .then((lanes) => lanes
-          .map((lane) => lane.worktreePath?.trim() ?? "")
-          .filter((root) => root && !isPathWithinAuthorizedRoot(root, authorized.root)))
-        .catch(() => []);
+          // An attached lane may be known only by its attached root.
+          .flatMap((lane) => [lane.worktreePath, lane.attachedRootPath])
+          .map((root) => root?.trim() ?? "")
+          .filter((root) => root && !isPathWithinAuthorizedRoot(root, authorized.root)));
+      // No `.catch`: a lane list that fails must refuse the ingest, not read as
+      // "no other lanes" and let another lane's files through.
       return otherLaneRoots;
     };
     for (const input of inputs) {
-      const localPath = asOptionalTrimmedString(input.path)
+      const rawPath = asOptionalTrimmedString(input.path)
         ?? (() => {
           const uri = asOptionalTrimmedString(input.uri);
           return uri && !/^https?:\/\//i.test(uri) ? uri : null;
         })();
-      if (!localPath || !path.isAbsolute(localPath)) continue;
+      if (!rawPath) continue;
+      // The broker resolves a relative path against the caller's root, so the
+      // boundary is checked on that same resolved path.
+      const localPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(authorized.callerRoot, rawPath);
       if (isPathWithinAuthorizedRoot(authorized.root, localPath)) continue;
       // Absolute proof paths may also come from broker-approved external
       // roots such as the OS temp directory or ~/.agent-browser. Preserve the

@@ -13,7 +13,7 @@ import { runGit } from "../git/git";
 import { readGlobalState } from "../state/globalState";
 import { toRecentProjectSummary } from "./recentProjectSummary";
 import { pathKey } from "../shared/pathCompare";
-import { listLinkedWorktreeRoots, resolveWorktreeParentRef } from "./worktreeParent";
+import { listLinkedLaneWorktreeRoots, resolveWorktreeParentRef } from "./worktreeParent";
 
 const README_CANDIDATES = ["README.md", "readme.md", "Readme.md", "README", "readme"];
 const README_EXCERPT_CHARS = 1600;
@@ -265,7 +265,7 @@ async function readWorktreeSummary(args: {
   };
 }
 
-async function listAdeWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
+async function listLaneWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
   const worktreesPath = path.join(rootPath, ".ade", "worktrees");
   const byKey = new Map<string, { rootPath: string; name: string }>();
   try {
@@ -279,7 +279,7 @@ async function listAdeWorktreeRoots(rootPath: string): Promise<Array<{ rootPath:
     // no managed worktrees folder
   }
   // Lanes outside `.ade/worktrees/` are still git-linked worktrees.
-  for (const worktreeRoot of listLinkedWorktreeRoots(rootPath)) {
+  for (const worktreeRoot of listLinkedLaneWorktreeRoots(rootPath)) {
     const key = pathKey(worktreeRoot);
     if (!byKey.has(key)) byKey.set(key, { rootPath: worktreeRoot, name: path.basename(worktreeRoot) });
   }
@@ -379,7 +379,7 @@ export async function getProjectDetail(rootPath: string, options: GetProjectDeta
 
 export async function getProjectWorkSummary(rootPath: string): Promise<RemoteRuntimeProjectWorkSummary> {
   const { requestedRoot, scanRoot } = await resolveProjectDetailScanRoot(rootPath);
-  const worktrees = await listAdeWorktreeRoots(scanRoot);
+  const worktrees = await listLaneWorktreeRoots(scanRoot);
   const summaries = (
     await Promise.all([
       readWorktreeSummary({

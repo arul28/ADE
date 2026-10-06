@@ -1113,7 +1113,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
   Global options:
-    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
     --headless              Skip the machine brain and run an in-process ADE runtime.
     --socket                Require a live ADE endpoint; fail instead of falling back to headless.

@@ -100,7 +100,7 @@ import {
   readCodexCredentials,
   type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
-import { listLinkedWorktreeRoots } from "../projects/worktreeParent";
+import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
@@ -2431,7 +2431,7 @@ type ProjectMatchRoot = {
 function projectMatchRoots(projectRoot: string | null | undefined): ProjectMatchRoot[] {
   if (!projectRoot) return [];
   const root = canonicalProjectRoot(projectRoot);
-  return [root, ...listLinkedWorktreeRoots(root).map((worktree) => path.resolve(worktree))].map((candidate, index) => ({
+  return [root, ...listLinkedLaneWorktreeRoots(root).map((worktree) => path.resolve(worktree))].map((candidate, index) => ({
     root: candidate,
     rootKey: pathComparisonKey(sanitizeClaudeProjectPath(candidate)),
     collapsedRoot: collapsedProjectKey(candidate),

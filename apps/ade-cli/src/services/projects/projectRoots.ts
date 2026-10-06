@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
+import { hasTable, openReadOnlyDatabase } from "../../../../desktop/src/main/services/projects/readOnlySqlite";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 
 export type ProjectRootResolution = {
@@ -35,36 +35,61 @@ export function findAdeManagedWorktreeRoot(startDir: string): ProjectRootResolut
   return null;
 }
 
+export function parseGitDirPointer(content: string, worktreeRoot: string): string | null {
+  const match = content.trim().match(/^gitdir:\s*(.+)$/);
+  return match?.[1] ? path.resolve(worktreeRoot, match[1]) : null;
+}
+
+/** The admin directory a checkout's `.git` file points at; null when `.git` is not a file. */
+export function readGitDirPointer(worktreeRoot: string): string | null {
+  try {
+    const gitPath = path.join(worktreeRoot, ".git");
+    if (!fs.statSync(gitPath).isFile()) return null;
+    return parseGitDirPointer(fs.readFileSync(gitPath, "utf8"), worktreeRoot);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The checkout root above `startDir` and the main repository it is a linked
- * worktree of, read from the `.git` pointer file without spawning git. Null for
- * a main checkout (`.git` is a directory) or a folder outside any repository.
+ * The main repository `worktreeRoot` is a linked worktree of, read from its
+ * `.git` pointer without spawning git. Git writes the pointer both ways —
+ * `<checkout>/.git` names `<repo>/.git/worktrees/<name>`, whose `gitdir` file
+ * names the checkout's `.git` back — and both are required, so a `.git` file
+ * that merely has the right shape cannot claim a repository.
+ */
+export function linkedWorktreeParentRoot(worktreeRoot: string): string | null {
+  const adminDir = readGitDirPointer(worktreeRoot);
+  if (!adminDir || path.basename(path.dirname(adminDir)) !== "worktrees") return null;
+  const commonGitDir = path.dirname(path.dirname(adminDir));
+  if (path.basename(commonGitDir) !== ".git") return null;
+  try {
+    const back = fs.readFileSync(path.join(adminDir, "gitdir"), "utf8").trim();
+    if (!back || !pathsEqual(path.resolve(adminDir, back), path.join(worktreeRoot, ".git"))) return null;
+  } catch {
+    return null;
+  }
+  return path.dirname(commonGitDir);
+}
+
+/**
+ * The checkout root at or above `startDir` and the repository it is a linked
+ * worktree of. Null for a main checkout (`.git` is a directory) or a folder
+ * outside any repository.
  */
 function linkedWorktreeOf(startDir: string): { worktreeRoot: string; parentRoot: string } | null {
   let cursor = startDir;
   while (true) {
-    const gitPath = path.join(cursor, ".git");
     let stat: fs.Stats | null = null;
     try {
-      stat = fs.statSync(gitPath);
+      stat = fs.statSync(path.join(cursor, ".git"));
     } catch {
       stat = null;
     }
     if (stat?.isDirectory()) return null;
     if (stat?.isFile()) {
-      let content: string;
-      try {
-        content = fs.readFileSync(gitPath, "utf8");
-      } catch {
-        return null;
-      }
-      const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(content)?.[1];
-      if (!gitdir) return null;
-      const adminDir = path.resolve(cursor, gitdir);
-      if (path.basename(path.dirname(adminDir)) !== "worktrees") return null;
-      const commonGitDir = path.dirname(path.dirname(adminDir));
-      if (path.basename(commonGitDir) !== ".git") return null;
-      return { worktreeRoot: cursor, parentRoot: path.dirname(commonGitDir) };
+      const parentRoot = linkedWorktreeParentRoot(cursor);
+      return parentRoot ? { worktreeRoot: cursor, parentRoot } : null;
     }
     const parent = path.dirname(cursor);
     if (parent === cursor) return null;
@@ -74,27 +99,20 @@ function linkedWorktreeOf(startDir: string): { worktreeRoot: string; parentRoot:
 
 /** Whether the project database at `parentRoot` has a live lane rooted at `worktreeRoot`. */
 function parentHasLaneAt(parentRoot: string, worktreeRoot: string): boolean {
-  let db: { prepare: (sql: string) => { all: () => unknown[] }; close: () => void } | null = null;
+  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
   try {
-    const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-    const { DatabaseSync } = require("node:sqlite") as {
-      DatabaseSync: new (file: string, options: { readOnly: boolean }) => NonNullable<typeof db>;
-    };
-    db = new DatabaseSync(path.join(parentRoot, ".ade", "ade.db"), { readOnly: true });
+    db = openReadOnlyDatabase(path.join(parentRoot, ".ade", "ade.db"));
+    if (!hasTable(db, "lanes")) return false;
     const rows = db.prepare(
       "select worktree_path, attached_root_path from lanes where archived_at is null",
-    ).all() as Array<{ worktree_path?: string | null; attached_root_path?: string | null }>;
+    ).all<{ worktree_path?: string | null; attached_root_path?: string | null }>();
     return rows.some((row) => [row.worktree_path, row.attached_root_path].some(
       (candidate) => typeof candidate === "string" && candidate.trim() && pathsEqual(path.resolve(candidate), worktreeRoot),
     ));
   } catch {
     return false;
   } finally {
-    try {
-      db?.close();
-    } catch {
-      // already closed
-    }
+    db?.close();
   }
 }
 
