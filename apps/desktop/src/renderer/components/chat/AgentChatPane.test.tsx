@@ -11825,6 +11825,25 @@ describe("mergeChatHistorySnapshot", () => {
     expect(merged[3]).toBe(secondTail);
   });
 
+  // A stale cached view that then took live events: the stretch between the
+  // two was never on screen, so its rows (here, a subagent's result) must come
+  // from the snapshot or scrollback, not be pinned out by a glued-on prefix.
+  it("drops a stale prefix that ends before a snapshot head the view never saw", () => {
+    const staleCached = envelope("2026-10-06T05:28:00.000Z", 10, "stale cached");
+    const missedHead = envelope("2026-10-06T07:00:00.000Z", 20, "snapshot head");
+    const liveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+    const parsedLiveTail = envelope("2026-10-06T08:40:00.000Z", 30, "live tail");
+
+    const merged = mergeChatHistorySnapshot([missedHead, parsedLiveTail], [staleCached, liveTail]);
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "snapshot head",
+      "live tail",
+    ]);
+    expect(merged).not.toContain(staleCached);
+    expect(merged[1]).toBe(liveTail);
+  });
+
   it("reuses existing snapshot entries while appending newly recovered events", () => {
     const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
     const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");

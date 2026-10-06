@@ -277,7 +277,18 @@ export function mergeAgentChatHistorySnapshot(
         : isAfter(entry, snapshotTail)
     )
   ));
-  const olderPrefix = firstOverlapIndex > 0
+  // The prefix is scrollback only when it joins the snapshot: the snapshot's
+  // first event is already on screen, or the prefix reaches into the
+  // snapshot's span. A prefix that ends before a snapshot head it never saw
+  // (a stale cached view that then took live events) ends at a hole. Keeping
+  // it would pin that hole, and every agent whose result fell in it would
+  // read "running" forever.
+  const snapshotHead = snapshot[0]!;
+  const prefixJoinsSnapshot = firstOverlapIndex > 0 && (
+    existingIndexByKey.has(identityKey(snapshotHead))
+    || isAtOrAfter(existing[firstOverlapIndex - 1]!, snapshotHead)
+  );
+  const olderPrefix = prefixJoinsSnapshot
     ? existing
       .slice(0, firstOverlapIndex)
       .filter((entry) => !snapshotKeys.has(identityKey(entry)))
