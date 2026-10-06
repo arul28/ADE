@@ -193,6 +193,7 @@ type HeadlessLinearDeps = {
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   getDeviceId?: () => string | null;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 };
 
 type HeadlessLinearServices = {
@@ -3041,6 +3042,7 @@ export function createHeadlessLinearServices(
     // Posts the "PR opened" card (and, through the published hook, proof) onto
     // the lane's Linear issues. Without it the brain skipped Linear entirely.
     getLinearIssueTracker: () => issueTracker,
+    refreshDefaultBranchAfterMerge: args.refreshDefaultBranchAfterMerge,
   });
   const agentChatService = createHeadlessAgentChatService(
     args.projectRoot,

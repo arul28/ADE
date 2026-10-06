@@ -1579,6 +1579,7 @@ export function createPrService({
   getLinearLiveStatusService,
   openExternal,
   onHotRefreshChanged,
+  refreshDefaultBranchAfterMerge,
 }: {
   db: AdeDb;
   logger: Logger;
@@ -1597,6 +1598,12 @@ export function createPrService({
   getLinearLiveStatusService?: () => LinearLiveStatusService | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
+  /**
+   * Fast-forwards the primary checkout after a PR merges into `baseBranch`,
+   * so a lane created right after the merge starts from the merged default
+   * branch instead of waiting for the background auto-pull. Never throws.
+   */
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 }) {
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
@@ -8076,6 +8083,13 @@ export function createPrService({
         targetBranch: row.base_branch,
       }).catch((error) => {
         logger.warn("prs.fetch_base_branch_failed", {
+          prId: row.id,
+          baseBranch: row.base_branch,
+          error: getErrorMessage(error),
+        });
+      });
+      await refreshDefaultBranchAfterMerge?.(row.base_branch).catch((error) => {
+        logger.warn("prs.default_branch_refresh_failed", {
           prId: row.id,
           baseBranch: row.base_branch,
           error: getErrorMessage(error),

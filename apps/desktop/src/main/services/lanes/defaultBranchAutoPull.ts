@@ -169,7 +169,10 @@ export type AutoPullRunResult = {
 };
 
 export type DefaultBranchAutoPullService = {
-  /** One decision-and-maybe-pull pass. Never throws. */
+  /**
+   * One decision-and-maybe-pull pass. Never throws. A call made while a pass
+   * is running resolves with one follow-up pass that starts after it.
+   */
   runOnce: () => Promise<AutoPullRunResult>;
   start: () => void;
   stop: () => void;
@@ -188,7 +191,8 @@ export function createDefaultBranchAutoPullService(
   const clearTimer = deps.clearTimer ?? clearTimeout;
 
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let running = false;
+  let inflight: Promise<AutoPullRunResult> | null = null;
+  let queued: Promise<AutoPullRunResult> | null = null;
   let started = false;
   let disposed = false;
 
@@ -196,9 +200,7 @@ export function createDefaultBranchAutoPullService(
     deps.logger?.[level]?.(event, data);
   };
 
-  const runOnce = async (): Promise<AutoPullRunResult> => {
-    if (running) return { pulled: false, reason: "not-evaluated" };
-    running = true;
+  const runPass = async (): Promise<AutoPullRunResult> => {
     try {
       const primary = deps.getPrimaryLane();
       if (!primary) return { pulled: false, reason: "no-primary-lane" };
@@ -277,9 +279,24 @@ export function createDefaultBranchAutoPullService(
         error: error instanceof Error ? error.message : String(error),
       });
       return { pulled: false, reason: "not-evaluated" };
-    } finally {
-      running = false;
     }
+  };
+
+  // Passes never overlap. A request that arrives mid-pass (a merge landing
+  // while the timer pass is fetching) queues exactly one follow-up pass, so it
+  // still sees the remote as of after its own trigger.
+  const runOnce = (): Promise<AutoPullRunResult> => {
+    if (inflight) {
+      queued ??= inflight.then(() => {
+        queued = null;
+        return runOnce();
+      });
+      return queued;
+    }
+    inflight = runPass().finally(() => {
+      inflight = null;
+    });
+    return inflight;
   };
 
   const schedule = (delayMs: number) => {

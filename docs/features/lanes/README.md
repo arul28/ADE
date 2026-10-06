@@ -53,14 +53,23 @@ closed instead of falling back to the tab's current machine.
 ## Default-branch auto-pull
 
 The primary checkout's default branch stays current without a manual pull.
-`defaultBranchAutoPull.ts` (desktop main, local-runtime only) runs a
-decision-and-maybe-pull pass on project open and then on a bounded
-five-minute background timer — the same "startup plus background refresh"
-trigger t3code uses. The pass is a **fast-forward only**:
+`defaultBranchAutoPull.ts` runs in the **brain** (wired in
+`apps/ade-cli/src/bootstrap.ts`), because the brain owns the project's
+checkout whether or not a desktop, phone, or web client is attached. It runs a
+decision-and-maybe-pull pass 20 s after the project opens and then on a
+bounded five-minute background timer — the same "startup plus background
+refresh" trigger t3code uses. A PR that ADE merges into the default branch
+triggers one extra pass right after post-merge cleanup fetches the base
+branch (`refreshDefaultBranchAfterMerge` on `createPrService`), so a lane
+created right after a merge starts from the merged branch. Passes never
+overlap; a request that arrives mid-pass queues one follow-up pass. The pass
+is a **fast-forward only**:
 
 1. It gates locally first. The target must be the primary lane, HEAD must be
-   attached and on the lane's recorded branch (`lanes.branch_ref`, i.e. the
-   project's default branch), there must be no staged or unstaged **tracked**
+   attached and on the project's default branch (the brain's detected
+   `baseRef`, not `lanes.branch_ref` — that follows whatever branch the
+   primary checkout has out, so comparing against it would pull any branch),
+   there must be no staged or unstaged **tracked**
    change, no in-progress rebase/merge/cherry-pick/revert, no held
    `lane_worktree_locks` lease, and a configured upstream. Untracked files do
    not block: a fast-forward can never lose one, and git itself refuses if the
