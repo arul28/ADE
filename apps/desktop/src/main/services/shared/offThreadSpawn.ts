@@ -202,10 +202,12 @@ type ControlMessage =
 
 class OffThreadSpawner {
   private worker: Worker | null = null;
+  private idleShutdown: NodeJS.Timeout | null = null;
   private nextId = 1;
   private readonly children = new Map<number, OffThreadChild>();
 
   spawn(command: string, args: readonly string[], options: OffThreadSpawnOptions): OffThreadChild {
+    this.cancelIdleShutdown();
     const id = this.nextId++;
     // Stdin written before the worker has the process is buffered here and
     // sent with the spawn request, so `spawn(); child.stdin.end(x)` keeps
@@ -267,6 +269,7 @@ class OffThreadSpawner {
       if (!child) return;
       if (message.type === "error" || message.type === "close") this.children.delete(message.id);
       child.handle(message);
+      if (message.type === "error" || message.type === "close") this.scheduleIdleShutdown(worker);
     });
     const onGone = (reason: string) => {
       if (this.worker !== worker) return;
@@ -277,6 +280,27 @@ class OffThreadSpawner {
     worker.on("exit", (code) => onGone(`The off-thread spawner exited (code ${code}).`));
     this.worker = worker;
     return worker;
+  }
+
+  private cancelIdleShutdown(): void {
+    if (this.idleShutdown) clearTimeout(this.idleShutdown);
+    this.idleShutdown = null;
+  }
+
+  private scheduleIdleShutdown(worker: Worker): void {
+    if (this.children.size > 0 || this.worker !== worker) return;
+    this.cancelIdleShutdown();
+    this.idleShutdown = setTimeout(() => {
+      this.idleShutdown = null;
+      if (this.children.size > 0 || this.worker !== worker) return;
+      // An unref'd worker does not keep Node alive, but its MessagePort still
+      // belongs to the runtime that created it. Retire it after a short idle
+      // window so runtime disposal releases that resource without rebuilding
+      // the worker between commands in a burst.
+      this.worker = null;
+      void worker.terminate();
+    }, 1_000);
+    this.idleShutdown.unref();
   }
 
   private fail(id: number, message: string): void {
