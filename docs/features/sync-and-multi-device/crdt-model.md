@@ -461,13 +461,18 @@ The same wedge exists for a **column** a newer peer added to a replicated
 table: cr-sqlite rejects the `crsql_changes` insert for a column it has
 no record of with *"SQL logic error"*, and the batch rolls back exactly as
 above. Every release that adds a synced column reaches it whenever an
-older desktop peer is paired. `applyChanges` therefore skips a change
-whose `cid` is not a column of the local table (the `-1` row sentinel is
-never skipped), logs `sync.unknown_column_skipped` once per column per
-process, and applies the rest. The cost is bounded: the older device
-misses that column's value until the row changes again after it
-updates. iOS has the same behaviour by construction (it writes only the
-columns it knows).
+older desktop peer is paired. `applyChanges` therefore does not apply a
+change whose `cid` is not a column of the local table (the `-1` row
+sentinel always applies). It keeps the change in the local-only table
+`sync_deferred_column_changes`, logs `sync.unknown_column_deferred` once per
+column per process, and applies the rest of the batch. On the first open of
+a build that has the column, `replayDeferredColumnChanges` inserts the kept
+changes into `crsql_changes` and deletes them, so cr-sqlite's clocks decide
+as for a live batch. Keeping them matters because cr-sqlite syncs per
+column: a value written once (for example, at row creation) is never sent
+again. Until the older device updates, it does not show the value, so a new
+synced column must tolerate a missing value on a peer. iOS has the same
+behaviour by construction (it writes only the columns it knows).
 
 **Invariant: the column skip only protects devices that run it.** A
 peer on a build without the skip still wedges on a new column, so the

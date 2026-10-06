@@ -1300,13 +1300,31 @@ export function createAiIntegrationService(args: {
     return key;
   };
 
-  const listCursorCloudRepositories = async (): Promise<CursorCloudRepository[]> => {
+  // Cursor's repositories endpoint allows five requests a minute per account,
+  // and every draft composer in every window asks. One request per account is
+  // shared while in flight, and a success is kept for a few minutes. A failure
+  // is not kept, and `refresh` (the composer's Retry) skips the cache.
+  const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
+  let cursorReposCache: { apiKey: string; at: number; repos: CursorCloudRepository[] } | null = null;
+  let cursorReposInFlight: { apiKey: string; request: Promise<CursorCloudRepository[]> } | null = null;
+  const listCursorCloudRepositories = async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Cursor } = await loadCursorSdk();
-    const repos = await Cursor.repositories.list({ apiKey });
-    return repos
-      .map((repo) => ({ url: String(repo.url ?? "").trim() }))
-      .filter((repo) => repo.url.length > 0);
+    if (!args?.refresh && cursorReposCache?.apiKey === apiKey && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
+      return cursorReposCache.repos;
+    }
+    if (cursorReposInFlight?.apiKey === apiKey) return cursorReposInFlight.request;
+    const request = (async () => {
+      const { Cursor } = await loadCursorSdk();
+      const repos = (await Cursor.repositories.list({ apiKey }))
+        .map((repo) => ({ url: String(repo.url ?? "").trim() }))
+        .filter((repo) => repo.url.length > 0);
+      cursorReposCache = { apiKey, at: Date.now(), repos };
+      return repos;
+    })().finally(() => {
+      if (cursorReposInFlight?.request === request) cursorReposInFlight = null;
+    });
+    cursorReposInFlight = { apiKey, request };
+    return request;
   };
 
   const listCursorCloudAgents = async (args?: {

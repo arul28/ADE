@@ -11,6 +11,7 @@ import {
 import {
   sessionStatusPresentation,
   sessionTurnStallMs,
+  turnSilenceAnchorMs,
   SESSION_TONE_DOT_CLASS,
   type SessionStatusOverlay,
   type SessionStatusPresentation,
@@ -269,8 +270,9 @@ export function sessionStatusDisplay(
 /**
  * The "No output" status for a live turn that went quiet with no open work,
  * or null when the turn is not stalled. Amber and prominent: the row stops
- * claiming "Working" and asks the user to look. The elapsed counts from the
- * last output, not from the start of the turn.
+ * claiming "Working" and asks the user to look. The elapsed counts from when
+ * the turn went silent: its last output, or its start when the last output
+ * belongs to an earlier turn (the same anchor the stall rule uses).
  */
 export function sessionStalledPresentation(
   session: SessionCanonicalUiInput,
@@ -281,6 +283,7 @@ export function sessionStalledPresentation(
   if (sessionTurnStallMs(session, nowMs) === null) return null;
   const state = sessionCanonicalUiState(session);
   if (state.phase !== "running" || (state.liveness && state.liveness !== "turn")) return null;
+  const silentSinceMs = turnSilenceAnchorMs(session);
   return {
     label: "No output",
     tone: "amber",
@@ -288,7 +291,7 @@ export function sessionStalledPresentation(
     showsElapsed: true,
     prominent: true,
     activityDetail: true,
-    ...(session.lastActivityAt ? { activityUpdatedAt: session.lastActivityAt } : {}),
+    ...(silentSinceMs != null ? { activityUpdatedAt: new Date(silentSinceMs).toISOString() } : {}),
   };
 }
 

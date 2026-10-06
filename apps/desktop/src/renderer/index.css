@@ -4582,8 +4582,7 @@ button, [role="button"] {
 .ade-work-surface .ade-work-grid-tiling .ade-floating-pane,
 .ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent,
 .ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:hover,
-.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:focus-within,
-.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-work-glass-tile-active.ade-floating-pane--lane-accent {
+.ade-work-surface .ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:focus-within {
   border: none;
   border-radius: 0;
   box-shadow: none;

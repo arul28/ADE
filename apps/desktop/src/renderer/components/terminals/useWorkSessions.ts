@@ -1343,15 +1343,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * other machine see the same pins.
    */
   const setSessionsPinned = useCallback(
-    async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean) => {
+    /** Resolves to the ids that now hold `pinned`, already-matching rows included. */
+    async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean): Promise<string[]> => {
+      const already = targetSessions.filter((session) => Boolean(session.pinned) === pinned).map((session) => session.id);
       const changing = targetSessions.filter((session) => Boolean(session.pinned) !== pinned);
-      if (!changing.length) return;
+      if (!changing.length) return already;
       // The write emits a session change on the owning machine, which
       // refreshes the roster; no local refresh is needed.
-      await setSessionsPinnedAction(
+      const written = await setSessionsPinnedAction(
         changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) })),
         pinned,
       );
+      return [...already, ...written.map(({ session }) => session.id)];
     },
     [machineRouter],
   );
@@ -1364,20 +1367,30 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [sessionsById, setSessionsPinned],
   );
 
-  // One-time move of pins made before pins synced. Each legacy pin that names
-  // a row in the roster is written to that row; then the local list is
-  // cleared, so a later unpin elsewhere is not undone from here.
-  const legacyPinMigrationRef = useRef(false);
+  // Move pins made before pins synced. Each legacy pin is written to its row
+  // once that row is in the roster (another machine's rows load later), and
+  // only a pin that was written leaves the local list, so a later unpin
+  // elsewhere is not undone from here and a failed write is retried next start.
+  const legacyPinAttemptedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (legacyPinMigrationRef.current || legacyPinnedSessionIds.length === 0) return;
-    const known = legacyPinnedSessionIds
+    if (legacyPinnedSessionIds.length === 0) return;
+    const attempted = legacyPinAttemptedRef.current;
+    const ready = legacyPinnedSessionIds
+      .filter((id) => !attempted.has(id))
       .map((id) => sessionsById.get(id))
       .filter((session): session is TerminalSessionSummary => session != null);
-    if (known.length === 0 && sessionsById.size === 0) return;
-    legacyPinMigrationRef.current = true;
-    void setSessionsPinned(known, true)
-      .catch((error) => console.warn("[work] legacy pin migration failed", error))
-      .finally(() => setProjectViewState({ pinnedSessionIds: [] }));
+    if (ready.length === 0) return;
+    for (const session of ready) attempted.add(session.id);
+    void setSessionsPinned(ready, true)
+      .then((doneIds) => {
+        if (!doneIds.length) return;
+        const done = new Set(doneIds);
+        setProjectViewState((prev) => ({
+          ...prev,
+          pinnedSessionIds: (prev.pinnedSessionIds ?? []).filter((id) => !done.has(id)),
+        }));
+      })
+      .catch((error) => console.warn("[work] legacy pin migration failed", error));
   }, [legacyPinnedSessionIds, sessionsById, setProjectViewState, setSessionsPinned]);
 
 

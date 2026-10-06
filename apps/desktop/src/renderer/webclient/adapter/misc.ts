@@ -656,8 +656,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cursorAuthCancel: () => call<void>("ai.cursorAuthCancel", undefined, undefined, false),
     onCursorAuthStatus: (cb: (status: CursorSdkAuthEvent) => void) =>
       events.on("cursorAuthStatus" as never, cb as never),
-    cursorCloudListRepositories: () =>
-      call<CursorCloudRepository[]>("ai.listCursorCloudRepositories", {}, [], true),
+    cursorCloudListRepositories: (args?: { refresh?: boolean }) =>
+      call<CursorCloudRepository[]>("ai.listCursorCloudRepositories", args ?? {}, [], true),
     cursorCloudListAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>
       call<CursorCloudListAgentsResult>(
         "ai.listCursorCloudAgents",

@@ -108,12 +108,10 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/terminals/LaneCombobox.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
+      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 1
+      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/terminals/SessionInfoPopover.tsx": {
       "ade-ui/no-fixed-overlay": 2,

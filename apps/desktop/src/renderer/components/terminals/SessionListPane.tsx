@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, SquaresFour, Target, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -80,9 +80,10 @@ import {
 } from "./workSessionFilters";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
 import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
-import { WorkFocusToolbarPager, type WorkFocusPagerModel } from "./WorkFocusGrid";
+import { WorkFocusPill, WorkFocusToolbarPager, type WorkFocusPagerModel } from "./WorkFocusGrid";
+import { useWorkFocusQueueReport, type WorkFocusQueueItem } from "./useWorkFocusQueueReport";
 import type { WorkFocusCardMark } from "./SessionCard";
-import { nextTurnStallDeadlineMs } from "../../../shared/sessionStatusPresentation";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import {
   appendForeignMachinesToBoard,
   lanePrWaitingReason,
@@ -128,13 +129,7 @@ import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 const EMPTY_LANE_IDS: string[] = [];
-const EMPTY_FOLDED_LANE_IDS: ReadonlySet<string> = new Set();
 
-/** One Focus-grid chat: the row, and the binding of the machine it lives on (null = this one). */
-export type WorkFocusQueueItem = {
-  session: TerminalSessionSummary;
-  binding: OpenProjectBinding | null;
-};
 const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   activity: "Recent",
   name: "Name",
@@ -1610,23 +1605,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     [workPinnedLaneIds],
   );
 
-  /**
-   * The stall rule depends on time passing, not on new data: a silent turn
-   * becomes stalled five minutes after its last output. Re-run the fold exactly
-   * at the next such deadline instead of polling.
-   */
-  const [stallEpoch, setStallEpoch] = useState(0);
-  const stallNowMs = useMemo(() => {
-    void stallEpoch;
-    void allSessionsUnfiltered;
-    return Date.now();
-  }, [allSessionsUnfiltered, stallEpoch]);
-  useEffect(() => {
-    const deadline = nextTurnStallDeadlineMs(allSessionsUnfiltered, stallNowMs);
-    if (deadline == null) return undefined;
-    const timer = window.setTimeout(() => setStallEpoch((value) => value + 1), Math.max(250, deadline - Date.now() + 50));
-    return () => window.clearTimeout(timer);
-  }, [allSessionsUnfiltered, stallNowMs]);
+  // The stall rule depends on time passing, not on new data.
+  const stallNowMs = useTurnStallClock(allSessionsUnfiltered);
 
   /**
    * Each local lane's rolled-up focus status and whether it folds into the
@@ -1901,79 +1881,26 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Foreign composite ids fold and return exactly like local lane ids: a
   // cross-machine lane parked on the Working shelf must come back to the front
   // of the inbox when it needs the user, not stay buried below unrelated work.
-
-
   const foldedForeignLaneSignature = foreignLaneShelving
     .filter((entry) => entry.shelf === "working")
     .map((entry) => entry.compositeLaneId)
     .sort()
     .join("\n");
-  /**
-   * Every chat the Focus grid shows: this machine's (`focusQueueIds`), then
-   * each other machine's unfolded lanes by the same rule. A row from another
-   * machine carries its binding so the tile talks to that machine; one with no
-   * open binding cannot render a chat and is left out. Memoized on its inputs:
-   * the sidebar re-renders on every streamed status tick.
-   */
   const foldedForeignLaneIds = useMemo(
     () => new Set(foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []),
     [foldedForeignLaneSignature],
   );
-  const focusQueueItems = useMemo<WorkFocusQueueItem[]>(() => {
-    if (!foldBusyLanesActive) return [];
-    const items: WorkFocusQueueItem[] = [];
-    const localById = new Map(allSessions.map((session) => [session.id, session] as const));
-    for (const id of focusQueueIds) {
-      const session = localById.get(id);
-      if (session) items.push({ session, binding: null });
-    }
-    for (const row of visibleForeignRows) {
-      const compositeLaneId = `${row.machineId}:${row.lane.id}`;
-      if (foldedForeignLaneIds.has(compositeLaneId) || !row.binding) continue;
-      const ids = workFocusQueue({
-        sessions: row.sessions,
-        filingBuckets: filingBucketsForForeignSessions(row.sessions),
-        foldedLaneIds: EMPTY_FOLDED_LANE_IDS,
-        laneWaiting: () => false,
-        nestedSessionIds: unfilteredForeignNestingByCompositeId.get(compositeLaneId)?.excludedTopLevelIds
-          ?? EMPTY_FOLDED_LANE_IDS,
-        nowMs: stallNowMs,
-      });
-      const byId = new Map(row.sessions.map((session) => [session.id, session] as const));
-      for (const id of ids) {
-        const session = byId.get(id);
-        if (session) items.push({ session, binding: row.binding });
-      }
-    }
-    return items;
-  }, [
-    allSessions,
-    filingBucketsForForeignSessions,
-    foldBusyLanesActive,
+  const focusQueueCount = useWorkFocusQueueReport({
+    active: foldBusyLanesActive,
+    localSessions: allSessions,
+    localIds: focusQueueIds,
+    foreignRows: visibleForeignRows,
     foldedForeignLaneIds,
-    focusQueueIds,
-    stallNowMs,
-    unfilteredForeignNestingByCompositeId,
-    visibleForeignRows,
-  ]);
-  // Reported only when what a tile shows can change, not on every render.
-  const focusQueueKey = focusQueueItems
-    .map(({ session }) => [
-      session.id,
-      session.status,
-      session.runtimeState ?? "",
-      session.lastActivityAt ?? "",
-      session.pendingInputItemId ?? "",
-      session.title ?? "",
-    ].join("|"))
-    .join("\n");
-  const focusQueueItemsRef = useRef(focusQueueItems);
-  focusQueueItemsRef.current = focusQueueItems;
-  const onFocusQueueChangeRef = useRef(onFocusQueueChange);
-  onFocusQueueChangeRef.current = onFocusQueueChange;
-  useEffect(() => {
-    onFocusQueueChangeRef.current?.(focusQueueItemsRef.current);
-  }, [focusQueueKey]);
+    filingBucketsFor: filingBucketsForForeignSessions,
+    foreignNesting: unfilteredForeignNestingByCompositeId,
+    nowMs: stallNowMs,
+    onChange: onFocusQueueChange,
+  });
   const allFoldedLaneIds = useMemo(() => {
     const set = new Set(foldedLaneIds);
     for (const id of foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []) {
@@ -3970,62 +3897,14 @@ export const SessionListPane = React.memo(function SessionListPane({
               belongs to Focus. Board has its own Working column, so Focus has
               nothing to fold there and dims. */}
           {setWorkFoldBusyLanes ? (
-            <div
-              className="ade-work-focus-pill shrink-0"
-              data-on={foldBusyLanesActive ? "true" : undefined}
-              data-grid={foldBusyLanesActive && workFocusGrid ? "true" : undefined}
-              data-disabled={isBoard ? "true" : undefined}
-              data-testid="work-focus-pill"
-            >
-              <SmartTooltip
-                content={{
-                  label: foldBusyLanesActive ? "Turn Focus off" : "Focus",
-                  description: isBoard
-                    ? "Focus works in the list. The board already has a Working column."
-                    : "Fold lanes where agents are busy into a Working section. They come back when something needs you.",
-                }}
-              >
-                <button
-                  type="button"
-                  className="ade-work-focus-pill-main"
-                  aria-pressed={foldBusyLanesActive}
-                  aria-label={foldBusyLanesActive ? `Focus on, ${focusQueueItems.length} waiting for you` : "Focus"}
-                  disabled={isBoard}
-                  onClick={() => setWorkFoldBusyLanes(!foldBusyLanesActive)}
-                  data-testid="work-focus-toggle"
-                >
-                  <Target size={12} weight={foldBusyLanesActive ? "bold" : "regular"} aria-hidden />
-                  <span>Focus</span>
-                  {foldBusyLanesActive && focusQueueItems.length > 0 ? (
-                    <span className="ade-work-focus-pill-count tabular-nums">{focusQueueItems.length}</span>
-                  ) : null}
-                </button>
-              </SmartTooltip>
-              {setWorkFocusGrid ? (
-                <SmartTooltip
-                  content={{
-                    label: workFocusGrid ? "Show one chat" : "Focus grid",
-                    description: workFocusGrid
-                      ? "Go back to one open chat with the tools pane."
-                      : "Show every chat that waits for you side by side.",
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="ade-work-focus-pill-grid"
-                    aria-pressed={workFocusGrid}
-                    aria-label="Focus grid"
-                    tabIndex={foldBusyLanesActive && !isBoard ? 0 : -1}
-                    aria-hidden={foldBusyLanesActive && !isBoard ? undefined : true}
-                    disabled={!foldBusyLanesActive || isBoard}
-                    onClick={() => setWorkFocusGrid(!workFocusGrid)}
-                    data-testid="work-focus-grid-toggle"
-                  >
-                    <SquaresFour size={12} weight={workFocusGrid ? "fill" : "regular"} aria-hidden />
-                  </button>
-                </SmartTooltip>
-              ) : null}
-            </div>
+            <WorkFocusPill
+              on={foldBusyLanesActive}
+              grid={workFocusGrid}
+              disabled={isBoard}
+              waitingCount={focusQueueCount}
+              onToggle={() => setWorkFoldBusyLanes(!foldBusyLanesActive)}
+              onToggleGrid={setWorkFocusGrid ? () => setWorkFocusGrid(!workFocusGrid) : undefined}
+            />
           ) : null}
           {focusPager && focusPagerShown ? <WorkFocusToolbarPager model={focusPager} /> : null}
           {/* The Focus grid has no board, so its pager takes this slot. Leave

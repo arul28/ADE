@@ -154,7 +154,8 @@ enum SessionSettleOverride: String, Equatable {
 ///      "active" override suppresses this tier entirely,
 ///   3. ended branch — stopped, failed, chat ready/ended,
 ///   4. running-chat turn failure,
-///   5. idle — ready(chat)/idle; a resting session is never stale,
+///   5. idle — ready(chat)/idle; a resting session is stale only when it
+///      claims live background work and is silent ≥ `sessionStaleAfterSeconds`,
 ///   6. stale — a live run silent ≥ `sessionStaleAfterSeconds`,
 ///   7. running.
 ///
@@ -173,6 +174,7 @@ func workCanonicalSessionState(
   settleOverride: String? = nil,
   attentionRequestedAt: String? = nil,
   lastTurnFailedAt: String? = nil,
+  backgroundTaskCount: Int = 0,
   now: Date = Date(),
   isChatTool: (String?) -> Bool = isWorkChatToolType
 ) -> CanonicalSessionState {
@@ -247,18 +249,25 @@ func workCanonicalSessionState(
     return CanonicalSessionState(phase: .failed)
   }
 
+  let silentPastStale = isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds)
+
   // Idle chats between turns are ready (calm); idle agent CLIs stay calm here —
-  // there is no deterministic ask. A resting session is never stale: chat rows
-  // keep status "running" between turns, so checking silence first filed every
-  // reply older than three hours as busy. Mirrors desktop `canonicalSessionState`.
+  // there is no deterministic ask. A resting session is stale only when it
+  // claims live background work and that claim has gone quiet: chat rows keep
+  // status "running" between turns, so checking silence first filed every
+  // reply older than three hours as busy.
+  // Mirrors desktop `canonicalSessionState`.
   if runtimeLower == "idle" {
+    if backgroundTaskCount > 0 && silentPastStale {
+      return CanonicalSessionState(phase: .stale)
+    }
     return chat
       ? CanonicalSessionState(phase: .ready)
       : CanonicalSessionState(phase: .idle)
   }
 
-  // 5. Stale: a live run silent past the threshold.
-  if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
+  // 6. Stale: a live run silent past the threshold.
+  if silentPastStale {
     return CanonicalSessionState(phase: .stale)
   }
 
@@ -645,6 +654,7 @@ func workCanonicalSessionState(
     settleOverride: session.settleOverride,
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
+    backgroundTaskCount: summary?.activeBackgroundTaskCount ?? 0,
     now: now
   )
 }

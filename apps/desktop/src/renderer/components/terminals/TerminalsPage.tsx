@@ -8,19 +8,8 @@ import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
 import { SessionSurface, WorkViewArea } from "./WorkViewArea";
 import { WorkGridView } from "./WorkGridView";
-import {
-  WorkFocusGridEmpty,
-  WorkFocusRoster,
-  focusEvenPages,
-  focusFit,
-  focusPageColumns,
-  stableFocusOrder,
-  wheelScrollsInside,
-  type FocusFit,
-  type WorkFocusPagerModel,
-} from "./WorkFocusGrid";
-import type { WorkFocusQueueItem } from "./SessionListPane";
-import type { WorkFocusCardMark } from "./SessionCard";
+import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
+import { useWorkFocusGrid } from "./useWorkFocusGrid";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
@@ -213,8 +202,6 @@ function copyToClipboard(text: string, what: string): void {
   });
 }
 
-const EMPTY_FOCUS_PAGE: readonly TerminalSessionSummary[] = [];
-
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   // New-lane CLI launches this window started: open their PTY once the brain
@@ -245,17 +232,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
-  /** The chats the Focus grid shows, reported by the sidebar (`workFocusQueue`). */
-  const [focusQueueItems, setFocusQueueItems] = useState<readonly WorkFocusQueueItem[]>([]);
-  /** The Focus-grid tile that owns the keyboard. */
-  const [focusActiveId, setFocusActiveId] = useState<string | null>(null);
-  /** Which Focus page each chat is on, read by the row-click handler. */
-  const focusPageByIdRef = useRef<ReadonlyMap<string, number>>(new Map());
-  const [focusPage, setFocusPage] = useState(0);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const hasProjectSidebar = useHasProjectSidebar();
   const projectSidebarHidden = useProjectSidebarHidden();
+  const focusGridMode = work.workViewMode !== "board" && work.workFoldBusyLanes && work.workFocusGrid;
+  const focus = useWorkFocusGrid({
+    enabled: focusGridMode,
+    // With the sessions sidebar on screen, the sidebar is the grid's roster.
+    sidebarIsRoster: hasProjectSidebar && !projectSidebarHidden,
+    projectStateKey,
+    rememberSessionPin: machineRouter.rememberSessionPin,
+  });
+  const { focusSession } = focus;
   const [boardHost, setBoardHost] = useState<HTMLDivElement | null>(null);
 
   const refreshWorkSessionsAfterLaneDelete = useCallback(
@@ -385,20 +374,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // In the Focus grid a row click focuses that chat's tile. A chat with no
       // tile (it is working, or the grid is full) opens in the normal view.
       if (work.workFocusGrid && work.workFoldBusyLanes && work.workViewMode !== "board") {
-        const onPage = focusPageByIdRef.current.get(id);
-        if (onPage !== undefined) {
-          setFocusPage(onPage);
-          setFocusActiveId(id);
-        } else {
-          work.setWorkFocusGrid(false);
-        }
+        if (!focusSession(id)) work.setWorkFocusGrid(false);
       }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
       if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
     },
-    [selectableSessions, selectionAnchorId, work],
+    [focusSession, selectableSessions, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(
@@ -1797,155 +1780,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     so the List/Board toggle is still one click away.
   */
   const boardMode = work.workViewMode === "board";
-  const focusGridMode = !boardMode && work.workFoldBusyLanes && work.workFocusGrid;
-  // With the sessions sidebar on screen, the sidebar is the Focus grid's roster.
-  const focusSidebarIsRoster = hasProjectSidebar && !projectSidebarHidden;
   const boardBesideList = boardMode && hasProjectSidebar && !projectSidebarHidden;
 
-  /**
-   * The session roster. It lives in the project sidebar in list mode, stays
-   * there beside the board in board mode, and fills the main area only when
-   * the board has no sidebar to sit next to.
-   *
-   * One element, not two call sites: the toolbar it owns — search, the
-   * List/Board toggle, filters, new chat — must be the same control in every
-   * mode, and the pane's cross-machine subscription must not run twice.
-   */
-  // Stable handles for the session list: these callbacks are rebuilt whenever
-  // the sessions, selection or filters change (several times a second while
-  // agents run), and each new identity re-rendered every lane header and card.
-  // A chat from another machine renders through that machine's binding.
-  useEffect(() => {
-    for (const { session, binding } of focusQueueItems) {
-      if (binding) machineRouter.rememberSessionPin(session, binding);
-    }
-  }, [focusQueueItems, machineRouter]);
-  // Tiles keep their order: chats that stay keep their place, new ones go last.
-  const [focusOrder, setFocusOrder] = useState<string[]>([]);
-  const focusQueueKey = focusQueueItems.map(({ session }) => session.id).join("\n");
-  useEffect(() => {
-    setFocusOrder((previous) => {
-      const next = stableFocusOrder(previous, focusQueueItems.map(({ session }) => session.id));
-      return next.length === previous.length && next.every((id, index) => id === previous[index]) ? previous : next;
-    });
-    // focusQueueKey carries the ids of focusQueueItems.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusQueueKey]);
-  const focusSessionsById = useMemo(
-    () => new Map(focusQueueItems.map(({ session }) => [session.id, session] as const)),
-    [focusQueueItems],
-  );
-  // The machine each Focus chat lives on, passed straight to its tile. The
-  // remembered pin above lands one effect later, and the grid keeps its first
-  // render of a tile, so relying on it sent another machine's chat to this one.
-  const focusBindingById = useMemo(
-    () => new Map(focusQueueItems.map(({ session, binding }) => [session.id, binding] as const)),
-    [focusQueueItems],
-  );
-  const focusOrdered = useMemo(
-    () => focusOrder
-      .map((id) => focusSessionsById.get(id))
-      .filter((session): session is TerminalSessionSummary => session != null),
-    [focusOrder, focusSessionsById],
-  );
-  // Same cap as a hand-made grid: every tile mounts a full chat. More chats
-  // than that become pages, and only the page on screen is mounted.
-  // Page size follows the space the grid has: a small window gets fewer,
-  // usable tiles per page instead of six cramped ones. Measured on the grid's
-  // own box; state changes only when the number of tiles that fit changes.
-  const [focusGridNode, setFocusGridNode] = useState<HTMLDivElement | null>(null);
-  const [focusFitState, setFocusFitState] = useState<FocusFit>({ columns: 3, rows: 2, capacity: MAX_WORK_GRID_TILES });
-  useEffect(() => {
-    if (!focusGridNode || typeof ResizeObserver === "undefined") return;
-    const update = () => {
-      const rect = focusGridNode.getBoundingClientRect();
-      const next = focusFit(rect.width, rect.height, MAX_WORK_GRID_TILES);
-      setFocusFitState((previous) => (
-        previous.columns === next.columns && previous.rows === next.rows && previous.capacity === next.capacity
-          ? previous
-          : next
-      ));
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(focusGridNode);
-    return () => observer.disconnect();
-  }, [focusGridNode]);
-  // As few pages as fit, with the chats spread evenly across them.
-  const focusPageList = useMemo(
-    () => focusEvenPages(focusOrdered, focusFitState.capacity),
-    [focusFitState.capacity, focusOrdered],
-  );
-  const currentFocusPage = Math.min(focusPage, Math.max(0, focusPageList.length - 1));
-  const focusMembers = focusPageList[currentFocusPage] ?? EMPTY_FOCUS_PAGE;
-  focusPageByIdRef.current = useMemo(() => {
-    const map = new Map<string, number>();
-    focusPageList.forEach((entries, index) => entries.forEach((session) => map.set(session.id, index)));
-    return map;
-  }, [focusPageList]);
-  // A chat that arrives on a page the user is not looking at marks that page
-  // until the user goes there.
-  const knownFocusIdsRef = useRef<ReadonlySet<string> | null>(null);
-  const [unseenFocusIds, setUnseenFocusIds] = useState<ReadonlySet<string>>(() => new Set());
-  useEffect(() => {
-    const ids = new Set(focusOrder);
-    const known = knownFocusIdsRef.current;
-    knownFocusIdsRef.current = ids;
-    setUnseenFocusIds((previous) => {
-      const next = new Set([...previous].filter((id) => ids.has(id)));
-      if (known) {
-        for (const id of ids) {
-          if (!known.has(id) && focusPageByIdRef.current.get(id) !== currentFocusPage) next.add(id);
-        }
-      }
-      for (const session of focusMembers) next.delete(session.id);
-      return next.size === previous.size && [...next].every((id) => previous.has(id)) ? previous : next;
-    });
-  }, [currentFocusPage, focusMembers, focusOrder]);
-  const [focusSlide, setFocusSlide] = useState<"next" | "previous" | null>(null);
-  const goToFocusPage = useLatestCallback((target: number) => {
-    const clamped = Math.max(0, Math.min(focusPageList.length - 1, target));
-    if (clamped === currentFocusPage) return;
-    setFocusSlide(clamped > currentFocusPage ? "next" : "previous");
-    setFocusPage(clamped);
-    setFocusActiveId(focusPageList[clamped]?.[0]?.id ?? null);
-  });
-  // A sideways two-finger swipe flips pages, unless something under the pointer
-  // scrolls sideways itself (a wide code block, a table).
-  const focusSwipeRef = useRef({ accumulated: 0, lockedUntil: 0 });
-  const onFocusWheel = useLatestCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (focusPageList.length < 2) return;
-    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
-    if (wheelScrollsInside(event.target, event.currentTarget, event.deltaX)) return;
-    const swipe = focusSwipeRef.current;
-    const now = performance.now();
-    if (now < swipe.lockedUntil) return;
-    swipe.accumulated += event.deltaX;
-    if (Math.abs(swipe.accumulated) < 90) return;
-    const direction = swipe.accumulated > 0 ? 1 : -1;
-    swipe.accumulated = 0;
-    swipe.lockedUntil = now + 450;
-    goToFocusPage(currentFocusPage + direction);
-  });
-  // One saved layout per SET of chats: the same chats come back exactly as the
-  // user arranged them, and a different set starts from the even auto layout
-  // instead of squeezing a newcomer into the largest tile.
-  const focusMemberKey = focusMembers.map((session) => session.id).join("\n");
-  // Side by side first: as few rows as the width allows.
-  const focusColumns = focusPageColumns(focusMembers.length, focusFitState.columns);
-  const focusGridSet = useMemo(() => {
-    const sessionIds = focusMemberKey ? focusMemberKey.split("\n") : [];
-    // The column count is part of the key, so a window that now fits a
-    // different arrangement starts from that arrangement.
-    const setKey = `${focusColumns}:${[...sessionIds].sort().join(",")}`;
-    let hash = 0;
-    for (let index = 0; index < setKey.length; index += 1) hash = (hash * 31 + setKey.charCodeAt(index)) >>> 0;
-    return {
-      id: `focus-${hash.toString(36)}`,
-      layoutId: makeGridLayoutId(projectStateKey, `focus-${hash.toString(36)}`),
-      sessionIds,
-    };
-  }, [focusColumns, focusMemberKey, projectStateKey]);
   /** Leave the grid and open this chat in the normal view, where Tools live. */
   const openFocusChatInWork = useLatestCallback((sessionId: string) => {
     setSelectedSessionIds(new Set());
@@ -1958,9 +1794,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     <SessionSurface
       session={session}
       lanes={sortedLanes}
-      isActive={session.id === (focusActiveId ?? focusMembers[0]?.id)}
-      shouldAutofocus={session.id === focusActiveId}
-      runtimePin={focusBindingById.get(session.id) ?? resolveSessionRuntimePin(session)}
+      isActive={session.id === focus.activeId}
+      shouldAutofocus={session.id === focus.focusedId}
+      runtimePin={focus.bindingById.get(session.id) ?? resolveSessionRuntimePin(session)}
       pageActive={active}
       terminalVisible
       onContextMenu={handleContextMenu}
@@ -1976,26 +1812,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   ));
   const focusGrid = focusGridMode ? (
     <div className="flex h-full min-h-0 w-full flex-col" data-testid="work-focus-grid">
-      <div
-        key={`focus-page-${currentFocusPage}`}
-        ref={setFocusGridNode}
-        className={cn("min-h-0 flex-1", focusSlide && `ade-focus-page-enter-${focusSlide}`)}
-        onWheel={onFocusWheel}
-        onAnimationEnd={() => setFocusSlide(null)}
-      >
-        {focusMembers.length === 0 ? (
+      <div key={focus.pageKey} {...focus.pageProps}>
+        {focus.members.length === 0 ? (
           <WorkFocusGridEmpty workingCount={work.runningFiltered.length} onLeaveGrid={() => work.setWorkFocusGrid(false)} />
-        ) : focusMembers.length === 1 ? (
-          renderFocusSurface(focusMembers[0]!)
+        ) : focus.members.length === 1 ? (
+          renderFocusSurface(focus.members[0]!)
         ) : (
           <WorkGridView
-            gridSet={focusGridSet}
-            sessions={focusMembers}
+            gridSet={focus.gridSet}
+            sessions={focus.members}
             lanes={sortedLanes}
-            activeItemId={focusActiveId ?? focusMembers[0]!.id}
+            activeItemId={focus.activeId}
             renderSession={renderFocusSurface}
-            onFocusSession={setFocusActiveId}
-            columns={focusColumns}
+            onFocusSession={focus.setFocusedId}
+            columns={focus.columns}
             // Membership follows what waits for the user, not drags.
             onAddSessionToGrid={() => {}}
             onRemoveFromGrid={() => {}}
@@ -2003,53 +1833,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           />
         )}
       </div>
-      {focusPageList.length > 0 && !focusSidebarIsRoster ? (
+      {focus.rosterProps ? (
         <WorkFocusRoster
-          pages={focusPageList}
-          page={currentFocusPage}
-          activeSessionId={focusActiveId ?? focusMembers[0]?.id ?? null}
-          unseenIds={unseenFocusIds}
-          onPage={goToFocusPage}
-          onChat={(sessionId, pageIndex) => {
-            if (pageIndex !== currentFocusPage) goToFocusPage(pageIndex);
-            setFocusActiveId(sessionId);
-          }}
-          onChatContextMenu={(session, event) => handleContextMenu(session, event, focusBindingById.get(session.id) ?? null)}
+          {...focus.rosterProps}
+          onChatContextMenu={(session, event) => handleContextMenu(session, event, focus.bindingById.get(session.id) ?? null)}
         />
       ) : null}
     </div>
   ) : null;
 
-  // With the sessions sidebar on screen, the sidebar is the grid's roster:
-  // chats on screen are lit there, others name their page, and the pager sits
-  // beside the Focus pill. Collapsed, the bottom roster takes over.
-  const focusMarks = useMemo(() => {
-    if (!focusGridMode || !focusSidebarIsRoster) return null;
-    const marks = new Map<string, WorkFocusCardMark>();
-    focusPageList.forEach((entries, index) => {
-      for (const session of entries) {
-        marks.set(session.id, { page: index, onScreen: index === currentFocusPage, unseen: unseenFocusIds.has(session.id) });
-      }
-    });
-    return marks;
-  }, [currentFocusPage, focusGridMode, focusPageList, focusSidebarIsRoster, unseenFocusIds]);
-  const focusPager = useMemo<WorkFocusPagerModel | null>(() => {
-    if (!focusGridMode || !focusSidebarIsRoster || focusPageList.length < 2) return null;
-    const first = focusPageList.slice(0, currentFocusPage).reduce((count, entries) => count + entries.length, 0) + 1;
-    const hasUnseen = (entries: readonly (readonly TerminalSessionSummary[])[]) =>
-      entries.some((page) => page.some((session) => unseenFocusIds.has(session.id)));
-    return {
-      page: currentFocusPage,
-      pageCount: focusPageList.length,
-      first,
-      last: first + (focusPageList[currentFocusPage]?.length ?? 1) - 1,
-      total: focusOrdered.length,
-      newBefore: hasUnseen(focusPageList.slice(0, currentFocusPage)),
-      newAfter: hasUnseen(focusPageList.slice(currentFocusPage + 1)),
-      onPage: goToFocusPage,
-    };
-  }, [currentFocusPage, focusGridMode, focusOrdered.length, focusPageList, focusSidebarIsRoster, goToFocusPage, unseenFocusIds]);
-
+  // Stable handles for the session list: these callbacks are rebuilt whenever
+  // the sessions, selection or filters change (several times a second while
+  // agents run), and each new identity re-rendered every lane header and card.
   const listSelectSession = useLatestCallback(handleSelectSession);
   // A new draft draws in the normal view, so starting one leaves the grid.
   const listShowDraftKind = useLatestCallback((...args: Parameters<typeof work.showDraftKind>) => {
@@ -2068,11 +1863,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   // In the Focus grid the sidebar's one filled row is the focused tile, not
   // the chat that was last open in the normal view (it may be on another page).
-  const listSelectedSessionId =
-    focusGridMode && focusMembers.length > 0
-      ? (focusActiveId ?? focusMembers[0]!.id)
-      : work.selectedSessionId;
+  const listSelectedSessionId = focus.selectedSessionId ?? work.selectedSessionId;
 
+  /**
+   * The session roster. It lives in the project sidebar in list mode, stays
+   * there beside the board in board mode, and fills the main area only when
+   * the board has no sidebar to sit next to.
+   *
+   * One element, not two call sites: the toolbar it owns — search, the
+   * List/Board toggle, filters, new chat — must be the same control in every
+   * mode, and the pane's cross-machine subscription must not run twice.
+   */
   const sessionListPane = useMemo(
     () => (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
@@ -2129,9 +1930,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setWorkFoldBusyLanes={work.setWorkFoldBusyLanes}
             workFocusGrid={work.workFocusGrid}
             setWorkFocusGrid={work.setWorkFocusGrid}
-            onFocusQueueChange={setFocusQueueItems}
-            focusMarks={focusMarks}
-            focusPager={focusPager}
+            onFocusQueueChange={focus.setQueueItems}
+            focusMarks={focus.marks}
+            focusPager={focus.pager}
             workSeenAtBySessionId={work.workSeenAtBySessionId}
             workLaneOrder={work.workLaneOrder}
             reorderWorkLanes={work.reorderWorkLanes}
@@ -2158,8 +1959,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handoffLaunchJobs,
       boardBesideList,
       boardHost,
-      focusMarks,
-      focusPager,
+      focus.marks,
+      focus.pager,
+      focus.setQueueItems,
     ],
   );
 

@@ -100,7 +100,7 @@ export function ImportTopBar({
           allLabel="All lanes"
           allDetail={String(laneFilterTotal)}
           variant="pill"
-          compact
+          size="compact"
           aria-label="Filter by lane"
         />
         <label className="relative flex h-7 min-w-[140px] flex-1 items-center">

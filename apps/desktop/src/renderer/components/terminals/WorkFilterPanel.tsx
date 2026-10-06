@@ -362,7 +362,7 @@ export function WorkFilterPanel({
               onChange={onLaneIdChange}
               showAllOption
               fullWidth
-              dense
+              size="dense"
               aria-label="Filter by lane"
             />
           </div>

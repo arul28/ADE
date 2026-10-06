@@ -245,7 +245,7 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death,
  *   5. stale — a live run (or a resting session's background-work claim)
- *      silent ≥ SESSION_STALE_AFTER_MS; a resting session is never stale,
+ *      silent ≥ SESSION_STALE_AFTER_MS; otherwise a resting session is not stale,
  *   6. running,
  *   7. resting states — ready (idle chat, quiet "your move"), idle, ended,
  *      EXCEPT when the session still owns live background work, which promotes
@@ -381,13 +381,12 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   // undetected prompt stay actionable via the caller's existing idle rules —
   // canonical keeps them "idle" (calm) because there is no deterministic ask.
   //
-  // A resting session is never stale. A chat row keeps status "running"
-  // between turns, so checking silence first turned every reply older than
-  // three hours into "Stale": the reply still waited on the user, but every
-  // surface filed it as busy, and a finished subagent held its lane out of the
-  // Working fold for good. Age is not activity. Only a resting session that
-  // claims live background work can still be stale, because then the claim
-  // is what has gone quiet.
+  // A resting session is stale only when it claims live background work and
+  // that claim has gone quiet. A chat row keeps status "running" between
+  // turns, so checking silence first turned every reply older than three
+  // hours into "Stale": the reply still waited on the user, but every surface
+  // filed it as busy, and a finished subagent held its lane out of the Working
+  // fold for good. Age is not activity.
   if (args.runtimeState === "idle") {
     const resting: CanonicalSessionState = chat
       ? { phase: "ready", badge: null, liveness: null }

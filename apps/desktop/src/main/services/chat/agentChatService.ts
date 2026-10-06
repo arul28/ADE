@@ -284,6 +284,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
+import type { SubagentLink } from "../sessions/sessionSettleTeardown";
 import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -36505,16 +36506,18 @@ export function createAgentChatService(args: {
 
       // A silent turn that still owns a running command or tool is waiting on
       // it, not stalled: a test suite with buffered output can print nothing
-      // for longer than the watchdog. ADE's own fold answers even when the
-      // app-server probe failed; the turn's items cover work ADE never saw
-      // start. Keep watching, so a turn that stays silent after the work
-      // finishes is still caught.
+      // for longer than the watchdog. When the app-server answered, its turn
+      // items decide (they also cover work ADE never saw start, and an entry
+      // ADE leaked cannot hold the watchdog off). ADE's own fold answers only
+      // when the probe failed. Keep watching, so a turn that stays silent
+      // after the work finishes is still caught.
       const openWorkItem = currentTurn
         ? codexTurnItems(currentTurn).find((item) =>
             CODEX_OPEN_WORK_ITEM_TYPES.has(stringOrNull(item.type) ?? "")
             && isCodexReconciledItemInProgress(item.status))
         : undefined;
-      if (stallReason === "no_progress" && ((managed.turnOpenWork?.size ?? 0) > 0 || openWorkItem)) {
+      const hasOpenWork = currentTurn ? openWorkItem != null : (managed.turnOpenWork?.size ?? 0) > 0;
+      if (stallReason === "no_progress" && hasOpenWork) {
         logger.info("agent_chat.codex_watchdog_suspended", {
           sessionId: managed.session.id,
           turnId,
@@ -55531,8 +55534,10 @@ export function createAgentChatService(args: {
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
-      ...(liveSession?.status === "active" && liveManaged?.turnOpenWork?.size
-        ? { turnOpenWorkCount: liveManaged.turnOpenWork.size }
+      // Present (zero included) whenever a turn is live: a reader treats a
+      // missing count as unknown (an older host) and never calls that stalled.
+      ...(liveSession?.status === "active"
+        ? { turnOpenWorkCount: liveManaged?.turnOpenWork?.size ?? 0 }
         : {}),
       // Omitted when nothing is live, like every other optional field here: a
       // zero record carries no information and would ride along on every
@@ -55601,26 +55606,36 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Sessions spawned by `parentSessionId` (subagents and peers), chat and
-   * tracked CLI alike. Children live in their parent's lane, so only that lane
-   * is read.
+   * The subagents of these sessions, for the settle cascade. Peers are left
+   * out: a peer is independent work, so filing its parent away must not stop
+   * it. Each lane is scanned once per batch, and lineage is read from the live
+   * session or its persisted state, never a full summary (a summary can write).
+   * A tracked CLI child records only its parent, so it counts as a subagent.
    */
-  const listSpawnedChildSessionIds = async (parentSessionId: string): Promise<string[]> => {
-    const parent = sessionService.get(parentSessionId);
-    if (!parent?.laneId) return [];
-    const rows = sessionService.list({ laneId: parent.laneId, limit: 500 });
-    const childIds: string[] = [];
-    for (const row of rows) {
-      if (row.id === parentSessionId) continue;
-      if (row.orchestrationParentSessionId === parentSessionId) {
-        childIds.push(row.id);
-        continue;
-      }
-      if (!isChatToolType(row.toolType)) continue;
-      const summary = await summarizeSessionRow(row).catch(() => null);
-      if (summary?.orchestrationParentSessionId === parentSessionId) childIds.push(row.id);
+  const listSubagentLinks = async (parentSessionIds: readonly string[]): Promise<SubagentLink[]> => {
+    const parents = new Set(parentSessionIds);
+    const laneIds = new Set<string>();
+    for (const id of parents) {
+      const laneId = sessionService.get(id)?.laneId;
+      if (laneId) laneIds.add(laneId);
     }
-    return childIds;
+    const children: SubagentLink[] = [];
+    for (const laneId of laneIds) {
+      for (const row of sessionService.list({ laneId, limit: null })) {
+        if (parents.has(row.id)) continue;
+        if (row.orchestrationParentSessionId && parents.has(row.orchestrationParentSessionId)) {
+          children.push({ sessionId: row.id, parentSessionId: row.orchestrationParentSessionId });
+          continue;
+        }
+        if (!isChatToolType(row.toolType)) continue;
+        const lineage = managedSessions.get(row.id)?.session ?? readPersistedState(row.id);
+        const parentId = lineage?.orchestrationParentSessionId?.trim();
+        if (parentId && parents.has(parentId) && lineage?.spawnKind === "subagent") {
+          children.push({ sessionId: row.id, parentSessionId: parentId });
+        }
+      }
+    }
+    return children;
   };
 
   // --- Event-driven waits ---------------------------------------------------
@@ -63212,7 +63227,7 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
-    listSpawnedChildSessionIds,
+    listSubagentLinks,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,

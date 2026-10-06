@@ -506,18 +506,24 @@ export function turnStallSilenceMs(
   session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
   nowMs: number = Date.now(),
 ): number | null {
+  const anchorMs = turnSilenceAnchorMs(session);
+  if (anchorMs == null) return null;
+  const silentForMs = nowMs - anchorMs;
+  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+}
+
+/** When the turn's silence started: the later of its last output and its start. */
+export function turnSilenceAnchorMs(session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null }): number | null {
   const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
   const turnMs = session.currentTurnStartedAt ? Date.parse(session.currentTurnStartedAt) : Number.NaN;
   const anchorMs = Math.max(
     Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
     Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
   );
-  if (!Number.isFinite(anchorMs)) return null;
-  const silentForMs = nowMs - anchorMs;
-  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+  return Number.isFinite(anchorMs) ? anchorMs : null;
 }
 
-type TurnStallInput = {
+export type TurnStallInput = {
   lastActivityAt?: string | null;
   currentTurnStartedAt?: string | null;
   turnOpenWorkCount?: number | null;
@@ -533,9 +539,16 @@ type TurnStallInput = {
  * is live (its canonical phase is running); this answers only the stall.
  */
 export function sessionTurnStallMs(session: TurnStallInput, nowMs: number = Date.now()): number | null {
-  if (!session.currentTurnStartedAt) return null;
-  if ((session.turnOpenWorkCount ?? 0) > 0) return null;
-  return turnStallSilenceMs(session, nowMs);
+  return turnCanStall(session) ? turnStallSilenceMs(session, nowMs) : null;
+}
+
+/**
+ * A live turn known to own no open work, so silence alone can stall it. A
+ * missing count is unknown (a host older than the count), never zero: such a
+ * turn may be waiting on a long command, so it is not called stalled.
+ */
+function turnCanStall(session: TurnStallInput): boolean {
+  return Boolean(session.currentTurnStartedAt) && session.turnOpenWorkCount === 0;
 }
 
 /**
@@ -545,14 +558,9 @@ export function sessionTurnStallMs(session: TurnStallInput, nowMs: number = Date
 export function nextTurnStallDeadlineMs(sessions: Iterable<TurnStallInput>, nowMs: number = Date.now()): number | null {
   let next: number | null = null;
   for (const session of sessions) {
-    if (!session.currentTurnStartedAt || (session.turnOpenWorkCount ?? 0) > 0) continue;
-    const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
-    const turnMs = Date.parse(session.currentTurnStartedAt);
-    const anchorMs = Math.max(
-      Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
-      Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
-    );
-    if (!Number.isFinite(anchorMs)) continue;
+    if (!turnCanStall(session)) continue;
+    const anchorMs = turnSilenceAnchorMs(session);
+    if (anchorMs == null) continue;
     const deadline = anchorMs + TURN_STALL_AFTER_MS;
     if (deadline <= nowMs) continue;
     if (next === null || deadline < next) next = deadline;

@@ -6776,6 +6776,7 @@ export function AgentChatPane({
     // to five a minute. `lastOutputPreview` rules out an existing chat on the
     // first render, before its history has loaded and `selectedEvents` fills.
     cursorCloudAvailable: cursorCloudCanLaunch && !selectedSession?.lastOutputPreview,
+    cursorAccountKey: providerConnections?.cursor?.accountEmail ?? null,
     laneId: cloudReadinessLaneId,
     laneGitRemote,
     laneGitBranch,
@@ -16753,7 +16754,7 @@ export function AgentChatPane({
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
-                                compact
+                                size="compact"
                                 // A machine whose lanes have not been read yet
                                 // has no lane to show — say so rather than
                                 // leaving the previous machine's lane on screen.

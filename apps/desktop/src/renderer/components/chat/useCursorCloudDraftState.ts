@@ -10,6 +10,11 @@ export type CursorCloudRepoListState =
 
 type UseCursorCloudDraftStateInput = {
   cursorCloudAvailable: boolean;
+  /**
+   * The signed-in Cursor account, only as a refetch trigger: a new account
+   * reads its own repo list. The host's cache is keyed by API key, not this.
+   */
+  cursorAccountKey: string | null;
   laneId: string | null;
   laneGitRemote: string | null;
   laneGitBranch: string | null;
@@ -19,31 +24,13 @@ type UseCursorCloudDraftStateInput = {
 };
 
 /**
- * Cursor's repositories endpoint allows five requests a minute per account, and
- * every draft composer asks. One request is shared while in flight, and a
- * success is kept for a few minutes; a failure is not kept, so Retry works.
+ * The account's Cursor repositories. The host caches and shares the request,
+ * because Cursor allows five a minute per account; `force` (Retry) skips it.
  */
-const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
-let cursorReposCache: { at: number; urls: string[] } | null = null;
-let cursorReposInFlight: Promise<string[]> | null = null;
-
 function loadCursorCloudRepoUrls(force: boolean): Promise<string[]> {
-  if (!force && cursorReposCache && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
-    return Promise.resolve(cursorReposCache.urls);
-  }
-  if (cursorReposInFlight) return cursorReposInFlight;
-  const request = window.ade.ai
-    .cursorCloudListRepositories()
-    .then((repos) => {
-      const urls = repos.map((repo) => repo.url);
-      cursorReposCache = { at: Date.now(), urls };
-      return urls;
-    })
-    .finally(() => {
-      if (cursorReposInFlight === request) cursorReposInFlight = null;
-    });
-  cursorReposInFlight = request;
-  return request;
+  return window.ade.ai
+    .cursorCloudListRepositories(force ? { refresh: true } : undefined)
+    .then((repos) => repos.map((repo) => repo.url));
 }
 
 /**
@@ -55,6 +42,7 @@ function loadCursorCloudRepoUrls(force: boolean): Promise<string[]> {
  */
 export function useCursorCloudDraftState({
   cursorCloudAvailable,
+  cursorAccountKey,
   laneId,
   laneGitRemote,
   laneGitBranch,
@@ -77,9 +65,11 @@ export function useCursorCloudDraftState({
     setRepoFetchGeneration((current) => current + 1);
   }, []);
 
+  const repoAccountKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!cursorCloudAvailable) return;
-    if (repoStateRef.current.status === "ready") return;
+    if (repoStateRef.current.status === "ready" && repoAccountKeyRef.current === cursorAccountKey) return;
+    repoAccountKeyRef.current = cursorAccountKey;
     let cancelled = false;
     setRepoState({ status: "loading" });
     // A Retry (generation > 0) skips the cache; the first read may reuse it.
@@ -95,7 +85,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneId, repoFetchGeneration]);
+  }, [cursorAccountKey, cursorCloudAvailable, laneId, repoFetchGeneration]);
 
   useEffect(() => {
     if (!cursorCloudAvailable) {

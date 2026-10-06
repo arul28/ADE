@@ -4,7 +4,7 @@ import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processR
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import { createAgentShellCleanup } from "./agentShellCleanup";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./sessionSettleTeardown";
 import { settleSourceMayInterruptActiveTurn } from "./sessionSettleTeardown";
 import type {
   ClaudeSessionPointer,
@@ -436,7 +436,7 @@ export function createSessionService({
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
-  listSpawnedChildSessionIds,
+  listSubagentLinks,
 }: {
   db: AdeDb;
   /**
@@ -467,12 +467,13 @@ export function createSessionService({
   /** Fired only for residue attached to a settle that actually landed. */
   onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
   /**
-   * Sessions spawned by this one (subagents, peers). Late-bound like teardown,
+   * The subagents of these sessions (not peers). Late-bound like teardown,
    * because the chat service that knows the lineage is built later. A settled
-   * parent settles its children too, so a lane is not left holding orphan
-   * subagents of work the user already filed away.
+   * parent settles its subagents too, so a lane is not left holding orphan
+   * subagents of work the user already filed away; unsettling the parent
+   * brings them back.
    */
-  listSpawnedChildSessionIds?: (sessionId: string) => Promise<string[]>;
+  listSubagentLinks?: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
 }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -1152,25 +1153,26 @@ export function createSessionService({
       aborted.push(...outcome.aborted);
     }
 
-    // Children follow a parent that actually settled. They are settled through
-    // the same window (teardown included), and the recursion reaches
-    // grandchildren. A child that refuses is left as it is and is not reported
-    // as an abort: the caller asked about the parent, and the PR-merge poller
-    // must not treat a busy subagent as a failure to file the merged lane.
-    if (settled.length && listSpawnedChildSessionIds) {
+    // Subagents follow a parent that is settled, whether by this call or an
+    // earlier one (so a retry reaches a subagent that refused last time). They
+    // are settled through the same window (teardown included), and the
+    // recursion reaches grandchildren. A subagent that refuses is left as it is
+    // and is not reported as an abort: the caller asked about the parent, and
+    // the PR-merge poller must not treat a busy subagent as a failure to file
+    // the merged lane.
+    const settledParents = ids.filter((id) => settled.includes(id) || settledAtMs(id) != null);
+    if (settledParents.length && listSubagentLinks) {
       const requested = new Set(ids);
-      const children: string[] = [];
-      for (const parentId of settled) {
-        let childIds: string[] = [];
-        try {
-          childIds = await listSpawnedChildSessionIds(parentId);
-        } catch {
-          childIds = [];
-        }
-        for (const childId of childIds) {
-          if (!requested.has(childId) && !children.includes(childId)) children.push(childId);
-        }
+      let childIds: string[] = [];
+      try {
+        childIds = (await listSubagentLinks(settledParents)).map((child) => child.sessionId);
+      } catch {
+        childIds = [];
       }
+      // Only subagents still unsettled: that ends the recursion even if
+      // lineage ever formed a cycle, and an already-settled subagent does not
+      // get a second teardown.
+      const children = [...new Set(childIds)].filter((childId) => !requested.has(childId) && settledAtMs(childId) == null);
       if (children.length) {
         const cascaded = await settleManyWithTeardown(children, options);
         settled.push(...cascaded.settled);
@@ -1229,6 +1231,59 @@ export function createSessionService({
   };
 
   const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
+
+  const settledAtMs = (sessionId: string): number | null => {
+    const row = db.get<{ settledAt: string | null }>(
+      "select settled_at as settledAt from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    const ms = row?.settledAt ? Date.parse(row.settledAt) : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
+  };
+
+  /**
+   * The undo half of the settle cascade. Call before unsettling `parentIds`;
+   * run the returned step after. It brings back their subagents that were
+   * settled with their own parent or later. A subagent the user settled on its
+   * own before its parent stays settled.
+   */
+  const prepareSubagentUnsettle = (parentIds: readonly string[], unsettle: (ids: string[]) => void): (() => void) => {
+    if (!listSubagentLinks) return () => {};
+    const parentSettledAt = new Map<string, number>();
+    for (const id of parentIds) {
+      const ms = settledAtMs(id);
+      if (ms != null) parentSettledAt.set(id, ms);
+    }
+    if (!parentSettledAt.size) return () => {};
+    return () => {
+      void listSubagentLinks([...parentSettledAt.keys()])
+        .then((children) => {
+          const settledWithParent = children
+            .filter(({ sessionId, parentSessionId }) => {
+              const ms = settledAtMs(sessionId);
+              const parentMs = parentSettledAt.get(parentSessionId);
+              return ms != null && parentMs != null && ms >= parentMs;
+            })
+            .map(({ sessionId }) => sessionId);
+          if (settledWithParent.length) unsettle(settledWithParent);
+        })
+        .catch(() => {});
+    };
+  };
+
+  const unsettleSessions = (sessionIds: string[]): void => {
+    const ids = normalizeSessionIds(sessionIds);
+    if (!ids.length) return;
+    const unsettleSubagents = prepareSubagentUnsettle(ids, unsettleSessions);
+    writeSettleLifecycle({
+      intent: { kind: "unsettleDeclared" },
+      sessionIds: ids,
+    });
+    for (const id of ids) {
+      emitChanged({ sessionId: id, reason: "meta-updated" });
+    }
+    unsettleSubagents();
+  };
 
   return {
     list,
@@ -1853,14 +1908,16 @@ export function createSessionService({
       });
     },
 
-    /** Clears a declared settle plus any `'settled'` override. */
+    /** Clears a declared settle plus any `'settled'` override, and the settle cascade's. */
     unsettleSession(sessionId: string): boolean {
+      const unsettleSubagents = prepareSubagentUnsettle([sessionId.trim()], unsettleSessions);
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
           intent: { kind: "unsettleDeclared" },
           sessionIds: [id],
         });
       });
+      if (changed) unsettleSubagents();
       return changed;
     },
 
@@ -2159,17 +2216,7 @@ export function createSessionService({
       return settleLifecycle.settling.settlingSessionIds();
     },
 
-    unsettleSessions(sessionIds: string[]): void {
-      const ids = normalizeSessionIds(sessionIds);
-      if (!ids.length) return;
-      writeSettleLifecycle({
-        intent: { kind: "unsettleDeclared" },
-        sessionIds: ids,
-      });
-      for (const id of ids) {
-        emitChanged({ sessionId: id, reason: "meta-updated" });
-      }
-    },
+    unsettleSessions,
 
     // -----------------------------------------------------------------------
     // Snooze — synced VISIBILITY overlay. It never touches lifecycle columns

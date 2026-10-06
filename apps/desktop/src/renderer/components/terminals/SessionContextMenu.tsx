@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   Alarm,
   ArrowBendUpRight,
@@ -553,9 +554,10 @@ function SessionContextMenuPanel({
       {/* Menu */}
       <div
         ref={menuRef}
-        className="ade-liquid-glass-menu fixed z-50 min-w-[180px] py-1"
+        className="ade-liquid-glass-menu fixed min-w-[180px] py-1"
         style={{
           ...menuPosition,
+          zIndex: Z_LAYERS.contextMenu,
           visibility: clampedPosition ? "visible" : "hidden",
         }}
         onPointerDown={(e) => e.stopPropagation()}

@@ -155,7 +155,7 @@ export function projectChatOntoSession(
     usageLimitResume: chat.usageLimitResume ?? null,
     chatActivityMode: chatIsPlanning(chat) ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
-    ...(chat.turnOpenWorkCount ? { turnOpenWorkCount: chat.turnOpenWorkCount } : {}),
+    ...(chat.turnOpenWorkCount != null ? { turnOpenWorkCount: chat.turnOpenWorkCount } : {}),
     ...(projectActiveGoal(chat) ? { activeGoal: projectActiveGoal(chat) } : {}),
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),

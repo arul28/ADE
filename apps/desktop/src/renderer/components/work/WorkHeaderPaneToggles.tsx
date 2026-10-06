@@ -50,6 +50,10 @@ export function WorkHeaderToolsToggle({
         WORK_HEADER_ICON_BUTTON_CLASS,
         open && "bg-[color-mix(in_srgb,var(--color-accent)_55%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-accent)_70%,transparent)] hover:opacity-90",
       )}
+      // In a grid the toggle decides focus itself (on another tile it moves the
+      // pane there). The tile takes focus on mouse-down, which would make the
+      // click read as "this tile's pane is open" and close it instead.
+      onMouseDown={(event) => event.stopPropagation()}
       onClick={onToggle}
       title={open ? "Close Tools pane" : "Open Tools pane"}
       aria-label={open ? "Close Tools pane" : "Open Tools pane"}

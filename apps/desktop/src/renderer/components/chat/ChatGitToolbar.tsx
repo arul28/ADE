@@ -53,7 +53,7 @@ type ChatGitToolbarProps = {
   onTogglePrPane?: () => void;
   /**
    * Focus grid: there is no Tools pane, so the PR badge goes to the PRs tab
-   * (or GitHub for another machine's lane) instead of a PR pane or menu.
+   * (also for another machine's lane) instead of a PR pane or menu.
    */
   prOpensPrsTab?: boolean;
   prPaneOpen?: boolean;

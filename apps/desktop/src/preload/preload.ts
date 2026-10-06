@@ -5525,9 +5525,9 @@ const adeBridge = {
         removeLocal();
       };
     },
-    cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
-      callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
-        ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
+    cursorCloudListRepositories: async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> =>
+      callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", { args: args ?? {} }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudListRepositories, args ?? {}),
       ),
     cursorCloudListAgents: async (args?: {
       includeArchived?: boolean;

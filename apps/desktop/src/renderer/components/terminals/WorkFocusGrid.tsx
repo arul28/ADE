@@ -2,14 +2,15 @@
  * Pieces of the Focus grid that the normal grid does not have.
  *
  * The Focus grid IS the normal Work grid (`WorkGridView` over
- * `PaneTilingLayout`, standard chat surfaces). What differs lives in
- * `TerminalsPage`: membership comes from the sidebar's Focus list instead of
- * drags, and each chat header shows "open in full view" instead of the Tools
- * toggle. This file holds the extras: the page math, the empty state, and the
- * roster bar that keeps every waiting chat in view.
+ * `PaneTilingLayout`, standard chat surfaces). Membership comes from the
+ * sidebar's Focus list instead of drags (`useWorkFocusQueueReport`), the grid's
+ * state lives in `useWorkFocusGrid`, and each chat header shows "open in full
+ * view" instead of the Tools toggle. This file holds the pure page math and
+ * the extra UI: the empty state, the bottom roster strip, the toolbar pager,
+ * and the Focus pill.
  */
 import React, { useEffect, useRef } from "react";
-import { CaretLeft, CaretRight, Target } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, SquaresFour, Target } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { primarySessionLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -63,8 +64,8 @@ export function WorkFocusGridEmpty({
  * high on purpose: a short tile is mostly composer, so a laptop-height grid
  * pages side-by-side tiles instead of stacking two rows.
  */
-export const FOCUS_TILE_MIN_WIDTH = 420;
-export const FOCUS_TILE_MIN_HEIGHT = 480;
+const FOCUS_TILE_MIN_WIDTH = 420;
+const FOCUS_TILE_MIN_HEIGHT = 480;
 
 export type FocusFit = {
   /** Tiles that fit side by side. */
@@ -138,6 +139,40 @@ export function wheelScrollsInside(target: EventTarget | null, root: HTMLElement
   return false;
 }
 
+export type FocusPageSummary = {
+  page: number;
+  pageCount: number;
+  /** 1-based position of the first and last chat on this page. */
+  first: number;
+  last: number;
+  total: number;
+  /** An unseen chat waits on an earlier / a later page. */
+  newBefore: boolean;
+  newAfter: boolean;
+};
+
+/** Where page `page` sits among all the chats, for the strip and the pager. */
+export function focusPageSummary(
+  pages: readonly (readonly TerminalSessionSummary[])[],
+  page: number,
+  unseenIds: ReadonlySet<string>,
+): FocusPageSummary {
+  const count = (entries: readonly (readonly TerminalSessionSummary[])[]) =>
+    entries.reduce((sum, items) => sum + items.length, 0);
+  const hasUnseen = (entries: readonly (readonly TerminalSessionSummary[])[]) =>
+    entries.some((items) => items.some((session) => unseenIds.has(session.id)));
+  const first = count(pages.slice(0, page)) + 1;
+  return {
+    page,
+    pageCount: pages.length,
+    first,
+    last: first + (pages[page]?.length ?? 0) - 1,
+    total: count(pages),
+    newBefore: hasUnseen(pages.slice(0, page)),
+    newAfter: hasUnseen(pages.slice(page + 1)),
+  };
+}
+
 /**
  * The Focus grid's roster: every chat that waits for the user, always on
  * screen, grouped by page. The page on screen is lit; a chip names its chat
@@ -160,16 +195,12 @@ export function WorkFocusRoster({
   activeSessionId: string | null;
   unseenIds: ReadonlySet<string>;
   onPage: (page: number) => void;
-  onChat: (sessionId: string, page: number) => void;
+  onChat: (sessionId: string) => void;
   /** The session menu the sidebar cards open, for this chat. */
   onChatContextMenu: (session: TerminalSessionSummary, event: React.MouseEvent) => void;
 }) {
-  const total = pages.reduce((count, entries) => count + entries.length, 0);
-  const first = pages.slice(0, page).reduce((count, entries) => count + entries.length, 0) + 1;
-  const last = first + (pages[page]?.length ?? 0) - 1;
+  const { total, first, last, newBefore, newAfter } = focusPageSummary(pages, page, unseenIds);
   const multiPage = pages.length > 1;
-  const newBefore = pages.slice(0, page).some((entries) => entries.some((session) => unseenIds.has(session.id)));
-  const newAfter = pages.slice(page + 1).some((entries) => entries.some((session) => unseenIds.has(session.id)));
 
   // Keep the lit group in view when the roster is wider than the bar.
   const stripRef = useRef<HTMLDivElement | null>(null);
@@ -197,7 +228,7 @@ export function WorkFocusRoster({
                 session={session}
                 focused={index === page && session.id === activeSessionId}
                 unseen={unseenIds.has(session.id)}
-                onClick={() => onChat(session.id, index)}
+                onClick={() => onChat(session.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   onChatContextMenu(session, event);
@@ -294,18 +325,8 @@ function RosterArrow({
   );
 }
 
-/** What the toolbar pager shows; built by `TerminalsPage` from the pages. */
-export type WorkFocusPagerModel = {
-  page: number;
-  pageCount: number;
-  /** 1-based position of the first and last chat on the page on screen. */
-  first: number;
-  last: number;
-  total: number;
-  newBefore: boolean;
-  newAfter: boolean;
-  onPage: (page: number) => void;
-};
+/** What the toolbar pager shows; built by `useWorkFocusGrid` from the pages. */
+export type WorkFocusPagerModel = FocusPageSummary & { onPage: (page: number) => void };
 
 /**
  * The Focus grid's page control in the sidebar toolbar, beside the Focus pill.
@@ -345,6 +366,89 @@ export function WorkFocusToolbarPager({ model }: { model: WorkFocusPagerModel })
         <CaretRight size={10} weight="bold" aria-hidden />
         {model.newAfter && model.page < model.pageCount - 1 ? <span aria-hidden className="ade-focus-toolbar-pager-new" /> : null}
       </button>
+    </div>
+  );
+}
+
+/**
+ * The Focus pill in the sidebar toolbar. The left half folds lanes where
+ * agents are busy; the right half (live only while Focus is on) swaps the work
+ * area for the Focus grid, so the bar itself says the grid belongs to Focus.
+ * The board has its own Working column, so in board mode the pill dims.
+ */
+export function WorkFocusPill({
+  on,
+  grid,
+  disabled,
+  waitingCount,
+  onToggle,
+  onToggleGrid,
+}: {
+  on: boolean;
+  grid: boolean;
+  disabled: boolean;
+  waitingCount: number;
+  onToggle: () => void;
+  /** Absent when the host has no Focus grid. */
+  onToggleGrid?: () => void;
+}) {
+  const gridLive = on && !disabled;
+  return (
+    <div
+      className="ade-work-focus-pill shrink-0"
+      data-on={on ? "true" : undefined}
+      data-grid={on && grid ? "true" : undefined}
+      data-disabled={disabled ? "true" : undefined}
+      data-testid="work-focus-pill"
+    >
+      <SmartTooltip
+        content={{
+          label: on ? "Turn Focus off" : "Focus",
+          description: disabled
+            ? "Focus works in the list. The board already has a Working column."
+            : "Fold lanes where agents are busy into a Working section. They come back when something needs you.",
+        }}
+      >
+        <button
+          type="button"
+          className="ade-work-focus-pill-main"
+          aria-pressed={on}
+          aria-label={on ? `Focus on, ${waitingCount} waiting for you` : "Focus"}
+          disabled={disabled}
+          onClick={onToggle}
+          data-testid="work-focus-toggle"
+        >
+          <Target size={12} weight={on ? "bold" : "regular"} aria-hidden />
+          <span>Focus</span>
+          {on && waitingCount > 0 ? (
+            <span className="ade-work-focus-pill-count tabular-nums">{waitingCount}</span>
+          ) : null}
+        </button>
+      </SmartTooltip>
+      {onToggleGrid ? (
+        <SmartTooltip
+          content={{
+            label: grid ? "Show one chat" : "Focus grid",
+            description: grid
+              ? "Go back to one open chat with the tools pane."
+              : "Show every chat that waits for you side by side.",
+          }}
+        >
+          <button
+            type="button"
+            className="ade-work-focus-pill-grid"
+            aria-pressed={grid}
+            aria-label="Focus grid"
+            tabIndex={gridLive ? 0 : -1}
+            aria-hidden={gridLive ? undefined : true}
+            disabled={!gridLive}
+            onClick={onToggleGrid}
+            data-testid="work-focus-grid-toggle"
+          >
+            <SquaresFour size={12} weight={grid ? "fill" : "regular"} aria-hidden />
+          </button>
+        </SmartTooltip>
+      ) : null}
     </div>
   );
 }

@@ -194,13 +194,15 @@ function useWorkSurfaceHeaderParts({
   const embeddedChrome = useFloatingPaneEmbeddedChrome();
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
   const generatingTitle = useSessionFieldGenerating(lifecycleSessionId, "title");
+  // Only a Focus grid tile offers "open in full view". It has no Tools pane,
+  // so its PR badge goes to the PRs tab instead of a PR pane.
+  const focusTile = onOpenFullView != null;
   const gitToolbar = showGitToolbar && laneId ? (
     <ChatGitToolbar
       laneId={laneId}
       sessionId={prSessionId}
-      // The Focus grid has no Tools pane: its PR badge goes to the PRs tab.
-      onTogglePrPane={onOpenFullView ? undefined : onTogglePrPane}
-      prOpensPrsTab={Boolean(onOpenFullView)}
+      onTogglePrPane={focusTile ? undefined : onTogglePrPane}
+      prOpensPrsTab={focusTile}
       prPaneOpen={prPaneOpen}
       runtimePin={runtimePin}
       linkedPrOnly={prBadgeOnly}
@@ -348,7 +350,8 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
           >
             <WorkSurfaceTitle title={title} generating={generatingTitle} />
             {/* A narrow tile keeps the title and drops the accessory (for
-                example "Go to parent thread"); the full view still has it. */}
+                example the Cursor Cloud or Devin link); the full view still
+                has it. */}
             {leftAligned ? null : titleAccessory}
           </div>
         </div>

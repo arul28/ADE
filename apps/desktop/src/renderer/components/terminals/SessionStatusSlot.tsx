@@ -5,7 +5,8 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
-import { nextTurnStallDeadlineMs, sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
+import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -98,13 +99,8 @@ export function SessionStatusSlot({
   const canonicalPhase = canonicalState.phase;
   // A live turn can go quiet with no new data at all, so the slot re-renders
   // itself exactly when this session crosses the stall bar.
-  const [stallClockMs, setStallClockMs] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const deadline = nextTurnStallDeadlineMs([session], Date.now());
-    if (deadline == null) return undefined;
-    const timer = window.setTimeout(() => setStallClockMs(Date.now()), Math.max(250, deadline - Date.now() + 50));
-    return () => window.clearTimeout(timer);
-  }, [session, stallClockMs]);
+  const stallSessions = React.useMemo(() => [session], [session]);
+  const stallClockMs = useTurnStallClock(stallSessions);
   const stalled = presentation ? sessionStalledPresentation(canonicalInput, Math.max(stallClockMs, Date.now())) : null;
   const shownPresentation = stalled ?? presentation;
   const elapsedSince = stalled?.activityUpdatedAt

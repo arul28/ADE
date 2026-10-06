@@ -128,7 +128,7 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "./services/sessions/sessionService";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./services/sessions/sessionSettleTeardown";
 import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
@@ -3570,14 +3570,14 @@ app.whenReady().then(async () => {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-      children: ((sessionId: string) => Promise<string[]>) | null;
-    } = { run: null, report: null, residue: null, children: null };
+      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
+    } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
-      listSpawnedChildSessionIds: async (sessionId) =>
-        settleTeardownRef.children ? await settleTeardownRef.children(sessionId) : [],
+      listSubagentLinks: async (parentSessionIds) =>
+        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run
           ? await settleTeardownRef.run(sessionId, ctx)
@@ -4533,7 +4533,7 @@ app.whenReady().then(async () => {
       settleTeardownRef.run = wiring.runSettleTeardown;
       settleTeardownRef.report = wiring.onRemoteSettleWrite;
       settleTeardownRef.residue = wiring.onSettleResidue;
-      settleTeardownRef.children = wiring.listSpawnedChildSessionIds;
+      settleTeardownRef.subagentLinks = wiring.listSubagentLinks;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService
