@@ -6375,11 +6375,14 @@ const adeBridge = {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
+    // The source worktree lives on the lane's machine; a pin names it.
     createFromUnstaged: async (
       args: CreateLaneFromUnstagedArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "createFromUnstaged",
         { args },

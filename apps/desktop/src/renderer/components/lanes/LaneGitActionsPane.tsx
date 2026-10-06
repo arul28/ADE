@@ -73,7 +73,6 @@ const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
  * no machine-pin parameter, so these actions cannot run against a chat on
  * another machine. Fail loudly rather than silently acting on the wrong one.
  */
-const LOCAL_ONLY_ACTION_MESSAGE = "This action only works on the machine this project tab is connected to.";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 
 export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null): string {
@@ -1391,8 +1390,19 @@ export function LaneGitActionsPane({
       error: null,
     });
     try {
-      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
-      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name });
+      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name }, pin);
+      if (pin) {
+        // The new lane lives on the lane's machine, not in this tab's lane
+        // list or Lanes page, so stay here: the source lane's changes moved
+        // out, and the new lane appears in that machine's lane list.
+        patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
+          busyAction: null,
+          notice: `Moved unstaged changes to new lane ${created.name}.`,
+          error: null,
+        });
+        await refreshLaneGitState(actionLaneId);
+        return;
+      }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
@@ -1418,6 +1428,7 @@ export function LaneGitActionsPane({
     navigate,
     pin,
     projectStateKey,
+    refreshLaneGitState,
     refreshLanes,
     requestTextInput,
     selectLane,

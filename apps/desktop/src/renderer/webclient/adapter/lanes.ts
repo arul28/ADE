@@ -71,7 +71,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
     },
-    createFromUnstaged: async (args: unknown) => {
+    createFromUnstaged: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createFromUnstaged", pin);
       const result = await call("lanes.createFromUnstaged", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
