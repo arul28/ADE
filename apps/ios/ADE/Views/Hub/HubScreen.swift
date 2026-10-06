@@ -558,7 +558,9 @@ struct HubScreen: View {
   private func rebuildHubProjectPresentations() {
     let focusedProjects = hubProjects
     let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
-    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines)
+    // Only machines the user keeps connected: a disconnected machine's last
+    // roster would keep its projects on the hub (and hide the no-machine state).
+    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines.filter(\.isPinned))
     if merge != fleetMerge { fleetMerge = merge }
     var nextPresentations = focusedRosters.map { entry in
       buildHubProjectPresentation(

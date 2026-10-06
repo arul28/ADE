@@ -62,6 +62,47 @@ struct HubQuickConnectSection: View {
     return accountTargets + savedTargets
   }
 
+  /// The machine the phone was last on first, then online machines, then the
+  /// rest, each group in directory order.
+  private var orderedTargets: [Target] {
+    let lastIdentity = normalizedIdentity(
+      syncService.activeHostProfile?.hostIdentity ?? syncService.activeHostProfile?.lastHostDeviceId
+    )
+    func rank(_ target: Target) -> Int {
+      if let lastIdentity, identity(of: target) == lastIdentity { return 0 }
+      return isOnline(target) ? 1 : 2
+    }
+    return targets.enumerated()
+      .sorted { lhs, rhs in
+        let (left, right) = (rank(lhs.element), rank(rhs.element))
+        return left == right ? lhs.offset < rhs.offset : left < right
+      }
+      .map(\.element)
+  }
+
+  /// Every online machine gets a card (up to four), so the one the user wants
+  /// is never hidden behind "See all machines" just for its directory order.
+  /// With none online, the first two still show.
+  private var visibleTargets: [Target] {
+    let ordered = orderedTargets
+    let online = ordered.filter(isOnline)
+    return Array((online.isEmpty ? ordered : online).prefix(online.isEmpty ? 2 : 4))
+  }
+
+  private func identity(of target: Target) -> String? {
+    switch target {
+    case .account(let machine): return normalizedIdentity(machine.deviceId)
+    case .saved(let host): return normalizedIdentity(host.hostIdentity)
+    }
+  }
+
+  private func isOnline(_ target: Target) -> Bool {
+    switch target {
+    case .account(let machine): return machine.online
+    case .saved(let host): return hubSavedMachineIsRecentlyReachable(host, liveHosts: syncService.discoveredHosts)
+    }
+  }
+
   private var hasTargets: Bool {
     !targets.isEmpty
   }
@@ -74,7 +115,7 @@ struct HubQuickConnectSection: View {
     Group {
       if hasTargets {
         VStack(spacing: 10) {
-          ForEach(targets.prefix(2)) { target in
+          ForEach(visibleTargets) { target in
             switch target {
             case .account(let machine):
               HubQuickConnectCard(
@@ -108,7 +149,7 @@ struct HubQuickConnectSection: View {
               ) { connectSaved(host) }
             }
           }
-          if targets.count > 2 {
+          if targets.count > visibleTargets.count {
             Button("See all machines", systemImage: "chevron.right") {
               syncService.settingsPresented = true
             }

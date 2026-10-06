@@ -58,10 +58,12 @@ struct PairingQrPayload: Equatable {
     guard !trimmed.isEmpty, trimmed.utf8.count <= maxPayloadBytes else { return nil }
 
     var encoded = trimmed
-    if trimmed.range(of: "^https?://", options: [.regularExpression, .caseInsensitive]) != nil {
+    if trimmed.range(of: "^(https?|ade)://", options: [.regularExpression, .caseInsensitive]) != nil {
       guard let components = URLComponents(string: trimmed) else { return nil }
       let path = components.path
-      guard path == "/pair" || path.hasSuffix("/pair") else { return nil }
+      // `ade://pair#<payload>` names the route in the host, not the path.
+      let isCustomPair = components.scheme?.lowercased() == "ade" && components.host?.lowercased() == "pair"
+      guard isCustomPair || path == "/pair" || path.hasSuffix("/pair") else { return nil }
       // The payload rides the URL fragment so it never reaches a web server.
       let fragment = components.fragment ?? ""
       guard !fragment.isEmpty else { return nil }

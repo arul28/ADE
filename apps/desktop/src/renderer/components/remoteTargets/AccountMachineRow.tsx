@@ -47,6 +47,7 @@ import {
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
   section: MachineSection;
+  /** An action on this row is in flight. Other rows' work never sets it. */
   busy: boolean;
   connecting: boolean;
   /**
@@ -68,6 +69,8 @@ type AccountMachineRowProps = {
   detailOpen: boolean;
   onToggleDetail: (rowId: string) => void;
   onConnect: (machine: AdeAccountMachine) => void;
+  /** Stops this row's connect while it is in progress. */
+  onCancelConnect?: (machine: AdeAccountMachine) => void;
   onRenamed?: () => void;
 };
 
@@ -121,6 +124,7 @@ export function AccountMachineRow({
   detailOpen,
   onToggleDetail,
   onConnect,
+  onCancelConnect,
   onRenamed,
 }: AccountMachineRowProps) {
   const { machine } = row;
@@ -286,7 +290,18 @@ export function AccountMachineRow({
                 Use hostname
               </button>
             ) : null}
-            {available ? (
+            {connecting && onCancelConnect ? (
+              <button
+                type="button"
+                aria-label={`Cancel connecting to ${displayName}`}
+                title="Stop connecting"
+                onClick={() => onCancelConnect(machine)}
+                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
+              >
+                <X size={13} weight="bold" />
+                Cancel
+              </button>
+            ) : available ? (
               <button
                 type="button"
                 disabled={busy}

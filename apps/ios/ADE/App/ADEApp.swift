@@ -85,7 +85,11 @@ struct ADEApp: App {
           syncService.warmRecentChatThreads()
           // Every other paired machine gets its light roster connection.
           machineFleet.attach(syncService)
-          machineFleet.setAppActive(scenePhase == .active)
+          // The live state, not `scenePhase`: this task captured the phase it
+          // started with (inactive at launch), and the move to active usually
+          // lands during the awaits above. The stale read paused every roster
+          // connection until the next background/foreground.
+          machineFleet.setAppActive(UIApplication.shared.applicationState == .active)
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in

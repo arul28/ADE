@@ -754,7 +754,15 @@ export class RemoteConnectionService {
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
+    // Taken before the first await so a cancel (disconnect or remove) that
+    // lands during the ownership check still stops this attempt.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
     if (explicit) {
@@ -763,7 +771,6 @@ export class RemoteConnectionService {
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
-    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     this.mergeStatus(target.id, {
       state: "connecting",
       lastAttemptedAt: Date.now(),

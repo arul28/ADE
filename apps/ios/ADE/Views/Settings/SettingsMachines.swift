@@ -108,6 +108,10 @@ func settingsMachines(
   let focusedKey = syncService.focusedMachineKey
   let primaryLive = syncService.connectionState == .connected
   let primaryConnecting = syncService.connectionState == .connecting
+  // The user disconnected the primary: it is off until they connect it again,
+  // so it lists as available (Connect), not as a primary that cannot be reached.
+  let primaryDisconnectedByUser = syncService.connectionState == .disconnected
+    && syncService.autoReconnectPausedByUser
   var seen = Set<String>()
   var result: [SettingsMachine] = []
 
@@ -120,7 +124,10 @@ func settingsMachines(
 
   func link(for key: String?) -> SettingsMachine.Link {
     guard let key else { return .available }
-    if key == focusedKey { return .primary(live: primaryLive, connecting: primaryConnecting) }
+    if key == focusedKey {
+      if primaryDisconnectedByUser { return .available }
+      return .primary(live: primaryLive, connecting: primaryConnecting)
+    }
     if let machine = fleet.machine(for: key), machine.isPinned {
       return .connected(machine.state, gaveUp: machine.gaveUp)
     }
@@ -290,7 +297,10 @@ final class SettingsMachineController: ObservableObject {
   private func performConnect(_ machine: SettingsMachine) {
     guard let syncService, let fleet else { return }
     if let key = machine.machineKey {
-      if syncService.focusedMachineKey == nil {
+      // No primary attached (none yet, or the user disconnected it): this
+      // machine becomes primary instead of a fleet machine beside nothing.
+      if syncService.focusedMachineKey == nil
+        || (syncService.connectionState != .connected && syncService.connectionState != .connecting) {
         run(machine, success: "\(machine.name) connected") {
           await syncService.switchFocus(toMachineKey: key)
         }
@@ -301,14 +311,15 @@ final class SettingsMachineController: ObservableObject {
       return
     }
     // Never paired on this phone: pair through the account. Pairing attaches
-    // the phone to it; the previous primary stays primary.
+    // the phone to it, so it becomes primary; the previous primary stays
+    // connected next to it.
     guard let accountMachine = machine.account else { return }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
       errors[machine.id] = "Your account session ended. Sign in again, then connect."
       return
     }
     run(machine, success: "\(machine.name) connected") {
-      await syncService.pairAccountMachineKeepingPrimary(accountMachine, authorization: authorization)
+      await syncService.pairAccountMachineKeepingPrevious(accountMachine, authorization: authorization)
     }
   }
 

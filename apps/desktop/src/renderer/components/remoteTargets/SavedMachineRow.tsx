@@ -8,6 +8,7 @@ import {
   Pulse,
   Trash,
   Warning,
+  X,
 } from "@phosphor-icons/react";
 import type {
   RemoteRuntimeConnectResult,
@@ -51,12 +52,6 @@ import {
 
 const CONNECTING_STALE_MS = 20_000;
 
-function connectButtonLabel(stale: boolean, connecting: boolean): string {
-  if (stale) return "Retry";
-  if (connecting) return "Connecting…";
-  return "Connect";
-}
-
 function useStaleConnecting(connecting: boolean): boolean {
   const [stale, setStale] = useState(false);
   useEffect(() => {
@@ -75,7 +70,12 @@ type SavedMachineRowProps = {
   section: MachineSection;
   selected: boolean;
   connected: RemoteRuntimeConnectResult | null;
-  busyId: string | null;
+  /** This computer is running a connect for this row right now. */
+  connecting: boolean;
+  /** A cancel, disconnect, remove or setting change on this row is in flight.
+   * Other rows' work never sets it. */
+  busy: boolean;
+  /** An add/edit form submit is in flight; only locks this row's edit form. */
   saving: boolean;
   formPrefill: RemoteTargetFormPrefill | null;
   testOpen: boolean;
@@ -100,6 +100,8 @@ type SavedMachineRowProps = {
   onToggleTest: (targetId: string) => void;
   onToggleEdit: (target: RemoteRuntimeTarget) => void;
   onRemove: (targetId: string) => void;
+  /** Stops a connect or reconnect that is in progress for this row. */
+  onCancelConnect: (targetId: string) => void;
   onSaveAndConnect: (input: RemoteRuntimeTargetInput) => void | Promise<void>;
   onAutoConnectChange: (targetId: string, enabled: boolean) => void;
   onTrustAndConnect: () => void;
@@ -114,7 +116,8 @@ export function SavedMachineRow({
   section,
   selected,
   connected,
-  busyId,
+  connecting,
+  busy,
   saving,
   formPrefill,
   testOpen,
@@ -133,6 +136,7 @@ export function SavedMachineRow({
   onToggleTest,
   onToggleEdit,
   onRemove,
+  onCancelConnect,
   onSaveAndConnect,
   onAutoConnectChange,
   onTrustAndConnect,
@@ -140,13 +144,16 @@ export function SavedMachineRow({
   onPairAgain = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
+  // Covers this computer's own connect and main's automatic reconnect.
   const targetConnecting =
-    busyId === target.id || status?.state === "connecting";
-  // A live connect (busyId set) can take minutes for SSH bootstrap. Only treat
+    connecting || (status?.state === "connecting" && !row.connected);
+  // A live connect can take minutes for SSH bootstrap. Only treat
   // snapshot-stuck "connecting" with no in-flight action as hung.
   const connectingStale = useStaleConnecting(
-    status?.state === "connecting" && busyId !== target.id && !row.connected,
+    status?.state === "connecting" && !connecting && !row.connected,
   );
+  // Remove stays available while connecting; it cancels the attempt first.
+  const locked = busy || connecting;
   const statusLabel = connectingStale
     ? "Can't reach"
     : connectionStateLabel(
@@ -246,7 +253,7 @@ export function SavedMachineRow({
             {row.connected && updateTargetVersion && onUpdateAndRestart ? (
               <button
                 type="button"
-                disabled={busyId != null || updating}
+                disabled={busy || updating}
                 onClick={() => onUpdateAndRestart(updateTargetVersion)}
                 style={outlineButton({
                   height: 28,
@@ -258,48 +265,72 @@ export function SavedMachineRow({
                 {updating ? "Updating…" : "Update & restart"}
               </button>
             ) : null}
+            {!row.connected && targetConnecting && !connectingStale ? (
+              <span role="status" style={{ ...helperTextStyle, padding: "0 4px" }}>
+                Connecting…
+              </span>
+            ) : null}
+            {!row.connected && targetConnecting ? (
+              <button
+                type="button"
+                aria-label={`Cancel connecting to ${target.name}`}
+                title="Stop connecting"
+                disabled={busy}
+                onClick={() => onCancelConnect(target.id)}
+                style={outlineButton({
+                  height: 28,
+                  padding: "0 10px",
+                  fontSize: 11,
+                })}
+              >
+                <X size={13} weight="bold" />
+                Cancel
+              </button>
+            ) : null}
             {row.connected ? (
               <button
                 type="button"
                 aria-label="Disconnect"
                 title="Disconnect"
-                disabled={busyId != null || updating}
+                disabled={busy || updating}
                 onClick={() => onDisconnect(target.id)}
                 style={{
                   ...iconActionButtonStyle,
-                  opacity: busyId != null || updating ? 0.45 : 1,
-                  cursor: busyId != null || updating ? "not-allowed" : "pointer",
+                  opacity: busy || updating ? 0.45 : 1,
+                  cursor: busy || updating ? "not-allowed" : "pointer",
                 }}
               >
                 <Plugs size={15} />
               </button>
             ) : section !== "unavailable" ? (
               <>
-                <button
-                  type="button"
-                  disabled={busyId != null}
-                  onClick={() => onConnect(target.id)}
-                  style={primaryButton({
-                    height: 28,
-                    padding: "0 10px",
-                    fontSize: 11,
-                  })}
-                >
-                  <PlugsConnected size={14} weight="bold" />
-                  {connectButtonLabel(connectingStale, targetConnecting)}
-                </button>
+                {!targetConnecting || connectingStale ? (
+                  <button
+                    type="button"
+                    disabled={locked}
+                    onClick={() => onConnect(target.id)}
+                    style={primaryButton({
+                      height: 28,
+                      padding: "0 10px",
+                      fontSize: 11,
+                    })}
+                  >
+                    <PlugsConnected size={14} weight="bold" />
+                    {connectingStale ? "Retry" : "Connect"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   aria-label="Test"
                   title="Test connection"
                   aria-controls={`remote-target-test-${target.id}`}
                   aria-expanded={testOpen}
-                  disabled={busyId != null}
+                  disabled={busy}
                   onClick={() => onToggleTest(target.id)}
                   style={{
                     ...iconActionButtonStyle,
-                    opacity: busyId != null ? 0.45 : 1,
-                    cursor: busyId != null ? "not-allowed" : "pointer",
+                    opacity: busy ? 0.45 : 1,
+                    cursor: busy ? "not-allowed" : "pointer",
                   }}
                 >
                   <Pulse size={15} />
@@ -313,12 +344,12 @@ export function SavedMachineRow({
                 title="Edit"
                 aria-controls={`remote-target-edit-${target.id}`}
                 aria-expanded={formOpen}
-                disabled={busyId != null}
+                disabled={locked}
                 onClick={() => onToggleEdit(target)}
                 style={{
                   ...iconActionButtonStyle,
-                  opacity: busyId != null ? 0.45 : 1,
-                  cursor: busyId != null ? "not-allowed" : "pointer",
+                  opacity: locked ? 0.45 : 1,
+                  cursor: locked ? "not-allowed" : "pointer",
                 }}
               >
                 <PencilSimple size={15} />
@@ -328,12 +359,12 @@ export function SavedMachineRow({
               type="button"
               aria-label={`Remove ${target.name}`}
               title="Delete"
-              disabled={busyId != null}
+              disabled={busy}
               onClick={() => onRemove(target.id)}
               style={{
                 ...iconActionButtonStyle,
-                opacity: busyId != null ? 0.45 : 1,
-                cursor: busyId != null ? "not-allowed" : "pointer",
+                opacity: busy ? 0.45 : 1,
+                cursor: busy ? "not-allowed" : "pointer",
               }}
             >
               <Trash size={15} />
@@ -365,9 +396,9 @@ export function SavedMachineRow({
         {errorCard ? (
           <RemoteErrorCard
             card={errorCard}
-            onRetry={busyId == null ? () => onConnect(target.id) : undefined}
-            retrying={busyId === target.id}
-            action={pairAgain && busyId == null
+            onRetry={!locked ? () => onConnect(target.id) : undefined}
+            retrying={connecting}
+            action={pairAgain && !locked
               ? { label: "Pair again", onClick: pairAgain }
               : null}
           />
@@ -410,7 +441,7 @@ export function SavedMachineRow({
           <HostKeyTrustCard
             trust={hostKeyTrust}
             trusting={trustingHostKey}
-            busy={busyId != null}
+            busy={locked}
             onTrustAndConnect={onTrustAndConnect}
             onCancel={onCancelHostKeyTrust}
           />
@@ -451,7 +482,7 @@ export function SavedMachineRow({
               checked={target.autoConnect ?? (
                 target.lastConnectedAt != null && target.manuallyDisconnectedAt == null
               )}
-              disabled={busyId != null}
+              disabled={busy}
               onChange={(event) => onAutoConnectChange(target.id, event.target.checked)}
               style={{ margin: "2px 0 0" }}
             />
@@ -463,7 +494,7 @@ export function SavedMachineRow({
             </span>
           </label>
           <RemoteTargetForm
-            busy={saving || busyId != null}
+            busy={saving || locked}
             prefill={formPrefill}
             submitLabel="Save and connect"
             onSubmit={onSaveAndConnect}

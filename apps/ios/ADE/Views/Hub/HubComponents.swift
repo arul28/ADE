@@ -93,7 +93,15 @@ private struct HubCircularButton: View {
 /// Compact "● Machine" pill — tap opens connection settings.
 struct HubConnectionPill: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @ObservedObject private var account = AccountService.shared
+
+  /// Machines with a live link right now: the primary one plus the fleet's.
+  /// Above one, the pill counts them instead of naming just the primary.
+  private var liveMachineCount: Int {
+    let primary = syncService.connectionHealth.transport == .connected ? 1 : 0
+    return primary + machineFleet.machines.filter { $0.state == .live }.count
+  }
 
   private var tint: Color {
     let health = syncService.connectionHealth
@@ -126,6 +134,11 @@ struct HubConnectionPill: View {
   }
 
   private var label: String {
+    // Only while the primary is attached: a connect in flight or a failure
+    // names the machine it is about.
+    if syncService.connectionHealth.transport == .connected, liveMachineCount > 1 {
+      return "\(liveMachineCount) machines"
+    }
     if let machineName {
       return machineName
     }
@@ -998,6 +1011,7 @@ struct HubEmptyProjectsCard: View {
 
 struct HubNoMachineState: View {
   @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var account = AccountService.shared
   var onConnectSuccess: () -> Void = {}
 
   var body: some View {
@@ -1088,10 +1102,16 @@ struct HubNoMachineState: View {
     syncService.canReconnectToSavedHost
   }
 
+  /// The account's name for the machine when it has one ("windows"), the
+  /// computer's own host name otherwise, as the hub pill names it.
   private var machineDisplayName: String? {
     let name = syncService.hostName ?? syncService.activeHostProfile?.hostName
     let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed?.isEmpty == false ? trimmed : nil
+    return accountMachinePresentationName(
+      hostIdentity: syncService.activeHostProfile?.hostIdentity,
+      fallback: trimmed?.isEmpty == false ? trimmed : nil,
+      machines: account.machines
+    )
   }
 
   private var statusText: String {
