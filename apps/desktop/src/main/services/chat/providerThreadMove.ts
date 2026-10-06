@@ -136,8 +136,10 @@ export async function findInstanceHoldingNewestClaudeThread<T extends { configHo
     try {
       const { mtimeMs } = await fs.promises.stat(filePath);
       if (!newest || mtimeMs > newest.mtimeMs) newest = { instance, mtimeMs };
-    } catch {
-      // Removed between the lookup and the stat.
+    } catch (error) {
+      // Removed between the lookup and the stat; anything else is a real fault.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
   }
   return newest?.instance ?? null;
