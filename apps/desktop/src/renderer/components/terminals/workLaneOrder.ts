@@ -11,6 +11,7 @@
  * and hand over plain data — so the ordering rules are unit-testable without
  * mounting a sidebar.
  */
+import { compareTextNatural } from "../../../shared/formatting";
 
 /** MIME type for a lane-header drag. Distinguishes it from a session-card drag. */
 export const ADE_WORK_LANE_DND_MIME = "application/x-ade-work-lane";
@@ -82,7 +83,7 @@ function compareByMode(
     case "activity":
       return compareDescNullsLast(a.lastActivityMs, b.lastActivityMs);
     case "name":
-      return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+      return compareTextNatural(a.name, b.name);
     case "manual": {
       // Lanes with no recorded position sort after every placed lane, in the
       // fallback order below — so a newly created lane appears predictably
