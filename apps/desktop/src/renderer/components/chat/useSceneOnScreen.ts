@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * When a scene's frame should be up: on (or about to come on) screen, held for
@@ -32,9 +32,19 @@ function scrollParentOf(element: HTMLElement): HTMLElement | null {
  * True while the element is on screen or about to be, with a dwell before it
  * turns true and a linger before it turns false. A parked surface
  * (`content-visibility: hidden`) reads as off screen.
+ *
+ * `ignoreScroll` drops the scroll-pause gate: while a turn streams, the
+ * transcript pins itself to the bottom on every delta, so "the reader stopped
+ * scrolling" never comes, and the scene the agent just drew must still appear.
  */
-export function useSceneOnScreen(target: React.RefObject<HTMLElement | null>, enabled: boolean): boolean {
+export function useSceneOnScreen(
+  target: React.RefObject<HTMLElement | null>,
+  enabled: boolean,
+  options: { ignoreScroll?: boolean } = {},
+): boolean {
   const [onScreen, setOnScreen] = useState(false);
+  const ignoreScrollRef = useRef(Boolean(options.ignoreScroll));
+  ignoreScrollRef.current = Boolean(options.ignoreScroll);
   useEffect(() => {
     const element = target.current;
     if (!enabled || !element) return;
@@ -57,7 +67,7 @@ export function useSceneOnScreen(target: React.RefObject<HTMLElement | null>, en
     // Mount only once scrolling has paused; keep checking until it has.
     const activateWhenQuiet = () => {
       const sinceScroll = performance.now() - lastScrollAt;
-      if (sinceScroll < SCENE_SCROLL_QUIET_MS) {
+      if (!ignoreScrollRef.current && sinceScroll < SCENE_SCROLL_QUIET_MS) {
         timer = window.setTimeout(activateWhenQuiet, SCENE_SCROLL_QUIET_MS - sinceScroll);
         return;
       }

@@ -335,15 +335,19 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     logger.info("built_in_browser_bridge.recordings_released_on_close", { count: keys.length });
   }
 
+  // The engines served besides the built-in browser, each under its own method
+  // prefix. Everything else must be `built_in_browser.*`.
+  const engines: Array<{
+    prefix: string;
+    handle: (name: string, params: Record<string, unknown>, connection: BridgeConnectionState) => Promise<unknown>;
+  }> = [
+    { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params, connection) => handleAppControlRecorder(name, params, connection) },
+    { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params, connection) => handleDemoEngine(name, params, connection) },
+    { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
+  ];
+
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
-    // The engines served besides the built-in browser, each under its own
-    // method prefix. Everything else must be `built_in_browser.*`.
-    const engines: Array<{ prefix: string; handle: (name: string, params: Record<string, unknown>) => Promise<unknown> }> = [
-      { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params) => handleAppControlRecorder(name, params, connection) },
-      { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params) => handleDemoEngine(name, params, connection) },
-      { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
-    ];
     const engine = engines.find((entry) => method.startsWith(entry.prefix)) ?? null;
     const isAppUpdateMethod = method.startsWith(DESKTOP_APP_UPDATE_BRIDGE_PREFIX);
     if (!engine && !isAppUpdateMethod && !method.startsWith(BUILT_IN_BROWSER_METHOD_PREFIX)) {
@@ -363,7 +367,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         "Built-in browser bridge authentication failed.",
       );
     }
-    if (engine) return await engine.handle(name, rawParams);
+    if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
       if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {

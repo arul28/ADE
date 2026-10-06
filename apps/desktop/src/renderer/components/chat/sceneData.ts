@@ -28,7 +28,8 @@ import { useChatMachineLanes, useChatRuntimeScope } from "./ChatRuntimeScope";
  *
  *  - Nothing new is polled. Lanes and sessions come from the stores ADE already
  *    keeps current; PRs from the coalesced `prs.listAll` read (ADE's own
- *    database, never GitHub), refreshed when lanes change.
+ *    database, never GitHub), refreshed on the machine's `prs-updated` events
+ *    (a check or review that changed) and when lanes change.
  *  - It is a component, mounted by `SceneFrame` only for a scene that asked for
  *    data and only while its frame is up, so its store subscriptions re-render
  *    nothing but itself, and a scene showing its still costs nothing.
@@ -62,17 +63,25 @@ export function SceneDataFeed({
   const snapshots = useAppStore((state) => (scope.pin ? NO_SNAPSHOTS : state.laneSnapshots));
   const sessions = useSessionsForPin(scope.binding);
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
+  /** Bumped by every PR change the chat's machine announces (checks, reviews, state). */
+  const [prRevision, setPrRevision] = useState(0);
+  useEffect(() => {
+    if (!wantPrs) return;
+    return window.ade.prs.onEvent((event) => {
+      if (event.type === "prs-updated") setPrRevision((value) => value + 1);
+    }, scope.pin);
+  }, [wantPrs, scope.pin]);
 
-  // PRs: once, and again when lanes change (a PR opens or merges with a lane
-  // update). Coalesced with every other reader of the same list.
+  // PRs: once, on every announced PR change, and when lanes change. Coalesced
+  // with every other reader of the same list.
   useEffect(() => {
     if (!wantPrs) return;
     let cancelled = false;
     void listPrsCoalesced({ projectRoot: scope.rootPath, pin: scope.pin })
       .then((list) => { if (!cancelled) setPrs(Array.isArray(list) ? list : []); })
-      .catch(() => { if (!cancelled) setPrs((current) => current ?? []); });
+      .catch(() => { if (!cancelled) setPrs((existing) => existing ?? []); });
     return () => { cancelled = true; };
-  }, [wantPrs, lanes, scope.rootPath, scope.pin]);
+  }, [wantPrs, lanes, prRevision, scope.rootPath, scope.pin]);
 
   const sendRef = useRef(send);
   sendRef.current = send;

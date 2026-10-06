@@ -41,11 +41,12 @@ export function createAppControlRecorderBridgeClient(args: {
 }): AppControlScreencastRecorderBackend & { dispose(): void } {
   const { logger } = args;
   const NO_DESKTOP = "App Control recording needs the ADE desktop app on this machine, and none is attached.";
+  const DISPOSED = "The App Control recorder bridge was disposed.";
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,
     getAuthToken: args.getAuthToken,
     unavailableMessage: NO_DESKTOP,
-    closedMessage: "The App Control recorder bridge was disposed.",
+    closedMessage: DISPOSED,
   });
   let disposed = false;
   const framesInFlight = new Set<string>();
@@ -54,7 +55,7 @@ export function createAppControlRecorderBridgeClient(args: {
   const inFlight = new Set<Promise<unknown>>();
 
   const call = <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> => {
-    if (disposed) return Promise.reject(new Error("The App Control recorder bridge was disposed."));
+    if (disposed) return Promise.reject(new Error(DISPOSED));
     const run = callNow<T>(method, params, timeoutMs);
     inFlight.add(run);
     const forget = (): void => {

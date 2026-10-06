@@ -92,21 +92,23 @@ function previewHadProblems(output: string): boolean {
 export function ScenePreviewThumb({ output }: { output: string | null | undefined }) {
   const path = readScenePreviewPath(output);
   const { pin } = useChatRuntimeScope();
-  const [src, setSrc] = useState<string | null>(null);
+  // Stamped with the path it was read for: a newer preview reuses this
+  // component, and its first render must not show the previous picture.
+  const [loaded, setLoaded] = useState<{ path: string; src: string } | null>(null);
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
     void readAttachmentImageDataUrl(path, pin)
-      .then(({ dataUrl }) => { if (!cancelled) setSrc(dataUrl); })
-      .catch(() => { if (!cancelled) setSrc(null); });
+      .then(({ dataUrl }) => { if (!cancelled) setLoaded({ path, src: dataUrl }); })
+      .catch(() => { if (!cancelled) setLoaded(null); });
     return () => { cancelled = true; };
   }, [path, pin]);
-  if (!path || !src) return null;
+  if (!path || !loaded || loaded.path !== path) return null;
   const problems = previewHadProblems(output ?? "");
   return (
     <div className="mt-1 mb-1 w-fit max-w-full" data-testid="chat-scene-preview-thumb">
       <img
-        src={src}
+        src={loaded.src}
         alt="Scene preview"
         className="block max-h-40 max-w-[360px] rounded-md object-contain object-left-top"
         style={{ border: `1px solid ${COLORS.borderMuted}` }}

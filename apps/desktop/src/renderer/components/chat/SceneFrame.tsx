@@ -17,11 +17,12 @@ import {
 } from "../../../shared/chatScene";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import type { SceneDataPayload } from "../../../shared/sceneDataProjection";
-import { openAdeDeeplink, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { openChatDeeplinkTarget } from "./ChipText";
 import { HighlightedCode } from "./CodeHighlighter";
 import {
   captureSceneShell,
@@ -41,7 +42,7 @@ import {
   rememberSceneHeight,
 } from "./sceneDocumentCache";
 import { loadSceneFontFaceCss, sceneFontFaceCssNow } from "./sceneFonts";
-import { rememberSceneStill } from "./sceneStillStore";
+import { readSceneStill, rememberSceneStill } from "./sceneStillStore";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { useSceneStillLatch } from "./useSceneStillLatch";
@@ -75,6 +76,11 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 960;
 /** The least time between two links a scene may open. */
 const SCENE_OPEN_MIN_INTERVAL_MS = 800;
+
+/** Every whole http(s) URL written in a scene's source. */
+function webUrlsIn(source: string): Set<string> {
+  return new Set(source.match(/https?:\/\/[^\s"'<>`)]+/g) ?? []);
+}
 
 /** True when `url` is a web link ADE itself put in a scene's data snapshot. */
 function urlInSceneData(data: SceneDataPayload | null, url: string): boolean {
@@ -137,7 +143,7 @@ export function SceneFrame({
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant.
-  const { sessionId, pin } = useChatRuntimeScope();
+  const { sessionId, pin, laneId } = useChatRuntimeScope();
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
   const title = (!failed && parsed.title) || "Generated view";
@@ -195,10 +201,12 @@ export function SceneFrame({
     return () => { cancelled = true; };
   }, [fontFaceCss]);
 
-  const onScreen = useSceneOnScreen(wrapperRef, !expandedVariant && !failed && !streaming);
-  // Live for its own turn (the author's entrance plays and the still is taken),
-  // on screen otherwise, and always when it is the expanded view.
-  const wantFrame = (expandedVariant || live || onScreen) && !collapsed;
+  // Up while on screen (during its own turn too: a scene drawn and then
+  // scrolled past during a ten-minute turn must not run all that time), and
+  // always as the expanded view. During its turn the scroll-pause gate is off,
+  // since a streaming transcript scrolls itself on every delta.
+  const onScreen = useSceneOnScreen(wrapperRef, !expandedVariant && !failed && !streaming, { ignoreScroll: live });
+  const wantFrame = (expandedVariant || onScreen) && !collapsed;
 
   /**
    * Whether the document should skip its entrance. Read at build time through
@@ -331,6 +339,9 @@ export function SceneFrame({
    */
   const lastOpenRef = useRef(0);
   const latestDataRef = useRef<SceneDataPayload | null>(null);
+  // Whole URLs only: a substring match would let a scene open any prefix of a
+  // URL it was written with, and pick which one, to spell out its data.
+  const writtenUrls = useMemo(() => webUrlsIn(source), [source]);
   const openFromScene = useCallback((url: string) => {
     const now = Date.now();
     const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
@@ -339,8 +350,9 @@ export function SceneFrame({
       && (activation ? activation.isActive : true);
     if (!pressed || now - lastOpenRef.current < SCENE_OPEN_MIN_INTERVAL_MS) return;
     lastOpenRef.current = now;
-    if (parseDeeplink(url).ok) {
-      openAdeDeeplink(url);
+    const deeplink = parseDeeplink(url);
+    if (deeplink.ok) {
+      openChatDeeplinkTarget(url, deeplink.target, { laneId, pin });
       return;
     }
     if (/^https?:\/\//i.test(url)) {
@@ -348,7 +360,7 @@ export function SceneFrame({
       // send it out on a click. Such a scene may open only the web pages it
       // was written with or that ADE sent it (a PR's GitHub link), never one
       // assembled at run time.
-      if (!failed && parsed.data.length && !source.includes(url) && !urlInSceneData(latestDataRef.current, url)) {
+      if (!failed && parsed.data.length && !writtenUrls.has(url) && !urlInSceneData(latestDataRef.current, url)) {
         setSceneError("This scene shows live ADE data, so it can only open the web links written in it.");
         return;
       }
@@ -356,7 +368,7 @@ export function SceneFrame({
       return;
     }
     setSceneError("A scene can open ADE links (ade://) and web pages only.");
-  }, [failed, parsed, source, pin]);
+  }, [failed, parsed, writtenUrls, pin, laneId]);
 
   // Only messages from this frame's own contentWindow are considered, every one
   // is shape-checked before it reaches state, and every one must name the
@@ -429,19 +441,21 @@ export function SceneFrame({
     setSceneError(null);
     setDrawFailed(false);
     setShowAnyway(false);
+    latestDataRef.current = null;
   }, [source, scopeKey]);
 
   /**
    * The theme a picture was drawn in. A still from before a theme switch must
    * not cover the frame (the reader would see the old palette flash) and is
-   * taken again once the scene is live in the new one. A picture this mount did
-   * not take is assumed current when first seen.
+   * taken again once the scene is live in the new one. A capture made in this
+   * window remembers its theme across mounts (`sceneStillStore`); a still known
+   * only from disk has no recorded theme and is taken as current.
    */
   const [pictureTheme, setPictureTheme] = useState<string | null>(null);
   useEffect(() => {
     if (!pictureSrc) { setPictureTheme(null); return; }
-    setPictureTheme((existing) => existing ?? sceneThemeSignature(themeRef.current));
-  }, [pictureSrc]);
+    setPictureTheme((existing) => existing ?? readSceneStill(scopeKey)?.theme ?? sceneThemeSignature(themeRef.current));
+  }, [pictureSrc, scopeKey]);
   const stillStale = Boolean(pictureSrc) && pictureTheme !== null && pictureTheme !== themeKey;
   // A stale picture releases the one-capture latch.
   useEffect(() => {
@@ -555,9 +569,10 @@ export function SceneFrame({
         }
         captureMissesRef.current = 0;
         const { dataUrl } = result;
+        const capturedTheme = sceneThemeSignature(themeRef.current);
         setStill(dataUrl);
-        setPictureTheme(sceneThemeSignature(themeRef.current));
-        if (scopeKey) rememberSceneStill(scopeKey, { dataUrl });
+        setPictureTheme(capturedTheme);
+        if (scopeKey) rememberSceneStill(scopeKey, { dataUrl, theme: capturedTheme });
         const store = window.ade?.scene?.storeStill;
         if (typeof store !== "function" || !scopeKey) return;
         const record = await store({ dataUrl, title, sessionId, scopeKey }).catch(() => null);

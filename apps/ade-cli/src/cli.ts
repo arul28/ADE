@@ -10647,12 +10647,15 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
 
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
 function buildScenePlan(args: string[]): CliPlan {
-  const sub = firstPositional(args);
-  if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
-  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene preview <file>`);
+  // Flags with values come out first: `ade scene --theme light preview f`
+  // would otherwise read `light` as the verb.
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);
+  const stdin = args.includes("-");
+  const sub = firstPositional(args);
+  if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene preview <file>`);
   let width: number | undefined;
   if (widthRaw) {
     width = Number(widthRaw);
@@ -10661,7 +10664,7 @@ function buildScenePlan(args: string[]): CliPlan {
     }
   }
   // A bare "-" (stdin) is not a positional to firstPositional, which skips flags.
-  const target = args.includes("-") ? "-" : firstPositional(args);
+  const target = stdin ? "-" : firstPositional(args);
   if (!target) throw new CliUsageError("ade scene preview needs a file, or - for stdin: ade scene preview /tmp/chart.html");
   let source: string;
   try {

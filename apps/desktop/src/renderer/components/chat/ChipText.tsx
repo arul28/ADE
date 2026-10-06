@@ -31,7 +31,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 
-import { buildDeeplink } from "../../../shared/deeplinks";
+import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import { getModelById } from "../../../shared/modelRegistry";
 import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "../../../shared/chips";
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
@@ -63,6 +63,38 @@ function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | null {
     ?? (pin.kind === "remote" ? pin.targetId : THIS_MACHINE_ID);
 }
 
+/**
+ * Open an `ade://` link that appeared in a chat (a chip, a scene), resolved
+ * against that chat's lane and machine rather than the tab's.
+ */
+export function openChatDeeplinkTarget(
+  url: string,
+  target: DeeplinkTarget,
+  scope: Pick<ChatRuntimeScope, "laneId" | "pin">,
+): void {
+  // A bare SHA in a reply names no lane. It is a commit of the lane this chat
+  // works in, on the machine this chat runs on. Without that, the click has
+  // nothing to open and shows the "lives on another machine" modal.
+  if (target.kind === "commit" && !target.laneId && scope.laneId) {
+    navigateToAppTarget({ kind: "commit", sha: target.sha, laneId: scope.laneId, machineId: chatMachineId(scope) });
+    return;
+  }
+  // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
+  // the repo to parse, so that one opens through the in-app PR route, which
+  // resolves the number against this project's PRs.
+  if (target.kind === "pr" && !target.repoOwner) {
+    navigateToAppTarget({ kind: "pr", prNumber: target.prNumber });
+    return;
+  }
+  // A lane id names a lane on the chat's machine; a pinned chat's lane is not
+  // in the tab's own lane list.
+  if (target.kind === "lane") {
+    navigateToAppTarget({ kind: "lane", laneId: target.laneId, machineId: chatMachineId(scope) });
+    return;
+  }
+  openAdeDeeplink(url);
+}
+
 /** Where a click on this chip should land, or null when it is not actionable. */
 function openChip(
   chip: Chip,
@@ -71,26 +103,7 @@ function openChip(
 ): void {
   const source = chip.source;
   if (source.origin === "deeplink") {
-    // A bare SHA in a reply names no lane. It is a commit of the lane this chat
-    // works in, on the machine this chat runs on. Without that, the click has
-    // nothing to open and shows the "lives on another machine" modal.
-    if (source.target.kind === "commit" && !source.target.laneId && scope.laneId) {
-      navigateToAppTarget({
-        kind: "commit",
-        sha: source.target.sha,
-        laneId: scope.laneId,
-        machineId: chatMachineId(scope),
-      });
-      return;
-    }
-    // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
-    // the repo to parse, so that one opens through the in-app PR route, which
-    // resolves the number against this project's PRs.
-    if (source.target.kind === "pr" && !source.target.repoOwner) {
-      navigateToAppTarget({ kind: "pr", prNumber: source.target.prNumber });
-      return;
-    }
-    openAdeDeeplink(source.url);
+    openChatDeeplinkTarget(source.url, source.target, scope);
     return;
   }
   if (source.origin === "url") {
