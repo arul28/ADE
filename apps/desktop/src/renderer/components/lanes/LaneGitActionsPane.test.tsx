@@ -25,6 +25,7 @@ vi.mock("./LaneDiffPane", () => ({
 
 let mockStoreState: {
   lanes: LaneSummary[];
+  laneCacheByProject?: Record<string, { lanes: LaneSummary[] }>;
   refreshLanes: ReturnType<typeof vi.fn>;
   selectLane: ReturnType<typeof vi.fn>;
   smartTooltipsEnabled: boolean;
@@ -131,6 +132,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
   beforeEach(() => {
     mockStoreState = {
+      laneCacheByProject: {},
       lanes: [
         buildLane(),
         buildLane({
@@ -446,9 +448,23 @@ describe("LaneGitActionsPane rescue action", () => {
     });
   });
 
-  it("enables the rescue button for unstaged-only changes and submits the quick prompt", async () => {
+  it.each([
+    { where: "a lane on this machine", runtimePin: null },
+    {
+      where: "a lane on another machine",
+      runtimePin: {
+        kind: "remote",
+        key: "remote:target-win:project-win",
+        targetId: "target-win",
+        projectId: "project-win",
+        runtimeName: "Windows PC",
+        displayName: "ADE",
+        rootPath: "C:\\Users\\arul2\\ADE",
+      },
+    },
+  ])("moves unstaged changes to a new lane on the lane's own machine for $where", async ({ runtimePin }) => {
     const user = userEvent.setup();
-    renderPane();
+    renderPane({ runtimePin: runtimePin as any });
 
     const rescueButton = await screen.findByRole("button", { name: /create new lane with current changes/i });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(false);
@@ -461,10 +477,18 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.lanes.createFromUnstaged).toHaveBeenCalledWith({
         sourceLaneId: "lane-1",
         name: "Rescue lane",
-      });
+      }, runtimePin);
     });
-    expect(mockStoreState.refreshLanes).toHaveBeenCalled();
-    expect(mockStoreState.selectLane).toHaveBeenCalledWith("lane-2");
+    if (runtimePin) {
+      // The new lane is on the other machine: this tab's lane list and Lanes
+      // page cannot select it, so the pane stays and says where it went.
+      expect(await screen.findByText(/moved unstaged changes to new lane rescue lane/i)).toBeTruthy();
+      expect(mockStoreState.selectLane).not.toHaveBeenCalled();
+      expect(screen.queryByText(/only works on the machine/i)).toBeNull();
+    } else {
+      expect(mockStoreState.refreshLanes).toHaveBeenCalled();
+      expect(mockStoreState.selectLane).toHaveBeenCalledWith("lane-2");
+    }
   });
 
   it("disables the rescue button when staged changes are present", async () => {
