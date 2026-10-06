@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
 import { findCodexThreadRolloutPath, uuidV7TimestampMs } from "./codexSubagentUsage";
+import { isPathInside } from "../shared/pathCompare";
 
 /**
  * Copies one provider thread from one local account's config home to another,
@@ -27,6 +28,13 @@ export type ProviderThreadMoveArgs = {
   threadId: string;
   fromConfigHome: string;
   toConfigHome: string;
+  /**
+   * The exact Claude transcript to copy, inside `fromConfigHome`. One session
+   * id can sit in several project folders (a session moved with `/cd`, an
+   * earlier transplant); a caller that already chose one names it here instead
+   * of taking the newest.
+   */
+  sourcePath?: string;
 };
 
 export type ProviderThreadMoveResult =
@@ -114,7 +122,10 @@ export function findInstanceHoldingThread<T extends { configHome: string; isDefa
 }
 
 async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {
-  const sourcePath = await findClaudeThreadFile(args.fromConfigHome, args.threadId);
+  const named = args.sourcePath ? path.resolve(args.sourcePath) : null;
+  const sourcePath = named
+    ? (isPathInside(named, args.fromConfigHome) && fs.existsSync(named) ? named : null)
+    : await findClaudeThreadFile(args.fromConfigHome, args.threadId);
   if (!sourcePath) {
     return {
       ok: false,

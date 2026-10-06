@@ -106,6 +106,7 @@ const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 const ORIGINAL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
 const ORIGINAL_CODEX_HOME = process.env.CODEX_HOME;
+const ORIGINAL_ADE_HOME = process.env.ADE_HOME;
 
 vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeServer: vi.fn(async () => ({
@@ -2132,6 +2133,10 @@ beforeEach(() => {
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
+  // `ADE_HOME` wins over `os.homedir()` for the machine directory (the account
+  // registry lives there), so a test run from an agent shell that exports it
+  // would otherwise write the developer's real accounts.
+  process.env.ADE_HOME = path.join(tmpHomeRoot, ".ade");
   mockState.generation += 1;
   turnDiffMockState.beforeTreeGates = [];
   turnDiffMockState.collectSummary = null;
@@ -2276,6 +2281,8 @@ afterEach(async () => {
   else process.env.CLAUDE_CONFIG_DIR = ORIGINAL_CLAUDE_CONFIG_DIR;
   if (ORIGINAL_CODEX_HOME === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = ORIGINAL_CODEX_HOME;
+  if (ORIGINAL_ADE_HOME === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = ORIGINAL_ADE_HOME;
   try {
     fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
