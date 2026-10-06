@@ -28,6 +28,8 @@ import {
   isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
+  peekRuntimeCatalogScopeParse,
+  rememberRuntimeCatalogScopeParse,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
 
@@ -121,27 +123,7 @@ function adoptCatalogModelManifest(catalog: AgentChatModelCatalog): AgentChatMod
 
 export function resetRuntimeCatalogDescriptorCacheForTests(): void {
   clearRuntimeCatalogScopeDescriptors();
-  parsedCatalogByScope.clear();
 }
-
-/**
- * The last unfiltered parse of a scope's catalog.
- *
- * Parsing one machine's catalog builds a descriptor per row, and the chat pane's
- * read-only callers (the handoff list, Cursor Cloud eligibility, the `@model`
- * menu) re-parse the SAME catalog object on every mount — ~0.45 ms a call for an
- * 83-model catalog on Windows, tens of times per chat switch. Keyed by the
- * catalog object's identity and the registry generation, so a new catalog or any
- * registry change re-parses; `filter`ed callers (the open picker, harness reach)
- * keep the uncached path.
- */
-const MAX_PARSED_CATALOG_SCOPES = 16;
-const parsedCatalogByScope = new Map<string, {
-  catalog: AgentChatModelCatalog;
-  registryGeneration: number;
-  models: RuntimeCatalogModelDescriptor[];
-  availableModelIds: string[];
-}>();
 
 /**
  * A catalog descriptor states machine-specific facts — reasoning tiers, context
@@ -418,10 +400,11 @@ export function descriptorsFromAgentChatModelCatalog(
   if (!catalog) return { models: [], availableModelIds: [] };
   const generation = modelRegistryGeneration();
   if (!filter) {
-    const memo = parsedCatalogByScope.get(scopeKey);
+    const memo = peekRuntimeCatalogScopeParse(scopeKey);
     if (memo && memo.catalog === catalog && memo.registryGeneration === generation) {
-      // Re-publish into the scope's descriptor map: the parse is what populates
-      // it, and `clearRuntimeCatalogScopeDescriptors` can have emptied it since.
+      // Keep the scope's descriptor map in step with the memo. Both are dropped
+      // together now, so this is cheap insurance rather than a load-bearing
+      // repair: it means a memo hit and a real parse leave identical state.
       const scoped = runtimeCatalogScopeDescriptors(scopeKey);
       for (const descriptor of memo.models) scoped.set(descriptor.id, descriptor);
       return { models: memo.models, availableModelIds: memo.availableModelIds };
@@ -509,9 +492,7 @@ export function descriptorsFromAgentChatModelCatalog(
   }
   const parsed = { models: [...merged.values()], availableModelIds: [...available] };
   if (!filter) {
-    // Scopes are bounded by the machines a window tracks; this is a backstop.
-    if (parsedCatalogByScope.size >= MAX_PARSED_CATALOG_SCOPES) parsedCatalogByScope.clear();
-    parsedCatalogByScope.set(scopeKey, { catalog, registryGeneration: generation, ...parsed });
+    rememberRuntimeCatalogScopeParse(scopeKey, { catalog, registryGeneration: generation, ...parsed });
   }
   return parsed;
 }

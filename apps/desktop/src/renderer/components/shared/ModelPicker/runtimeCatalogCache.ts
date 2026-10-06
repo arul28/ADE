@@ -1,5 +1,6 @@
 import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
 import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
+import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
 
 const REFRESH_PROVIDER_BY_FAMILY: Partial<Record<ProviderFamily, AgentChatModelCatalogRefreshProvider>> = {
   opencode: "opencode",
@@ -76,6 +77,17 @@ type RuntimeCatalogScopeState = {
   // catalog rather than in a parallel registry so one cap and one eviction
   // govern both, and a dropped scope can never leave descriptors behind.
   descriptorsById: Map<string, ModelDescriptor>;
+  // The last UNFILTERED parse of `catalog`, memoized for the read-only callers
+  // that re-derive it per chat-pane mount. Beside the catalog for the same
+  // reason as `descriptorsById`: one cap, one eviction, and a reset cannot
+  // leave a parallel map holding descriptors for a machine this window dropped.
+  // `registryGeneration` pins it to the registry it was built against.
+  parsedCatalog: {
+    catalog: AgentChatModelCatalog;
+    registryGeneration: number;
+    models: RuntimeCatalogModelDescriptor[];
+    availableModelIds: string[];
+  } | null;
   // Identity of this bucket instance. A catalog fetch reserves the bucket and
   // remembers this value; a response that comes back after the bucket was
   // evicted or reset finds a different serial (or none) and is dropped instead
@@ -106,6 +118,7 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
   }
   const created: RuntimeCatalogScopeState = {
     catalog: null,
+    parsedCatalog: null,
     providerRefreshedAt: new Map(),
     cursorSourceRefreshedAt: new Map(),
     descriptorsById: new Map(),
@@ -138,7 +151,27 @@ export function peekRuntimeCatalogScopeDescriptors(
 }
 
 export function clearRuntimeCatalogScopeDescriptors(): void {
-  for (const scope of runtimeCatalogScopes.values()) scope.descriptorsById.clear();
+  for (const scope of runtimeCatalogScopes.values()) {
+    scope.descriptorsById.clear();
+    // The memoized parse IS those descriptors. Leaving it would hand the next
+    // caller rows this function was asked to forget.
+    scope.parsedCatalog = null;
+  }
+}
+
+/** This scope's memoized unfiltered parse, or null when it has none. */
+export function peekRuntimeCatalogScopeParse(
+  scopeKey: string,
+): RuntimeCatalogScopeState["parsedCatalog"] {
+  return peekRuntimeCatalogScope(scopeKey)?.parsedCatalog ?? null;
+}
+
+/** Remember this scope's unfiltered parse. */
+export function rememberRuntimeCatalogScopeParse(
+  scopeKey: string,
+  parsed: NonNullable<RuntimeCatalogScopeState["parsedCatalog"]>,
+): void {
+  runtimeCatalogScope(scopeKey).parsedCatalog = parsed;
 }
 
 export function resetModelPickerRuntimeCatalogForTests(): void {
