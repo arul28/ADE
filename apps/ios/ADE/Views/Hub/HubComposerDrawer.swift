@@ -799,7 +799,9 @@ struct HubInlineComposer: View {
   private func dispatch() {
     let outgoingAttachments = workChatInputReadyAttachments(attachments)
     guard canSend else {
-      holdsDestination = false
+      // A tap during a switch is refused (`busy`) and must not release the
+      // hold; the re-entry after a switch that cannot send does release it.
+      if !busy { holdsDestination = false }
       return
     }
     // Another machine's project: make that machine primary first, before the
