@@ -330,21 +330,57 @@ export function windowsExecutableExtensions(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
- * NTFS lookups ignore case, so a probe for `codex.cmd` succeeds against a file
- * actually named `codex.CMD` and vice versa. The resolved path is surfaced in
- * Settings and handed to other tools, so report the name as it is spelled on
- * disk instead of however PATHEXT happened to be cased.
+ * Windows directory listings, reused for a few seconds.
+ *
+ * Matching against a listing also reports the name as it is spelled on disk:
+ * NTFS lookups ignore case, so `codex.cmd` resolves against `codex.CMD`, and the
+ * resolved path is surfaced in Settings and handed to other tools.
+ *
+ * Probing `<dir>\<command><ext>` for every PATHEXT extension in both casings
+ * is 26 `stat` calls per directory, and a miss walks every PATH entry plus the
+ * known install dirs. Measured on a Windows PC with an 80-entry PATH: resolving
+ * the 14 CLIs ADE looks for took 29,536 `stat` calls and ~450 ms, on the
+ * brain's event loop, on every provider detection pass. One `readdir` per
+ * directory answers every candidate name for every command, in the casing on
+ * disk. Ten seconds covers a detection pass; a CLI installed since is found on
+ * the next pass, or at once after {@link invalidateExecutableLookupCache}.
  */
-function withOnDiskCasing(candidatePath: string): string {
-  if (process.platform !== "win32") return candidatePath;
-  const dir = path.dirname(candidatePath);
-  const base = path.basename(candidatePath);
+const WINDOWS_DIR_LISTING_TTL_MS = 10_000;
+const windowsDirListings = new Map<string, { expiresAt: number; names: Map<string, string> }>();
+
+function windowsDirEntries(dir: string): Map<string, string> {
+  const now = Date.now();
+  const cached = windowsDirListings.get(dir);
+  if (cached && cached.expiresAt > now) return cached.names;
+  const names = new Map<string, string>();
   try {
-    const actual = fs.readdirSync(dir).find((entry) => entry.toLowerCase() === base.toLowerCase());
-    return actual ? path.join(dir, actual) : candidatePath;
+    for (const entry of fs.readdirSync(dir)) {
+      const key = entry.toLowerCase();
+      if (!names.has(key)) names.set(key, entry);
+    }
   } catch {
-    return candidatePath;
+    // Missing or unreadable: nothing resolves here.
   }
+  windowsDirListings.set(dir, { expiresAt: now + WINDOWS_DIR_LISTING_TTL_MS, names });
+  return names;
+}
+
+/** Forget cached directory listings, e.g. before a forced provider re-detection. */
+export function invalidateExecutableLookupCache(): void {
+  windowsDirListings.clear();
+}
+
+function resolveFromWindowsDir(command: string, dir: string, extensions: readonly string[]): string | null {
+  const entries = windowsDirEntries(dir);
+  if (entries.size === 0) return null;
+  const candidateNames = extensions.length > 0 ? extensions.map((ext) => `${command}${ext}`) : [command];
+  for (const name of candidateNames) {
+    const actual = entries.get(name.toLowerCase());
+    if (!actual) continue;
+    const candidatePath = path.join(dir, actual);
+    if (isExecutableFile(candidatePath)) return candidatePath;
+  }
+  return null;
 }
 
 function resolveFromDirs(
@@ -352,12 +388,7 @@ function resolveFromDirs(
   dirs: Iterable<string>,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const commandHasExtension = path.extname(command).length > 0;
-  const extensions = process.platform === "win32" && !commandHasExtension
-    ? windowsExecutableExtensions(env)
-    : [];
-
-  for (const dir of dirs) {
+  if (process.platform === "win32") {
     // Windows cannot execute an extension-less file. `npm i -g` drops three
     // shims side by side — `codex` (a `#!/bin/sh` script for Git Bash),
     // `codex.cmd` and `codex.ps1` — and only the latter two are launchable
@@ -366,19 +397,21 @@ function resolveFromDirs(
     // wraps extension-less commands in `cmd.exe`, which re-applies PATHEXT, but
     // every consumer that spawns the resolved path directly (the Claude Agent
     // SDK via `pathToClaudeCodeExecutable`, node-pty, provider SDKs) gets ENOENT.
-    // Resolve the way Windows does: PATHEXT only. On other platforms the bare
-    // name is the executable.
-    const candidatePaths = extensions.length > 0
-      // Uppercase second, for the rare case-sensitive Windows directory.
-      ? extensions.flatMap((ext) => [
-          path.join(dir, `${command}${ext}`),
-          path.join(dir, `${command}${ext.toUpperCase()}`),
-        ])
-      : [path.join(dir, command)];
-
-    for (const candidatePath of candidatePaths) {
-      if (isExecutableFile(candidatePath)) return withOnDiskCasing(candidatePath);
+    // Resolve the way Windows does: PATHEXT only, in PATHEXT order, reported
+    // in the casing on disk (case-insensitive match, so a case-sensitive
+    // directory resolves too).
+    const extensions = path.extname(command).length > 0 ? [] : windowsExecutableExtensions(env);
+    for (const dir of dirs) {
+      const resolved = resolveFromWindowsDir(command, dir, extensions);
+      if (resolved) return resolved;
     }
+    return null;
+  }
+
+  // On other platforms the bare name is the executable.
+  for (const dir of dirs) {
+    const candidatePath = path.join(dir, command);
+    if (isExecutableFile(candidatePath)) return candidatePath;
   }
   return null;
 }
