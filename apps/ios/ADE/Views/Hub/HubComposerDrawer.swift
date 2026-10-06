@@ -10,6 +10,12 @@ import SwiftUI
 // PROJECT IN PLACE (no active-project switch), reports the created chat back
 // through `onCreated`, and collapses. The hub surfaces a toast; it does NOT
 // navigate into the chat.
+//
+// The picker also lists the projects of the other live machines. Sending to
+// one of those makes its machine primary first (the old primary stays
+// connected), then creates the chat there the same way. The draft stays in the
+// box until the switch succeeds, and the hub keeps the composer on screen
+// while it runs (`onMachineSwitch`), so a failed switch shows its error here.
 
 // MARK: - Public surface (the hub depends on these names)
 
@@ -51,10 +57,14 @@ let hubComposerSpring = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
 struct HubInlineComposer: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
 
   /// Owned by the hub so taps on the list behind the composer can collapse it.
   @Binding var expanded: Bool
   let onCreated: (HubCreatedChat) -> Void
+  /// True while a send is switching the primary machine. The hub keeps the
+  /// composer mounted meanwhile, though the primary is not connected.
+  var onMachineSwitch: (Bool) -> Void = { _ in }
 
   // Composer selection (seeded from the app-wide "last used" record in init so
   // the provider/model onChange handlers don't reset runtimeMode on first
@@ -74,6 +84,11 @@ struct HubInlineComposer: View {
   // auto-create sentinel; both are resolved against the TARGET project on send.
   @State private var pickedProjectId: String = ""
   @State private var selectedLaneId: String = ""
+  /// The machine of the picked project when it is not the primary one.
+  @State private var pickedMachineKey: String?
+  /// A send to another machine is switching the primary and then sending:
+  /// the roster refreshes this causes must not reset the chosen destination.
+  @State private var holdsDestination = false
 
   // UI / flow.
   @State private var draft: String = ""
@@ -94,9 +109,14 @@ struct HubInlineComposer: View {
 
   private let dictationTargetId = "hub-new-chat-drawer"
 
-  init(expanded: Binding<Bool>, onCreated: @escaping (HubCreatedChat) -> Void) {
+  init(
+    expanded: Binding<Bool>,
+    onCreated: @escaping (HubCreatedChat) -> Void,
+    onMachineSwitch: @escaping (Bool) -> Void = { _ in }
+  ) {
     self._expanded = expanded
     self.onCreated = onCreated
+    self.onMachineSwitch = onMachineSwitch
     var restoredProvider = "claude"
     var restoredModelId = "claude-sonnet-5"
     if let saved = WorkComposerPreferences.load() {
@@ -157,7 +177,16 @@ struct HubInlineComposer: View {
   }
 
   private var pickedProject: MobileProjectSummary? {
-    syncService.projects.first { $0.id == pickedProjectId }
+    if pickedMachineKey != nil { return pickedRemoteProject?.asRemoteMachineProjectSummary }
+    return syncService.projects.first { $0.id == pickedProjectId }
+  }
+
+  private var pickedRemoteMachine: MachineFleet.Machine? {
+    pickedMachineKey.flatMap { machineFleet.machine(for: $0) }
+  }
+
+  private var pickedRemoteProject: RemoteRosterProject? {
+    pickedRemoteMachine?.projects.first { $0.projectId == pickedProjectId }
   }
 
   private var lanesForPickedProject: [RemoteRosterLane] {
@@ -208,7 +237,9 @@ struct HubInlineComposer: View {
   }
 
   private var canUploadAttachments: Bool {
-    attachmentsAvailable
+    // Another machine's project: that machine is checked once it is primary.
+    if pickedMachineKey != nil { return true }
+    return attachmentsAvailable
       && syncService.connectionState == .connected
   }
 
@@ -289,17 +320,25 @@ struct HubInlineComposer: View {
       // binding — drop focus so the keyboard goes down with the panel.
       if !nowExpanded { composerFocused = false }
     }
-    // The keyboard can disappear without SwiftUI clearing focus (interactive
-    // scroll dismissal, hardware-keyboard toggles). Never leave the panel
-    // expanded with no keyboard and no way out — unless a picker or dictation
-    // legitimately owns the screen.
+    // The keyboard can disappear while the panel is open (interactive scroll
+    // dismissal). Never leave the panel expanded once the field lost focus —
+    // unless a picker or dictation legitimately owns the screen. A field that
+    // keeps focus means a hardware keyboard took over (iPad, a paired keyboard,
+    // the simulator): its software keyboard "hides" the moment it shows, and
+    // collapsing then made the composer impossible to open. The hub's tap
+    // outside still collapses it.
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
       guard expanded,
             !modelPickerPresented,
             !destinationPickerPresented,
             presentedPicker == nil,
             !isDictating else { return }
-      collapse()
+      // The text view reports a resign in `textViewDidEndEditing`, which can
+      // land just after this notification; read focus on the next turn.
+      DispatchQueue.main.async {
+        guard expanded, !composerFocused else { return }
+        collapse()
+      }
     }
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
@@ -308,6 +347,7 @@ struct HubInlineComposer: View {
     // roster refreshes) — keep the persisted destination honest against them.
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
+    .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -343,7 +383,10 @@ struct HubInlineComposer: View {
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.accent)
 
-        Text(pickedProject?.displayName ?? "Select project")
+        Text(hubComposerDestinationTitle(
+          projectName: pickedProject?.displayName,
+          machineName: pickedRemoteMachine?.name
+        ))
           .font(.system(.subheadline, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -373,6 +416,8 @@ struct HubInlineComposer: View {
       }
     )
     .onPreferenceChange(HubDestinationTopKey.self) { destinationControlTopY = $0 }
+    // Fixed while a send runs: it switches machines to reach this destination.
+    .disabled(busy)
     .accessibilityLabel("Destination")
     .accessibilityValue("\(pickedProject?.displayName ?? "No project"), \(selectedLaneName)")
     .accessibilityHint("Choose the project and lane for this chat.")
@@ -431,11 +476,20 @@ struct HubInlineComposer: View {
       sectionLabel("PROJECT")
       ScrollView {
         LazyVStack(spacing: 2) {
+          if !machineFleet.composerDestinationMachines.isEmpty {
+            HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
+          }
           if syncService.projects.isEmpty {
             emptyPickerRow("No projects on this machine")
           } else {
             ForEach(syncService.projects) { project in
               projectRow(project)
+            }
+          }
+          ForEach(machineFleet.composerDestinationMachines) { machine in
+            HubComposerMachineHeader(name: machine.name)
+            ForEach(machine.projects, id: \.projectId) { project in
+              projectRow(project.asRemoteMachineProjectSummary, machineKey: machine.machineKey)
             }
           }
         }
@@ -484,10 +538,12 @@ struct HubInlineComposer: View {
       .padding(.vertical, 12)
   }
 
-  private func projectRow(_ project: MobileProjectSummary) -> some View {
-    let isSelected = project.id == pickedProjectId
+  /// `machineKey`: the project's machine when it is not the primary one.
+  private func projectRow(_ project: MobileProjectSummary, machineKey: String? = nil) -> some View {
+    let isSelected = project.id == pickedProjectId && machineKey == pickedMachineKey
     return Button {
-      guard project.id != pickedProjectId else { return }
+      guard !isSelected else { return }
+      pickedMachineKey = machineKey
       pickedProjectId = project.id
       // Switching projects resets only that project's lane selection.
       selectedLaneId = defaultLaneId(forProjectId: project.id)
@@ -742,7 +798,27 @@ struct HubInlineComposer: View {
   @MainActor
   private func dispatch() {
     let outgoingAttachments = workChatInputReadyAttachments(attachments)
-    guard canSend else { return }
+    guard canSend else {
+      // A tap during a switch is refused (`busy`) and must not release the
+      // hold; the re-entry after a switch that cannot send does release it.
+      if !busy { holdsDestination = false }
+      return
+    }
+    // Another machine's project: make that machine primary first, before the
+    // draft is cleared, then send as usual.
+    if let key = pickedMachineKey, key != syncService.focusedMachineKey {
+      holdsDestination = true
+      // Set before the task runs, so a second tap cannot start a second switch.
+      busy = true
+      Task {
+        guard await focusPickedMachine(key) else {
+          holdsDestination = false
+          return
+        }
+        dispatch()
+      }
+      return
+    }
     let restoredDraft = draft
     let restoredAttachments = attachments
     collapse()
@@ -753,6 +829,7 @@ struct HubInlineComposer: View {
     WorkComposerDraftStore.clear(WorkComposerDraftStore.hubNewChatKey)
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
+      holdsDestination = false
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -1099,9 +1176,52 @@ struct HubInlineComposer: View {
     }
   }
 
+  /// Makes the picked project's machine primary so the chat can be created
+  /// there; the previous primary stays connected. False (with the error set)
+  /// when that machine cannot be reached or does not list the project.
+  @MainActor
+  private func focusPickedMachine(_ key: String) async -> Bool {
+    let machineName = pickedRemoteMachine?.name ?? "that machine"
+    let projectId = pickedProjectId
+    let rootPath = syncNormalizedProjectRootScope(pickedRemoteProject?.rootPath)
+    // The switch reconciles the destination against a roster that may not have
+    // its lanes yet; the lane the user chose belongs to that machine and stays.
+    let laneId = selectedLaneId
+    busy = true
+    errorMessage = nil
+    onMachineSwitch(true)
+    defer { onMachineSwitch(false) }
+    let switched = await syncService.switchFocusKeepingPrevious(toMachineKey: key)
+    busy = false
+    guard switched else {
+      // The switch can retarget the destination mid-way; a retry must still go
+      // to the machine the user picked.
+      pickedMachineKey = key
+      pickedProjectId = projectId
+      selectedLaneId = laneId
+      errorMessage = "Can’t reach \(machineName) right now."
+      return false
+    }
+    // The catalog can name the project by a cached id: match its folder too.
+    guard let project = syncService.projects.first(where: { candidate in
+      candidate.id == projectId
+        || (rootPath != nil && syncNormalizedProjectRootScope(candidate.rootPath) == rootPath)
+    }) else {
+      errorMessage = "\(machineName) no longer has that project."
+      return false
+    }
+    pickedMachineKey = nil
+    pickedProjectId = project.id
+    selectedLaneId = laneId
+    return true
+  }
+
   // MARK: Destination resolution
 
   private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
+    if pickedMachineKey != nil {
+      return pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+    }
     guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
     return syncService.rosterProject(for: project)?.lanes ?? []
   }
@@ -1123,6 +1243,22 @@ struct HubInlineComposer: View {
   /// lane lists: keep a still-valid choice, else fall back to the active project
   /// (then first) and that project's primary/first lane.
   private func reconcileDestination() {
+    guard !holdsDestination else { return }
+    if let key = pickedMachineKey {
+      if key == syncService.focusedMachineKey {
+        // That machine became primary: the same project id names it there.
+        pickedMachineKey = nil
+      } else if pickedRemoteProject != nil {
+        if !isAutoCreateLane, !lanesForPickedProject.contains(where: { $0.id == selectedLaneId }) {
+          selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
+        }
+        return
+      } else {
+        // The machine went away or no longer has the project.
+        pickedMachineKey = nil
+        pickedProjectId = ""
+      }
+    }
     let projects = syncService.projects
     guard !projects.isEmpty else {
       pickedProjectId = ""

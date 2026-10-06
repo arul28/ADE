@@ -38,6 +38,7 @@ struct HubScreen: View {
   // Whether the bottom composer is expanded (keyboard/session controls up).
   // Owned here so taps on the list behind it collapse it.
   @State private var composerExpanded = false
+  @State private var composerSwitchingMachine = false
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -67,7 +68,10 @@ struct HubScreen: View {
   @Environment(\.scenePhase) private var scenePhase
 
   private var isNoMachineBlankState: Bool {
-    (syncService.connectionState == .disconnected || syncService.connectionState == .error)
+    // A send switching machines keeps the hub (and its composer) up through
+    // the reconnect, so its draft and any error stay on screen.
+    !composerSwitchingMachine
+      && (syncService.connectionState == .disconnected || syncService.connectionState == .error)
       && fleetMerge.extraProjects.isEmpty
   }
 
@@ -321,10 +325,16 @@ struct HubScreen: View {
         }
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if canShowProjects {
+        // Kept while a send switches machines: the primary is reconnecting,
+        // and the draft and any error belong to this composer.
+        if canShowProjects || composerSwitchingMachine {
           // No band behind it: the glass composer floats over the list, which
           // scrolls under it edge to edge.
-          HubInlineComposer(expanded: $composerExpanded, onCreated: handleCreated)
+          HubInlineComposer(
+            expanded: $composerExpanded,
+            onCreated: handleCreated,
+            onMachineSwitch: { composerSwitchingMachine = $0 }
+          )
         }
       }
     }
@@ -558,7 +568,9 @@ struct HubScreen: View {
   private func rebuildHubProjectPresentations() {
     let focusedProjects = hubProjects
     let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
-    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines)
+    // Only machines the user keeps connected: a disconnected machine's last
+    // roster would keep its projects on the hub (and hide the no-machine state).
+    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines.filter(\.isPinned))
     if merge != fleetMerge { fleetMerge = merge }
     var nextPresentations = focusedRosters.map { entry in
       buildHubProjectPresentation(

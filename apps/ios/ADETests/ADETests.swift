@@ -3759,6 +3759,93 @@ final class ADETests: XCTestCase {
     )
   }
 
+  /// Two machines can share a hint — a DHCP-reused address, the previous
+  /// machine's route still current while the next one is saved, a display
+  /// name — but different device identities mean two pairings, and both stay.
+  /// An older profile that never learned its identity may fold into the
+  /// identified one but never replaces it, even when it is newer.
+  @MainActor
+  func testSavedProfilesKeepEveryIdentifiedMachineThroughSharedHints() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    func profile(identity: String?, name: String, address: String, updatedAt: String) -> HostConnectionProfile {
+      HostConnectionProfile(
+        hostIdentity: identity,
+        hostName: name,
+        port: 8787,
+        authKind: "paired",
+        pairedDeviceId: "phone",
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: identity,
+        lastSuccessfulAddress: address,
+        savedAddressCandidates: [address],
+        discoveredLanAddresses: [address],
+        tailscaleAddress: nil,
+        updatedAt: updatedAt
+      )
+    }
+    let studio = profile(identity: "studio-id", name: "Mac Studio", address: "192.168.1.113", updatedAt: "2026-10-06T06:00:00Z")
+    // Same last address as the studio: the stale-route case.
+    let windows = profile(identity: "windows-id", name: "windows", address: "192.168.1.113", updatedAt: "2026-10-06T06:01:00Z")
+    service.installSavedProfileForTesting(studio, token: "studio-secret")
+    service.installSavedProfileForTesting(windows, token: "windows-secret")
+    XCTAssertEqual(
+      Set(service.savedProfilesForTesting().compactMap(\.hostIdentity)),
+      ["studio-id", "windows-id"],
+      "A shared address must not merge two machines."
+    )
+
+    // A newer identity-less profile with the studio's name.
+    let legacy = profile(identity: nil, name: "Mac Studio", address: "10.0.0.9", updatedAt: "2026-10-06T07:00:00Z")
+    service.installSavedProfileForTesting(legacy, token: "legacy-secret")
+    let saved = service.savedProfilesForTesting()
+    XCTAssertEqual(Set(saved.compactMap(\.hostIdentity)), ["studio-id", "windows-id"])
+    XCTAssertFalse(saved.contains { $0.hostIdentity == nil }, "The identity-less profile must not replace the identified one.")
+    XCTAssertEqual(saved.count, 2)
+    XCTAssertTrue(service.hasCredentialForTesting(studio))
+    XCTAssertTrue(service.hasCredentialForTesting(windows))
+  }
+
+  /// Disconnecting the primary machine means it stays off until the user
+  /// connects it again: Settings lists it as available (with Connect), not as
+  /// a primary that cannot be reached, and a machine the user connects next
+  /// becomes primary instead of a fleet machine beside nothing.
+  @MainActor
+  func testUserDisconnectedPrimaryListsAsAvailable() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-id",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret", makeActive: true)
+    let fleet = MachineFleet()
+
+    service.disconnectForUserConnectionChange()
+
+    let row = try XCTUnwrap(settingsMachines(
+      syncService: service,
+      account: AccountService.shared,
+      fleet: fleet,
+      hidden: HiddenMachineStore.shared
+    ).first { $0.machineKey == "machine:studio-id" })
+    XCTAssertEqual(row.link, .available)
+    XCTAssertFalse(row.isConnectedSet)
+    XCTAssertFalse(service.primaryIsAttached)
+    XCTAssertEqual(service.focusedMachineKey, "machine:studio-id", "The pairing is kept; only the connection is off.")
+  }
+
   @MainActor
   func testMatchingAccountRelayMetadataPreservesDirectPairingOwnership() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

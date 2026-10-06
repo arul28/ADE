@@ -5086,6 +5086,12 @@ final class SyncService: ObservableObject {
 
   func disconnectForUserConnectionChange() {
     prepareForUserConnectionChange()
+    // A machine the user disconnects stays disconnected until they connect it
+    // again: out of the fleet's connected set too, or the next machine they
+    // connect to would make this one a fleet machine and dial it straight back.
+    if let focusedMachineKey {
+      machineFleet?.stopKeepingLive(machineKey: focusedMachineKey)
+    }
     // An explicit disconnect has no hello to arrive later, so the Hub
     // transition has to happen here or not at all.
     projectHubPresented = true
@@ -6738,9 +6744,29 @@ final class SyncService: ObservableObject {
     var keyToIndex: [String: Int] = [:]
     for profile in profiles.values {
       let identityKeys = profileIdentityKeys(profile)
-      let matchedIndex = identityKeys.lazy.compactMap { keyToIndex[$0] }.first
+      // A name or last-address match is only a hint. Two profiles that each
+      // know their machine's identity, and the identities differ, are two
+      // machines: a shared address (a DHCP lease, the previous machine's route
+      // still current while the next one is saved) or a shared display name
+      // must never merge them, or one machine's pairing is silently dropped.
+      let matchedIndex = identityKeys.lazy.compactMap { keyToIndex[$0] }.first { index in
+        guard let identity = profile.machineIdentity,
+              let otherIdentity = canonicalProfiles[index].machineIdentity
+        else { return true }
+        return identity == otherIdentity
+      }
       if let index = matchedIndex {
-        if shouldPreferProfile(profile, over: canonicalProfiles[index]) {
+        let existing = canonicalProfiles[index]
+        // An older profile that never learned its identity may merge with an
+        // identified one, but the identified profile always wins, in either
+        // order: it is the one its pairing token is keyed by.
+        let replaces: Bool
+        switch (existing.machineIdentity != nil, profile.machineIdentity != nil) {
+        case (false, true): replaces = true
+        case (true, false): replaces = false
+        default: replaces = shouldPreferProfile(profile, over: existing)
+        }
+        if replaces {
           canonicalProfiles[index] = profile
         }
         for key in identityKeys { keyToIndex[key] = index }
@@ -20613,18 +20639,27 @@ final class SyncService: ObservableObject {
       let ack = try decode(payload, as: SyncChangesetAckPayload.self)
       handleChangesetAck(ack)
     case "brain_status":
-      if let dict = payload as? [String: Any] {
-        if let brain = dict["brain"] as? [String: Any] {
-          setHostName(brain["deviceName"] as? String)
-          updateProfile { profile in
-            profile.hostName = brain["deviceName"] as? String
-            profile.lastHostDeviceId = brain["deviceId"] as? String
-          }
-          if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
-            let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
-            let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
-            recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
-          }
+      // A status from the previous machine's socket can land just after the
+      // phone switched to another one. Writing it would stamp the old
+      // machine's id, name and relay route onto the new machine's saved
+      // profile, which then read as the same machine and dropped a pairing.
+      let statusMachine = ((payload as? [String: Any])?["brain"] as? [String: Any])
+        .flatMap { syncNonEmpty($0["deviceId"] as? String)?.lowercased() }
+      let statusIsForActiveMachine = statusMachine == nil
+        || activeHostProfile?.machineIdentity == nil
+        || statusMachine == activeHostProfile?.machineIdentity
+      if statusIsForActiveMachine,
+         let dict = payload as? [String: Any],
+         let brain = dict["brain"] as? [String: Any] {
+        setHostName(brain["deviceName"] as? String)
+        updateProfile { profile in
+          profile.hostName = brain["deviceName"] as? String
+          profile.lastHostDeviceId = brain["deviceId"] as? String
+        }
+        if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
+          let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
+          let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
+          recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
         }
         // Relay reachability can flip live. `brain_status` always carries
         // `cloudRelayWssUrl` on new hosts: a wss route when the relay is up,
@@ -25353,6 +25388,28 @@ extension SyncService {
     return await reconnect(toSavedHost: host)
   }
 
+  /// Make another machine primary; the previous primary stays connected as a
+  /// fleet machine when it was live. One that was not live stays off.
+  @discardableResult
+  func switchFocusKeepingPrevious(toMachineKey machineKey: String) async -> Bool {
+    if let previous = focusedMachineKey, previous != machineKey, connectionState == .connected {
+      machineFleet?.markConnected(machineKey: previous)
+    }
+    return await switchFocus(toMachineKey: machineKey)
+  }
+
+  /// A primary machine is chosen and connected or connecting. Without one, a
+  /// machine the user connects becomes primary rather than a fleet machine.
+  var primaryIsAttached: Bool {
+    focusedMachineKey != nil && (connectionState == .connected || connectionState == .connecting)
+  }
+
+  /// The user disconnected the primary: it stays off until they connect it
+  /// again, and lists as available rather than as an unreachable primary.
+  var primaryDisconnectedByUser: Bool {
+    connectionState == .disconnected && autoReconnectPausedByUser
+  }
+
   /// Settings "Forget on this phone": the machine leaves the connected set,
   /// its saved pairing (profile and token) is dropped, and it is hidden from
   /// this phone's lists until it comes back (`HiddenMachineStore`).
@@ -25368,18 +25425,20 @@ extension SyncService {
     HiddenMachineStore.shared.hide(identity: hiddenIdentity, isAvailableNow: isAvailableNow)
   }
 
-  /// Pairs an account machine this phone never paired and keeps it connected.
-  /// Pairing attaches the phone to it; the previous primary machine stays
-  /// primary. Returns false when the pairing fails.
-  func pairAccountMachineKeepingPrimary(
+  /// Pairs an account machine this phone never paired, next to the machines
+  /// already connected. Pairing attaches the phone to it, so it becomes the
+  /// primary machine; the previous primary stays connected as a fleet machine
+  /// when it was live. Switching focus back would cost a second full reconnect
+  /// to the previous machine for nothing. Returns false when the pairing fails.
+  func pairAccountMachineKeepingPrevious(
     _ machine: AccountMachine,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
     let previousKey = focusedMachineKey
+    let previousWasLive = connectionState == .connected
     guard await pairWithAccountMachine(machine, authorization: authorization) else { return false }
-    if let previousKey, let newKey = focusedMachineKey, newKey != previousKey {
-      machineFleet?.markConnected(machineKey: newKey)
-      _ = await switchFocus(toMachineKey: previousKey)
+    if let previousKey, previousWasLive, let newKey = focusedMachineKey, newKey != previousKey {
+      machineFleet?.markConnected(machineKey: previousKey)
     }
     return true
   }

@@ -102,9 +102,21 @@ extension SyncService {
     )
   }
 
-  /// The primary (focused) machine's name for machine lists and chips.
+  /// The primary (focused) machine's name for machine lists and chips: the
+  /// account's name for it ("windows") when it has one, as Settings shows it,
+  /// else the computer's own host name.
   var focusedMachineDisplayName: String {
-    nonEmptyTrimmed(hostName) ?? nonEmptyTrimmed(activeHostProfile?.hostName) ?? "This machine"
+    focusedMachineAccountName ?? "This machine"
+  }
+
+  /// `focusedMachineDisplayName` without the placeholder: nil when the phone
+  /// knows no name for the primary machine.
+  var focusedMachineAccountName: String? {
+    accountMachinePresentationName(
+      hostIdentity: activeHostProfile?.machineIdentity,
+      fallback: nonEmptyTrimmed(hostName) ?? activeHostProfile?.hostName,
+      machines: AccountService.shared.machines
+    )
   }
 
   /// `machineKey`'s checkout of the focused repository, if it has one.

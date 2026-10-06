@@ -122,6 +122,8 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          // Machine names come from the directory: a rename shows at once.
+          self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
           self.hiddenMachines.reconcile(
             // Both keys a row can be hidden under: the device identity, and
@@ -502,7 +504,12 @@ final class MachineFleet: ObservableObject {
       }
       return Machine(
         machineKey: key,
-        name: connection.hostName ?? nonEmptyTrimmed(connection.profile.hostName) ?? "Machine",
+        // The account's name for the machine, as Settings lists it.
+        name: accountMachinePresentationName(
+          hostIdentity: HiddenMachineStore.identity(fromFleetKey: key),
+          fallback: connection.hostName ?? nonEmptyTrimmed(connection.profile.hostName),
+          machines: AccountService.shared.machines
+        ) ?? "Machine",
         state: state,
         projects: connection.rosterProjects,
         rosterRevision: connection.rosterRevision,

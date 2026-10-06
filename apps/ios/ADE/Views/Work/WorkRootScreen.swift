@@ -247,11 +247,12 @@ struct WorkRootSyncInputs: Equatable {
     spawnKindUpdateAvailable = sync.supportsSpawnKindUpdate
     deleteSessionAvailable = sync.supportsWorkSessionDeletion
     generateNamesAvailable = sync.canInvokeRemoteAction("chat.regenerateSessionMetadata")
-    if let fleet, !fleet.machines.isEmpty, let activeProject {
+    // Only machines the user keeps connected; a disconnected one stays off.
+    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: fleet.machines,
+        machines: connected,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
       )

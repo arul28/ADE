@@ -16,8 +16,8 @@ import {
 type DiscoveredMachineRowProps = {
   machine: RemoteRuntimeDiscoveredMachine;
   section: MachineSection;
-  busyId: string | null;
-  saving: boolean;
+  /** This machine's own connect is in flight. Other rows never set it. */
+  busy: boolean;
   testOpen: boolean;
   onConnect: (machine: RemoteRuntimeDiscoveredMachine) => void;
   onToggleTest: (machineId: string) => void;
@@ -26,8 +26,7 @@ type DiscoveredMachineRowProps = {
 export function DiscoveredMachineRow({
   machine,
   section,
-  busyId,
-  saving,
+  busy,
   testOpen,
   onConnect,
   onToggleTest,
@@ -67,7 +66,7 @@ export function DiscoveredMachineRow({
               <>
                 <button
                   type="button"
-                  disabled={!route || busyId != null || saving}
+                  disabled={!route || busy}
                   onClick={() => onConnect(machine)}
                   style={{
                     ...primaryButton({
@@ -75,17 +74,17 @@ export function DiscoveredMachineRow({
                       padding: "0 10px",
                       fontSize: 11,
                     }),
-                    opacity: route && busyId == null && !saving ? 1 : 0.55,
+                    opacity: route && !busy ? 1 : 0.55,
                   }}
                 >
                   <PlugsConnected size={14} weight="bold" />
-                  {busyId === machine.id ? "Opening…" : "Pair"}
+                  {busy ? "Opening…" : "Pair"}
                 </button>
                 <button
                   type="button"
                   aria-controls={`remote-discovered-test-${machine.id}`}
                   aria-expanded={testOpen}
-                  disabled={busyId != null}
+                  disabled={busy}
                   onClick={() => onToggleTest(machine.id)}
                   style={outlineButton({
                     height: 30,

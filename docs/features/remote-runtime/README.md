@@ -1082,6 +1082,15 @@ run a local repair against data owned by the remote machine. See
    failure surfaces inline with a one-tap jump into Nearby + PIN pairing
    when the same machine is discoverable locally.
 
+   A connect locks only its own row in the Machines pane (`useRowActions`); every
+   other row keeps Connect, Edit and Remove. A connecting or reconnecting row shows
+   Cancel, which is a manual disconnect: main's disconnect generation ends the
+   in-flight connect for that target, including one still in the account ownership
+   check, and the renderer ignores its late answer. Remove works while connecting
+   and cancels first. Main cannot interrupt an account pairing, so a cancelled
+   pairing keeps its row at "Stopping…" until it settles, and a second pairing for
+   the same machine cannot start meanwhile.
+
    `ade-adopt-v1` protects the *credentials* exchanged during adoption (the
    account bearer, the DPoP proof, and the minted paired secret are all
    sealed), not the confidentiality of the ongoing session. After adoption
