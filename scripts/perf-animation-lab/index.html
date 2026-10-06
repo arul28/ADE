@@ -23,6 +23,18 @@
   /* E/F: the same two, on an element hinted into its own compositing layer. */
   .strategy-layer .box { animation: lab-spin 1s steps(30) infinite; will-change: transform; }
   .strategy-layersmooth .box { animation: lab-spin 1s linear infinite; will-change: transform; }
+  /* Sheens: a translated gradient bar, ADE's `ade-launch-rail-sheen` shape.
+     `sheen` is the shipped smooth form; `sheensteps` is the same at 30 steps
+     a second (1.5s x 30 = 45). Both carry will-change like the real one. */
+  @keyframes lab-sheen { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+  .strategy-sheen .box, .strategy-sheensteps .box { overflow: hidden; position: relative; width: 120px; }
+  .strategy-sheen .ring, .strategy-sheensteps .ring {
+    width: 48px; height: 16px; border-radius: 9999px; border: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(221,214,254,0.7) 50%, transparent 100%);
+    will-change: transform;
+  }
+  .strategy-sheen .ring { animation: lab-sheen 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+  .strategy-sheensteps .ring { animation: lab-sheen 1.5s steps(45) infinite; }
   /* G: a composited opacity pulse instead of a rotation. */
   @keyframes lab-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
   .strategy-opacity .box { animation: lab-pulse 1.2s linear infinite; }

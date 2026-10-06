@@ -5483,7 +5483,10 @@ button, [role="button"] {
   width: 40%;
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent 0%, rgba(221, 214, 254, 0.7) 50%, transparent 100%);
-  animation: ade-launch-rail-sheen 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  /* steps = 1.5s x 30. A smooth sweep re-runs full-window paint at the display
+     rate; quantized it is ~3x cheaper (traced: 3 sheens over 8s, 206-256ms of
+     compositor draw smooth, 65-68ms stepped). The easing is traded for that. */
+  animation: ade-launch-rail-sheen 1.5s steps(45) infinite;
   will-change: transform;
   pointer-events: none;
 }
@@ -5604,7 +5607,8 @@ button, [role="button"] {
   background-size: auto, auto, 220% 100%;
   background-position: center, center, 0 0;
   background-repeat: no-repeat;
-  animation: ade-reasoning-ultra-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-reasoning-ultra-sheen 3.8s steps(114) infinite;
 }
 
 .ade-reasoning-effort-trigger-ultra > *,
@@ -5646,7 +5650,8 @@ button, [role="button"] {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
   filter: blur(4px);
-  animation: ade-workflow-card-sheen 3.8s ease-in-out infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-workflow-card-sheen 3.8s steps(114) infinite;
 }
 
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-fill,

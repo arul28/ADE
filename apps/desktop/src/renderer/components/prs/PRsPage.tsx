@@ -416,7 +416,8 @@ function PRsPageInner({ active }: { active: boolean }) {
         .prs-shimmer-bar {
           background: linear-gradient(90deg, rgba(167,139,250,0.04) 25%, rgba(167,139,250,0.10) 50%, rgba(167,139,250,0.04) 75%);
           background-size: 200% 100%;
-          animation: prs-shimmer 1.8s ease-in-out infinite;
+          /* steps = 1.8s x 30; see ade-launch-rail-sheen in index.css. */
+          animation: prs-shimmer 1.8s steps(54) infinite;
         }
       `}</style>
       <div className="prs-shimmer-bar h-4 w-44 rounded-md" />

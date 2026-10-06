@@ -788,7 +788,7 @@ export function CommitHistoryView({
       <style>{`.chv .chv-tile g, .chv .chv-row { transition: opacity 120ms ease-out; } .chv .chv-tile .chv-edge { transition: stroke-width 120ms ease-out; }`}</style>
       {loading && commits.length > 0 ? (
         <div role="progressbar" aria-label="Refreshing commits" className="absolute inset-x-0 top-0 z-[2] h-px overflow-hidden">
-          <div className="h-full w-1/3 animate-[chv-sweep_1.1s_ease-in-out_infinite] bg-[var(--color-accent)]" />
+          <div className="h-full w-1/3 animate-[chv-sweep_1.1s_steps(33)_infinite] bg-[var(--color-accent)]" />
           <style>{`@keyframes chv-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }`}</style>
         </div>
       ) : null}
