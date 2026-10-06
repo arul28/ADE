@@ -249,6 +249,22 @@ a lock file per read cost the brain another 13 s per 10 minutes — and for
 
 ---
 
+## 12. `localeCompare` with an options object rebuilds a collator per call
+
+**Failure.** V8 caches a collator for `a.localeCompare(b)` only. Pass an options
+object — `localeCompare(b, undefined, { sensitivity: "base" })`, the shape used
+all over ADE for case-insensitive ordering — and every single comparison
+constructs a fresh `Intl.Collator`. A 110-label sort measured 1.40 ms that way
+and 0.023 ms through one collator built at module scope: 60x. It is a cost on
+every platform, but Windows is where it was found, in a sort the chat pane ran on
+every mount.
+
+**Do instead.** `compareTextInsensitive` / `compareTextNatural` from
+`apps/desktop/src/shared/formatting.ts`. A new `localeCompare` call with an
+options argument in a sort comparator is a finding.
+
+---
+
 ## Smaller traps worth knowing
 
 - **Port 8787 is often taken by Tailscale** on Windows; the projectless brain
@@ -269,6 +285,15 @@ a lock file per read cost the brain another 13 s per 10 minutes — and for
   with `steps()` — spinners use duration x 30 steps (`--animate-spin` in
   `renderer/index.css`) — and cap rAF-driven work by elapsed time, as the
   streaming text reveal does (`TEXT_REVEAL_MIN_COMMIT_INTERVAL_MS`).
+  `steps()` is where it stops: do **not** replace a stepped animation with a JS
+  timer that writes the value itself. A stepped keyframe still draws every vsync,
+  but an unchanged draw is nearly free (three 16px spinners: 65 ms of compositor
+  draw per 8 s, no main-thread work). A 30 Hz JS clock does cut draws to 30/s and
+  still measured 2.3x the total work, because each tick adds style recalc,
+  layerize, raster and script. `will-change: transform` changes nothing.
+  Re-measure with `scripts/perf-animation-lab` before trusting any of this on a
+  new Electron, and read its README first: process CPU is too noisy on a
+  many-core Windows box to measure an animation at all.
 - **The full local suite is not clean on a Windows host.** POSIX-only fixtures,
   Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races
   fail there by design; only the focused Windows suites are signal-bearing

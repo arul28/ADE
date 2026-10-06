@@ -237,7 +237,53 @@ Why spinners: Electron does not composite CSS rotations (keyframes, the `rotate`
 
 - **Single SQLite writes of 190-346 ms** (`writeOwnRow`, `setLastError`) in the dev brain. WAL with `synchronous = NORMAL` is already set; the likely causes are lock waits against a second brain on the same project database (a dev setup artifact) or WAL checkpoints. Needs a measurement on a single-brain machine before any change.
 - **`ensureLocalDevice` writes the device row on every call** with a fresh `last_seen_at`, several times a second, and each write replicates to peers. Skipping unchanged writes for a few seconds touches sync semantics; decide what `last_seen_at` freshness peers need first.
-- **Stepped animations still tick every frame.** Blink re-evaluates a `steps()` animation each vsync even when its value has not changed; the tick is ~0.25 ms with nothing to repaint. Removing it needs a timer-driven spinner (30 updates a second) shared by the 190 `animate-spin` call sites.
 - **Chat switch** costs the same on a production renderer as on the dev build: ~280 ms to settle warm, 500-900 ms cold, ~230 ms of main-thread work per warm switch, almost all script (style ~30 ms, layout ~8 ms). Measured by navigating the dev window to `vite preview` of a sourcemapped `vite build` and mapping CPU profiles back to source. Per warm switch: the transcript list ~38 ms and the chat pane ~32 ms inclusive; model-catalog work ~24 ms — `handoffAvailableModelIds` and `orderAvailableModelIds` in `AgentChatPane.tsx`, `descriptorsFromAgentChatModelCatalog`, `cursorCloudEligibleModelIds` — because `getModelById` rebuilds a dynamic OpenCode/Pi descriptor on every call and the pane recomputes these per mount. Making the ordering O(n) did not move it; caching resolved descriptors, or keeping the pane mounted across switches, is the lever. The `MeasuredEventRow` `offsetHeight` read is the commit's own style and layout arriving early, not extra work.
 - **Claude follow-ups respawn the CLI on Windows** (no background-job reattach), so every turn pays a process launch; see `docs/development/windows-support.md`.
 - Smooth sheen animations (`ade-launch-rail-sheen`, `ade-reasoning-ultra-sheen`, `ade-workflow-card-sheen`, `chv-sweep`, `prs-shimmer`) and decorative onboarding loops are not quantized yet.
+
+---
+
+## Windows pass, round 2 (2026-10-06)
+
+Same PC and method as the pass above: isolate the real unit and measure it
+before and after. Renderer animation costs are measured with a fresh Electron
+window and a Chromium trace over CDP (`scripts/perf-animation-lab`), never with
+process CPU -- on this 32-core machine with other agents building, the same
+strategy sampled 11.0% then 5.0% of a core and the ordering inverted between
+runs, while the trace repeats to within 2%.
+
+### Applied
+
+| Change | Where | Measured |
+|---|---|---|
+| An unfiltered catalog parse is memoized per machine scope, keyed on the catalog object's identity and a new registry generation; a `filter`ed caller (the open picker, harness reach) keeps the uncached path | `ModelPicker/modelCatalog.ts`, `shared/modelRegistry.ts` | `descriptorsFromAgentChatModelCatalog` on this machine's real 83-model catalog: 0.448 -> 0.002 ms a call |
+| `getModelById` caches the descriptors its parse-and-construct tail builds for dynamic ids (`pi:...`, OpenCode refs, `ollama/...`, `cursor/...`, `droid/...`), dropped on a registry-generation change | `shared/modelRegistry.ts` | 110 mixed ids: 0.112 -> 0.019 ms |
+| Model-label and lane-name sorts go through one shared `Intl.Collator` | `shared/formatting.ts` and its five hot callers | 110-label sort: 1.40 -> 0.023 ms; `handoffAvailableModelIds` 0.967 -> 0.046 ms a call |
+
+### Closed by measurement, not by code
+
+- **A shared 30 Hz spinner clock is the wrong trade.** The backlog above asked
+  for a timer-driven spinner to replace the `steps(30)` CSS animation, on the
+  estimate that the per-vsync tick cost ~0.25 ms. It does not. Traced over 8 s
+  with three 16px spinners on a 239 Hz display:
+
+  | strategy | total | compositor draws | draw ms | main-thread ms |
+  |---|---|---|---|---|
+  | `steps(30)` keyframes (ships today) | 65 | 1,923 (240/s) | 65 | 0 |
+  | one JS clock writing `--angle` on `:root` at 30 Hz | 151 | 243 (30/s) | 40 | 111 |
+  | one JS clock rewriting a stylesheet rule at 30 Hz | 144 | 243 (30/s) | 40 | 104 |
+  | `linear` keyframes (before the first Windows pass) | 218 | 1,922 | 218 | 0 |
+
+  The clock does cut compositor draws 240/s -> 30/s as hoped, but it buys 25 ms
+  of draw with 86 ms of style recalc, layerize, raster, timer and script. It is
+  2.3x more total work than what ships. Do not build it.
+- **The cost is "an animation is running", not "how many".** `steps(30)` traced
+  59 ms per 8 s with one spinner, 65 with three, 69 with ten, 94 with thirty: a
+  running animation holds the compositor in a draw loop at the display rate, and
+  each extra spinner adds ~1.2 ms per 8 s. One spinner is already ~0.74% of a
+  core, so the lever that remains is pausing indicators nobody is looking at,
+  not making each one cheaper.
+- **`will-change: transform` buys nothing here.** Promoting the rotating element
+  measured 62 ms against 60 ms unpromoted, inside run-to-run variance. Electron
+  is already compositing the transform; the draw loop is the cost.
+
