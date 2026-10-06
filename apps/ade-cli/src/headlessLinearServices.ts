@@ -9,6 +9,9 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
+import type { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
+import type { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
@@ -187,6 +190,9 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
@@ -3038,6 +3044,13 @@ export function createHeadlessLinearServices(
     githubService,
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
+    // The same lane services desktop main passed: PR-driven lane mutations
+    // take the worktree lease (which auto-pull and other mutators honor), and
+    // post-merge cleanup refreshes rebase suggestions and child auto-rebase
+    // attention state.
+    laneWorktreeLockService: args.laneWorktreeLockService ?? null,
+    autoRebaseService: args.autoRebaseService ?? null,
+    rebaseSuggestionService: args.rebaseSuggestionService ?? null,
     openExternal: args.openExternal ?? (async () => {}),
     // Posts the "PR opened" card (and, through the published hook, proof) onto
     // the lane's Linear issues. Without it the brain skipped Linear entirely.
