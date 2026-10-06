@@ -55,6 +55,14 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
+import { sceneSourceFromInput } from "../../desktop/src/shared/scenePreview";
+import {
+  projectSceneLanes,
+  projectScenePrs,
+  projectSceneSessions,
+  type SceneDataPayload,
+} from "../../desktop/src/shared/sceneDataProjection";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import {
   PROOF_LISTING_ARTIFACT_FILTER,
@@ -788,6 +796,20 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "preview_scene",
+    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the ADE desktop app on this machine.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: {
+        source: { type: "string", minLength: 1, maxLength: 400000, description: "The scene: a fence body or a whole ```scene fence." },
+        width: { type: "number", minimum: 320, maximum: 1600, description: "Frame width in CSS px. A chat's reply column is about 720." },
+        theme: { type: "string", enum: ["dark", "light"] },
+      }
+    }
+  },
+  {
     name: "list_broken_computer_use_artifacts",
     description: "List proof records whose stored file is missing or was never imported, with the path each can be recovered from when one survives.",
     inputSchema: {
@@ -1512,6 +1534,48 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "record_environment",
 ]);
 
+/**
+ * The live data a previewed scene asked for (`data=` on its marker line), built
+ * from this brain's services with the same projection the chat uses, so a
+ * data-driven scene previews with real content instead of its empty state.
+ */
+async function scenePreviewData(runtime: AdeRuntime, source: string): Promise<SceneDataPayload | null> {
+  const parsed = parseSceneFence(sceneSourceFromInput(source));
+  if (isSceneParseFailure(parsed) || !parsed.data.length) return null;
+  const wanted = new Set(parsed.data);
+  const payload: SceneDataPayload = { at: new Date().toISOString() };
+  try {
+    if (wanted.has("lanes")) payload.lanes = projectSceneLanes(await runtime.laneService.list({ includeStatus: true }));
+    if (wanted.has("sessions")) payload.sessions = projectSceneSessions(await Promise.resolve(runtime.sessionService.list({ limit: 100 })));
+    if (wanted.has("prs")) payload.prs = projectScenePrs(runtime.prService?.listAll() ?? []);
+  } catch {
+    // A preview without data still checks the layout; the empty state shows.
+  }
+  return payload;
+}
+
+/** Previews kept per project; older ones are removed as new ones are written. */
+const SCENE_PREVIEW_KEEP = 20;
+
+/** Write a preview PNG under `.ade/cache/scene-previews/` and prune the oldest. */
+function writeScenePreviewImage(projectRoot: string, bytes: Buffer): string {
+  const dir = path.join(projectRoot, ".ade", "cache", "scene-previews");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `scene-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.png`);
+  fs.writeFileSync(file, bytes);
+  try {
+    const previews = fs.readdirSync(dir)
+      .filter((entry) => entry.startsWith("scene-") && entry.endsWith(".png"))
+      .sort();
+    for (const stale of previews.slice(0, Math.max(0, previews.length - SCENE_PREVIEW_KEEP))) {
+      fs.rmSync(path.join(dir, stale), { force: true });
+    }
+  } catch {
+    // Pruning is housekeeping; the preview itself is written.
+  }
+  return file;
+}
+
 const ALL_TOOL_SPECS: ToolSpec[] = [
   ...TOOL_SPECS,
   ...CTO_OPERATOR_TOOL_SPECS,
@@ -1519,6 +1583,7 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 ];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "preview_scene",
   "read_remote_caller_capture",
   "list_ade_actions",
   "get_ade_action_status",
@@ -7016,6 +7081,28 @@ async function runTool(args: {
           limit: asNumber(toolArgs.limit, 50),
         })),
     };
+  }
+
+  if (name === "preview_scene") {
+    const source = typeof toolArgs.source === "string" ? toolArgs.source : "";
+    if (!source.trim()) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the scene's source.");
+    const previewer = runtime.getScenePreviewer?.() ?? null;
+    if (!previewer) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Previewing a scene needs the ADE desktop app on this machine, and none is attached.",
+      );
+    }
+    const theme = toolArgs.theme === "light" ? "light" : "dark";
+    const width = typeof toolArgs.width === "number" && Number.isFinite(toolArgs.width) ? toolArgs.width : undefined;
+    const data = await scenePreviewData(runtime, source);
+    const result = await previewer.render({ source, theme, ...(width ? { width } : {}), ...(data ? { data } : {}) });
+    let screenshotPath: string | null = null;
+    if (result.screenshotBase64) {
+      screenshotPath = writeScenePreviewImage(runtime.projectRoot, Buffer.from(result.screenshotBase64, "base64"));
+    }
+    const { screenshotBase64: _bytes, ...rest } = result;
+    return { ...rest, screenshotPath, ok: result.problems.every((problem) => problem.kind === "lint") && Boolean(screenshotPath) };
   }
 
   if (name === "note_demo_step") {

@@ -25,12 +25,15 @@
  * outside that same allowlist (`will-frame-navigate` in `main.ts`).
  *
  * Two further risks remain and are handled elsewhere. It can draw something
- * misleading, so the host gives every frame permanent "generated view" chrome and a title —
- * a scene must never be mistakable for ADE's own UI. And it can burn CPU: the
- * bounds on that today are the source-size cap below, the clamped frame height,
- * and the fact that a scene stops at the end of its turn on any surface that
- * can snapshot it. There is no CPU watchdog; a runaway scene on a surface with
- * no capture route will keep running until the transcript is closed.
+ * misleading, so the host labels every scene on hover and a scene can never
+ * approve, confirm or reach anything: its only ways out are the messages
+ * {@link parseSceneHostMessage} accepts. And it can burn CPU and GPU. The bounds
+ * on that are the source-size cap below, the clamped frame height, the host
+ * running a frame only while its scene is on screen (a still stands in
+ * otherwise), and the SDK idling a settled scene nobody is touching: endless
+ * animations pause and `requestAnimationFrame` drops to a few frames a second
+ * until the pointer or focus comes back. There is no CPU watchdog for a busy
+ * script loop.
  *
  * Division of labour with mosaic: a scene SHOWS, a mosaic ASKS. Approvals and
  * destructive confirmations stay in mosaic and in ADE's native surfaces — a
@@ -105,10 +108,11 @@ export const SCENE_LIMITS = {
    * The renderer checks `maxSourceBytes` before it ever calls `scene.prepare`,
    * but the document store is bounded by document COUNT, so a renderer that
    * skipped that check could pin 64 unbounded strings in main. This is the
-   * server-side bound: the fence source plus the fixed template, with room for
-   * the template rather than a second magic number at the IPC edge.
+   * server-side bound: the fence source plus the fixed template and the two
+   * inlined app fonts (~150 KB as data URLs; see `sceneFonts.ts`), with room
+   * for both rather than a second magic number at the IPC edge.
    */
-  maxDocumentBytes: 192_000,
+  maxDocumentBytes: 400_000,
   maxTitleLength: 120,
   /** A scene that never calls ade.ready() is frozen anyway after this. */
   readyTimeoutMs: 8_000,
@@ -149,11 +153,27 @@ export const SCENE_CONTENT_SECURITY_POLICY = [
   "object-src 'none'",
 ].join("; ");
 
+/**
+ * Live ADE data a scene may ask for on its marker line,
+ * `<!-- @scene title="…" data="lanes,prs" -->`. The host sends each one as a
+ * read-only snapshot and again when it changes; see `sceneData.ts`.
+ */
+export const SCENE_DATA_SOURCES = ["lanes", "sessions", "prs"] as const;
+export type SceneDataSource = (typeof SCENE_DATA_SOURCES)[number];
+
 export type ParsedScene = {
   title: string | null;
   /** The agent's markup, unwrapped from any document tags it supplied. */
   html: string;
+  /** The live sources the scene asked for, in a fixed order; empty for none. */
+  data: SceneDataSource[];
 };
+
+function readSceneDataSources(raw: string | undefined): SceneDataSource[] {
+  if (!raw) return [];
+  const asked = new Set(raw.toLowerCase().split(/[\s,]+/).filter(Boolean));
+  return SCENE_DATA_SOURCES.filter((source) => asked.has(source));
+}
 
 export type SceneParseFailure = {
   reason: "empty" | "too-large";
@@ -357,6 +377,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
 
   const lines = raw.split("\n");
   let title: string | null = null;
+  let data: SceneDataSource[] = [];
   let bodyStart = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (!lines[i].trim().length) {
@@ -368,6 +389,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
       const attrs = readMarkerAttributes(marker[1] ?? "");
       const parsed = (attrs.title ?? "").trim();
       if (parsed.length) title = parsed.slice(0, SCENE_LIMITS.maxTitleLength);
+      data = readSceneDataSources(attrs.data);
       bodyStart = i + 1;
     }
     break;
@@ -375,7 +397,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
 
   const html = unwrapDocument(lines.slice(bodyStart).join("\n"));
   if (!html.length) return { reason: "empty", detail: "Scene has no markup." };
-  return { title, html };
+  return { title, html, data };
 }
 
 export function isSceneParseFailure(value: ParsedScene | SceneParseFailure): value is SceneParseFailure {
@@ -404,6 +426,11 @@ export function summarizeSceneFence(source: string): string {
  */
 export type SceneTheme = {
   bg: string;
+  /**
+   * A raised fill for cards. Must be a value that resolves on its own inside
+   * the frame: a `var(--color-fg)` reference means nothing there, and an
+   * invalid custom property turned every `var(--surface)` transparent.
+   */
   surface: string;
   border: string;
   fg: string;
@@ -414,21 +441,69 @@ export type SceneTheme = {
   danger: string;
   fontSans: string;
   fontMono: string;
+  /** `color-scheme` for form controls and scrollbars. */
+  scheme: "dark" | "light";
+  /** The transcript's prose size in px, so scene text sits at the reply's size. */
+  fontSize: number;
 };
 
 export const SCENE_FALLBACK_THEME: SceneTheme = {
-  bg: "#0d0b14",
-  surface: "rgba(255,255,255,0.035)",
+  bg: "#0f0f11",
+  surface: "rgba(255,255,255,0.04)",
   border: "rgba(255,255,255,0.10)",
-  fg: "#ece9f5",
-  fgMuted: "rgba(236,233,245,0.58)",
-  accent: "#a78bfa",
+  fg: "#F0F0F2",
+  fgMuted: "rgba(240,240,242,0.58)",
+  accent: "#A78BFA",
   success: "#4ade80",
   warning: "#fbbf24",
   danger: "#f87171",
-  fontSans: "Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-  fontMono: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSans: "Geist, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+  fontMono: "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace",
+  scheme: "dark",
+  fontSize: 13,
 };
+
+/** The CSS custom properties a theme becomes inside the frame. */
+export function sceneThemeVariables(theme: SceneTheme): Array<[string, string]> {
+  return [
+    ["--bg", theme.bg],
+    ["--surface", theme.surface],
+    ["--border", theme.border],
+    ["--fg", theme.fg],
+    ["--fg-muted", theme.fgMuted],
+    ["--accent", theme.accent],
+    ["--success", theme.success],
+    ["--warning", theme.warning],
+    ["--danger", theme.danger],
+    ["--font-sans", theme.fontSans],
+    ["--font-mono", theme.fontMono],
+    ["--font-size", `${theme.fontSize}px`],
+  ];
+}
+
+/** True when two themes would draw a scene identically. */
+export function sameSceneTheme(a: SceneTheme, b: SceneTheme): boolean {
+  return sceneThemeVariables(a).every(([, value], index) => value === sceneThemeVariables(b)[index]![1])
+    && a.scheme === b.scheme;
+}
+
+/**
+ * A message from the host into a scene frame. The frame acts on these only when
+ * they come from its parent window.
+ *
+ * - `theme`: ADE's theme changed; the SDK re-applies the variables and
+ *   `color-scheme`, updates `ade.theme`, and calls `ade.on("theme")` listeners.
+ * - `data`: new live data; the SDK sets `ade.data` and calls `ade.on("data")`.
+ */
+export type SceneFrameInbound =
+  | { type: "theme"; payload: SceneTheme }
+  /** A snapshot of the live sources the scene asked for (`sceneData.ts`). */
+  | { type: "data"; payload: unknown };
+
+/** The envelope the in-frame SDK listens for. */
+export function sceneFrameMessage(message: SceneFrameInbound): { __adeSceneHost: 1 } & SceneFrameInbound {
+  return { __adeSceneHost: 1, ...message };
+}
 
 function escapeForScript(value: unknown): string {
   // `</script>` inside a JSON blob would close the tag early. U+2028 and U+2029
@@ -458,6 +533,16 @@ const SCENE_SDK_SOURCE = `
   var reducedMotion = false;
   try { reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
 
+  /*
+   * Restored: this scene already played once and is being brought back (it
+   * scrolled back into view, or a reopened chat is waking its still). Its
+   * entrance must not replay: ade.animate and ade.countUp jump to their end
+   * state, and finite CSS animations started while restoring are finished on
+   * the spot, so the live frame comes up looking like the still it replaces.
+   * Ends at the first settle.
+   */
+  var restoring = !!window.__ADE_SCENE_RESTORED__;
+
   // Measure the CONTENT, not the frame. document.documentElement is sized by
   // the iframe element itself, so measuring it lets a scene grow but never
   // shrink below the host's initial guess.
@@ -480,18 +565,37 @@ const SCENE_SDK_SOURCE = `
     try { parent.postMessage(message, "*"); } catch (e) {}
   }
 
+  function emitLocal(type, payload) {
+    var fns = (listeners[type] || []).slice();
+    for (var i = 0; i < fns.length; i++) {
+      try { fns[i](payload); } catch (e) { post("error", { message: String(e && e.message || e) }); }
+    }
+  }
+
   var ade = {
     data: window.__ADE_SCENE_DATA__ || null,
     theme: window.__ADE_SCENE_THEME__ || null,
     reducedMotion: reducedMotion,
+    restored: restoring,
     on: function (event, fn) {
       if (typeof fn !== "function") return function () {};
       (listeners[event] = listeners[event] || []).push(fn);
+      // Data that already arrived is delivered to a late listener too, so a
+      // scene can register after its first snapshot without missing it.
+      if (event === "data" && ade.data !== null) {
+        // The snapshot current when this fires, not when it was scheduled: a
+        // newer one may have arrived in between.
+        setTimeout(function () {
+          try { fn(ade.data); } catch (e) { post("error", { message: String(e && e.message || e) }); }
+        }, 0);
+      }
       return function () {
         listeners[event] = (listeners[event] || []).filter(function (f) { return f !== fn; });
       };
     },
     emit: function (name, payload) { post("emit", { name: String(name), payload: payload }); },
+    /** Open an ade:// link in ADE or an http(s) page in ADE's browser. Needs a click in the scene. */
+    open: function (url) { post("open", { url: String(url) }); },
     ready: function () { post("ready", { height: measure() }); },
     resize: function () { post("resize", { height: measure() }); },
     /** WAAPI wrapper that collapses to the end state under reduced motion. */
@@ -499,7 +603,7 @@ const SCENE_SDK_SOURCE = `
       var el = typeof target === "string" ? document.querySelector(target) : target;
       if (!el) return null;
       var opts = Object.assign({ duration: 420, easing: "cubic-bezier(.22,.61,.36,1)", fill: "both" }, options || {});
-      if (reducedMotion) opts.duration = 0;
+      if (reducedMotion || restoring) { opts.duration = 0; opts.delay = 0; }
       return el.animate(keyframes, opts);
     },
     /** Count a number up; the single most-wanted effect in a live view. */
@@ -508,12 +612,13 @@ const SCENE_SDK_SOURCE = `
       if (!el) return;
       var o = options || {};
       var from = typeof o.from === "number" ? o.from : 0;
-      var duration = reducedMotion ? 0 : (typeof o.duration === "number" ? o.duration : 900);
+      var duration = reducedMotion || restoring ? 0 : (typeof o.duration === "number" ? o.duration : 900);
       var decimals = typeof o.decimals === "number" ? o.decimals : 0;
+      if (duration <= 0) { el.textContent = Number(to).toFixed(decimals); return; }
       var start = null;
       function frame(now) {
         if (start === null) start = now;
-        var t = duration <= 0 ? 1 : Math.min(1, (now - start) / duration);
+        var t = Math.min(1, (now - start) / duration);
         var eased = 1 - Math.pow(1 - t, 3);
         el.textContent = (from + (to - from) * eased).toFixed(decimals);
         if (t < 1) requestAnimationFrame(frame);
@@ -524,18 +629,216 @@ const SCENE_SDK_SOURCE = `
 
   window.ade = ade;
 
-  window.addEventListener("message", function (event) {
-    var msg = event.data;
-    if (!msg || msg.__adeSceneHost !== 1) return;
-    var fns = listeners[msg.type] || [];
-    for (var i = 0; i < fns.length; i++) {
-      try { fns[i](msg.payload); } catch (e) { post("error", { message: String(e && e.message || e) }); }
+  function applyTheme(theme) {
+    if (!theme || typeof theme !== "object") return;
+    var root = document.documentElement;
+    var pairs = [
+      ["--bg", theme.bg], ["--surface", theme.surface], ["--border", theme.border],
+      ["--fg", theme.fg], ["--fg-muted", theme.fgMuted], ["--accent", theme.accent],
+      ["--success", theme.success], ["--warning", theme.warning], ["--danger", theme.danger],
+      ["--font-sans", theme.fontSans], ["--font-mono", theme.fontMono],
+      ["--font-size", typeof theme.fontSize === "number" ? theme.fontSize + "px" : null],
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      if (typeof pairs[i][1] === "string" && pairs[i][1].length) root.style.setProperty(pairs[i][0], pairs[i][1]);
     }
+    if (theme.scheme === "light" || theme.scheme === "dark") root.style.colorScheme = theme.scheme;
+    ade.theme = theme;
+  }
+
+  // Only the parent may speak to a scene. Anything else that posts here (a
+  // nested window the scene opened, another frame) is ignored.
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) return;
+    var msg = event.data;
+    if (!msg || msg.__adeSceneHost !== 1 || typeof msg.type !== "string") return;
+    if (msg.type === "theme") { applyTheme(msg.payload); wake(1500); }
+    if (msg.type === "data") { ade.data = msg.payload; wake(1500); }
+    emitLocal(msg.type, msg.payload);
+  });
+
+  // A link in a scene goes through ADE rather than navigating the frame (which
+  // is blocked): ade:// opens in ADE, http(s) in ADE's browser.
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    var anchor = target && typeof target.closest === "function" ? target.closest("a[href]") : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute("href") || "";
+    if (!href || href.charAt(0) === "#") return;
+    event.preventDefault();
+    post("open", { url: href });
+  }, true);
+
+  // Blocked requests are the most common silent failure; say what was blocked.
+  var policyReports = 0;
+  document.addEventListener("securitypolicyviolation", function (event) {
+    if (policyReports >= 5) return;
+    policyReports += 1;
+    post("error", { message: "Blocked by the scene policy (" + event.effectiveDirective + "): " + (event.blockedURI || "inline") });
   });
 
   window.addEventListener("error", function (event) {
     post("error", { message: String(event.message || "scene error") });
   });
+
+  /*
+   * Idle: a settled scene nobody is touching should cost nothing.
+   *
+   * A view that loops (a spinner, a pulsing dot, a canvas particle field) keeps
+   * the GPU compositing every frame at the display's refresh rate — 240 times a
+   * second on the panels ADE is developed on — for a picture that is not
+   * changing what it says. So once the scene has settled and the pointer and
+   * focus are elsewhere: endless animations pause where they are, SVG (SMIL)
+   * animations pause, and requestAnimationFrame callbacks are batched into a
+   * few frames a second rather than dropped, so a scene that redraws on new
+   * data still redraws. Pointer, focus, wheel or a key wakes it at full rate.
+   */
+  var IDLE_RAF_INTERVAL_MS = 250;
+  var IDLE_AFTER_LEAVE_MS = 1200;
+  var settleReported = false;
+  var engaged = false;
+  var idle = false;
+  var paused = [];
+  var idleTimer = null;
+  var wakeUntil = 0;
+  var nativeRaf = window.requestAnimationFrame.bind(window);
+  var nativeCaf = window.cancelAnimationFrame.bind(window);
+  var rafQueue = [];
+  var rafSeq = 0;
+  var rafFlush = null;
+  // Ids cancelled after their callback left the queue for a flush batch that
+  // has not run yet. Without this a cancel in that gap was silently ignored.
+  var rafCancelled = Object.create(null);
+  var rafBatchesPending = 0;
+
+  function flushRafQueue() {
+    rafFlush = null;
+    if (!rafQueue.length) return;
+    var batch = rafQueue;
+    rafQueue = [];
+    rafBatchesPending += 1;
+    nativeRaf(function (now) {
+      for (var i = 0; i < batch.length; i++) {
+        var entry = batch[i];
+        if (rafCancelled[entry.id]) continue;
+        try { entry.cb(now); } catch (e) { post("error", { message: String(e && e.message || e) }); }
+      }
+      // With no batch in flight, every remembered cancel is moot (its callback
+      // ran or was skipped), so the record cannot grow.
+      rafBatchesPending -= 1;
+      if (rafBatchesPending === 0) rafCancelled = Object.create(null);
+    });
+  }
+
+  window.requestAnimationFrame = function (cb) {
+    if (!idle) return nativeRaf(cb);
+    rafSeq += 1;
+    // Negative ids never collide with the browser's own positive handles.
+    var id = -rafSeq;
+    rafQueue.push({ id: id, cb: cb });
+    if (rafFlush === null) rafFlush = setTimeout(flushRafQueue, IDLE_RAF_INTERVAL_MS);
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    if (typeof id === "number" && id < 0) {
+      var before = rafQueue.length;
+      rafQueue = rafQueue.filter(function (entry) { return entry.id !== id; });
+      // Not in the queue: it may be in a batch waiting for its frame.
+      if (rafQueue.length === before) rafCancelled[id] = true;
+      return;
+    }
+    nativeCaf(id);
+  };
+
+  function isEndless(animation) {
+    try {
+      return animation.effect && animation.effect.getComputedTiming().endTime === Infinity;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // SVG <animate>/<animateTransform> (SMIL) is not in getAnimations(), and
+  // Chromium repaints an animated SVG on the main thread every frame.
+  function setSvgPaused(pause) {
+    try {
+      var svgs = document.querySelectorAll("svg");
+      for (var i = 0; i < svgs.length; i++) {
+        var svg = svgs[i];
+        if (pause && typeof svg.pauseAnimations === "function") svg.pauseAnimations();
+        if (!pause && typeof svg.unpauseAnimations === "function") svg.unpauseAnimations();
+      }
+    } catch (e) {}
+  }
+
+  function pauseEndless() {
+    try {
+      var running = document.getAnimations();
+      for (var i = 0; i < running.length; i++) {
+        var a = running[i];
+        if (a.playState === "running" && isEndless(a)) { a.pause(); paused.push(a); }
+      }
+    } catch (e) {}
+    setSvgPaused(true);
+  }
+
+  function setIdle(next) {
+    if (idle === next) return;
+    idle = next;
+    if (idle) { pauseEndless(); return; }
+    var resume = paused;
+    paused = [];
+    for (var i = 0; i < resume.length; i++) { try { resume[i].play(); } catch (e) {} }
+    setSvgPaused(false);
+    if (rafFlush !== null) { clearTimeout(rafFlush); rafFlush = null; }
+    flushRafQueue();
+  }
+
+  function scheduleIdle(delay) {
+    if (idleTimer !== null) clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () {
+      idleTimer = null;
+      var remaining = wakeUntil - Date.now();
+      if (remaining > 0) { scheduleIdle(remaining); return; }
+      if (settleReported && !engaged) setIdle(true);
+    }, delay);
+  }
+
+  /** Run at full rate for a moment: a new theme or new data arrived. */
+  function wake(ms) {
+    wakeUntil = Math.max(wakeUntil, Date.now() + ms);
+    setIdle(false);
+    scheduleIdle(ms);
+  }
+
+  function engage() {
+    engaged = true;
+    if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+    setIdle(false);
+  }
+  function disengage() {
+    engaged = false;
+    scheduleIdle(IDLE_AFTER_LEAVE_MS);
+  }
+  document.addEventListener("pointerover", engage, true);
+  document.addEventListener("pointerdown", engage, true);
+  document.addEventListener("wheel", engage, { capture: true, passive: true });
+  document.addEventListener("keydown", engage, true);
+  document.addEventListener("pointerout", function (event) {
+    // relatedTarget is null only when the pointer left this document.
+    if (!event.relatedTarget) disengage();
+  }, true);
+  window.addEventListener("blur", function () { if (engaged) disengage(); });
+
+  // An endless animation that starts while idle (a row turning into a spinner
+  // on new data) is paused as soon as it appears.
+  var idleWatch = null;
+  try {
+    idleWatch = new MutationObserver(function () {
+      if (!idle) return;
+      setTimeout(function () { if (idle) pauseEndless(); }, 50);
+    });
+  } catch (e) {}
 
   // Report height once layout settles so the host can size the frame, and again
   // on any resize the scene causes itself.
@@ -545,23 +848,20 @@ const SCENE_SDK_SOURCE = `
    * Settle watch: tell the host the moment this view has finished moving.
    *
    * The host needs it because a scene's still has to be taken WHILE the scene
-   * is still up. Freezing at the end of the turn was too late for anything the
-   * user had scrolled past, and too early for nothing — the animation the
-   * author wrote is exactly the part that must have played before the picture
-   * is worth keeping.
+   * is still up, after the animation the author wrote has played.
    *
    * Two signals, because neither alone is enough. getAnimations() sees
    * WAAPI and CSS animations (ade.animate, a keyframed reveal) but not a
    * requestAnimationFrame loop; the MutationObserver sees ade.countUp writing
    * into a text node but not a transform that never touches the DOM. Quiet on
-   * both for SETTLE_QUIET_MS is the definition of stopped.
+   * both for SETTLE_QUIET_MS is the definition of stopped. Endless animations
+   * never finish, so they do not hold a settle back.
    *
-   * Reported exactly once. A scene that keeps animating forever hits the cap
+   * Reported exactly once. A scene that keeps changing forever hits the cap
    * and is reported anyway — a frame of a loop is a truthful picture of a view
    * that loops — and a late mutation after that must not produce a second
    * settle, because the host acts on the first one.
    */
-  var settleReported = false;
   var quietTimer = null;
   var capTimer = null;
   var settleObserver = null;
@@ -571,7 +871,7 @@ const SCENE_SDK_SOURCE = `
       if (typeof document.getAnimations !== "function") return false;
       var running = document.getAnimations();
       for (var i = 0; i < running.length; i++) {
-        if (running[i].playState === "running") return true;
+        if (running[i].playState === "running" && !isEndless(running[i])) return true;
       }
       return false;
     } catch (e) {
@@ -581,22 +881,39 @@ const SCENE_SDK_SOURCE = `
     }
   }
 
+  // While restoring, a finite CSS animation is the entrance replaying: finish it.
+  function finishEntrances() {
+    if (!restoring) return;
+    try {
+      var running = document.getAnimations();
+      for (var i = 0; i < running.length; i++) {
+        if (!isEndless(running[i])) { try { running[i].finish(); } catch (e) {} }
+      }
+    } catch (e) {}
+  }
+
   function reportSettled() {
     if (settleReported) return;
     settleReported = true;
+    restoring = false;
     if (quietTimer !== null) clearTimeout(quietTimer);
     if (capTimer !== null) clearTimeout(capTimer);
     try { if (settleObserver) settleObserver.disconnect(); } catch (e) {}
+    try {
+      if (idleWatch) idleWatch.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    } catch (e) {}
     post("settled", { height: measure() });
+    if (!engaged) scheduleIdle(0);
   }
 
   function armQuiet() {
     if (settleReported) return;
+    finishEntrances();
     if (quietTimer !== null) clearTimeout(quietTimer);
     quietTimer = setTimeout(function () {
-      // Re-arm rather than settle while something is still playing: a long
-      // animation mutates nothing, so the debounce alone would call it quiet
-      // half a second in.
+      // Re-arm rather than settle while something finite is still playing: a
+      // long animation mutates nothing, so the debounce alone would call it
+      // quiet half a second in.
       if (animationsRunning()) { armQuiet(); return; }
       reportSettled();
     }, ${SCENE_SETTLE_QUIET_MS});
@@ -617,6 +934,7 @@ const SCENE_SDK_SOURCE = `
   }
 
   window.addEventListener("load", function () {
+    finishEntrances();
     reportHeight();
     post("ready", { height: measure() });
     // Started from 'ready' on purpose: the cap is measured from the moment the
@@ -629,36 +947,35 @@ const SCENE_SDK_SOURCE = `
 })();
 `.trim();
 
-function baseStyles(theme: SceneTheme): string {
+/**
+ * The frame's own defaults. No padding: a scene's content lines up with the
+ * reply text around it, the way a chart in a document does, and a scene that
+ * wants a card draws one. `flow-root` keeps a first heading's margin inside the
+ * measured height instead of collapsing out of the body and getting clipped.
+ */
+function baseStyles(theme: SceneTheme, fontFaceCss: string): string {
+  const variables = sceneThemeVariables(theme).map(([name, value]) => `  ${name}: ${value};`).join("\n");
   return `
+${fontFaceCss}
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: transparent; }
 body {
+  display: flow-root;
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--font-size);
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  padding: 18px 20px;
+  font-variant-numeric: tabular-nums;
 }
 :root {
-  --bg: ${theme.bg};
-  --surface: ${theme.surface};
-  --border: ${theme.border};
-  --fg: ${theme.fg};
-  --fg-muted: ${theme.fgMuted};
-  --accent: ${theme.accent};
-  --success: ${theme.success};
-  --warning: ${theme.warning};
-  --danger: ${theme.danger};
-  --font-sans: ${theme.fontSans};
-  --font-mono: ${theme.fontMono};
-  color-scheme: dark;
+${variables}
+  color-scheme: ${theme.scheme};
 }
 a { color: var(--accent); }
-code, pre { font-family: var(--font-mono); }
+code, pre, kbd, samp { font-family: var(--font-mono); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 999px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 18%, transparent); border-radius: 999px; }
 ::-webkit-scrollbar-track { background: transparent; }
 `.trim();
 }
@@ -686,6 +1003,16 @@ export type SceneDocumentArgs = {
    * `ade-scene:` URL and the blob fallback both serve these exact bytes.
    */
   nonce?: string | null;
+  /**
+   * This scene already played once and is being brought back on screen; its
+   * entrance animations must not replay. See the SDK's `restoring`.
+   */
+  restored?: boolean;
+  /**
+   * `@font-face` rules for ADE's own fonts, as data URLs (the frame may load
+   * fonts from `data:` only). Empty means the system fallbacks in the theme.
+   */
+  fontFaceCss?: string;
 };
 
 /**
@@ -700,6 +1027,16 @@ export type SceneDocumentArgs = {
  */
 function sceneScopeAttribute(scopeKey: string): string {
   return encodeURIComponent(scopeKey);
+}
+
+/**
+ * Host-built font CSS, kept from closing the `<style>` it is placed in. It is
+ * ADE's own string, not the agent's, but it is assembled from fetched bytes, so
+ * it is held to the one property that matters here.
+ */
+function sanitizeFontFaceCss(css: string | null | undefined): string {
+  if (!css) return "";
+  return /<\/style/i.test(css) ? "" : css;
 }
 
 /**
@@ -719,11 +1056,12 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
     '<meta name="referrer" content="no-referrer">',
     '<meta charset="utf-8">',
     `<title>${title.replace(/[<>&]/g, "")}</title>`,
-    `<style>${baseStyles(theme)}</style>`,
+    `<style>${baseStyles(theme, sanitizeFontFaceCss(args.fontFaceCss))}</style>`,
     "<script>",
     `window.__ADE_SCENE_DATA__ = ${escapeForScript(args.data ?? null)};`,
     `window.__ADE_SCENE_THEME__ = ${escapeForScript(theme)};`,
     `window.__ADE_SCENE_NONCE__ = ${escapeForScript(args.nonce ?? null)};`,
+    `window.__ADE_SCENE_RESTORED__ = ${args.restored ? "true" : "false"};`,
     "</script>",
     `<script>${SCENE_SDK_SOURCE}</script>`,
     `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
@@ -771,9 +1109,15 @@ export type SceneHostMessage = { nonce?: string } & (
   | { type: "settled"; payload: { height?: number } }
   | { type: "emit"; payload: { name: string; payload?: unknown } }
   | { type: "error"; payload: { message: string } }
+  /**
+   * Open a link: an `ade://` deeplink in ADE, or an http(s) page in ADE's
+   * browser. Sent by `ade.open(url)` and by any `<a href>` click in the scene.
+   * The host acts on it only right after the user clicked inside the frame.
+   */
+  | { type: "open"; payload: { url: string } }
 );
 
-const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error"]);
+const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error", "open"]);
 
 /**
  * Validate an inbound frame message. The frame is untrusted, so shape-check
@@ -799,6 +1143,11 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   if (type === "error") {
     const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "scene error";
     return { ...nonce, type: "error", payload: { message } };
+  }
+  if (type === "open") {
+    const url = typeof payload.url === "string" ? payload.url.trim() : "";
+    if (!url.length || url.length > 2048) return null;
+    return { ...nonce, type: "open", payload: { url } };
   }
   const height = typeof payload.height === "number" && Number.isFinite(payload.height)
     ? Math.max(0, Math.min(4000, Math.round(payload.height)))
