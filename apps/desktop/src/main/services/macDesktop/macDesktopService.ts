@@ -701,23 +701,33 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // The driver
   // -------------------------------------------------------------------------
 
+  /** A lane's display moved before its start stored the display. */
+  const pendingDisplayOrigins = new Map<string, { x: number; y: number }>();
+
   const handleDriverEvent = (event: Record<string, unknown> & { event: string }): void => {
     const laneId = asNullableString(event.laneId);
     switch (event.event) {
-      case "display-created": {
-        // The helper re-publishes a lane's display when macOS moved it (adding
-        // any display re-arranges the others). The first create is stored from
-        // the request's own reply; an echo with the same origin changes nothing.
-        const reported = asRecord(event.display);
-        const movedLaneId = asNullableString(reported.laneId);
-        const stored = movedLaneId ? ownership.getDisplay(movedLaneId) : null;
-        if (!movedLaneId || !stored) return;
-        const origin = {
-          x: asNumber(asRecord(reported.origin).x, stored.origin.x),
-          y: asNumber(asRecord(reported.origin).y, stored.origin.y),
-        };
-        if (origin.x === stored.origin.x && origin.y === stored.origin.y) return;
-        const updated = ownership.setDisplay({ ...stored, origin });
+      case "display-moved": {
+        // macOS re-arranged the displays (adding any display moves the others)
+        // and the helper moved this lane's windows with its display. Clients
+        // upsert on `display-created`, so the new origin goes out as that.
+        if (!laneId) return;
+        const origin = asRecord(event.origin);
+        const stored = ownership.getDisplay(laneId);
+        if (!stored) {
+          // A start still in flight: the move can be read off stdout before
+          // the create reply is stored, and the helper will not report it
+          // again. Held for `startInternal` to apply.
+          pendingDisplayOrigins.set(laneId, {
+            x: asNumber(origin.x, 0),
+            y: asNumber(origin.y, 0),
+          });
+          return;
+        }
+        const updated = ownership.setDisplay({
+          ...stored,
+          origin: { x: asNumber(origin.x, stored.origin.x), y: asNumber(origin.y, stored.origin.y) },
+        });
         emit({ type: "display-created", display: updated });
         return;
       }
@@ -1096,6 +1106,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const longWindowsCreate = seatAdapter.id !== "mac-virtual-display" && seatMode === "private";
     if (longWindowsCreate) windowsLongOperationInFlight += 1;
     let reply: DriverDisplayReply;
+    // Only a move reported during THIS create may be applied to its reply.
+    pendingDisplayOrigins.delete(laneId);
     try {
       reply = longWindowsCreate
         ? await windowsOps.run("start_private", laneId, async () => await seat.create(createArgs) as DriverDisplayReply)
@@ -1126,7 +1138,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       ...(seatMode ? { seatMode } : {}),
     };
     driverLifecycle.setDisplayMode(display.mode);
-    const stored = ownership.setDisplay(display, laneName);
+    const movedTo = pendingDisplayOrigins.get(laneId);
+    pendingDisplayOrigins.delete(laneId);
+    const stored = ownership.setDisplay(movedTo ? { ...display, origin: movedTo } : display, laneName);
     emit({ type: "display-created", display: stored });
     captureOutcome("started");
     ensureSweepTimer();

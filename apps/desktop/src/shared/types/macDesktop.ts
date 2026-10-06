@@ -449,7 +449,13 @@ export type MacDesktopObserveArgs = {
  * which moves the user's one pointer, so it is the one capability behind the
  * lease. A hover is real-only.
  */
-export type MacDesktopInputMode = "accessibility" | "background" | "real";
+export const MAC_DESKTOP_INPUT_MODES = ["accessibility", "background", "real"] as const;
+
+export type MacDesktopInputMode = (typeof MAC_DESKTOP_INPUT_MODES)[number];
+
+export function isMacDesktopInputMode(value: unknown): value is MacDesktopInputMode {
+  return typeof value === "string" && (MAC_DESKTOP_INPUT_MODES as readonly string[]).includes(value);
+}
 
 /** One way of naming what to act on, in the order the service resolves them. */
 export type MacDesktopTarget = {
@@ -586,7 +592,10 @@ export type MacDesktopDragArgs = MacDesktopControllerArgs & MacDesktopSilentArgs
   from: MacDesktopTarget;
   to: MacDesktopTarget;
   durationMs?: number | null;
-  /** Always `real`: a drag has no accessibility action. Kept for symmetry. */
+  /**
+   * `real` for a drop onto another app or the Dock. Otherwise a drag is a
+   * pointer action: `background` on a Mac seat, `real` on a Windows seat.
+   */
   mode?: MacDesktopInputMode | null;
   chatSessionId?: string | null;
 };

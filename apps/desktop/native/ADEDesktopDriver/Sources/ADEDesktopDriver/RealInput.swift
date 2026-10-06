@@ -341,20 +341,7 @@ final class RealInput {
         restoreCursor: Bool = false
     ) throws {
         try authorize(laneId: laneId, holderId: holderId)
-        let lines = Int32(max(1, min(50, amount)))
-        let vertical: Int32
-        let horizontal: Int32
-        switch direction.lowercased() {
-        case "up": (vertical, horizontal) = (lines, 0)
-        case "down": (vertical, horizontal) = (-lines, 0)
-        case "left": (vertical, horizontal) = (0, lines)
-        case "right": (vertical, horizontal) = (0, -lines)
-        default:
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "\"\(direction)\" is not a scroll direction; use up, down, left or right."
-            )
-        }
+        let (vertical, horizontal) = try ScrollDelta.lines(direction: direction, amount: amount)
         try posting(restore: restoreCursor) {
             // The wheel event carries no position of its own: it goes where the
             // pointer is. So the pointer is moved to the point first, and

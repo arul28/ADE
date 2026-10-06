@@ -2095,6 +2095,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       ) {
         command = insertDebugFlagsIntoDirectElectronCommand(command, [...APP_CONTROL_RENDER_FLAGS]);
       }
+      const inlineDebugFlags = debugFlags.map(shellQuote).join(" ");
       if (process.platform !== "win32") {
         // The launch terminal is the user's shell, and zsh — the macOS default
         // — does not word-split an unquoted parameter: `$ADE_APP_CONTROL_DEBUG_FLAGS`
@@ -2103,13 +2104,15 @@ export function createAppControlLaneController(context: AppControlLaneController
         // it had asked for until the user gave up. ADE knows the flags, so a
         // reference to the variable is inlined here, quoted or not, the same
         // way the `{ADE_APP_CONTROL_DEBUG_FLAGS}` placeholder is.
+        // A quote pair is dropped only when it wraps the variable alone:
+        // `bash -c "… $ADE_APP_CONTROL_DEBUG_FLAGS"` keeps its closing quote.
         command = command.replace(
-          /"?\$(?:\{ADE_APP_CONTROL_DEBUG_FLAGS\}|ADE_APP_CONTROL_DEBUG_FLAGS\b)"?/g,
-          debugFlags.map(shellQuote).join(" "),
+          /("?)\$(?:\{ADE_APP_CONTROL_DEBUG_FLAGS\}|ADE_APP_CONTROL_DEBUG_FLAGS\b)\1/g,
+          inlineDebugFlags,
         );
       }
       if (command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")) {
-        command = command.replace(/\{ADE_APP_CONTROL_DEBUG_FLAGS\}/g, debugFlags.map(shellQuote).join(" "));
+        command = command.replace(/\{ADE_APP_CONTROL_DEBUG_FLAGS\}/g, inlineDebugFlags);
       }
       return {
         label: launchArgs.label?.trim() || rawCommand,

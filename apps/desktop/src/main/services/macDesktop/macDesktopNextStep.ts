@@ -54,6 +54,9 @@ export type MacDesktopNextStepInput = {
   button?: string | null;
   /** A click's repeat count. */
   count?: number | null;
+  /** A scroll's direction and line count, so the advice reproduces the scroll. */
+  direction?: string | null;
+  amount?: number | null;
   /** Whether this caller may post real input right now. */
   lease: MacDesktopLeaseDecision;
   /** A Windows seat: `--real` needs no approval card, so none is suggested. */
@@ -124,7 +127,7 @@ function accessibilityMissReason(
 }
 
 function realInputStep(
-  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "lease" | "realInputNeedsNoCard">,
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "direction" | "amount" | "lease" | "realInputNeedsNoCard">,
   why: string,
 ): ComputerUseActionNextStep {
   const { lease } = args;
@@ -133,7 +136,7 @@ function realInputStep(
       return {
         method: "real_input",
         reason: `${why}; repeat the command with --real`,
-        command: realClickCommand(args),
+        command: pointCommand(args, { real: true }),
       };
     }
     if (lease.code === "MAC_DESKTOP_INPUT_LEASE_REQUIRED") {
@@ -153,43 +156,53 @@ function realInputStep(
   return {
     method: "real_input",
     reason: `${why}; this chat holds real input, so repeat the command with --real`,
-    command: realClickCommand(args),
+    command: pointCommand(args, { real: true }),
   };
 }
 
 /**
- * The real-input command for a click, at the element's centre in global screen
- * points. Only built when every part of the click can be reproduced: a triple
- * click has no flag, so it gets no command rather than one that clicks once.
+ * The command that repeats a click or scroll at the element's centre in global
+ * screen points, as background input or (`real`) real input. Only built when
+ * every part of the action can be reproduced: a triple click has no flag, so it
+ * gets no command rather than one that clicks once.
  */
-function realClickCommand(
-  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count">,
-  real = true,
+function pointCommand(
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "direction" | "amount">,
+  options: { real: boolean },
 ): string | null {
   const { resolved } = args;
-  if (args.action !== "click" || !resolved) return null;
+  if (!resolved) return null;
+  const at = `--x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}`;
+  const real = options.real ? " --real" : "";
+  if (args.action === "scroll") {
+    if (!args.direction) return null;
+    const amount = args.amount != null ? ` --amount ${args.amount}` : "";
+    return `ade mac-desktop scroll ${args.direction} ${at}${amount}${real} --text`;
+  }
+  if (args.action !== "click") return null;
   const count = args.count ?? 1;
   if (count > 2) return null;
   const button = args.button === "right" ? " --right" : "";
   const repeat = count === 2 ? " --double" : "";
-  return `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}${button}${repeat}${real ? " --real" : ""} --text`;
+  return `ade mac-desktop click ${at}${button}${repeat}${real} --text`;
 }
 
 /**
- * The background rung: the same click as a pointer event delivered to the
- * app alone. Only for a click on an element with a frame; keys have no
- * background form (they already go to the app alone).
+ * The background rung: the same click or scroll as a pointer event at the
+ * element, delivered to its app alone. Keys have no background form (they
+ * already go to the app alone).
  */
 function backgroundStep(
-  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "backgroundAvailable">,
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "direction" | "amount" | "backgroundAvailable">,
   why: string,
 ): ComputerUseActionNextStep | null {
-  if (!args.backgroundAvailable || args.action !== "click") return null;
-  const command = realClickCommand(args, false);
+  if (!args.backgroundAvailable) return null;
+  const command = pointCommand(args, { real: false });
   if (!command) return null;
+  const verb = args.action === "scroll" ? "scroll it" : "click it";
   return {
     method: "background_input",
-    reason: `${why}; click it where it is drawn instead — background input moves no pointer and needs no approval`,
+    reason: `${why}; ${verb} where it is drawn instead — background input moves no pointer and needs no approval`,
     command,
   };
 }
@@ -250,9 +263,10 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
 /**
  * The next step when the driver refused an accessibility action outright.
  *
- * An element with no press action never reaches the effect comparison: the
- * driver throws first. That is the commonest case where real input is the
- * fix, so the refusal carries the same advice an unconfirmed effect would.
+ * A Mac driver clicks an element with no press action at its centre as
+ * background input by itself, so this refusal now comes from a driver that
+ * cannot (a Windows seat, an older Mac helper). Real input is then the fix,
+ * and the refusal carries the same advice an unconfirmed effect would.
  */
 export function macDesktopRefusedNextStep(args: {
   action: string;
@@ -265,7 +279,6 @@ export function macDesktopRefusedNextStep(args: {
   count?: number | null;
   lease: MacDesktopLeaseDecision;
   realInputNeedsNoCard?: boolean;
-  backgroundAvailable?: boolean;
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
   if (!/answered no press action/i.test(args.message)) return null;

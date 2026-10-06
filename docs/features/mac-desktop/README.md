@@ -89,6 +89,8 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/ScrollDelta.swift` | A scroll direction and line count as wheel deltas, for the real and background paths. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayRelocation.swift` | Following lane displays macOS re-arranged: the reconfiguration callback, moving a lane's windows with its display, and the `display-moved` event. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol. Every log line goes to stderr, and the Node client copies each line into the brain log. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
@@ -413,7 +415,7 @@ window under the point, and to nothing else. It is what a Mac seat uses for a
 point click (`click --x/--y`), a right or double click, a scroll at a point and
 a drag, unless the caller passes `--real`. An Accessibility click on an element
 with no press action, and a right or double click on a handle, fall back to it
-at the element's centre; the reply says `via: background` and the result's
+at the element's centre; the reply says `deliveredMode: background` and the result's
 `mode` is `background`. A Windows seat has no background path and keeps
 `real`.
 
@@ -435,7 +437,11 @@ right-click that opened Live's own context menu, and a pick from that menu):
    `makeKey` down/up pair, posted to the target with `SLPSPostEventRecordTo`.
    The app believes its window is key and spends its activating click on the
    make-key pair, so the real click is delivered. No record goes to the user's
-   app, so its frontmost state does not change.
+   app, so its frontmost state does not change. The records do make the
+   clicked window key inside its own app, so a window of the app the user is
+   working in (frontmost, with windows on their own screen — a claimed Chrome
+   window while they type in another) is refused: the user's next keystrokes
+   would land in the lane's window. That case stays behind the lease.
 3. **SkyLight posting.** `SLEventPostToPid`, falling back to `CGEventPostToPid`
    when the symbol is missing.
 4. **Guard.** If the target makes itself frontmost, the user's app is put back
@@ -449,8 +455,27 @@ nothing here falls back to the HID tap.
 
 The target is the frontmost window under the point that belongs to an app with
 a window on the lane, at any window level (a context menu is its own window
-above the one that opened it), and only on the lane's display. A point off the
-display is refused.
+above the one that opened it), and only on the lane's display
+(`WindowHitTest.backgroundCandidates`). A point off the display is refused. A
+drag goes wholly to the window it starts in; one that ends on a different
+window is refused, because the drop would reach nobody. Its steps pump the run
+loop under the gesture gate; a click's and a scroll's short pauses do not pump.
+
+A user takeover refuses background input from an agent exactly as it refuses
+real input (`MAC_DESKTOP_USER_HAS_CONTROL`); accessibility input from an agent
+meets the same check.
+
+### Following a moved display
+
+Adding or removing any display makes macOS re-arrange the others, and a lane
+display can move (from x = -2560 to -5120) while the windows on it stay at
+their global coordinates — on the next lane's screen. Every helper registers
+`CGDisplayRegisterReconfigurationCallback` at start (`DisplayRelocation.swift`)
+and, after a change and after each display it creates, re-reads every lane
+display's bounds. A lane whose display moved gets its windows moved by the
+same offset, its placement updated, and a `display-moved` event; the service
+stores the new origin and republishes the display as `display-created`, which
+every client upserts.
 
 Known limits: a hover (`mouseMoved`) is not delivered, because AppKit routes
 moves by the real pointer, so hover-only controls need `--real`. Chromium

@@ -50,7 +50,7 @@ public enum GestureGateDrainItem: Equatable, Sendable {
     case expired(DriverRequest, DriverError)
 }
 
-/// The per-process "a real gesture is in flight" flag, plus the queue of
+/// The per-process "a drag (real or background) is in flight" flag, plus the queue of
 /// requests that had to wait for it.
 public final class GestureGate: @unchecked Sendable {
     /// How many requests may pile up behind one gesture.
@@ -107,7 +107,7 @@ public final class GestureGate: @unchecked Sendable {
         if let activeLane {
             throw DriverError(
                 code: DriverErrorCode.internalError,
-                message: "A real gesture is already in flight on lane \(activeLane)."
+                message: "A drag is already in flight on lane \(activeLane)."
             )
         }
         activeLane = laneId
@@ -133,7 +133,7 @@ public final class GestureGate: @unchecked Sendable {
             return .rejected(
                 DriverError(
                     code: DriverErrorCode.internalError,
-                    message: "Too many requests are waiting behind the real gesture on lane \(active)."
+                    message: "Too many requests are waiting behind the drag on lane \(active)."
                 )
             )
         }
@@ -220,7 +220,7 @@ public final class GestureGate: @unchecked Sendable {
         guard let active = activeLaneId else { return nil }
         return DriverError(
             code: DriverErrorCode.gestureInFlight,
-            message: "A real gesture is in flight on lane \(active); wait would hold the pressed button for its whole timeout."
+            message: "A drag is in flight on lane \(active); a wait now would hold it up for the wait's whole timeout."
         )
     }
 
@@ -248,7 +248,7 @@ public final class GestureGate: @unchecked Sendable {
                 parked.request,
                 DriverError(
                     code: DriverErrorCode.deferredExpired,
-                    message: "Request \(parked.request.id) waited \(Int(waited.rounded()))s behind a real gesture and was dropped instead of run."
+                    message: "Request \(parked.request.id) waited \(Int(waited.rounded()))s behind a drag and was dropped instead of run."
                 )
             )
         }

@@ -31,7 +31,9 @@
 ///
 /// Known limits: a hover (`mouseMoved`) is not delivered (AppKit routes moves
 /// by the real pointer), and Chromium reports no held button during a drag.
-/// Those stay on `RealInput` behind the lease.
+/// Those stay on `RealInput` behind the lease. So does input to a window of
+/// the app the user is working in: the focus records would make that window
+/// key in the user's own app (`InputCommands` refuses it).
 
 import AppKit
 import CoreGraphics
@@ -94,19 +96,7 @@ final class BackgroundInput {
     }
 
     func scroll(target: Target, at point: CGPoint, direction: String, amount: Int) throws -> Report {
-        let lines = Int32(max(1, min(50, amount)))
-        let (vertical, horizontal): (Int32, Int32)
-        switch direction.lowercased() {
-        case "up": (vertical, horizontal) = (lines, 0)
-        case "down": (vertical, horizontal) = (-lines, 0)
-        case "left": (vertical, horizontal) = (0, lines)
-        case "right": (vertical, horizontal) = (0, -lines)
-        default:
-            throw DriverError(
-                code: DriverErrorCode.invalidArgument,
-                message: "\"\(direction)\" is not a scroll direction; use up, down, left or right."
-            )
-        }
+        let (vertical, horizontal) = try ScrollDelta.lines(direction: direction, amount: amount)
         return deliver(target) { report in
             post(.mouseMoved, at: point, button: .left, target: target, report: &report)
             pause(0.015)
@@ -129,20 +119,35 @@ final class BackgroundInput {
 
     /// The button goes down at `from`, moves in steps, and comes up at `to`,
     /// all to the window under `from`, the way a real drag stays with the view
-    /// it started in. Nothing global is held, so no gesture gate is needed.
-    func drag(target: Target, from: CGPoint, to: CGPoint, durationMs: Int) -> Report {
+    /// it started in. The steps pump the run loop, so the caller holds the
+    /// gesture gate for the length of the drag: nothing global is held, but
+    /// another request run inside the pump must not interleave its own events
+    /// with this one's. When `shouldContinue` answers false the button comes
+    /// up at the point reached and the report says `drag:interrupted`.
+    func drag(
+        target: Target,
+        from: CGPoint,
+        to: CGPoint,
+        durationMs: Int,
+        shouldContinue: () -> Bool
+    ) -> Report {
         deliver(target) { report in
             post(.mouseMoved, at: from, button: .left, target: target, report: &report)
             pause(0.015)
             post(.leftMouseDown, at: from, button: .left, clickState: 1, pressed: true, target: target, report: &report)
             let steps = max(2, min(60, durationMs / 16))
+            var reached = from
             for step in 1...steps {
+                RunLoopPump.wait(until: { false }, timeout: Double(max(1, durationMs)) / 1000.0 / Double(steps))
+                guard shouldContinue() else {
+                    report.degraded.append("drag:interrupted")
+                    break
+                }
                 let progress = CGFloat(step) / CGFloat(steps)
-                let point = CGPoint(x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress)
-                post(.leftMouseDragged, at: point, button: .left, pressed: true, target: target, report: &report)
-                pause(Double(max(1, durationMs)) / 1000.0 / Double(steps))
+                reached = CGPoint(x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress)
+                post(.leftMouseDragged, at: reached, button: .left, pressed: true, target: target, report: &report)
             }
-            post(.leftMouseUp, at: to, button: .left, clickState: 1, pressed: false, target: target, report: &report)
+            post(.leftMouseUp, at: reached, button: .left, clickState: 1, pressed: false, target: target, report: &report)
         }
     }
 
@@ -191,6 +196,14 @@ final class BackgroundInput {
     private func guardFrontmost(target: Target, report: inout Report) {
         guard let user = report.frontmostBefore, user != target.pid else {
             pause(0.05)
+            return
+        }
+        // Without the window server's own front-process read, the fallback
+        // (`NSWorkspace`) only updates while the run loop turns, and turning it
+        // here would run other requests in the middle of this one. Nothing it
+        // read would be current, so the guard says so and stands down.
+        guard symbols.readsFrontmostDirectly else {
+            report.degraded.append("guard:frontmost_unobservable")
             return
         }
         for _ in 0..<6 {
@@ -259,14 +272,17 @@ final class BackgroundInput {
         event.postToPid(pid)
     }
 
-    /// Short gaps are slept; longer ones pump the run loop, because every
-    /// request this driver handles runs on the main thread.
+    /// The window server's frontmost process, for the caller's checks.
+    func frontmostPid() -> pid_t? { symbols.frontmostPid() }
+
+    /// A click or scroll sleeps through its gaps (about a fifth of a second in
+    /// all): pumping the run loop there would run another request — a lane's
+    /// two-minute `wait`, another chat's click — in the middle of this one,
+    /// with the guard unable to give the user's app back until it returned.
+    /// Only drag steps pump, under the caller's gesture gate.
     private func pause(_ seconds: Double) {
-        if seconds <= 0.02 {
-            usleep(useconds_t(seconds * 1_000_000))
-        } else {
-            RunLoopPump.wait(until: { false }, timeout: seconds)
-        }
+        guard seconds > 0 else { return }
+        usleep(useconds_t(seconds * 1_000_000))
     }
 }
 
@@ -303,10 +319,12 @@ private final class Symbols {
             "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
             RTLD_LAZY
         )
+        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
         func lookup<T>(_ names: [String], in handles: [UnsafeMutableRawPointer?], as _: T.Type) -> T? {
             for name in names {
-                for handle in handles {
-                    if let symbol = dlsym(handle ?? UnsafeMutableRawPointer(bitPattern: -2), name) {
+                // A framework that failed to open is skipped, not searched as nil.
+                for case let handle? in handles {
+                    if let symbol = dlsym(handle, name) {
                         return unsafeBitCast(symbol, to: T.self)
                     }
                 }
@@ -314,10 +332,10 @@ private final class Symbols {
             return nil
         }
         postToPidFn = lookup(["SLEventPostToPid"], in: [skyLight], as: PostToPid.self)
-        setWindowLocationFn = lookup(["CGEventSetWindowLocation"], in: [skyLight, nil], as: SetWindowLocation.self)
+        setWindowLocationFn = lookup(["CGEventSetWindowLocation"], in: [skyLight, rtldDefault], as: SetWindowLocation.self)
         postRecordFn = lookup(["SLPSPostEventRecordTo"], in: [skyLight], as: PostRecord.self)
-        processForPidFn = lookup(["GetProcessForPID"], in: [hiServices, nil], as: ProcessForPid.self)
-        pidForProcessFn = lookup(["GetProcessPID"], in: [hiServices, nil], as: PidForProcess.self)
+        processForPidFn = lookup(["GetProcessForPID"], in: [hiServices, rtldDefault], as: ProcessForPid.self)
+        pidForProcessFn = lookup(["GetProcessPID"], in: [hiServices, rtldDefault], as: PidForProcess.self)
         getFrontFn = lookup(["_SLPSGetFrontProcess", "SLPSGetFrontProcess"], in: [skyLight], as: GetFront.self)
         setFrontFn = lookup(["_SLPSSetFrontProcessWithOptions", "SLPSSetFrontProcessWithOptions"], in: [skyLight], as: SetFront.self)
     }
@@ -346,6 +364,9 @@ private final class Symbols {
         var psn = psn
         return record.withUnsafeBufferPointer { postRecordFn(&psn, $0.baseAddress!) }
     }
+
+    /// Whether `frontmostPid` asks the window server, which needs no run loop.
+    var readsFrontmostDirectly: Bool { getFrontFn != nil && pidForProcessFn != nil }
 
     /// The window server's frontmost process, which stays current in a helper
     /// that does not own the AppKit notifications `NSWorkspace` relies on.

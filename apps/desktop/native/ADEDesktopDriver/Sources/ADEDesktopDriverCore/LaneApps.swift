@@ -138,6 +138,9 @@ public final class NewWindowTracker: @unchecked Sendable {
     /// (Ableton Live publishes its window seconds before its accessibility
     /// element) used to land there for good.
     public static let launchedSlowAttempts = 20
+
+    /// Sweeps skipped before each slow attempt; the last one repeats.
+    static let slowCooldowns = [2, 4, 8, 10]
     private struct Watch {
         var laneId: String
         var launched: Bool
@@ -287,7 +290,7 @@ public final class NewWindowTracker: @unchecked Sendable {
         let slow = attempts - maxNotReadyAttempts
         if slow >= 0, watch.launched, slow < Self.launchedSlowAttempts {
             watch.notReady[windowId] = attempts
-            watch.cooldown[windowId] = min(1 << min(slow + 1, 4), 10)
+            watch.cooldown[windowId] = Self.slowCooldowns[min(slow, Self.slowCooldowns.count - 1)]
             watches[pid] = watch
             return .retryLater(isFirst: slow == 0)
         }

@@ -127,10 +127,12 @@ final class VirtualDisplayHost {
     /// display (this helper's or another ADE's) takes its old spot. Nothing
     /// re-read the origin, so the lane kept clamping, capturing and parking
     /// at the old rect, which now belonged to the other lane's screen.
-    func refreshMovedPlacements() -> [(laneId: String, from: DisplayPlacement, to: DisplayPlacement)] {
+    typealias DisplayMove = (laneId: String, displayId: CGDirectDisplayID, from: DisplayPlacement, to: DisplayPlacement)
+
+    func refreshMovedPlacements() -> [DisplayMove] {
         lock.lock()
         defer { lock.unlock() }
-        var moved: [(laneId: String, from: DisplayPlacement, to: DisplayPlacement)] = []
+        var moved: [DisplayMove] = []
         for (laneId, handle) in handles where handle.mode == "virtual" {
             let bounds = CGDisplayBounds(handle.displayId)
             guard bounds.width > 0, bounds.origin != handle.placement.origin else { continue }
@@ -140,7 +142,7 @@ final class VirtualDisplayHost {
                 height: handle.placement.height,
                 scale: handle.placement.scale
             )
-            moved.append((laneId: laneId, from: handle.placement, to: next))
+            moved.append((laneId: laneId, displayId: handle.displayId, from: handle.placement, to: next))
             handles[laneId]?.placement = next
         }
         return moved

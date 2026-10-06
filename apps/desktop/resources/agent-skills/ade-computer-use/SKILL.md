@@ -222,7 +222,7 @@ Use these directly; you do not need `--help` for them.
 | Open an app, file or URL | `ade screen open "Safari" --text` |
 | What is on screen | `ade screen observe --text` |
 | Click a control by its label | `ade screen click --text "Sign in" --text` |
-| Click a point from the screenshot (no pointer moves) | `ade screen click --x 900 --y 420 --text` (add `--right` or `--double`) |
+| Click a point from the screenshot | `ade screen click --x 900 --y 420 --text` (add `--right` or `--double`); moves no pointer on a Mac or a private Windows seat |
 | Type, then press Return | `ade screen type "reddit" --submit --text` |
 | Press one key | `ade screen press return --text` (also `tab`, `escape`) |
 | Wait for a label to appear | `ade screen wait --label "Done" --timeout 8000 --text` |
@@ -329,7 +329,12 @@ A point click, a right or double click, a scroll at a point and a drag are
 delivered to the app under the point and nowhere else (`mode background` in
 the reply), so custom-drawn and Electron apps work too. A handle whose element
 has no press action is clicked that way automatically. Keys and text already
-go to the app alone.
+go to the app alone. Two refusals: while the user has taken control of the
+screen, every agent action is refused with `MAC_DESKTOP_USER_HAS_CONTROL` —
+retry after they hand control back; and a window of the app the user is
+working in right now (one Chrome window claimed onto the lane while they type
+in another) is refused, because acting on it would take that app's keyboard
+focus — ask for the lease and use `--real`, or open a separate copy.
 
 `--real` is different: it posts through the user's one pointer, which jumps
 onto the lane's screen for every event. On a Mac it sits behind a lease the

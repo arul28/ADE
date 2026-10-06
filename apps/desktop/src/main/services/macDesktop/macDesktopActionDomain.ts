@@ -13,6 +13,7 @@
  */
 
 import {
+  MAC_DESKTOP_INPUT_MODES,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   MAC_DESKTOP_MODIFIERS,
   MAC_DESKTOP_RESOLUTION_PRESETS,
@@ -110,7 +111,6 @@ function optionalBoolean(args: unknown, key: string): boolean | null {
   throw new Error(`macDesktop: ${key} must be a boolean.`);
 }
 
-const MAC_DESKTOP_INPUT_MODES: readonly MacDesktopInputMode[] = ["accessibility", "background", "real"];
 const MAC_DESKTOP_SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const;
 /**
  * Derived, never re-typed: a preset added to the shared table and forgotten
