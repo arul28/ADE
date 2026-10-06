@@ -692,7 +692,7 @@ import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
-import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
+import { findInstanceHoldingThread, moveProviderThread, providerThreadIsInHome } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSwitchAccountArgs,
@@ -9714,6 +9714,16 @@ export type ChatAccountUsage = {
   resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
 };
 
+/** Claude could not resume the thread id it was given. */
+function isClaudeStaleSessionError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes("session not found")
+    || msg.includes("no conversation found with session id")
+    || msg.includes("invalid session")
+    || msg.includes("stale session")
+    || msg.includes("session expired");
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -10403,6 +10413,43 @@ export function createAgentChatService(args: {
     const instance = resolveSessionInstance(managed);
     const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
     return presetHome || instance?.configHome || null;
+  };
+
+  /**
+   * A resume reads only the chat's own account home. A thread that lives in
+   * another account's home (an import or move that never copied it) fails
+   * with "No conversation found", and the turn then starts a blank thread
+   * while the chat looks continued. Copy it in from the account holding it.
+   */
+  const ensureClaudeThreadInSessionHome = async (
+    managed: ManagedChatSession,
+    threadId: string,
+  ): Promise<void> => {
+    const targetHome = sessionConfigHome(managed);
+    if (!targetHome || providerThreadIsInHome("claude", threadId, targetHome)) return;
+    let holder: ProviderInstance | null = null;
+    try {
+      const others = getMachineProviderInstanceStore()
+        .list("claude")
+        .filter((instance) => !pathsEqual(instance.configHome, targetHome));
+      holder = findInstanceHoldingThread("claude", threadId, others);
+    } catch {
+      holder = null;
+    }
+    if (!holder) return;
+    const moved = await moveProviderThread({
+      provider: "claude",
+      threadId,
+      fromConfigHome: holder.configHome,
+      toConfigHome: targetHome,
+    });
+    logger[moved.ok ? "info" : "warn"]("agent_chat.claude_thread_pulled_into_account", {
+      sessionId: managed.session.id,
+      sdkSessionId: threadId,
+      fromInstanceId: holder.id,
+      ok: moved.ok,
+      ...(moved.ok ? {} : { error: moved.message }),
+    });
   };
 
   /**
@@ -16974,6 +17021,12 @@ export function createAgentChatService(args: {
       ? selfChatRuntimeOwner()
       : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+    // The fallback below is what survives a teardown. Seeded at hydrate, it
+    // would otherwise outlive every newer thread the runtime opens, and the
+    // first persist after a teardown (an account switch) resumes the old one.
+    if (liveClaudeSdkSessionId && !managed.claudeBackgroundJobShort) {
+      managed.claudeBackgroundResumeSessionId = liveClaudeSdkSessionId;
+    }
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
       : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
@@ -27367,6 +27420,10 @@ export function createAgentChatService(args: {
             turnPermissionMode,
             error: String(permErr),
           });
+          // The resume itself failed, not the mode. A fresh query here would
+          // have none of this chat's history while the chat looks continued,
+          // so the turn fails into the missing-thread recovery instead.
+          if (runtime.sdkSessionId && isClaudeStaleSessionError(permErr)) throw permErr;
           await resetClaudeQuerySession(managed, runtime, "session_reset", {
             clearSdkSessionId: true,
             preserveInitialInputDispatchGate: true,
@@ -29538,15 +29595,7 @@ export function createAgentChatService(args: {
         appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
 
         // If resume failed, clear sessionId and the caller can retry fresh
-        const isStaleSessionError = (err: unknown): boolean => {
-          const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-          return msg.includes("session not found")
-            || msg.includes("no conversation found with session id")
-            || msg.includes("invalid session")
-            || msg.includes("stale session")
-            || msg.includes("session expired");
-        };
-        if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
+        if (runtime.sdkSessionId && isClaudeStaleSessionError(effectiveError)) {
           const staleSdkSessionId = runtime.sdkSessionId;
           logger.warn("agent_chat.claude_sdk_session_error", {
             sessionId: managed.session.id,
@@ -29568,6 +29617,9 @@ export function createAgentChatService(args: {
             null,
           );
           if (runtime.sdkSessionId === staleSdkSessionId) runtime.sdkSessionId = null;
+          if (managed.claudeBackgroundResumeSessionId === staleSdkSessionId) {
+            managed.claudeBackgroundResumeSessionId = null;
+          }
           managed.runtimeInvalidated = true;
           clearDeliveredDirectiveEpoch(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
@@ -38940,6 +38992,9 @@ export function createAgentChatService(args: {
       });
       runtime.sdkSessionId = null;
       runtime.forkFromSdkSessionId = null;
+      if (managed.claudeBackgroundResumeSessionId === providerSessionIdToClear) {
+        managed.claudeBackgroundResumeSessionId = null;
+      }
       managed.runtimeInvalidated = true;
       // The id is gone, so the next query opens a session that has heard none
       // of this chat — including the doctrine that makes a CTO thread the CTO.
@@ -39331,6 +39386,8 @@ export function createAgentChatService(args: {
     // Repair a corrupted thinking history before resuming directly (the warm
     // path already ran this in pre-warm). No-op for healthy transcripts.
     if (!runtime.warmQuery && options.resume) {
+      await ensureClaudeThreadInSessionHome(managed, options.resume);
+      assertCurrentStart();
       const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath, sessionConfigHome(managed));
       if (repair.repaired) {
         logger.warn("agent_chat.claude_thinking_transcript_repaired", {
@@ -39718,6 +39775,7 @@ export function createAgentChatService(args: {
         // so a corrupted thinking history can't wedge the resume (see
         // claudeThinkingTranscriptRepair). No-op for healthy transcripts.
         if (options.resume) {
+          await ensureClaudeThreadInSessionHome(managed, options.resume);
           const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath, sessionConfigHome(managed));
           if (repair.repaired) {
             logger.warn("agent_chat.claude_thinking_transcript_repaired", {
