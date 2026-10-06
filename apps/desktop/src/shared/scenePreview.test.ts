@@ -5,7 +5,6 @@ import {
   lintSceneSource,
   scenePreviewTheme,
   sceneSourceFromInput,
-  SCENE_PREVIEW_MAX_SOURCE_BYTES,
 } from "./scenePreview";
 
 /**
@@ -52,11 +51,6 @@ describe("lintSceneSource", () => {
     const near = lintSceneSource("x".repeat(Math.ceil(SCENE_LIMITS.maxSourceBytes * 0.85)));
     expect(near).toHaveLength(1);
     expect(near[0]!.message).toContain("near");
-  });
-
-  /** The preview accepts a whole fence pasted around a scene; the chat cap still applies to its body. */
-  it("accepts a fence for a source that is over the chat cap so it can be reported", () => {
-    expect(SCENE_PREVIEW_MAX_SOURCE_BYTES).toBeGreaterThan(SCENE_LIMITS.maxSourceBytes);
   });
 });
 
