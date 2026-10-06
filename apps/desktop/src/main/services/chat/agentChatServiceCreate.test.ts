@@ -3817,7 +3817,7 @@ describe("createAgentChatService", () => {
   });
 
   // The account registry lives under the test's own temp home: `os.homedir()`
-  // is pinned there, and no test sets ADE_HOME.
+  // is pinned there, and the harness pins ADE_HOME beside it.
   describe("provider account pinning", () => {
     it("records the account a new chat starts on, and keeps it when the default changes", async () => {
       const accounts = getMachineProviderInstanceStore();
