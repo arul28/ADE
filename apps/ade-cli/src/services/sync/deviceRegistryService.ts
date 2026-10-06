@@ -18,6 +18,7 @@ import { mapPlatform } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -104,6 +105,11 @@ function execFileText(
   commandArgs: string[],
   timeoutMs: number,
 ): Promise<string | null> {
+  if (offThreadSpawnEnabled()) {
+    // A Windows spawn on the event loop blocked the brain ~100 ms per probe.
+    return execFileOffThread(command, commandArgs, { timeoutMs, maxBuffer: 1024 * 1024 })
+      .then(({ exitCode, stdout, error }) => (error || exitCode !== 0 ? null : stdout));
+  }
   return new Promise((resolve) => {
     execFile(command, commandArgs, {
       encoding: "utf8",

@@ -303,6 +303,65 @@ export function spawnOffThread(
   return spawner.spawn(command, args, options);
 }
 
+export type OffThreadExecResult = {
+  /** The exit code, or null when the process never ran, was killed, or timed out. */
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set when the process could not start, timed out, or overran maxBuffer. */
+  error: Error | null;
+};
+
+/**
+ * `execFile` for short capture-style commands, spawned off the event loop.
+ * Like `execFile`, a timeout or an overrun of `maxBuffer` kills the process
+ * tree and reports an error.
+ */
+export function execFileOffThread(
+  command: string,
+  args: readonly string[],
+  options: OffThreadSpawnOptions & { timeoutMs: number; maxBuffer?: number },
+): Promise<OffThreadExecResult> {
+  const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+  return new Promise((resolve) => {
+    const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    let failure: Error | null = null;
+    let settled = false;
+    const finish = (exitCode: number | null, error: Error | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        error,
+      });
+    };
+    const kill = (error: Error) => {
+      failure ??= error;
+      child.killTree("SIGTERM");
+    };
+    const timer = setTimeout(() => kill(new Error(`${command} timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    const collect = (sink: Buffer[]) => (data: Buffer) => {
+      bytes += data.length;
+      if (bytes > maxBuffer) {
+        kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
+        return;
+      }
+      sink.push(data);
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.on("error", (error: Error) => finish(null, error));
+    child.on("close", (code: number | null) => finish(failure ? null : code, failure));
+    child.stdin.end("");
+  });
+}
+
 /** `terminateProcessTree` for an {@link OffThreadChild}; never blocks the caller. */
 export function terminateOffThreadChildTree(child: OffThreadChild, signal: NodeJS.Signals = "SIGKILL"): boolean {
   return child.killTree(signal);

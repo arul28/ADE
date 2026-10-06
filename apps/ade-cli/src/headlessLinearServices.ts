@@ -97,6 +97,7 @@ import { createAutomationSecretService as createAutomationSecretServiceImpl } fr
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import { runGitRepoCached } from "../../desktop/src/main/services/git/git";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
@@ -452,6 +453,19 @@ function runCommandAsync(
   args: string[],
   options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (offThreadSpawnEnabled()) {
+    // `gh auth token` runs here every ~15 s; on Windows a spawn on the event
+    // loop blocked it ~120 ms each time. See offThreadSpawn.ts.
+    return execFileOffThread(executable, args, {
+      cwd: options.cwd,
+      timeoutMs: options.timeoutMs,
+      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+    }).then(({ exitCode, stdout, stderr, error }) => ({
+      exitCode: error ? 1 : exitCode ?? 1,
+      stdout,
+      stderr: stderr || (error ? error.message : ""),
+    }));
+  }
   return new Promise((resolve) => {
     execFile(
       executable,
