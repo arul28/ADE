@@ -193,6 +193,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // failure for a repair that is still running — the exact mis-report the
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
+    // Project recovery's Repair reinstalls the service and then waits up to
+    // 90s for the brain to answer, streaming its steps as it goes. On the 30s
+    // default the renderer showed a raw IPC timeout mid-repair, hiding the
+    // step that actually failed.
+    case IPC.recoveryRepair:
       return 4 * 60_000;
     // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
     // merged PR. The 30s default reported a failure while the merge went on.

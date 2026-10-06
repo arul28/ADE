@@ -207,6 +207,13 @@ export function runBrainWatchdogCheck(args: {
   selfPid?: number;
   pidAlive?: (pid: number) => boolean;
   kill?: (pid: number) => void;
+  /**
+   * Called after a successful kill. The kill alone relies on the supervisor's
+   * KeepAlive to start a replacement, and a launchd domain in on-demand-only
+   * mode ignores KeepAlive -- the brain would stay dead. The CLI passes a
+   * `launchctl kickstart` here on macOS. Best effort; never throws.
+   */
+  restartService?: (pid: number) => void;
   platform?: NodeJS.Platform;
   /** Injectable so tests never have to inspect a real process. */
   /** Live pid's start time in ms; `null` means "could not tell" (no kill). */
@@ -381,6 +388,11 @@ export function runBrainWatchdogCheck(args: {
         error instanceof Error ? error.message : String(error)
       }`,
     };
+  }
+  try {
+    args.restartService?.(verdict.pid);
+  } catch {
+    // KeepAlive is still the primary restart; this only covers a domain that ignores it.
   }
   return {
     ok: true,
