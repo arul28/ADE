@@ -255,7 +255,7 @@ import {
   createAutomationAdeActionLookup,
   getAdeActionDomainServices,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import { createLaneWorktreeLockService, LaneWorktreeLockedError, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import {
   createDefaultBranchAutoPullService,
   detectInProgressGitOperation,
@@ -1499,6 +1499,20 @@ export async function createAdeRuntime(args: {
         return gitDir ? detectInProgressGitOperation(gitDir) : null;
       },
       isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
+      acquireWorktreeLock: (lane) => {
+        try {
+          const acquired = laneWorktreeLockService.acquire({
+            laneId: lane.laneId,
+            worktreePath: lane.worktreePath,
+            ownerKind: "git_mutation",
+            ownerLabel: "Auto-pull default branch",
+          });
+          return { release: () => laneWorktreeLockService.release({ token: acquired.token }) };
+        } catch (error) {
+          if (error instanceof LaneWorktreeLockedError) return null;
+          throw error;
+        }
+      },
       readSyncStatus: async (laneId) => {
         const status = await gitService.getSyncStatus({ laneId });
         return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };

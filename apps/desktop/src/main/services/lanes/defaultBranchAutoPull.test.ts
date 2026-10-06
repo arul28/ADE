@@ -107,6 +107,7 @@ function harness(overrides: Partial<DefaultBranchAutoPullDeps> = {}): Harness {
     readWorktreeStatus: async () => ({ staged: 0, unstaged: 0, headBranchRef: "main" }),
     detectInProgressOperation: async () => null,
     isWorktreeLocked: () => false,
+    acquireWorktreeLock: () => ({ release: () => {} }),
     readSyncStatus: async () => sync({ behind: 4 }),
     fetch,
     pullFastForward,
@@ -203,6 +204,38 @@ describe("createDefaultBranchAutoPullService", () => {
 
     expect(await service.runOnce()).toEqual({ pulled: false, reason: "worktree-locked" });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("skips when another operation acquires the worktree lease during fetch", async () => {
+    const acquireWorktreeLock = vi.fn(() => null);
+    const { deps, fetch, pullFastForward } = harness({ acquireWorktreeLock });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    expect(await service.runOnce()).toEqual({ pulled: false, reason: "worktree-locked" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(acquireWorktreeLock).toHaveBeenCalledWith({ laneId: "lane-primary", worktreePath: "/repo", branchRef: "main" });
+    expect(pullFastForward).not.toHaveBeenCalled();
+  });
+
+  it("holds the worktree lease through the pull and releases it afterward", async () => {
+    let leaseHeld = false;
+    const release = vi.fn(() => { leaseHeld = false; });
+    const pullFastForward = vi.fn(async () => {
+      expect(leaseHeld).toBe(true);
+    });
+    const { deps } = harness({
+      acquireWorktreeLock: () => {
+        leaseHeld = true;
+        return { release };
+      },
+      pullFastForward,
+    });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    expect(await service.runOnce()).toMatchObject({ pulled: true });
+    expect(leaseHeld).toBe(false);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(pullFastForward).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces calls during a pass into one serialized follow-up", async () => {
