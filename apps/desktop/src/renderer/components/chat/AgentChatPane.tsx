@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
+import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
 import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
@@ -3550,7 +3551,7 @@ function orderAvailableModelIds(ids: Iterable<string>): string[] {
   extra.sort((left, right) => {
     const leftLabel = getModelById(left)?.displayName ?? left;
     const rightLabel = getModelById(right)?.displayName ?? right;
-    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(leftLabel, rightLabel);
   });
   return [...ordered, ...extra];
 }
@@ -4735,6 +4736,7 @@ export function AgentChatPane({
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // Pending thread comments for the open chat. Null while the chat has no
   // readable session (a launch still starting, a draft) or the composer and
   // transcript disagree on which chat is open.
@@ -6866,7 +6868,7 @@ export function AgentChatPane({
     extras.sort((left, right) => {
       const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left, modelCatalogScopeKey)?.displayName ?? left;
       const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right, modelCatalogScopeKey)?.displayName ?? right;
-      return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+      return compareTextInsensitive(leftLabel, rightLabel);
     });
     return [...ordered, ...extras];
   }, [availableModelIds, modelCatalogScopeKey, runtimeCatalogVersion, selectedSessionModelId]);
@@ -9223,7 +9225,12 @@ export function AgentChatPane({
       }
     }, chatRuntimePinRef.current);
     return unsubscribe;
+    // The pin is read through the ref, but its key must re-subscribe: a pin
+    // that resolves after mount would otherwise leave the drawer on the bound
+    // machine's feed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    chatRuntimePinKey,
     isTileActive,
     refreshComputerUseSnapshot,
     selectedSessionId,
@@ -15036,6 +15043,7 @@ export function AgentChatPane({
           storageKey={`chat:${selectedSessionId}`}
           laneId={laneId}
           chatSessionId={selectedSessionId}
+          runtimePin={renderedChatRuntimePin}
           onRevealTerminal={revealChatTerminal}
         />
       ) : null}
@@ -15411,6 +15419,7 @@ export function AgentChatPane({
         storageKey={`composer-auth:${selectedSessionId}`}
         laneId={laneId}
         chatSessionId={selectedSessionId}
+        runtimePin={renderedChatRuntimePin}
         onRevealTerminal={revealChatTerminal}
       />
     </div>
@@ -16921,6 +16930,7 @@ export function AgentChatPane({
       <RewindFilesConfirmDialog
         state={rewindConfirmDialog}
         sessionId={selectedSessionId}
+        runtimePin={renderedChatRuntimePin}
         onCancel={closeRewindConfirmDialog}
         onConfirm={confirmRewindDialog}
       />

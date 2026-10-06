@@ -1568,7 +1568,12 @@ Cross-machine Work union:
   contract as `decodeForeignLanes`, validating every field the badge path reads
   (`id`, `laneId`, `headBranch`, `githubPrNumber`, `githubUrl`, `state`) so a
   peer on an older build cannot produce a `PR #undefined` chip or one whose
-  click is a silent no-op. See
+  click is a silent no-op. A newly opened PR appears in a machine's slice only
+  once its owner has mapped it: the owner's poller repo-snapshot discovery sweep
+  is the path that maps a `gh pr create` row to its lane (the desktop focus
+  reconcile reaches only a project open on the owner's own computer), and a
+  pinned chat additionally asks the owner for a non-forced reconcile on its
+  header mount and window refocus. See
   [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read).
   A detached chat created
   against another `OpenProjectBinding` is optimistically filed in that

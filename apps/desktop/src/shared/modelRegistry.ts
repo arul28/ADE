@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import bundledModelManifestJson from "./model-manifest.json";
+import { compareTextInsensitive } from "./formatting";
 import {
   missingFieldsForNewModel,
   MODEL_MANIFEST_ROUTE_CLI,
@@ -1355,8 +1356,24 @@ function curatedRows(): readonly ModelDescriptor[] {
   return servedCuratedRows;
 }
 
+let registryGeneration = 0;
+
+/**
+ * Bumped whenever a lookup's answer can change: a manifest apply, a live ACP
+ * overlay rebuild, or a dynamic OpenCode/Pi registry replacement.
+ *
+ * Caches of RESOLVED descriptors key on this instead of subscribing to each
+ * mutator, so a new mutator cannot silently leave a cache stale — every one of
+ * them already funnels through `rebuildServedIndexes` or a `replaceDynamic*`
+ * call.
+ */
+export function modelRegistryGeneration(): number {
+  return registryGeneration;
+}
+
 /** Rebuild the served lookups from `MODEL_REGISTRY` and the live overlay. */
 function rebuildServedIndexes(): void {
+  registryGeneration += 1;
   servedCuratedRows = MODEL_REGISTRY.map((row) => servedRegistryRow(row));
   byId = new Map<string, ModelDescriptor>();
   byShortId = new Map<string, ModelDescriptor | null>();
@@ -1852,6 +1869,7 @@ export function createDynamicPiModelDescriptor(
 }
 
 export function replaceDynamicPiModelDescriptors(descriptors: ModelDescriptor[]): void {
+  registryGeneration += 1;
   dynamicPiById = new Map<string, ModelDescriptor>();
   dynamicPiByAlias = new Map<string, ModelDescriptor>();
   for (const descriptor of descriptors) {
@@ -2165,6 +2183,7 @@ function isDynamicOpenCodeDescriptor(descriptor: ModelDescriptor): boolean {
 }
 
 export function replaceDynamicOpenCodeModelDescriptors(descriptors: ModelDescriptor[]): void {
+  registryGeneration += 1;
   dynamicOpenCodeById = new Map<string, ModelDescriptor>();
   dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
 
@@ -2541,7 +2560,7 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
     const ra = rank(ga);
     const rb = rank(gb);
     if (ra !== rb) return ra - rb;
-    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(a.displayName, b.displayName);
   });
 }
 
@@ -2794,13 +2813,37 @@ export function sortDroidCliDescriptorsForPicker(descriptors: ModelDescriptor[])
     const ra = rank(ga);
     const rb = rank(gb);
     if (ra !== rb) return ra - rb;
-    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(a.displayName, b.displayName);
   });
 }
 
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+/**
+ * Descriptors BUILT by the parse-and-construct tail of {@link getModelById}.
+ *
+ * A dynamic id (`pi:…`, an OpenCode ref, `ollama/…`, `cursor/…`, `droid/…`) is
+ * in no index, so every lookup rebuilt its descriptor from scratch — and the
+ * chat pane resolves tens of them per mount, several times over, to order and
+ * label its model lists. Keyed by {@link registryGeneration} so a manifest
+ * apply or a dynamic-registry replacement drops the whole cache rather than
+ * serving a descriptor built against the previous registry.
+ */
+let constructedById = new Map<string, ModelDescriptor>();
+let constructedGeneration = -1;
+// Ids come from catalogs, sessions and drafts, so this is a backstop against a
+// caller resolving unbounded free-form strings, not an expected ceiling.
+const MAX_CONSTRUCTED_DESCRIPTORS = 512;
+
+function constructedDescriptors(): Map<string, ModelDescriptor> {
+  if (constructedGeneration !== registryGeneration) {
+    constructedById = new Map<string, ModelDescriptor>();
+    constructedGeneration = registryGeneration;
+  }
+  return constructedById;
+}
 
 export function getModelById(id: string): ModelDescriptor | undefined {
   const normalized = id.trim();
@@ -2820,6 +2863,19 @@ export function getModelById(id: string): ModelDescriptor | undefined {
     const dynamicAcp = map.get(normalized);
     if (dynamicAcp) return dynamicAcp;
   }
+  const constructed = constructedDescriptors();
+  const alreadyBuilt = constructed.get(normalized);
+  if (alreadyBuilt) return alreadyBuilt;
+  const built = constructDynamicModelDescriptor(normalized);
+  if (built) {
+    if (constructed.size >= MAX_CONSTRUCTED_DESCRIPTORS) constructed.clear();
+    constructed.set(normalized, built);
+  }
+  return built;
+}
+
+/** Build the descriptor a dynamic (unindexed) model id describes, if it is one. */
+function constructDynamicModelDescriptor(normalized: string): ModelDescriptor | undefined {
   const piDecoded = decodePiRegistryId(normalized);
   if (piDecoded) {
     return createDynamicPiModelDescriptor(piDecoded.providerId, piDecoded.modelId, { profileId: piDecoded.profileId });

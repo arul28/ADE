@@ -8322,6 +8322,32 @@ describe("prService auto-map by branch", () => {
     expect(events[0].prId.length).toBeGreaterThan(0);
   });
 
+  it("syncLanePr maps an open PR on the lane branch without the repo-wide sweep", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const readStoreRow = db.get.getMockImplementation()!;
+    db.get.mockImplementation((sql: string, params: unknown[] = []) =>
+      String(sql).includes("from lanes")
+        ? { lane_type: "worktree", branch_ref: `refs/heads/${AUTO_BRANCH}`, base_ref: "main", archived_at: null }
+        : readStoreRow(sql, params));
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const synced = await service.syncLanePr(LANE_ID);
+
+    expect(synced).toEqual(expect.objectContaining({ laneId: LANE_ID, githubPrNumber: 777 }));
+    // Every PR list it asked GitHub for was scoped to the lane's branch; the
+    // closed-history sweep that took about a minute never ran.
+    const listCalls = (githubService.apiRequest as any).mock.calls
+      .map(([args]: [{ method?: string; path: string; query?: Record<string, unknown> }]) => args)
+      .filter((args: { method?: string; path: string }) =>
+        (args.method ?? "GET") === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`);
+    expect(listCalls.length).toBeGreaterThan(0);
+    expect(listCalls.every((args: { query?: Record<string, unknown> }) =>
+      args.query?.head === `${REPO.owner}:${AUTO_BRANCH}`)).toBe(true);
+  });
+
   it("skips a fork PR (different head repo)", async () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, []);

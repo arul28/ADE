@@ -628,7 +628,8 @@ button.ade-welcome-item:focus-visible {
     color-mix(in srgb, var(--color-accent) 9%, transparent),
     transparent
   );
-  animation: ade-recent-shimmer 2.4s ease-in-out infinite;
+  /* steps = 2.4s x 30; see `ade-launch-rail-sheen` in index.css. */
+  animation: ade-recent-shimmer 2.4s steps(72) infinite;
 }
 .ade-welcome-spin { animation: ade-recent-spin 0.9s steps(27) infinite; }
 

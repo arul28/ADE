@@ -1,3 +1,4 @@
+import { compareTextInsensitive } from "./formatting";
 import {
   CURSOR_CLI_LINE_ORDER,
   DROID_CLI_LINE_ORDER,
@@ -326,7 +327,7 @@ function sortModels(models: ModelDescriptor[], modelOrder: Map<string, number>):
     const oa = modelOrder.get(a.id);
     const ob = modelOrder.get(b.id);
     if (oa != null && ob != null && oa !== ob) return oa - ob;
-    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(a.displayName, b.displayName);
   });
 }
 

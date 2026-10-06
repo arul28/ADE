@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; background: #0b0b10; color: #ddd; font: 12px system-ui; }
+  #grid { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; }
+  .box { width: 16px; height: 16px; }
+  .ring {
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 2px solid rgba(167,139,250,0.25); border-top-color: #a78bfa;
+    box-sizing: border-box;
+  }
+  /* A: today's shipped form — a stepped CSS keyframe animation per spinner. */
+  @keyframes lab-spin { to { transform: rotate(360deg); } }
+  .strategy-css .box { animation: lab-spin 1s steps(30) infinite; }
+  /* B: one JS clock writes --lab-angle on :root; every spinner reads it. */
+  .strategy-rootvar .box { transform: rotate(var(--lab-angle, 0deg)); }
+  /* C: one JS clock rewrites a single stylesheet rule. */
+  /* (rule injected at runtime: .strategy-sheet .box { transform: rotate(Ndeg) }) */
+  /* D: smooth CSS animation, for reference against round 1's finding. */
+  .strategy-smooth .box { animation: lab-spin 1s linear infinite; }
+  /* E/F: the same two, on an element hinted into its own compositing layer. */
+  .strategy-layer .box { animation: lab-spin 1s steps(30) infinite; will-change: transform; }
+  .strategy-layersmooth .box { animation: lab-spin 1s linear infinite; will-change: transform; }
+  /* Sheens: a translated gradient bar, ADE's `ade-launch-rail-sheen` shape.
+     `sheen` is the shipped smooth form; `sheensteps` is the same at 30 steps
+     a second (1.5s x 30 = 45). Both carry will-change like the real one. */
+  @keyframes lab-sheen { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+  .strategy-sheen .box, .strategy-sheensteps .box { overflow: hidden; position: relative; width: 120px; }
+  .strategy-sheen .ring, .strategy-sheensteps .ring {
+    width: 48px; height: 16px; border-radius: 9999px; border: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(221,214,254,0.7) 50%, transparent 100%);
+    will-change: transform;
+  }
+  .strategy-sheen .ring { animation: lab-sheen 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+  .strategy-sheensteps .ring { animation: lab-sheen 1.5s steps(45) infinite; }
+  /* G: a composited opacity pulse instead of a rotation. */
+  @keyframes lab-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+  .strategy-opacity .box { animation: lab-pulse 1.2s linear infinite; }
+  #hud { position: fixed; right: 8px; bottom: 8px; background: #000a; padding: 6px 8px; }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<div id="hud"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const strategy = params.get("strategy") || "css";
+const count = Number(params.get("count") || 3);
+
+const grid = document.getElementById("grid");
+for (let i = 0; i < count; i += 1) {
+  const box = document.createElement("div");
+  box.className = "box";
+  const ring = document.createElement("div");
+  ring.className = "ring";
+  box.appendChild(ring);
+  grid.appendChild(box);
+}
+document.body.className = `strategy-${strategy}`;
+
+const STEPS = 30;
+const STEP_MS = 1000 / STEPS;
+let sheetRule = null;
+if (strategy === "sheet") {
+  const style = document.createElement("style");
+  document.head.appendChild(style);
+  style.sheet.insertRule(".strategy-sheet .box { transform: rotate(0deg); }", 0);
+  sheetRule = style.sheet.cssRules[0];
+}
+
+let step = 0;
+function tick() {
+  step = (step + 1) % STEPS;
+  const deg = `${Math.round((step * 360) / STEPS)}deg`;
+  if (strategy === "rootvar") document.documentElement.style.setProperty("--lab-angle", deg);
+  else if (strategy === "sheet") sheetRule.style.transform = `rotate(${deg})`;
+}
+if (strategy === "rootvar" || strategy === "sheet") setInterval(tick, STEP_MS);
+
+// The frame witness itself forces a frame every vsync, which swamps the very
+// cost under test, so it is opt-in (`?witness=1`) and off for CPU runs.
+if (params.get("witness") === "1") {
+  let frames = 0;
+  let worstGap = 0;
+  let last = performance.now();
+  function raf(now) {
+    frames += 1;
+    worstGap = Math.max(worstGap, now - last);
+    last = now;
+    requestAnimationFrame(raf);
+  }
+  requestAnimationFrame(raf);
+  setInterval(() => {
+    document.getElementById("hud").textContent =
+      `${strategy} x${count} · ${frames} fps · worst gap ${worstGap.toFixed(1)}ms`;
+    frames = 0;
+    worstGap = 0;
+  }, 1000);
+} else {
+  document.getElementById("hud").textContent = `${strategy} x${count}`;
+}
+</script>
+</body>
+</html>

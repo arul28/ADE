@@ -110,6 +110,14 @@ export function useChatMachineLanes(pin: OpenProjectBinding | null): LaneSummary
   return pinnedLanes ?? boundLanes;
 }
 
+/**
+ * Does the chat run on this computer, bound and unpinned? Only then do its
+ * file paths open here and does main's focus reconcile reach its project.
+ */
+export function chatRunsOnThisComputer(scope: Pick<ChatMachineScope, "pin" | "isRemote">): boolean {
+  return !scope.isRemote && scope.pin == null;
+}
+
 export function useChatRuntimeScopeForPin(
   pin: OpenProjectBinding | null,
   laneId: string | null,

@@ -5,6 +5,7 @@ import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   getLocalModelIdTail,
+  modelRegistryGeneration,
   parseDynamicDroidModelRef,
   parseDynamicOpenCodeModelRef,
   parseLocalProviderFromModelId,
@@ -27,6 +28,8 @@ import {
   isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
   peekRuntimeCatalogScopeDescriptors,
+  peekRuntimeCatalogScopeParse,
+  rememberRuntimeCatalogScopeParse,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
 
@@ -395,6 +398,18 @@ export function descriptorsFromAgentChatModelCatalog(
   scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): { models: RuntimeCatalogModelDescriptor[]; availableModelIds: string[] } {
   if (!catalog) return { models: [], availableModelIds: [] };
+  const generation = modelRegistryGeneration();
+  if (!filter) {
+    const memo = peekRuntimeCatalogScopeParse(scopeKey);
+    if (memo && memo.catalog === catalog && memo.registryGeneration === generation) {
+      // Keep the scope's descriptor map in step with the memo. Both are dropped
+      // together now, so this is cheap insurance rather than a load-bearing
+      // repair: it means a memo hit and a real parse leave identical state.
+      const scoped = runtimeCatalogScopeDescriptors(scopeKey);
+      for (const descriptor of memo.models) scoped.set(descriptor.id, descriptor);
+      return { models: memo.models, availableModelIds: memo.availableModelIds };
+    }
+  }
   const merged = new Map<string, RuntimeCatalogModelDescriptor>();
   const available = new Set<string>();
   const scopedDescriptors = runtimeCatalogScopeDescriptors(scopeKey);
@@ -475,5 +490,9 @@ export function descriptorsFromAgentChatModelCatalog(
       }
     }
   }
-  return { models: [...merged.values()], availableModelIds: [...available] };
+  const parsed = { models: [...merged.values()], availableModelIds: [...available] };
+  if (!filter) {
+    rememberRuntimeCatalogScopeParse(scopeKey, { catalog, registryGeneration: generation, ...parsed });
+  }
+  return parsed;
 }

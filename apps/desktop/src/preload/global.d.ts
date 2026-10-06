@@ -1967,7 +1967,7 @@ declare global {
           includeInPr?: boolean;
           closeOnMerge?: boolean;
         }) => Promise<SessionLinearIssueLink[]>;
-        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listLinearIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionLinearIssueLink[]>;
         listLinearIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionLinearIssueLink[]>;
         attachGitHubIssueToSession: (args: {
@@ -1978,7 +1978,7 @@ declare global {
           includeInPr?: boolean;
           closeOnMerge?: boolean;
         }) => Promise<SessionGitHubIssueLink[]>;
-        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
         listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
         listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
@@ -2003,6 +2003,7 @@ declare global {
         dismissAutoRebaseStatus: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
         initEnv: (args: InitLaneEnvArgs, pin?: OpenProjectBinding | null) => Promise<LaneEnvInitProgress>;
@@ -2152,6 +2153,7 @@ declare global {
         ) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
       };
       chatLaunch: {
@@ -3699,7 +3701,7 @@ declare global {
           args: FilesSearchTextArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<FilesSearchTextMatch[]>;
-        onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
+        onChange: (cb: (ev: FileChangeEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       git: {
         stageFile: (
@@ -4071,6 +4073,8 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<PrSummary | null>;
         reconcileNow: () => Promise<void>;
+        /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
+        reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
         listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (

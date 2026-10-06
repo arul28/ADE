@@ -24,6 +24,58 @@ function Invoke-CliQuiet([string[]]$Arguments) {
   & $cliWrapper @Arguments 2>$null | Out-String
 }
 
+# Appends one timing line per install step to <ADE_HOME>/runtime/install-steps.log.
+#
+# The installer is the one part of an ADE update that leaves no account of
+# itself: electron-builder's common.nsh sets `ShowInstDetails nevershow`, NSIS
+# writes no log, and the desktop app is not running, so the minutes between
+# `autoUpdate.quit_and_install` and the new version's first event could only be
+# attributed by reading file mtimes afterwards. These lines close that gap.
+#
+# Never fatal, and never a reason an install fails: a step that cannot write its
+# own timing still did its work.
+function Write-AdeInstallStep([string]$Step, [double]$Seconds, [string]$Detail = "") {
+  try {
+    if ([string]::IsNullOrWhiteSpace($env:ADE_HOME)) { return }
+    $logDir = Join-Path $env:ADE_HOME "runtime"
+    if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
+      New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    $line = "{0} install-setup {1} {2:N2}s{3}" -f `
+      ([DateTime]::UtcNow.ToString("o")), $Step, $Seconds, $(if ($Detail) { " $Detail" } else { "" })
+    Add-Content -LiteralPath (Join-Path $logDir "install-steps.log") -Value $line -Encoding UTF8
+  } catch {
+    # Best effort only.
+  }
+}
+
+# Runs one install step, timing it, and records how long it took either way.
+#
+# A native command that exits nonzero does NOT throw, not even under
+# `$ErrorActionPreference = "Stop"` -- every caller here checks $LASTEXITCODE
+# itself, right after this returns. So the exit code is read here too: a step
+# that failed must not be logged as "ok", or the log we added to attribute a slow
+# or broken install would be the one thing lying about it. Only cmdlets run
+# between the body and that read, so $LASTEXITCODE still belongs to the body when
+# the caller sees it.
+function Invoke-AdeTimedStep([string]$Step, [scriptblock]$Body) {
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    & $Body
+    $sw.Stop()
+    $exit = $LASTEXITCODE
+    if (($exit -is [int]) -and ($exit -ne 0)) {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed exit=$exit"
+    } else {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "ok"
+    }
+  } catch {
+    $sw.Stop()
+    Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed"
+    throw
+  }
+}
+
 function Get-ShortSha256([string]$Value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
@@ -103,7 +155,10 @@ try {
   )
   $env:NODE_PATH = $nodePathEntries -join [IO.Path]::PathSeparator
 
-  $serviceStatusJson = Invoke-CliQuiet @("serve", "--service-status", "--json")
+  $serviceStatusJson = $null
+  Invoke-AdeTimedStep "service_status_read" {
+    $script:serviceStatusJson = Invoke-CliQuiet @("serve", "--service-status", "--json")
+  }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup state could not be read before setup."
   }
@@ -122,7 +177,7 @@ try {
   $previousServiceRunning = $serviceStatus.running
   $serviceStateKnown = $true
 
-  & $pathInstaller $cliTarget
+  Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE terminal command installer exited with code $LASTEXITCODE."
   }
@@ -131,7 +186,7 @@ try {
   # so the brain came up as role `agent` and refused the desktop app and the
   # phone (role `cto`) until the app re-registered it. `brain start` pins
   # `cto`, the same as `install-runtime.ps1`.
-  & $cliWrapper brain start
+  Invoke-AdeTimedStep "brain_start" { & $cliWrapper brain start }
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup installer exited with code $LASTEXITCODE."
   }

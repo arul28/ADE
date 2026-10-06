@@ -1425,11 +1425,15 @@ Renderer surfaces:
   preview contains the `Please run /login` / 401 invalid-credentials
   failure. The action creates a tracked shell PTY in the same lane
   (and same chat drawer when there is a chat owner) running
-  `claude auth login`.
+  `claude auth login`. It takes an optional `runtimePin` — the machine the lane
+  lives on — and creates the PTY there, so a chat on another machine opens its
+  login terminal in that machine's CLI home.
 - `apps/desktop/src/renderer/components/terminals/CliSessionWorkSurfaceHeader.tsx`
   — CLI adapter for `WorkSurfaceHeader`. It maps a
   `TerminalSessionSummary` to the shared header, adds the Claude login
-  CTA when auth failure is detected, status dot, Run menu, info, and
+  CTA when auth failure is detected (forwarding the session's owning
+  `runtimePin` so the login terminal opens on the machine the session runs on),
+  status dot, Run menu, info, and
   overflow actions, and intentionally leaves stop controls to the
   sidebar card / chat composer paths.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —

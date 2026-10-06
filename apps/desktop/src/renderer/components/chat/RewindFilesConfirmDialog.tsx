@@ -13,6 +13,7 @@ import type {
   AgentChatRewindFilesResult,
   AgentChatRewindSkippedFile,
   FileDiff,
+  OpenProjectBinding,
   TurnDiffFile,
 } from "../../../shared/types";
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
@@ -141,11 +142,14 @@ function DiffPreview({
 export function RewindFilesConfirmDialog({
   state,
   sessionId,
+  runtimePin = null,
   onCancel,
   onConfirm,
 }: {
   state: RewindFilesConfirmDialogState | null;
   sessionId: string | null;
+  /** The chat's machine; its checkpoints hold the diffs this dialog previews. */
+  runtimePin?: OpenProjectBinding | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -189,7 +193,7 @@ export function RewindFilesConfirmDialog({
     setActiveDiffLoadState("loading");
 
     try {
-      const diff = await window.ade.agentChat.getTurnFileDiff(args);
+      const diff = await window.ade.agentChat.getTurnFileDiff(args, runtimePin);
       if (latestDiffRequestKey.current !== cacheKey) return;
       if (!diff) {
         setActiveDiffLoadState("missing");
@@ -203,7 +207,7 @@ export function RewindFilesConfirmDialog({
       console.error("[RewindFilesConfirmDialog] Failed to load diff", file.path, error);
       setActiveDiffLoadState("error");
     }
-  }, [sessionId, state]);
+  }, [runtimePin, sessionId, state]);
 
   useEffect(() => {
     if (!state) return;

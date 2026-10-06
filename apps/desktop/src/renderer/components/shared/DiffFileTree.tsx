@@ -6,6 +6,7 @@ import {
   FolderSimple,
 } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { compareTextNatural } from "../../../shared/formatting";
 import { cn } from "../ui/cn";
 
 /**
@@ -96,7 +97,7 @@ export function normalizeDiffTreePath(path: string): string {
 function sortDiffTreeItems(items: DiffFileTreeItem[]): void {
   items.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
-    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    return compareTextNatural(a.name, b.name);
   });
   for (const item of items) {
     if (item.kind === "folder") sortDiffTreeItems(item.children);

@@ -102,7 +102,7 @@ describe("UserMessageIssueContext", () => {
     expect(detachGitHubIssueFromSession).toHaveBeenCalledWith({
       chatSessionId: "chat-1",
       issueId: "ade/app#42",
-    });
+    }, null);
     expect(screen.getAllByTestId("github-issue-context-chip")).toHaveLength(1);
     expect(screen.getByText("First issue")).toBeTruthy();
     expect(screen.queryByText("Second issue")).toBeNull();

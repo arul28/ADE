@@ -311,8 +311,9 @@ is unchanged: the pin is a preload-level routing argument, not a new channel.
 | `ade.files.createDirectory` | recursive mkdir |
 | `ade.files.rename` | enforces both paths in root |
 | `ade.files.delete` | recursive rm, rejects root itself |
-| `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change` |
+| `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change`; takes an optional trailing `OpenProjectBinding` pin so a pinned workspace watches (and hears changes from) the lane's own machine |
 | `ade.files.stopWatching` | decrements ref count |
+| `ade.files.onChange` | the `ade.files.change` subscription; takes an optional trailing pin, subscribing to the lane's machine's `file_change` feed while still forwarding this process's local `external-local:*` events |
 | `ade.files.quickOpen` | scores the workspace's file-name index |
 | `ade.files.searchText` | `git grep` in a git work tree, else a streaming JS scan over the name index |
 

@@ -5,7 +5,7 @@ import { isDataUri } from "../../../../shared/chatImageUrls";
 import { basenameCrossPlatform } from "../../../../shared/pathDisplay";
 import { readAttachmentImageDataUrl } from "../../../lib/attachmentImage";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../../lib/openExternal";
-import { useChatRuntimeScope } from "../ChatRuntimeScope";
+import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
 
 type ImageViewEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 
@@ -38,11 +38,14 @@ function stripFileUrlPrefix(value: string | null): string | null {
   if (!value) return value;
   if (!/^file:\/\//i.test(value)) return value;
   const raw = value.replace(/^file:\/\//i, "");
+  let decoded = raw;
   try {
-    return decodeURIComponent(raw);
+    decoded = decodeURIComponent(raw);
   } catch {
-    return raw;
+    // keep the raw path
   }
+  // `file:///C:/x.png` names a Windows path; drop the slash before the drive.
+  return decoded.replace(/^\/([a-z]:[\\/])/i, "$1");
 }
 
 type ImageViewTarget = {
@@ -54,7 +57,12 @@ type ImageViewTarget = {
   open: () => void;
 };
 
-function imageViewTarget(event: ImageViewEvent): ImageViewTarget {
+/**
+ * `pathOpensHere` is false when the chat runs on another machine: its local
+ * path names a file on that machine, which this computer cannot open. The
+ * thumbnail still shows it, read through the chat's pin.
+ */
+function imageViewTarget(event: ImageViewEvent, pathOpensHere: boolean): ImageViewTarget {
   const displayName = deriveDisplayName(event);
   // Codex may pass a local path either in `event.path` or as a `file://` URL
   // in `event.url`. Normalize both into a real OS path before handing off to
@@ -78,9 +86,9 @@ function imageViewTarget(event: ImageViewEvent): ImageViewTarget {
     localPath,
     url,
     inlineSrc,
-    canOpen: Boolean(localPath || url),
+    canOpen: Boolean((localPath && pathOpensHere) || url),
     open: () => {
-      if (localPath) {
+      if (localPath && pathOpensHere) {
         void window.ade.app.openPath(localPath).catch(() => undefined);
         return;
       }
@@ -131,7 +139,7 @@ function OpenButton({ target }: { target: ImageViewTarget }) {
 
 /** One tile in a strip: the picture when it loads, else a quiet placeholder. */
 function ImageViewTile({ event }: { event: ImageViewEvent }) {
-  const target = imageViewTarget(event);
+  const target = imageViewTarget(event, chatRunsOnThisComputer(useChatRuntimeScope()));
   const src = useImageViewSrc(target);
   const tileClass = "relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-fg/[0.07] bg-black/25";
   const body = src ? (
@@ -162,7 +170,7 @@ function PreviewImage({ src, name }: { src: string; name: string }) {
 }
 
 export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps) {
-  const target = imageViewTarget(event);
+  const target = imageViewTarget(event, chatRunsOnThisComputer(useChatRuntimeScope()));
   const previewSrc = useImageViewSrc(target);
 
   // A run of image views: one line that counts them, then one strip.

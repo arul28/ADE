@@ -237,7 +237,152 @@ Why spinners: Electron does not composite CSS rotations (keyframes, the `rotate`
 
 - **Single SQLite writes of 190-346 ms** (`writeOwnRow`, `setLastError`) in the dev brain. WAL with `synchronous = NORMAL` is already set; the likely causes are lock waits against a second brain on the same project database (a dev setup artifact) or WAL checkpoints. Needs a measurement on a single-brain machine before any change.
 - **`ensureLocalDevice` writes the device row on every call** with a fresh `last_seen_at`, several times a second, and each write replicates to peers. Skipping unchanged writes for a few seconds touches sync semantics; decide what `last_seen_at` freshness peers need first.
-- **Stepped animations still tick every frame.** Blink re-evaluates a `steps()` animation each vsync even when its value has not changed; the tick is ~0.25 ms with nothing to repaint. Removing it needs a timer-driven spinner (30 updates a second) shared by the 190 `animate-spin` call sites.
 - **Chat switch** costs the same on a production renderer as on the dev build: ~280 ms to settle warm, 500-900 ms cold, ~230 ms of main-thread work per warm switch, almost all script (style ~30 ms, layout ~8 ms). Measured by navigating the dev window to `vite preview` of a sourcemapped `vite build` and mapping CPU profiles back to source. Per warm switch: the transcript list ~38 ms and the chat pane ~32 ms inclusive; model-catalog work ~24 ms — `handoffAvailableModelIds` and `orderAvailableModelIds` in `AgentChatPane.tsx`, `descriptorsFromAgentChatModelCatalog`, `cursorCloudEligibleModelIds` — because `getModelById` rebuilds a dynamic OpenCode/Pi descriptor on every call and the pane recomputes these per mount. Making the ordering O(n) did not move it; caching resolved descriptors, or keeping the pane mounted across switches, is the lever. The `MeasuredEventRow` `offsetHeight` read is the commit's own style and layout arriving early, not extra work.
 - **Claude follow-ups respawn the CLI on Windows** (no background-job reattach), so every turn pays a process launch; see `docs/development/windows-support.md`.
 - Smooth sheen animations (`ade-launch-rail-sheen`, `ade-reasoning-ultra-sheen`, `ade-workflow-card-sheen`, `chv-sweep`, `prs-shimmer`) and decorative onboarding loops are not quantized yet.
+
+---
+
+## Windows pass, round 2 (2026-10-06)
+
+Same PC and method as the pass above: isolate the real unit and measure it
+before and after. Renderer animation costs are measured with a fresh Electron
+window and a Chromium trace over CDP (`scripts/perf-animation-lab`), never with
+process CPU -- on this 32-core machine with other agents building, the same
+strategy sampled 11.0% then 5.0% of a core and the ordering inverted between
+runs, while the trace repeats to within 2%.
+
+### Applied
+
+| Change | Where | Measured |
+|---|---|---|
+| An unfiltered catalog parse is memoized per machine scope, keyed on the catalog object's identity and a new registry generation; a `filter`ed caller (the open picker, harness reach) keeps the uncached path | `ModelPicker/modelCatalog.ts`, `shared/modelRegistry.ts` | `descriptorsFromAgentChatModelCatalog` on this machine's real 83-model catalog: 0.448 -> 0.002 ms a call |
+| `getModelById` caches the descriptors its parse-and-construct tail builds for dynamic ids (`pi:...`, OpenCode refs, `ollama/...`, `cursor/...`, `droid/...`), dropped on a registry-generation change | `shared/modelRegistry.ts` | 110 mixed ids: 0.112 -> 0.019 ms |
+| Model-label and lane-name sorts go through one shared `Intl.Collator` | `shared/formatting.ts` and its five hot callers | 110-label sort: 1.40 -> 0.023 ms; `handoffAvailableModelIds` 0.967 -> 0.046 ms a call |
+| Claude Code's daemon is discovered on Windows too: `\.\pipe\cc-daemon-<nonce>-control`, nonce from `<config dir>/daemon/pipe.key` | `chat/agentChatService.ts` | Endpoint, line protocol and fail-closed paths verified against a stand-in pipe server; the one live consumer could previously only answer `unknown` |
+
+### Claude background-job reattach on Windows
+
+The backlog said each Claude follow-up respawns the CLI on Windows because
+Claude Code ships no `control.sock` there. Both halves needed correcting.
+
+- **Claude Code does have a Windows daemon.** Its own bundle resolves the
+  control endpoint as `\.\pipe\cc-daemon-<nonce>-control` on Windows and
+  `<tmp>/cc-daemon-<uid>/<hash>/control.sock` elsewhere, with the nonce in
+  `<config dir>/daemon/pipe.key` validated as 16 hex characters. It even reports
+  `sockDir: \.\pipe\cc-daemon-*` in its own diagnostics. ADE implemented the
+  POSIX half only, so `resolveClaudeDaemonControlSocket` could never return an
+  endpoint on Windows.
+- **The respawn the backlog described was unreachable anyway.**
+  `_runClaudeBackgroundTurn` — the whole `claude --bg` turn path, including
+  `dispatchClaudeBackgroundPrompt` and its reply-into-a-live-job branch — has no
+  callers. No Claude chat turn goes through it, so no turn was paying a respawn
+  for want of a socket. Left in place; deleting a path this size is the owner's
+  call, not a perf pass's.
+- **What was actually broken is settle teardown.**
+  `hasLiveClaudeBackgroundJob` deliberately answers `unknown` rather than `gone`
+  when it cannot reach a daemon, so a settle does not mistake a running job for
+  a finished one. On Windows it could only ever answer `unknown`, so a session
+  carrying a recorded `claudeBackgroundJobShort` spent the confirmation budget
+  and reported residue that did not exist — the exact failure the comment above
+  it was written to prevent. Narrow today, because only the dead path and
+  restored records set that field.
+- **Not verified:** an exchange with a live Claude daemon. `claude --bg` refuses
+  to start from a non-TTY until the workspace trust prompt is accepted, and
+  faking that means writing the user's Claude config. The endpoint construction,
+  the `proto: 1` line protocol over a Windows named pipe, and both fail-closed
+  paths (missing key, malformed key) are verified against a stand-in pipe server
+  on this host.
+
+### Chat switch, measured end to end
+
+The per-call numbers above are isolated. Driven through the real UI on a
+production renderer, the catalog memo is worth about 4 ms of script per warm
+switch — real and repeatable, but a fraction of the switch, because the catalog
+work is only part of what a pane mount does.
+
+Harness, which is the part worth keeping: `vite build` of the renderer served by
+`vite preview`, loaded in a plain Electron window with **no preload**, so the
+renderer's own `browserMock` supplies `window.ade`. No brain, no account, no
+project database, no `ade` CLI. The mock normally serves `{ groups: [] }`, which
+short-circuits `descriptorsFromAgentChatModelCatalog` and would measure the memo
+as exactly zero, so it was temporarily given a catalog the size of this machine's
+real one (83 models, two thirds dynamic ids). Switches are driven by clicking the
+two mock chat rows and read from `Performance.getMetrics` deltas over a 1.5 s
+settle window.
+
+| | warm median task | warm median script |
+|---|---|---|
+| before, 12 switches | 38.2 ms | 26.8 ms |
+| before, 20 switches | 38.6 ms | 28.0 ms |
+| after, 12 switches | 33.9 ms | 22.6 ms |
+| after, 20 switches | 37.4 ms | 23.6 ms |
+
+Script time — the metric the change actually targets — falls consistently from
+26.8-28.0 ms to 22.6-23.6 ms, about 15%. Total task time overlaps between runs
+(30-67 ms either way) and is not a signal on its own; style and layout do not
+move, as expected. Kept on that basis.
+
+Two limits on the number: the mock has two short chats, so the transcript share
+of a switch is small and the catalog share correspondingly larger than in a real
+long chat; and the dynamic ids in the harness catalog are synthetic. A real Work
+tab with dozens of chats mounts more of this per switch, not less.
+
+### Closed by measurement, not by code
+
+- **The 190-346 ms SQLite writes are a second brain, not ADE's writes.** The
+  backlog asked for a single-brain measurement first. On this machine, with one
+  brain running and a copy of the live 7.2 MB project database opened through
+  ADE's own `openKvDb` (same pragmas, cr-sqlite loaded):
+
+  | | cost |
+  |---|---|
+  | `writeOwnRow`'s `runtime_processes` upsert (a plain table), 200x | mean 0.02 ms, p95 0.04, max 0.12 |
+  | the `ensureLocalDevice` shape -- select, update, select back, on CRR `devices`, 200x | mean 0.08 ms, p95 0.10, max 1.98 |
+  | the same with the write skipped | mean 0.01 ms |
+  | `wal_checkpoint(TRUNCATE)` after the run | 3.9 ms |
+
+  So neither write is expensive and a checkpoint is not the cause. A second
+  *process* holding a write transaction is, and it reproduces the recorded range
+  on the nose: a single write behind another process's transaction took 164.8 ms
+  behind a 120 ms hold, 326.6 ms behind 250 ms, and 1,076.7 ms behind 1,000 ms --
+  the holder's time plus ~50-80 ms. 190-346 ms is a peer holding a write for
+  ~130-280 ms. Nothing to fix in ADE; the fix is one brain per project database,
+  which `/context` already tells every agent to check.
+- **Skipping the `ensureLocalDevice` write is not worth its risk.** It saves
+  0.06-0.07 ms a call. At "several times a second" that is ~0.2 ms a second, and
+  the price is changing what `last_seen_at` freshness peers can assume. Dropped.
+- **A contended write blocks the whole event loop, then throws.** `node:sqlite`
+  is synchronous, so a write waiting on another writer is not an async wait: the
+  brain's event loop stops for the full contention. Worse, if releasing the lock
+  depends on the blocked process's own event loop, nothing can release it -- an
+  in-process version of the test above waited the entire `busy_timeout` of 5,000
+  ms and then threw `database is locked`. This is the mechanism behind the
+  `brain.event_loop_near_miss` warnings seen during two-brain sessions, and the
+  reason "one brain per project database" is a performance rule and not only a
+  correctness one.
+- **A shared 30 Hz spinner clock is the wrong trade.** The backlog above asked
+  for a timer-driven spinner to replace the `steps(30)` CSS animation, on the
+  estimate that the per-vsync tick cost ~0.25 ms. It does not. Traced over 8 s
+  with three 16px spinners on a 239 Hz display:
+
+  | strategy | total | compositor draws | draw ms | main-thread ms |
+  |---|---|---|---|---|
+  | `steps(30)` keyframes (ships today) | 65 | 1,923 (240/s) | 65 | 0 |
+  | one JS clock writing `--angle` on `:root` at 30 Hz | 151 | 243 (30/s) | 40 | 111 |
+  | one JS clock rewriting a stylesheet rule at 30 Hz | 144 | 243 (30/s) | 40 | 104 |
+  | `linear` keyframes (before the first Windows pass) | 218 | 1,922 | 218 | 0 |
+
+  The clock does cut compositor draws 240/s -> 30/s as hoped, but it buys 25 ms
+  of draw with 86 ms of style recalc, layerize, raster, timer and script. It is
+  2.3x more total work than what ships. Do not build it.
+- **The cost is "an animation is running", not "how many".** `steps(30)` traced
+  59 ms per 8 s with one spinner, 65 with three, 69 with ten, 94 with thirty: a
+  running animation holds the compositor in a draw loop at the display rate, and
+  each extra spinner adds ~1.2 ms per 8 s. One spinner is already ~0.74% of a
+  core, so the lever that remains is pausing indicators nobody is looking at,
+  not making each one cheaper.
+- **`will-change: transform` buys nothing here.** Promoting the rotating element
+  measured 62 ms against 60 ms unpromoted, inside run-to-run variance. Electron
+  is already compositing the transform; the draw loop is the cost.
+

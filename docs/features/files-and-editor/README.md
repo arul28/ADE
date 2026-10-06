@@ -301,7 +301,8 @@ positional argument**, a machine pin (`OpenProjectBinding | null`):
 Reads and writes both honour it. A file belonging to a chat on another machine
 opens **fully editable** without rebinding the window: `writeText`,
 `writeTextAtomic`, `createFile`, `createDirectory`, `rename`, `delete`,
-`watchChanges`, and `stopWatching` all land on the machine that owns the bytes.
+`watchChanges`, `stopWatching`, and the `onChange` change feed all land on the
+machine that owns the bytes.
 
 Two deliberate exceptions:
 
@@ -311,7 +312,10 @@ Two deliberate exceptions:
 - `external-local:*` workspaces **drop** a supplied pin. They are registered
   only in this process's file service and their root path is meaningful only on
   this disk, so a caller that pins every file call uniformly still gets the
-  correct local behaviour.
+  correct local behaviour. A pinned `onChange` follows the same rule: it
+  subscribes to the lane's machine's `file_change` feed, but still forwards this
+  process's local loose-folder events, since those watchers run here whatever
+  the pin says.
 
 Coverage is the whole point, not a nicety: a Files workspace id **is** a lane
 id, and lane rows sync across machines, so the same id resolves on both. An

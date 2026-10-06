@@ -4,6 +4,7 @@ import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
 import { acpLoginCommand } from "../settings/providers/acpProviders";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
@@ -98,6 +99,8 @@ function ShellRunButton({
 }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The CLI that needs the login is the one on the chat's machine.
+  const runtimePin = useChatRuntimeScope().pin;
   const disabled = running || !window.ade?.pty?.create || (!laneId && !window.ade?.lanes?.list);
 
   const handleRun = useCallback(() => {
@@ -109,7 +112,7 @@ function ShellRunButton({
       const resolvedLaneId = laneId ?? (await window.ade.lanes.list({
         includeArchived: false,
         includeStatus: false,
-      }))[0]?.id ?? null;
+      }, runtimePin))[0]?.id ?? null;
       if (!resolvedLaneId) {
         throw new Error("No active lane is available for this project.");
       }
@@ -123,7 +126,7 @@ function ShellRunButton({
         toolType: "shell",
         startupCommand: command,
         ...(initialInput ? { initialInput, initialInputDelayMs: 1_200 } : {}),
-      });
+      }, runtimePin);
     })()
       .then((created) => {
         onRevealTerminal?.({
@@ -137,7 +140,7 @@ function ShellRunButton({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setRunning(false));
-  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal]);
+  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal, runtimePin]);
 
   return (
     <div className="flex flex-col items-end gap-1">
