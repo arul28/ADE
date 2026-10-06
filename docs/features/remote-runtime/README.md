@@ -284,7 +284,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   wait and the real handover get a full budget **each**: when they shared one
   install-wide deadline, a young brain that died late in its wait left the
   restart with no time and its replacement was reported as a `replacement_pid`
-  failure. `installSystemd.ts` reads unit state from a single
+  failure. After `launchctl load`, `installLaunchd.ts` runs `launchctl
+  kickstart` (no `-k`, so a running job is untouched) whenever launchd has not
+  started the job: a launchd domain in on-demand-only mode ignores `RunAtLoad`
+  and `KeepAlive`, leaves the job at `runs = 0` / `pended nondemand spawn =
+  speculative`, and logs `pending spawn, domain in on-demand-only mode`. Without
+  the kickstart every Repair, reinstall and machine reset on such a Mac ended in
+  `replacement_pid`; a failed kickstart's own error is appended to that message.
+  The heartbeat watchdog kickstarts the service after it kills a wedged brain
+  for the same reason, and the diagnostic report carries launchd's spawn log
+  (`log show --last 10m`) plus a Notes line naming the state.
+  `installSystemd.ts` reads unit state from a single
   `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
   `activating` as a live brain. The desktop then keeps
   dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`

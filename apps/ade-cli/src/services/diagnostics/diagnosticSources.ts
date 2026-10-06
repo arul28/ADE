@@ -18,9 +18,11 @@ import {
 } from "./storageEnvironmentProbe";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../../desktop/src/main/services/logging/machineLogger";
-import { resolveRuntimeServiceName } from "../../serviceManager/common";
+import { currentUid, resolveRuntimeServiceName } from "../../serviceManager/common";
 import {
   backgroundItemStatusCommand,
+  isLaunchdPrintRunning,
+  parseLaunchdPendingSpawn,
   launchAgentPath,
   parseBackgroundItemStatus,
 } from "../../serviceManager/installLaunchd";
@@ -390,16 +392,69 @@ function journalPlan(
   };
 }
 
+/** The `gui/<uid>/<service>` launchd target the print plan and Notes name. */
+function launchdTarget(env: NodeJS.ProcessEnv): string {
+  return `gui/${currentUid()}/${resolveRuntimeServiceName(env)}`;
+}
+
 /**
  * launchd's own view of the job: state, pid, last exit, and why it last ran.
  * The plist says what the agent SHOULD do; this says what launchd did with it,
  * and "loaded but never started" is invisible without it.
  */
 function launchdPrintPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
-  const serviceName = resolveRuntimeServiceName(env);
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
-  const target = `gui/${uid}/${serviceName}`;
+  const target = launchdTarget(env);
   return { display: `launchctl print ${target}`, command: "launchctl", args: ["print", target] };
+}
+
+/**
+ * launchd's own log lines about the job. `launchctl print` shows that a spawn
+ * is pending; only this log says why -- `pending spawn, domain in
+ * on-demand-only mode` is the case where launchd ignores RunAtLoad/KeepAlive
+ * and the service never starts until something kickstarts it. Ten minutes keeps
+ * the read inside the command budget while still covering a recovery screen
+ * that has been retrying.
+ */
+function launchdSpawnLogPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
+  const serviceName = resolveRuntimeServiceName(env);
+  const predicate = `process == "launchd" AND eventMessage CONTAINS "${serviceName}"`;
+  return {
+    display: `log show --last 10m (launchd, ${serviceName})`,
+    command: "/usr/bin/log",
+    args: ["show", "--last", "10m", "--style", "compact", "--predicate", predicate],
+  };
+}
+
+const LAUNCHD_ON_DEMAND_ONLY_PATTERN = /on-demand-only mode/i;
+
+/**
+ * One plain sentence for the Notes section when launchd has the job loaded and
+ * has not started it, so a reader does not have to know what
+ * `pended nondemand spawn` means to see the cause.
+ */
+function launchdSpawnNotes(env: NodeJS.ProcessEnv, run: DiagnosticCommandRunner): string[] {
+  const print = launchdPrintPlan(env);
+  const printAnswer = run(print.command, print.args);
+  // Only a job this print found, stopped, gets a verdict: a recovered brain
+  // still has the on-demand log lines from before its kickstart, and a job in
+  // the user domain would be pointed at the wrong kickstart target.
+  if (!printAnswer || printAnswer.status !== 0 || isLaunchdPrintRunning(printAnswer.stdout)) return [];
+  const pending = parseLaunchdPendingSpawn(printAnswer.stdout);
+  const spawnLog = launchdSpawnLogPlan(env);
+  const logAnswer = run(spawnLog.command, spawnLog.args);
+  const onDemandOnly = logAnswer?.status === 0 && LAUNCHD_ON_DEMAND_ONLY_PATTERN.test(logAnswer.stdout);
+  const target = launchdTarget(env);
+  const notes: string[] = [];
+  if (onDemandOnly) {
+    notes.push(
+      `launchd: the user's launchd domain is in on-demand-only mode, so it ignores RunAtLoad/KeepAlive and never starts the service by itself; \`launchctl kickstart ${target}\` starts it`,
+    );
+  } else if (pending) {
+    notes.push(
+      `launchd: the job is loaded but launchd has never started it (runs = 0, pended nondemand spawn = ${pending}); \`launchctl kickstart ${target}\` starts it`,
+    );
+  }
+  return notes;
 }
 
 /**
@@ -420,7 +475,11 @@ function planMachineDiagnosticCommands(args: {
   homeDir: string;
 }): DiagnosticCommandPlan[] {
   if (args.platform === "darwin") {
-    return [launchdPrintPlan(args.env), backgroundItemPlan(args.env, args.homeDir)];
+    return [
+      launchdPrintPlan(args.env),
+      backgroundItemPlan(args.env, args.homeDir),
+      launchdSpawnLogPlan(args.env),
+    ];
   }
   if (args.platform === "win32") {
     const task = windowsScheduledTaskPlan(args.env);
@@ -432,6 +491,15 @@ function planMachineDiagnosticCommands(args: {
 
 function diagnosticCommandKey(command: string, args: readonly string[]): string {
   return JSON.stringify([command, ...args]);
+}
+
+function memoizeDiagnosticCommands(run: DiagnosticCommandRunner): DiagnosticCommandRunner {
+  const answers = new Map<string, ReturnType<DiagnosticCommandRunner>>();
+  return (command, commandArgs) => {
+    const key = diagnosticCommandKey(command, commandArgs);
+    if (!answers.has(key)) answers.set(key, run(command, commandArgs));
+    return answers.get(key) ?? null;
+  };
 }
 
 /**
@@ -496,6 +564,7 @@ function collectServiceDefinition(args: {
 
   if (args.platform === "darwin") {
     const print = launchdPrintPlan(args.env);
+    const spawnLog = launchdSpawnLogPlan(args.env);
     const backgroundItem = backgroundItemPlan(args.env, args.homeDir);
     const backgroundItemAnswer = args.run(backgroundItem.command, backgroundItem.args);
     return [
@@ -510,6 +579,10 @@ function collectServiceDefinition(args: {
           text: `${parseBackgroundItemStatus(backgroundItemAnswer.stdout)} (raw ${backgroundItemAnswer.stdout.trim() || "empty"})`,
         }
         : { label: "Background Items", path: backgroundItem.display, error: "(could not be read)" },
+      readCommandOutput("launchd spawn log", spawnLog.display, spawnLog.command, spawnLog.args, args.run, {
+        maxLines: 40,
+        maxBytes: SERVICE_DEFINITION_MAX_BYTES,
+      }),
     ];
   }
   if (args.platform === "win32") {
@@ -640,7 +713,10 @@ export function collectMachineDiagnosticSources(
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? os.homedir();
-  const run = options.runCommand ?? runDiagnosticCommand;
+  // The launchd verdict in Notes reads the same commands the service-definition
+  // section does; one answer per command keeps the synchronous path from
+  // running `log show` and `launchctl print` twice.
+  const run = memoizeDiagnosticCommands(options.runCommand ?? runDiagnosticCommand);
   const openProjectRoot = options.projectRoot?.trim() || null;
   const layout = resolveMachineAdeLayout(env);
   const readVolume = options.readVolume ?? readVolumeViaStatfs;
@@ -705,6 +781,7 @@ export function collectMachineDiagnosticSources(
   );
 
   const notes: string[] = [...DIAGNOSTIC_COLLECTION_NOTES];
+  if (platform === "darwin") notes.push(...launchdSpawnNotes(env, run));
   if (fallbackProjectRoot) {
     notes.push(
       `project logs: no project was open, so the most recently opened project on this machine was used (${projectPathLabel(fallbackProjectRoot)})`,

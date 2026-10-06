@@ -6,6 +6,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
   BACKGROUND_ITEM_BLOCKED_MESSAGE,
+  currentUid,
   type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
   MATERIALIZE_DATALESS_FILES_KEY,
@@ -15,6 +16,7 @@ import {
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
   serviceManagerResultText,
+  sleepSync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
@@ -330,7 +332,7 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
 function getLoadedLaunchdState(
   run: ServiceManagerSpawnSync,
 ): { running: boolean; pid: number | null } | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = run("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
@@ -380,6 +382,64 @@ function handoverFailure(
     failureStep,
     message,
   };
+}
+
+/**
+ * Asks launchd to start the service now. `kickstart` without `-k` is a no-op
+ * for a job that is already running, so this only ever starts a stopped one.
+ *
+ * Needed because a launchd domain can sit in "on-demand-only mode": launchd
+ * then ignores `RunAtLoad` and `KeepAlive`, logs `pending spawn, domain in
+ * on-demand-only mode: com.ade.runtime`, and `launchctl print` shows the job
+ * with `runs = 0` and `pended nondemand spawn = speculative`. Only an explicit
+ * request starts it. A real Mac sat in that mode for days: every Repair,
+ * reinstall and machine reset ended in a `replacement_pid` failure, and a
+ * manual `launchctl kickstart` fixed it each time.
+ *
+ * Returns launchctl's own error when the kickstart fails, so a failure names
+ * launchd's reason instead of only "no replacement pid".
+ */
+export function kickstartLaunchdService(run: ServiceManagerSpawnSync = spawnSync): string | null {
+  const uid = currentUid();
+  // The job lands in the gui domain from a desktop session and in the user
+  // domain from ssh; `getLoadedLaunchdState` reads the same pair. The gui
+  // error is the one worth reporting when both fail.
+  let firstError: string | null = null;
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const result = run("launchctl", ["kickstart", `${domain}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+    if (result.status === 0) return null;
+    firstError ??= serviceManagerResultText(result) || `launchctl kickstart exited with status ${result.status ?? "unknown"}.`;
+  }
+  return firstError;
+}
+
+/**
+ * The watchdog's restart after it kills a wedged brain. Waits (briefly) for the
+ * killed pid to be gone first: a kickstart while launchd still counts the job
+ * as running is a no-op, and on a domain that ignores KeepAlive nothing else
+ * would start the replacement.
+ */
+export function kickstartLaunchdServiceAfterExit(
+  killedPid: number,
+  deps: { run?: ServiceManagerSpawnSync; pidAlive?: (pid: number) => boolean; waitMs?: number } = {},
+): string | null {
+  const alive = deps.pidAlive ?? pidAlive;
+  const deadline = Date.now() + (deps.waitMs ?? 3_000);
+  while (alive(killedPid) && Date.now() < deadline) sleepSync(50);
+  return kickstartLaunchdService(deps.run ?? spawnSync);
+}
+
+/**
+ * launchd's own words for a job it loaded and has not started:
+ * `pended nondemand spawn = speculative` with `runs = 0`. Null when the job has
+ * run, or when the print says nothing about a pending spawn.
+ */
+export function parseLaunchdPendingSpawn(output: string): string | null {
+  const pended = output.match(/\bpended nondemand spawn\s*=\s*([^\n]+)/i);
+  if (!pended) return null;
+  const runs = output.match(/\bruns\s*=\s*(\d+)\b/i);
+  if (runs && Number(runs[1]) > 0) return null;
+  return pended[1].trim();
 }
 
 export function getLaunchdServiceMainPid(
@@ -554,6 +614,7 @@ export async function installLaunchdService(
       message: serviceManagerResultText(load) || "launchctl load failed.",
     };
   }
+  const kickstartError = kickstartLaunchdService(run);
   const oldPid = loaded?.pid ?? null;
   // A fresh full budget: the young-brain wait above may have spent all of its
   // own, and the real handover is the one whose outcome decides whether this
@@ -581,7 +642,8 @@ export async function installLaunchdService(
     return handoverFailure(
       servicePath,
       "replacement_pid",
-      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`,
+      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`
+        + (kickstartError ? ` launchctl kickstart failed: ${kickstartError}` : ""),
     );
   }
   if (!replacementResponsive) {
@@ -645,7 +707,7 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
     parentPid: deps.parentPid,
   });
   if (selfBlock) return selfBlock;
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
@@ -677,7 +739,7 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     };
   }
 
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = spawnSync("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = spawnSync("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
@@ -710,6 +772,7 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     };
   }
   const backgroundItem = cachedBackgroundItemStatus(servicePath);
+  const pendingSpawn = parseLaunchdPendingSpawn(print.stdout);
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -720,6 +783,8 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     backgroundItem,
     message: backgroundItem === "requires_approval"
       ? BACKGROUND_ITEM_BLOCKED_MESSAGE
-      : "ADE service launchd service is loaded but not running.",
+      : pendingSpawn
+        ? `ADE service launchd service is loaded but launchd has never started it (pended nondemand spawn = ${pendingSpawn}); launchctl kickstart starts it.`
+        : "ADE service launchd service is loaded but not running.",
   };
 }

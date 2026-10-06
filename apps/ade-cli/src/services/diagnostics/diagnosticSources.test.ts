@@ -280,17 +280,69 @@ describe("collectMachineDiagnosticSources — service definition", () => {
 
     const definition = collect({ home }).serviceDefinition;
 
-    expect(definition).toHaveLength(3);
+    expect(definition).toHaveLength(4);
     // The plist first, then what launchd actually loaded, then whether macOS
-    // will run it at all ("Allow in the Background").
+    // will run it at all ("Allow in the Background"), then launchd's own log
+    // of why it did or did not spawn the job.
     expect(definition.map((entry) => entry.label)).toEqual([
       "launchd agent",
       "launchd job",
       "Background Items",
+      "launchd spawn log",
     ]);
     // The whole reason this section exists: a plist written without it boots the
     // desktop app as the background service.
     expect(definition[0]?.text).toContain("ELECTRON_RUN_AS_NODE");
+  });
+
+  // A job launchd loaded and never started is the case where every repair
+  // fails the same way; the Notes line names it so a reader does not need to
+  // know what `pended nondemand spawn` means. A brain that recovered keeps the
+  // old log lines for ten minutes and must not be reported as stuck.
+  it.each([
+    {
+      name: "domain in on-demand-only mode",
+      print: "state = not running\n\truns = 0\n\tpended nondemand spawn = speculative\n",
+      log: "launchd: [gui/501 [100016]:] pending spawn, domain in on-demand-only mode: com.ade.runtime\n",
+      note: /on-demand-only mode.*launchctl kickstart gui\/\d+\/com\.ade\.runtime/,
+    },
+    {
+      name: "loaded and never started",
+      print: "state = not running\n\truns = 0\n\tpended nondemand spawn = speculative\n",
+      log: "",
+      note: /never started it \(runs = 0, pended nondemand spawn = speculative\).*launchctl kickstart/,
+    },
+    {
+      name: "running after a kickstart, old log lines still present",
+      print: "state = running\n\truns = 1\n\tpid = 416\n",
+      log: "launchd: [gui/501 [100016]:] pending spawn, domain in on-demand-only mode: com.ade.runtime\n",
+      note: null,
+    },
+    {
+      name: "stopped after having run",
+      print: "state = not running\n\truns = 3\n\tlast exit code = 1\n",
+      log: "",
+      note: null,
+    },
+  ])("names the launchd spawn state in Notes: $name", ({ print, log, note }) => {
+    const { home } = machineHome();
+    const runCommand: DiagnosticCommandRunner = (command) => {
+      if (command === "launchctl") return { status: 0, stdout: print };
+      if (command === "/usr/bin/log") return { status: 0, stdout: log };
+      return { status: 0, stdout: "1\n" };
+    };
+
+    const sources = collect({ home, runCommand });
+    const launchdNotes = sources.notes.filter((entry) => entry.startsWith("launchd:"));
+
+    if (note) {
+      expect(launchdNotes).toHaveLength(1);
+      expect(launchdNotes[0]).toMatch(note);
+    } else {
+      expect(launchdNotes).toEqual([]);
+    }
+    expect(sources.serviceDefinition.find((entry) => entry.label === "launchd spawn log")?.text ?? "")
+      .toBe(log.trim());
   });
 
   it("follows the channel's service name rather than the frozen default", () => {
