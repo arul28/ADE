@@ -1510,7 +1510,9 @@ export async function createAdeRuntime(args: {
         await gitService.pull({ laneId, mode: "ff-only" });
       },
     });
-    defaultBranchAutoPullService.start();
+    // Embedded runtimes are guests inside an external process and must not
+    // take machine-brain authority over the project's checkout.
+    if (!embeddedRuntime) defaultBranchAutoPullService.start();
     teardown.push(() => defaultBranchAutoPullService.stop());
 
     laneTeardownDeps.ptyService = {
@@ -2020,11 +2022,13 @@ export async function createAdeRuntime(args: {
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       getDeviceId: readSyncDeviceId,
-      refreshDefaultBranchAfterMerge: async (baseBranch) => {
-        // A merge into a stacked parent branch leaves the default branch alone.
-        if (normalizeBranchName(baseBranch).trim() !== normalizeBranchName(baseRef).trim()) return;
-        await defaultBranchAutoPullService.runOnce();
-      },
+      refreshDefaultBranchAfterMerge: embeddedRuntime
+        ? undefined
+        : async (baseBranch) => {
+            // A merge into a stacked parent branch leaves the default branch alone.
+            if (normalizeBranchName(baseBranch).trim() !== normalizeBranchName(baseRef).trim()) return;
+            await defaultBranchAutoPullService.runOnce();
+          },
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());

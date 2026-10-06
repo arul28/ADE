@@ -8088,13 +8088,15 @@ export function createPrService({
           error: getErrorMessage(error),
         });
       });
-      await refreshDefaultBranchAfterMerge?.(row.base_branch).catch((error) => {
+      try {
+        await refreshDefaultBranchAfterMerge?.(row.base_branch);
+      } catch (error) {
         logger.warn("prs.default_branch_refresh_failed", {
           prId: row.id,
           baseBranch: row.base_branch,
           error: getErrorMessage(error),
         });
-      });
+      }
       try {
         laneService.invalidateCache?.();
       } catch (cacheError) {

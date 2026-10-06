@@ -59,7 +59,7 @@ export type AutoPullEligibilityInput = {
   isPrimary: boolean;
   /** The live HEAD branch, or null when HEAD is detached. */
   headBranchRef: string | null;
-  /** The lane's recorded default branch, e.g. `main`. */
+  /** The project's detected default branch, e.g. `main`. */
   defaultBranchRef: string;
   /** Tracked changes in the index. Untracked files do not block a fast-forward. */
   staged: number;
@@ -134,7 +134,7 @@ export function detectInProgressGitOperation(gitDir: string): string | null {
 export type AutoPullPrimaryLane = {
   laneId: string;
   worktreePath: string;
-  /** The lane's recorded branch, i.e. the project's default branch. */
+  /** The project's detected default branch. */
   branchRef: string;
 };
 
