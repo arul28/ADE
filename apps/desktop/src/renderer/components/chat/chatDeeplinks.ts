@@ -40,6 +40,19 @@ export function openChatDeeplinkTarget(
     navigateToAppTarget({ kind: "commit", sha: target.sha, laneId: scope.laneId, machineId: chatMachineId(scope) });
     return;
   }
+  // A commit that names its own lane (a chip carrying one) still belongs to the
+  // chat's machine: the generic route would resolve the lane against the tab's,
+  // where a same-id local lane could win before the chat's remote one.
+  if (target.kind === "commit" && target.laneId) {
+    navigateToAppTarget({
+      kind: "commit",
+      sha: target.sha,
+      laneId: target.laneId,
+      machineId: chatMachineId(scope),
+      envelope: target.envelope ?? null,
+    });
+    return;
+  }
   // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
   // the repo to parse, so that one opens through the in-app PR route, which
   // resolves the number against this project's PRs.

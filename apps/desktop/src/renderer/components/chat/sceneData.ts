@@ -9,7 +9,7 @@ import {
   type SceneDataPayload,
 } from "../../../shared/sceneDataProjection";
 import { listPrsCoalesced } from "../../lib/prReadCache";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, projectStateKeyForBinding } from "../../state/appStore";
 import { useSessionsForPin } from "../../state/crossMachineLanes";
 import { useChatMachineLanes, useChatRuntimeScope } from "./ChatRuntimeScope";
 
@@ -61,7 +61,15 @@ export function SceneDataFeed({
   const lanes = useChatMachineLanes(scope.pin);
   // Run counts exist only in the tab's own Lanes snapshots.
   const snapshots = useAppStore((state) => (scope.pin ? NO_SNAPSHOTS : state.laneSnapshots));
-  const sessions = useSessionsForPin(scope.binding);
+  const sessionsForPin = useSessionsForPin(scope.binding);
+  // A project transition can leave the chat unpinned with a null binding while
+  // the project's session cache still holds its rows; read that cache by root
+  // so a scene does not flash "none" for the sessions it can already see.
+  const boundSessions = useAppStore((state) => {
+    const key = projectStateKeyForBinding(scope.binding, scope.rootPath);
+    return key ? state.sessionsCacheByProject[key] ?? null : null;
+  });
+  const sessions = sessionsForPin ?? boundSessions;
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
   useEffect(() => {
     if (!wantPrs) return;
@@ -99,7 +107,14 @@ export function SceneDataFeed({
       ...(wantPrs ? { prs: projectScenePrs(prs ?? []) } : {}),
     };
     const signature = JSON.stringify(content);
-    if (signature === lastSentRef.current) return;
+    if (signature === lastSentRef.current) {
+      // Back to what the frame already has: drop any newer snapshot still queued,
+      // or the timer would send it and the scene would show stale state.
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      pendingRef.current = null;
+      return;
+    }
     pendingRef.current = { at: new Date().toISOString(), ...content };
     const flush = () => {
       timerRef.current = null;

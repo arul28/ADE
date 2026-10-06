@@ -10649,6 +10649,17 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
 function buildScenePlan(args: string[]): CliPlan {
   // Flags with values come out first: `ade scene --theme light preview f`
   // would otherwise read `light` as the verb.
+  // Reject an option as another flag's operand before readValue consumes it,
+  // so `--theme --width 980` reports the missing theme value instead of eating
+  // `--width` and losing the width.
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (
+      (args[index] === "--theme" || args[index] === "--width")
+      && args[index + 1]?.startsWith("--")
+    ) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);
