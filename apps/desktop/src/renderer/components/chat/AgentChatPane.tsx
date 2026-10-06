@@ -71,7 +71,7 @@ import {
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import { formatWorkingDuration, turnStallSilenceMs } from "../../../shared/sessionStatusPresentation";
-import { turnHasOpenWork } from "../../../shared/turnInFlight";
+import { latestTurnProgressAt, turnHasOpenWork } from "../../../shared/turnInFlight";
 import {
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
@@ -5715,10 +5715,20 @@ export function AgentChatPane({
   // session's whole resident event window (up to 60k events), and an actively
   // streaming turn — the hot render path — is never past it. Gating here keeps
   // that fold off every streamed event and runs it only when a turn looks quiet.
-  const turnSilenceMs = turnActive && selectedSession
-    ? turnStallSilenceMs(selectedSession, stallNowMs)
-    : null;
+  //
+  // Silence is measured from the transcript's newest progress event, not the
+  // session summary alone: the summary only refreshes on lifecycle edges, so
+  // its `lastActivityAt` freezes through a whole turn of thinking and tool
+  // calls. `latestTurnProgressAt` stops at the first hit from the end, so on a
+  // streaming turn it costs one step. A turn waiting on the user is not silent.
   const selectedSessionEvents = composerSessionId ? eventsBySession[composerSessionId] : undefined;
+  const turnSilenceMs = turnActive && selectedSession && !selectedSessionAwaitingInput
+    ? turnStallSilenceMs(
+        selectedSession,
+        stallNowMs,
+        selectedSessionEvents ? latestTurnProgressAt(selectedSessionEvents) : null,
+      )
+    : null;
   const selectedTurnHasOpenWork = turnSilenceMs !== null && selectedSessionEvents
     ? turnHasOpenWork(selectedSessionEvents.map((envelope) => envelope.event))
     : false;
@@ -16090,8 +16100,8 @@ export function AgentChatPane({
       model={{
         id: "chat-turn-stalled",
         tone: "warning",
-        title: `No output for ${formatWorkingDuration(stalledTurnSilenceMs)}`,
-        detail: "Nothing has come back from the provider. Interrupt to stop this turn, or dismiss and keep waiting.",
+        title: `No new activity for ${formatWorkingDuration(stalledTurnSilenceMs)}`,
+        detail: "No thinking, tool use or reply from this turn, and nothing is running. Interrupt to stop it, or dismiss and keep waiting.",
         actions: [{ label: "Interrupt", onClick: () => { void interrupt("stop_and_clear"); } }],
         dismiss: {
           onDismiss: () => setStalledTurnDismissedKey(stalledTurnKey),

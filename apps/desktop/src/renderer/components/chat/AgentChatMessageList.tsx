@@ -1771,13 +1771,6 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
   );
 }
 
-// After the turn has been active this long with no terminal event, the
-// indicator adds a quiet "taking longer than usual" note so a long silent wait
-// doesn't read as frozen. Provider overloads (HTTP 529) and transient errors
-// are retried *inside* the model SDK with nothing surfaced to us until they
-// resolve or finally fail — so a long "Thinking" is the only signal we get.
-const LONG_RUNNING_TURN_SECONDS = 30;
-
 /**
  * Formats the elapsed turn time as a compact "working for" duration. Stays as
  * bare seconds under a minute ("42s") and rolls into minutes past it
@@ -1824,7 +1817,6 @@ function WorkingIndicator({
 }) {
   const timerRef = useRef<HTMLSpanElement | null>(null);
   const startMsRef = useRef<number | null>(null);
-  const [longRunning, setLongRunning] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const hasToolActivity = toolEntries.length > 0;
   // The status line swaps between a bare <span> and an expander <button> the
@@ -1833,7 +1825,7 @@ function WorkingIndicator({
   // an element captured once when the ticker started) reattaches the counter to
   // whichever node is currently mounted and repaints it in the same commit, so
   // the swap can't strand the ticker on a detached node — the bug that froze
-  // the display at "0s" while "taking longer than usual" still appeared.
+  // the display at "0s" while the turn kept running.
   const attachTimer = useCallback((el: HTMLSpanElement | null) => {
     timerRef.current = el;
     if (!el) return;
@@ -1849,7 +1841,6 @@ function WorkingIndicator({
       // Re-read the ref every tick — see attachTimer above.
       const el = timerRef.current;
       if (el) el.textContent = formatElapsedSeconds(elapsedSec);
-      setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
       handle = window.setTimeout(tick, 1000);
     };
     tick();
@@ -1870,12 +1861,6 @@ function WorkingIndicator({
       <span className="shrink-0 text-fg/38">
         working for <span ref={attachTimer} className="tabular-nums">0s</span>
       </span>
-      {longRunning ? (
-        <>
-          <span className="shrink-0 text-fg/28" aria-hidden>·</span>
-          <span className="shrink-0 text-fg/35">taking longer than usual</span>
-        </>
-      ) : null}
       {hasToolActivity ? (
         activityOpen
           ? <CaretDown size={10} weight="bold" className="shrink-0 text-violet-300/45" />
