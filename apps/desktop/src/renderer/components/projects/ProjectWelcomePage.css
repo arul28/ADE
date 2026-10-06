@@ -630,7 +630,7 @@ button.ade-welcome-item:focus-visible {
   );
   animation: ade-recent-shimmer 2.4s ease-in-out infinite;
 }
-.ade-welcome-spin { animation: ade-recent-spin 0.9s linear infinite; }
+.ade-welcome-spin { animation: ade-recent-spin 0.9s steps(27) infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   .ade-welcome [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }

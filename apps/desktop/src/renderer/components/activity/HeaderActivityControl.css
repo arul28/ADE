@@ -240,7 +240,7 @@ button.activity-hdr-freshness {
 }
 
 .activity-hdr-spin {
-  animation: activity-hdr-spin 1.1s linear infinite;
+  animation: activity-hdr-spin 1.1s steps(33) infinite;
 }
 
 @keyframes activity-hdr-spin {

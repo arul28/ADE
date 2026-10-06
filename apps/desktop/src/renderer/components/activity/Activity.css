@@ -217,7 +217,7 @@ button.activity-pane-freshness {
 }
 
 .activity-pane-spin {
-  animation: activity-spin 1.1s linear infinite;
+  animation: activity-spin 1.1s steps(33) infinite;
 }
 
 @keyframes activity-spin {
@@ -1344,7 +1344,7 @@ button.activity-pane-freshness {
   border: 2px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-top-color: var(--color-accent);
   border-radius: 50%;
-  animation: activity-spin 700ms linear infinite;
+  animation: activity-spin 700ms steps(21) infinite;
 }
 
 .activity-settings-error {

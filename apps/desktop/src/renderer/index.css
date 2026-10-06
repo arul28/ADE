@@ -37,6 +37,13 @@
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
   --animate-pulse: ade-duty-pulse 2s infinite;
   --animate-ping: ade-duty-ping 2s infinite;
+  /* Every spinner turns in 30 steps a second, never at display rate. Electron
+     does not composite these rotations: each frame re-runs paint and layerize
+     for the whole window, then the GPU composites it. On a 240 Hz Windows
+     display one 16px `linear` spinner cost ~58% of a core (renderer + GPU);
+     at steps(30) it is lost in idle noise. Custom spin keyframes follow the
+     same rule: steps = duration in seconds x 30. */
+  --animate-spin: spin 1s steps(30) infinite;
 
   --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
   --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
@@ -3344,7 +3351,7 @@ button, [role="button"] {
   height: 200px;
   border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
-  animation: ade-gear-spin 20s linear infinite;
+  animation: ade-gear-spin 20s steps(600) infinite;
   opacity: 0.4;
 }
 
@@ -3357,7 +3364,7 @@ button, [role="button"] {
   height: 140px;
   border: 2px dashed rgba(249, 115, 22, 0.05);
   border-radius: 50%;
-  animation: ade-gear-spin-reverse 15s linear infinite;
+  animation: ade-gear-spin-reverse 15s steps(450) infinite;
   opacity: 0.35;
 }
 
@@ -4971,7 +4978,7 @@ button, [role="button"] {
 
 /* Running status indicator spin */
 .ade-timeline-running-spin {
-  animation: ade-running-spin 1.2s linear infinite;
+  animation: ade-running-spin 1.2s steps(36) infinite;
 }
 
 @keyframes ade-running-spin {
