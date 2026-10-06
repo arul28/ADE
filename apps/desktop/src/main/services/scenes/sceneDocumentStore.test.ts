@@ -43,20 +43,28 @@ describe("scene document store", () => {
     expect(store.respond("ade-scene:///etc/passwd").status).toBe(404);
   });
 
-  it("evicts the oldest document once the cap is reached", () => {
+  /**
+   * The renderer reuses one prepared URL for every remount of a scene, so a
+   * read is a load. Eviction has to take the documents nobody has loaded
+   * lately, not the ones still on screen: a document that was just read must
+   * outlive the one prepared beside it and never read.
+   */
+  it("evicts by read order once the cap is reached", () => {
     let counter = 0;
     const store = createSceneDocumentStore({ capacity: 3, makeId: () => `id-${counter++}` });
 
     const first = store.put("<p>1</p>");
     const second = store.put("<p>2</p>");
-    store.put("<p>3</p>");
+    const third = store.put("<p>3</p>");
     expect(store.size()).toBe(3);
     expect(store.respond(first.url).status).toBe(200);
 
     const fourth = store.put("<p>4</p>");
     expect(store.size()).toBe(3);
-    expect(store.respond(first.url).status).toBe(404);
-    expect(store.respond(second.url).status).toBe(200);
+    // `first` was loaded; `second` was never read and is the oldest.
+    expect(store.respond(first.url).status).toBe(200);
+    expect(store.respond(second.url).status).toBe(404);
+    expect(store.respond(third.url).status).toBe(200);
     expect(store.respond(fourth.url).status).toBe(200);
   });
 

@@ -15,6 +15,8 @@ import {
   createBuiltInBrowserDesktopBridgeClient,
   DesktopBridgeUnavailableError,
 } from "./desktopBridgeClient";
+import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
+import { createScenePreviewBridgeClient } from "./scenePreviewBridgeClient";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 import type { BuiltInBrowserDesktopBridgeClient } from "./desktopBridgeMethods";
 import {
@@ -748,5 +750,110 @@ describe("remote browser forwarder", () => {
     const forwarder = createRemoteBrowserForwarder({ emitEvent: () => {}, logger: forwarderLogger });
     expect(forwarder.acknowledgeRemoteRequest({ requestId: "bbr-gone" })).toEqual({ ok: false });
     expect(forwarder.acknowledgeRemoteRequest({})).toEqual({ ok: false });
+  });
+});
+
+/**
+ * The shared connection the desktop-only engines reach through. The desktop
+ * ties work (a recording, a demo job) to the connection that started it, so the
+ * socket survives a call that fails as an ANSWER and is dropped only when the
+ * transport itself is gone.
+ */
+describe("createDesktopBridgeConnection", () => {
+  let server: ServerHandle | null = null;
+
+  afterEach(async () => {
+    if (server) {
+      await server.close();
+      server = null;
+    }
+  });
+
+  function open(overrides: Partial<Parameters<typeof createDesktopBridgeConnection>[0]> = {}) {
+    return createDesktopBridgeConnection({
+      socketPath: "/nonexistent/bridge.sock",
+      getAuthToken: () => "token",
+      unavailableMessage: "no desktop attached",
+      closedMessage: "connection closed",
+      ...overrides,
+    });
+  }
+
+  it("keeps the socket open when a call answers with an error", async () => {
+    let calls = 0;
+    server = await startBridgeServer(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("render failed");
+      return { ok: true };
+    });
+    const connection = open({ socketPath: server.socketPath });
+
+    await expect(connection.request("scene_preview.render", {}, 5_000)).rejects.toThrow("render failed");
+    await expect(connection.request("scene_preview.render", {}, 5_000)).resolves.toEqual({ ok: true });
+    // The error answer did not cost a reconnect.
+    expect(server.connectionCount()).toBe(1);
+  });
+
+  it("refuses a call with no bridge token before opening a socket", async () => {
+    const connection = open({ getAuthToken: () => null });
+    await expect(connection.request("scene_preview.render", {}, 5_000))
+      .rejects.toThrow("no desktop attached");
+  });
+
+  it("refuses a call made after close", async () => {
+    const connection = open();
+    connection.close();
+    await expect(connection.request("scene_preview.render", {}, 5_000))
+      .rejects.toThrow("connection closed");
+  });
+});
+
+/**
+ * The scene preview client queues its own renders. The desktop runs them one at
+ * a time anyway, but the queue is what starts each request's timeout when it is
+ * sent, so a preview waiting behind two slow ones does not time out in transit
+ * and drop the shared socket.
+ */
+describe("createScenePreviewBridgeClient", () => {
+  let server: ServerHandle | null = null;
+
+  afterEach(async () => {
+    if (server) {
+      await server.close();
+      server = null;
+    }
+  });
+
+  it("sends one render at a time", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let received = 0;
+    const gates: Array<() => void> = [];
+    server = await startBridgeServer(async () => {
+      received += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active -= 1;
+      return { title: null, width: 720, height: 0, readyMs: null, settledMs: null, screenshotBase64: null, problems: [] };
+    });
+    const previewer = createScenePreviewBridgeClient({
+      socketPath: server.socketPath,
+      getAuthToken: () => "token",
+    });
+
+    const first = previewer.render({ source: "<p>a</p>" });
+    const second = previewer.render({ source: "<p>b</p>" });
+    await vi.waitFor(() => expect(received).toBe(1));
+    // The second has not reached the server while the first is outstanding.
+    expect(received).toBe(1);
+    gates[0]!();
+    await vi.waitFor(() => expect(received).toBe(2));
+    gates[1]!();
+    const results = await Promise.all([first, second]);
+    previewer.dispose();
+
+    expect(results).toHaveLength(2);
+    expect(maxActive).toBe(1);
   });
 });
