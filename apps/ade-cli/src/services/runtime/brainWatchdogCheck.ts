@@ -19,11 +19,14 @@ import {
 /**
  * The one action an external watchdog is allowed to take.
  *
- * It does NOT restart anything. launchd `KeepAlive` (macOS) and the PowerShell
- * supervisor loop (Windows) already restart a brain that exits; the only thing
- * missing was a way to make a wedged brain exit. So this kills, and lets the
- * supervisor that already owns the lifecycle do the restarting. Anything else
- * would put a second thing in the business of starting brains.
+ * It kills; the supervisor that owns the lifecycle restarts. launchd
+ * `KeepAlive` (macOS) and the PowerShell supervisor loop (Windows) already
+ * restart a brain that exits; the only thing missing was a way to make a wedged
+ * brain exit. The one addition is on macOS: after the kill the CLI asks launchd
+ * to start the job it already owns (`launchctl kickstart`, a no-op on a running
+ * job), because a domain in on-demand-only mode ignores `KeepAlive` and would
+ * leave the brain dead. That is still launchd starting launchd's job, not a
+ * second supervisor.
  */
 export const BRAIN_WATCHDOG_KILL_COMMAND = "external-watchdog";
 
@@ -211,9 +214,10 @@ export function runBrainWatchdogCheck(args: {
    * Called after a successful kill. The kill alone relies on the supervisor's
    * KeepAlive to start a replacement, and a launchd domain in on-demand-only
    * mode ignores KeepAlive -- the brain would stay dead. The CLI passes a
-   * `launchctl kickstart` here on macOS. Best effort; never throws.
+   * `launchctl kickstart` here on macOS. Best effort: returns the restart's
+   * error text, or null when it succeeded.
    */
-  restartService?: (pid: number) => void;
+  restartService?: (pid: number) => string | null;
   platform?: NodeJS.Platform;
   /** Injectable so tests never have to inspect a real process. */
   /** Live pid's start time in ms; `null` means "could not tell" (no kill). */
@@ -389,10 +393,11 @@ export function runBrainWatchdogCheck(args: {
       }`,
     };
   }
+  let restartError: string | null = null;
   try {
-    args.restartService?.(verdict.pid);
-  } catch {
-    // KeepAlive is still the primary restart; this only covers a domain that ignores it.
+    restartError = args.restartService?.(verdict.pid) ?? null;
+  } catch (error) {
+    restartError = error instanceof Error ? error.message : String(error);
   }
   return {
     ok: true,
@@ -400,6 +405,7 @@ export function runBrainWatchdogCheck(args: {
     pid: verdict.pid,
     ageMs: verdict.ageMs,
     staleAfterMs,
-    message: `Brain pid ${verdict.pid} stopped responding for ${verdict.ageMs}ms — stopped it so the service restarts.`,
+    message: `Brain pid ${verdict.pid} stopped responding for ${verdict.ageMs}ms — stopped it so the service restarts.`
+      + (restartError ? ` Restarting it failed: ${restartError}` : ""),
   };
 }

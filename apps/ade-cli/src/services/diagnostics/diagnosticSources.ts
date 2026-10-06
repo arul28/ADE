@@ -18,9 +18,10 @@ import {
 } from "./storageEnvironmentProbe";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../../desktop/src/main/services/logging/machineLogger";
-import { resolveRuntimeServiceName } from "../../serviceManager/common";
+import { currentUid, resolveRuntimeServiceName } from "../../serviceManager/common";
 import {
   backgroundItemStatusCommand,
+  isLaunchdPrintRunning,
   parseLaunchdPendingSpawn,
   launchAgentPath,
   parseBackgroundItemStatus,
@@ -396,10 +397,12 @@ function journalPlan(
  * The plist says what the agent SHOULD do; this says what launchd did with it,
  * and "loaded but never started" is invisible without it.
  */
+function launchdTarget(env: NodeJS.ProcessEnv): string {
+  return `gui/${currentUid()}/${resolveRuntimeServiceName(env)}`;
+}
+
 function launchdPrintPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
-  const serviceName = resolveRuntimeServiceName(env);
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
-  const target = `gui/${uid}/${serviceName}`;
+  const target = launchdTarget(env);
   return { display: `launchctl print ${target}`, command: "launchctl", args: ["print", target] };
 }
 
@@ -431,11 +434,15 @@ const LAUNCHD_ON_DEMAND_ONLY_PATTERN = /on-demand-only mode/i;
 function launchdSpawnNotes(env: NodeJS.ProcessEnv, run: DiagnosticCommandRunner): string[] {
   const print = launchdPrintPlan(env);
   const printAnswer = run(print.command, print.args);
-  const pending = printAnswer && printAnswer.status === 0 ? parseLaunchdPendingSpawn(printAnswer.stdout) : null;
+  // Only a job this print found, stopped, gets a verdict: a recovered brain
+  // still has the on-demand log lines from before its kickstart, and a job in
+  // the user domain would be pointed at the wrong kickstart target.
+  if (!printAnswer || printAnswer.status !== 0 || isLaunchdPrintRunning(printAnswer.stdout)) return [];
+  const pending = parseLaunchdPendingSpawn(printAnswer.stdout);
   const spawnLog = launchdSpawnLogPlan(env);
   const logAnswer = run(spawnLog.command, spawnLog.args);
   const onDemandOnly = logAnswer?.status === 0 && LAUNCHD_ON_DEMAND_ONLY_PATTERN.test(logAnswer.stdout);
-  const target = print.args[1];
+  const target = launchdTarget(env);
   const notes: string[] = [];
   if (onDemandOnly) {
     notes.push(
@@ -483,6 +490,15 @@ function planMachineDiagnosticCommands(args: {
 
 function diagnosticCommandKey(command: string, args: readonly string[]): string {
   return JSON.stringify([command, ...args]);
+}
+
+function memoizeDiagnosticCommands(run: DiagnosticCommandRunner): DiagnosticCommandRunner {
+  const answers = new Map<string, ReturnType<DiagnosticCommandRunner>>();
+  return (command, commandArgs) => {
+    const key = diagnosticCommandKey(command, commandArgs);
+    if (!answers.has(key)) answers.set(key, run(command, commandArgs));
+    return answers.get(key) ?? null;
+  };
 }
 
 /**
@@ -696,7 +712,10 @@ export function collectMachineDiagnosticSources(
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? os.homedir();
-  const run = options.runCommand ?? runDiagnosticCommand;
+  // The launchd verdict in Notes reads the same commands the service-definition
+  // section does; one answer per command keeps the synchronous path from
+  // running `log show` and `launchctl print` twice.
+  const run = memoizeDiagnosticCommands(options.runCommand ?? runDiagnosticCommand);
   const openProjectRoot = options.projectRoot?.trim() || null;
   const layout = resolveMachineAdeLayout(env);
   const readVolume = options.readVolume ?? readVolumeViaStatfs;

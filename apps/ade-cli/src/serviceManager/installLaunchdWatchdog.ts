@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
+  currentUid,
   type AdeServiceCommand,
   MATERIALIZE_DATALESS_FILES_KEY,
   type ServiceManagerSpawnSync,
@@ -16,9 +17,10 @@ import {
  * reacts to an exit. A brain that hangs while staying alive is therefore
  * invisible to launchd -- the 2026-08-05 incident. This agent runs every
  * `StartInterval` seconds, reads the brain's heartbeat file, and SIGKILLs a
- * brain that has stopped beating. KeepAlive then does the restart, so the
- * watchdog never starts anything itself and cannot become a competing
- * supervisor.
+ * brain that has stopped beating. KeepAlive then does the restart. The check
+ * also runs `launchctl kickstart` on the brain's own job after a kill, because
+ * a domain in on-demand-only mode ignores KeepAlive; that asks launchd to start
+ * the job it owns, so the watchdog still cannot become a competing supervisor.
  *
  * It is a separate agent rather than a thread inside the brain because the
  * whole point is to survive the brain being wedged.
@@ -70,8 +72,8 @@ export function watchdogCommand(command: AdeServiceCommand): AdeServiceCommand {
     args,
     env: {
       ...(command.env ?? {}),
-      // The check must never take a lifecycle action of its own. Its only
-      // authority is "kill a pid that stopped beating".
+      // The check must never install or reload the service. Its authority is
+      // "kill a pid that stopped beating" and then kickstart launchd's own job.
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     },
   };
@@ -241,7 +243,7 @@ export function uninstallLaunchdWatchdogAgent(deps: {
   const runtimeServiceName = deps.runtimeServiceName ?? ADE_RUNTIME_SERVICE_NAME;
   const servicePath = watchdogLaunchAgentPath(homeDir, runtimeServiceName);
   const label = resolveWatchdogServiceName(runtimeServiceName);
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   run("launchctl", ["bootout", `gui/${uid}/${label}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
   try {

@@ -14,6 +14,7 @@ import {
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -193,12 +194,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // failure for a repair that is still running — the exact mis-report the
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
-    // Project recovery's Repair reinstalls the service and then waits up to
-    // 90s for the brain to answer, streaming its steps as it goes. On the 30s
-    // default the renderer showed a raw IPC timeout mid-repair, hiding the
-    // step that actually failed.
-    case IPC.recoveryRepair:
       return 4 * 60_000;
+    // On the 30s default the renderer showed a raw IPC timeout mid-repair.
+    case IPC.recoveryRepair:
+      return PROJECT_REPAIR_IPC_TIMEOUT_MS;
     // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
     // merged PR. The 30s default reported a failure while the merge went on.
     case IPC.prsLand:

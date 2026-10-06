@@ -6,6 +6,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
   BACKGROUND_ITEM_BLOCKED_MESSAGE,
+  currentUid,
   type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
   MATERIALIZE_DATALESS_FILES_KEY,
@@ -15,6 +16,7 @@ import {
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
   serviceManagerResultText,
+  sleepSync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
@@ -330,7 +332,7 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
 function getLoadedLaunchdState(
   run: ServiceManagerSpawnSync,
 ): { running: boolean; pid: number | null } | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = run("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
@@ -398,7 +400,7 @@ function handoverFailure(
  * launchd's reason instead of only "no replacement pid".
  */
 export function kickstartLaunchdService(run: ServiceManagerSpawnSync = spawnSync): string | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   // The job lands in the gui domain from a desktop session and in the user
   // domain from ssh; `getLoadedLaunchdState` reads the same pair. The gui
   // error is the one worth reporting when both fail.
@@ -423,14 +425,8 @@ export function kickstartLaunchdServiceAfterExit(
 ): string | null {
   const alive = deps.pidAlive ?? pidAlive;
   const deadline = Date.now() + (deps.waitMs ?? 3_000);
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-  while (alive(killedPid) && Date.now() < deadline) Atomics.wait(pause, 0, 0, 50);
+  while (alive(killedPid) && Date.now() < deadline) sleepSync(50);
   return kickstartLaunchdService(deps.run ?? spawnSync);
-}
-
-function kickstartIfLaunchdLeftJobPending(run: ServiceManagerSpawnSync): string | null {
-  if (getLoadedLaunchdState(run)?.running === true) return null;
-  return kickstartLaunchdService(run);
 }
 
 /**
@@ -618,7 +614,7 @@ export async function installLaunchdService(
       message: serviceManagerResultText(load) || "launchctl load failed.",
     };
   }
-  const kickstartError = kickstartIfLaunchdLeftJobPending(run);
+  const kickstartError = kickstartLaunchdService(run);
   const oldPid = loaded?.pid ?? null;
   // A fresh full budget: the young-brain wait above may have spent all of its
   // own, and the real handover is the one whose outcome decides whether this
@@ -711,7 +707,7 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
     parentPid: deps.parentPid,
   });
   if (selfBlock) return selfBlock;
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
@@ -743,7 +739,7 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
     };
   }
 
-  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  const uid = currentUid();
   let print = spawnSync("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
     const userPrint = spawnSync("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
