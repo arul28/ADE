@@ -6,12 +6,17 @@
 // See README.md: read the compositor-draw column and its event count, and never
 // measure this with process CPU.
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const lab = path.dirname(fileURLToPath(import.meta.url));
-const electron = path.resolve(lab, "../../apps/desktop/node_modules/electron/dist/electron.exe");
+// `require("electron")` from Node returns the absolute path to the platform's
+// binary — `electron.exe` on Windows, `Electron.app/Contents/MacOS/Electron` on
+// macOS, `electron` on Linux. Resolved against apps/desktop, which is where the
+// dependency actually lives, so this works from any cwd and on any host.
+const electron = createRequire(path.resolve(lab, "../../apps/desktop/package.json"))("electron");
 
 const argv = process.argv.slice(2);
 const readFlag = (name, fallback) => {
