@@ -49,6 +49,13 @@ export type ScenePreviewResult = {
 
 export const SCENE_PREVIEW_WIDTH = { default: 720, min: 320, max: 1600 } as const;
 
+/**
+ * The most source a preview accepts. Room for a whole fence pasted around a
+ * scene at the chat's own cap (`SCENE_LIMITS.maxSourceBytes`), so an over-cap
+ * scene is still previewed and reported as over the cap rather than refused.
+ */
+export const SCENE_PREVIEW_MAX_SOURCE_BYTES = 400_000;
+
 /** ADE's light palette (`[data-theme="light"]` in index.css), for previews only. */
 export const SCENE_PREVIEW_LIGHT_THEME: SceneTheme = {
   bg: "#f5f3f0",

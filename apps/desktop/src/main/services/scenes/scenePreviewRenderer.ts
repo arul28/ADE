@@ -3,11 +3,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { BrowserWindow, session as electronSession } from "electron";
 
+import { buildSceneDocument, escapeForScript } from "../../../shared/chatSceneDocument";
 import {
-  buildSceneDocument,
   isSceneParseFailure,
   parseSceneFence,
   SCENE_CONTENT_SECURITY_POLICY,
+  sceneFrameMessage,
 } from "../../../shared/chatScene";
 import {
   lintSceneSource,
@@ -18,6 +19,7 @@ import {
   type ScenePreviewRequest,
   type ScenePreviewResult,
 } from "../../../shared/scenePreview";
+import { isWoff2, SCENE_FONT_FACES, sceneFontFaceRule } from "../../../shared/sceneFontFaces";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -67,29 +69,16 @@ let fontFaceCssCache: string | null = null;
  */
 function resolveFontFaceCss(roots: { appPath: string; rendererDir: string }): string {
   if (fontFaceCssCache !== null) return fontFaceCssCache;
-  const faces: Array<{ family: string; dev: string; asset: RegExp }> = [
-    {
-      family: "Geist",
-      dev: path.join(roots.appPath, "node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2"),
-      asset: /^Geist-Variable.*\.woff2$/,
-    },
-    {
-      family: "JetBrains Mono",
-      dev: path.join(roots.appPath, "node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2"),
-      asset: /^jetbrains-mono-latin-wght-normal.*\.woff2$/,
-    },
-  ];
   const assetsDir = path.join(roots.rendererDir, "assets");
   let assets: string[] = [];
   try { assets = fs.readdirSync(assetsDir); } catch { assets = []; }
   const rules: string[] = [];
-  for (const face of faces) {
-    const asset = assets.find((name) => face.asset.test(name));
-    const file = asset ? path.join(assetsDir, asset) : face.dev;
+  for (const face of SCENE_FONT_FACES) {
+    const asset = assets.find((name) => face.assetPattern.test(name));
+    const file = asset ? path.join(assetsDir, asset) : path.join(roots.appPath, "node_modules", face.packageFile);
     try {
       const bytes = fs.readFileSync(file);
-      if (bytes.subarray(0, 4).toString("latin1") !== "wOF2") continue;
-      rules.push(`@font-face { font-family: "${face.family}"; src: url(data:font/woff2;base64,${bytes.toString("base64")}) format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }`);
+      if (isWoff2(bytes)) rules.push(sceneFontFaceRule(face.family, bytes.toString("base64")));
     } catch {
       // Not shipped here; the system fallback stands in.
     }
@@ -100,14 +89,9 @@ function resolveFontFaceCss(roots: { appPath: string; rendererDir: string }): st
 
 /** The page that hosts the scene frame and records what it reports. Ours, not the agent's. */
 function hostPage(sceneDocument: string, width: number, background: string, nonce: string, data: unknown): string {
-  const embeddedData = JSON.stringify(data ?? null)
-    .replace(/</g, "\\u003c")
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
-  const embedded = JSON.stringify(sceneDocument)
-    .replace(/</g, "\\u003c")
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
+  // The live-data message the chat would post after ready, built here with the
+  // protocol's own envelope so the page posts it as-is.
+  const dataMessage = escapeForScript(data == null ? null : sceneFrameMessage({ type: "data", payload: data }));
   // The scene's own policy, on the host too: a srcdoc frame inherits its
   // parent's policy, so the host must allow exactly what a scene may do.
   const hostPolicy = SCENE_CONTENT_SECURITY_POLICY.split("; ").filter((rule) => !rule.startsWith("frame-src")).join("; ");
@@ -117,7 +101,7 @@ function hostPage(sceneDocument: string, width: number, background: string, nonc
 </head><body><script>
 (function(){
   var state = { readyMs: null, settledMs: null, height: 120, errors: [] };
-  var DATA = ${embeddedData};
+  var DATA_MESSAGE = ${dataMessage};
   window.__scenePreview = state;
   var t0 = 0;
   var frame = document.createElement("iframe");
@@ -135,13 +119,13 @@ function hostPage(sceneDocument: string, width: number, background: string, nonc
     if (m.type === "ready" && state.readyMs === null) {
       state.readyMs = Math.round(performance.now() - t0);
       // As the chat does: the live-data snapshot follows ready.
-      if (DATA !== null) frame.contentWindow.postMessage({ __adeSceneHost: 1, type: "data", payload: DATA }, "*");
+      if (DATA_MESSAGE !== null) frame.contentWindow.postMessage(DATA_MESSAGE, "*");
     }
     if (m.type === "settled" && state.settledMs === null) state.settledMs = Math.round(performance.now() - t0);
-    if (m.type === "error" && state.errors.length < 40) state.errors.push(String(p.message || "scene error"));
+    if (m.type === "error" && state.errors.length < ${MAX_PROBLEMS}) state.errors.push(String(p.message || "scene error"));
   });
   t0 = performance.now();
-  frame.srcdoc = ${embedded};
+  frame.srcdoc = ${escapeForScript(sceneDocument)};
   document.body.appendChild(frame);
 })();
 </script></body></html>`;

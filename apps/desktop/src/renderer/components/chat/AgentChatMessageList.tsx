@@ -2094,7 +2094,6 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
         </button>
       ) : null}
     </CollapsibleCard>
-    <ScenePreviewThumb output={resultStr} />
     </motion.div>
   );
 }
@@ -2287,16 +2286,13 @@ function CommandEventCard({
   );
 
   return (
-    <>
-      <InlineDisclosureRow
-        defaultOpen={event.status === "failed"}
-        summary={timelineSummary}
-        className={WORK_LOG_CARD_CLASS}
-      >
-        {commandBody}
-      </InlineDisclosureRow>
-      <ScenePreviewThumb output={event.output} />
-    </>
+    <InlineDisclosureRow
+      defaultOpen={event.status === "failed"}
+      summary={timelineSummary}
+      className={WORK_LOG_CARD_CLASS}
+    >
+      {commandBody}
+    </InlineDisclosureRow>
   );
 }
 

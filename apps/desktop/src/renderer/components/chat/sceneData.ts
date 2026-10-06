@@ -46,8 +46,6 @@ const NO_SNAPSHOTS: LaneListSnapshot[] = [];
 /**
  * Feeds `send` with the requested sources while mounted. Renders nothing.
  */
-export type { SceneDataPayload };
-
 export function SceneDataFeed({
   sources,
   send,

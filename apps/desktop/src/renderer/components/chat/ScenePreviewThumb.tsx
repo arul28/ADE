@@ -16,14 +16,29 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  */
 
 // The preview tool writes `<project>/.ade/cache/scene-previews/scene-<stamp>.png`.
-// Matched on both separators (Windows), and on the doubled backslashes of JSON.
-const PREVIEW_PATH = /((?:[A-Za-z]:)?(?:\\\\|\\|\/)[^\s"'<>|]*?(?:\\\\|\\|\/)\.ade(?:\\\\|\\|\/)cache(?:\\\\|\\|\/)scene-previews(?:\\\\|\\|\/)scene-[\w.-]+\.png)/;
+// Either separator (Windows), and spaces (`C:\Users\Jane Doe\…`); a line
+// break or a quote ends a path.
+const PREVIEW_PATH = /((?:[A-Za-z]:)?[\\/][^\r\n"'<>|]*?[\\/]\.ade[\\/]cache[\\/]scene-previews[\\/]scene-[\w.-]+\.png)/;
+
+const JSON_ESCAPES: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" };
+
+/**
+ * A tool result arrives JSON-encoded (`{"output":"ok\nscreenshot  …"}`), where
+ * a newline is the two characters `\n` and a path separator is `\\`. Decode
+ * those first, or the path would seem to start at the escaped newline. Plain
+ * command output is left alone: a Windows path in it may contain `\n` for real.
+ */
+function decodeIfJson(text: string): string {
+  const head = text.trimStart()[0];
+  if (head !== "{" && head !== "[" && head !== '"') return text;
+  return text.replace(/\\(["\\/bfnrt])/g, (_match, char: string) => JSON_ESCAPES[char] ?? char);
+}
 
 /** The preview PNG an `ade scene preview` output names, if any. */
 export function readScenePreviewPath(output: string | null | undefined): string | null {
   if (!output || !output.includes("scene-previews")) return null;
-  const match = PREVIEW_PATH.exec(output);
-  return match ? match[1]!.replace(/\\\\/g, "\\") : null;
+  const match = PREVIEW_PATH.exec(decodeIfJson(output));
+  return match ? match[1]! : null;
 }
 
 type ScenePreviewEntryLike = { command?: string; args?: unknown; output?: string; result?: unknown };

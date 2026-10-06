@@ -1,28 +1,49 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsOutSimple, Camera, Sparkle, WarningCircle } from "@phosphor-icons/react";
 
+import { buildSceneDocument } from "../../../shared/chatSceneDocument";
 import {
-  buildSceneDocument,
   isSceneParseFailure,
   parseSceneFence,
   parseSceneHostMessage,
-  sameSceneTheme,
   sceneFrameMessage,
+  sceneThemeMessage,
+  sceneThemeSignature,
   SCENE_LIMITS,
   SCENE_SETTLE_MAX_MS,
   SCENE_SETTLE_QUIET_MS,
+  type SceneFrameInbound,
   type SceneTheme,
 } from "../../../shared/chatScene";
 import { parseDeeplink } from "../../../shared/deeplinks";
+import type { SceneDataPayload } from "../../../shared/sceneDataProjection";
 import { openAdeDeeplink, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { HighlightedCode } from "./CodeHighlighter";
-import { SceneDataFeed, type SceneDataPayload } from "./sceneData";
+import {
+  captureSceneShell,
+  measureCapturableSceneRect,
+  SCENE_CAPTURE_RETRY_MAX_MS,
+  SCENE_CAPTURE_RETRY_MS,
+} from "./sceneCapture";
+import { SceneDataFeed } from "./sceneData";
+import {
+  cachedPreparedUrl,
+  cachedSceneDocument,
+  forgetPreparedUrl,
+  hasScenePlayed,
+  knownSceneHeight,
+  markScenePlayed,
+  rememberPreparedUrl,
+  rememberSceneHeight,
+} from "./sceneDocumentCache";
 import { loadSceneFontFaceCss, sceneFontFaceCssNow } from "./sceneFonts";
 import { rememberSceneStill } from "./sceneStillStore";
 import { useSceneTheme } from "./sceneTheme";
+import { useSceneOnScreen } from "./useSceneOnScreen";
 import { useSceneStillLatch } from "./useSceneStillLatch";
 
 /**
@@ -40,94 +61,34 @@ import { useSceneStillLatch } from "./useSceneStillLatch";
  * is said on hover, in the toolbar that also expands it and files it as proof.
  *
  * A scene is live while it is on screen, so its hovers, toggles and zooms keep
- * working in scrollback, and a still stands in for it everywhere else:
+ * working in scrollback, and a still stands in for it everywhere else
+ * (`useSceneOnScreen`). A scene that already played comes back RESTORED: the
+ * SDK skips its entrance, and the still covers the frame until it is drawn. A
+ * settled scene nobody is touching idles inside the frame (see the SDK in
+ * `shared/chatSceneDocument.ts`).
  *
- *  - It mounts when it has been on (or about to come on) screen for a beat,
- *    so a fast scroll past only ever shows stills.
- *  - It unmounts after it has been off screen for a few seconds.
- *  - A scene that already played comes back RESTORED: the SDK skips its
- *    entrance, and the still covers the frame until it is drawn, so scrolling
- *    back shows the same picture, now interactive.
- *  - A settled scene nobody is touching idles inside the frame (endless
- *    animations paused, requestAnimationFrame at a few frames a second); see
- *    the SDK in `shared/chatScene.ts`.
- *
- * The still is still taken once, when the scene first settles fully on screen,
- * for scrollback, reopened chats, remote clients and the proof drawer.
+ * The still is taken when a scene with none first settles fully on screen, and
+ * again after a theme switch, for scrollback, reopened chats, remote clients
+ * and the proof drawer.
  */
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 960;
-/** On screen this long before a frame mounts: a fast scroll past mounts nothing. */
-const SCENE_ACTIVATE_DWELL_MS = 120;
 /** The least time between two links a scene may open. */
 const SCENE_OPEN_MIN_INTERVAL_MS = 800;
-/** Off screen this long before a frame unmounts back to its still. */
-const SCENE_DEACTIVATE_LINGER_MS = 4_000;
-/** How far outside the viewport counts as "about to be on screen". */
-const SCENE_ACTIVATE_MARGIN = "240px 0px";
-/**
- * Scrolling must have paused this long before a frame mounts. A reader moving
- * through a transcript sees stills; frames load where they stop. Measured: a
- * steady scroll through six scenes cost the scene process 12% of a core in
- * mounts when frames loaded as they passed.
- */
-const SCENE_SCROLL_QUIET_MS = 150;
 
-/** The nearest ancestor that scrolls, or null for the viewport. */
-function scrollParentOf(element: HTMLElement): HTMLElement | null {
-  for (let el = element.parentElement; el && el !== document.body; el = el.parentElement) {
-    const style = window.getComputedStyle(el);
-    if (/(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflowX}`)) return el;
-  }
-  return null;
+/** True when `url` is a web link ADE itself put in a scene's data snapshot. */
+function urlInSceneData(data: SceneDataPayload | null, url: string): boolean {
+  return Boolean(data?.prs?.some((pr) => pr.githubUrl === url));
 }
 
 /**
- * A fresh id for one built document.
- *
- * Not a security boundary — the frame is already sandboxed and origin-isolated,
- * and this only has to separate one of OUR documents from the previous one — so
- * `randomUUID` where it exists and a counter-plus-random string where it does
- * not (an older jsdom, a non-secure context) is enough.
+ * How far the document in the frame has got. Stamped with the URL it belongs
+ * to, so a caller that swaps the source on one mounted frame never reads the
+ * last document's progress as the new one's.
  */
-let sceneNonceCounter = 0;
-function mintSceneNonce(): string {
-  sceneNonceCounter += 1;
-  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
-  return `${sceneNonceCounter}-${random}`;
-}
+type FrameStage = { src: string; ready: boolean; settled: boolean; revealed: boolean };
 
-/** Scenes that have played to a settle in this window: they come back restored. */
-const playedScopes = new Set<string>();
-/** Last measured height per scene, so a placeholder holds the space it will take. */
-const knownHeights = new Map<string, number>();
-
-/**
- * Built documents and their prepared URLs, reused across remounts.
- *
- * A scene now mounts and unmounts as it scrolls, and each mount used to build a
- * fresh document (new nonce), send it over IPC and take a new slot in main's
- * 64-document store. A remount of the same scene in the same theme reuses both.
- * Reusing a nonce across mounts is safe: a message is first matched to the
- * frame element's own `contentWindow`, and a remount is a new element.
- */
-const DOCUMENT_CACHE_LIMIT = 24;
-const documentCache = new Map<string, { html: string; nonce: string }>();
-const preparedUrlCache = new Map<string, string>();
-
-function rememberBounded<V>(map: Map<string, V>, key: string, value: V): void {
-  map.delete(key);
-  map.set(key, value);
-  while (map.size > DOCUMENT_CACHE_LIMIT) {
-    const oldest = map.keys().next();
-    if (oldest.done) break;
-    map.delete(oldest.value);
-  }
-}
-
-function themeSignature(theme: SceneTheme): string {
-  return JSON.stringify(theme);
-}
+const PROOF_LABEL = { idle: "Proof", saving: "Saving…", saved: "Saved", failed: "Not saved" } as const;
 
 export type SceneFrameProps = {
   source: string;
@@ -164,175 +125,6 @@ export type SceneFrameProps = {
   variant?: "inline" | "expanded";
 };
 
-type Status = "loading" | "running";
-
-/**
- * True when the whole shell is inside the viewport.
- *
- * Deliberately all-or-nothing rather than "intersects": the snapshot path
- * crops to what is on screen, so anything less than the whole rect produces a
- * picture of part of a view with no sign that it is partial.
- */
-function isSceneRectFullyVisible(rect: DOMRect): boolean {
-  if (rect.width < 1 || rect.height < 1) return false;
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-  if (!viewportWidth || !viewportHeight) return false;
-  return rect.top >= 0 && rect.left >= 0 && rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-}
-
-/** The `overflow` values that clip descendants to the element's padding box. */
-const CLIPPING_OVERFLOW = new Set(["hidden", "clip", "auto", "scroll", "overlay"]);
-
-/** Sub-pixel slack for the containment checks: layout is fractional, a capture is not. */
-const SCENE_RECT_EPSILON = 0.5;
-
-/**
- * The shell's rect, but only when every pixel inside it is this scene, on
- * screen, right now. Null otherwise.
- *
- * The snapshot is a grab of the WINDOW cropped to this rect, so whatever is
- * painted there is what gets kept. Inside the window viewport is not enough:
- *
- *  - The transcript is its own scroller, and the chat header sits above it in
- *    the same window. A scene scrolled half under the scroller's top edge still
- *    has a non-negative window rect, so the crop came back as the chat header
- *    painted over the scene's hidden top. Every clipping ancestor has to
- *    contain the rect too.
- *  - The composer floats over the bottom of the transcript, and a dialog or
- *    menu can sit over anything. Hit-testing a few points finds whatever is
- *    painted on top; anything that is not this shell means "not now".
- */
-function measureCapturableSceneRect(shell: HTMLElement): DOMRect | null {
-  const rect = shell.getBoundingClientRect();
-  if (!isSceneRectFullyVisible(rect)) return null;
-  for (let el = shell.parentElement; el && el !== document.documentElement; el = el.parentElement) {
-    const style = window.getComputedStyle(el);
-    if (!CLIPPING_OVERFLOW.has(style.overflowX) && !CLIPPING_OVERFLOW.has(style.overflowY)) continue;
-    // The clip edge is the padding box: the border box less the borders.
-    const box = el.getBoundingClientRect();
-    const left = box.left + el.clientLeft;
-    const top = box.top + el.clientTop;
-    if (
-      rect.left < left - SCENE_RECT_EPSILON
-      || rect.top < top - SCENE_RECT_EPSILON
-      || rect.right > left + el.clientWidth + SCENE_RECT_EPSILON
-      || rect.bottom > top + el.clientHeight + SCENE_RECT_EPSILON
-    ) {
-      return null;
-    }
-  }
-  if (typeof document.elementFromPoint === "function") {
-    const inset = 2;
-    const points: Array<[number, number]> = [
-      [rect.left + inset, rect.top + inset],
-      [rect.right - inset, rect.top + inset],
-      [rect.left + inset, rect.bottom - inset],
-      [rect.right - inset, rect.bottom - inset],
-      [rect.left + rect.width / 2, rect.top + rect.height / 2],
-    ];
-    for (const [x, y] of points) {
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || !shell.contains(hit)) return null;
-    }
-  }
-  return rect;
-}
-
-function sameSceneRect(a: DOMRect, b: DOMRect): boolean {
-  return Math.abs(a.left - b.left) < SCENE_RECT_EPSILON
-    && Math.abs(a.top - b.top) < SCENE_RECT_EPSILON
-    && Math.abs(a.width - b.width) < SCENE_RECT_EPSILON
-    && Math.abs(a.height - b.height) < SCENE_RECT_EPSILON;
-}
-
-type SceneCapture = (rect: { x: number; y: number; width: number; height: number }) => Promise<string | null>;
-
-/**
- * Grab the shell, or answer why not.
- *
- * Measured twice — before the request and after the picture comes back —
- * because the grab is asynchronous: it lands on a later compositor frame, and
- * the transcript re-pins its scroll and re-measures rows at exactly the moments
- * a scene tends to be captured (a turn ending, the composer resizing). A rect
- * that moved in between describes a place the scene no longer was, and the
- * picture is of whatever slid into it. Such a picture is thrown away, never kept.
- */
-async function captureSceneShell(
-  shell: HTMLElement,
-  capture: SceneCapture,
-): Promise<{ kind: "captured"; dataUrl: string } | { kind: "not-visible" | "moved" | "empty" }> {
-  const before = measureCapturableSceneRect(shell);
-  if (!before) return { kind: "not-visible" };
-  const dataUrl = await capture({
-    x: before.x, y: before.y, width: before.width, height: before.height,
-  });
-  const after = shell.isConnected ? measureCapturableSceneRect(shell) : null;
-  if (!after || !sameSceneRect(before, after)) return { kind: "moved" };
-  return dataUrl ? { kind: "captured", dataUrl } : { kind: "empty" };
-}
-
-/**
- * How long a capture thrown away for moving waits before it tries again. It
- * doubles per consecutive miss up to the cap: a pinned transcript scrolls every
- * frame while a turn streams, and each try is a window grab plus a PNG encode.
- */
-const SCENE_CAPTURE_RETRY_MS = 250;
-const SCENE_CAPTURE_RETRY_MAX_MS = 4_000;
-
-/**
- * True while the shell is on screen or about to be, with a dwell before it
- * turns true and a linger before it turns false; see the constants above.
- */
-function useSceneOnScreen(target: React.RefObject<HTMLElement | null>, enabled: boolean): boolean {
-  const [onScreen, setOnScreen] = useState(false);
-  useEffect(() => {
-    const element = target.current;
-    if (!enabled || !element) return;
-    if (typeof IntersectionObserver !== "function") {
-      // No way to tell (an old test host): behave as if always visible.
-      setOnScreen(true);
-      return;
-    }
-    let timer: number | null = null;
-    const clear = () => { if (timer !== null) { window.clearTimeout(timer); timer = null; } };
-    // Only scrolling that moves THIS scene counts: a terminal streaming output
-    // elsewhere in the window scrolls constantly and must not hold scenes back.
-    let lastScrollAt = 0;
-    const onScroll = (event: Event) => {
-      const target = event.target;
-      if (target === document || (target instanceof Node && target.contains(element))) lastScrollAt = performance.now();
-    };
-    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    // Mount only once scrolling has paused; keep checking until it has.
-    const activateWhenQuiet = () => {
-      const sinceScroll = performance.now() - lastScrollAt;
-      if (sinceScroll < SCENE_SCROLL_QUIET_MS) {
-        timer = window.setTimeout(activateWhenQuiet, SCENE_SCROLL_QUIET_MS - sinceScroll);
-        return;
-      }
-      timer = null;
-      setOnScreen(true);
-    };
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries.some((entry) => entry.isIntersecting);
-      clear();
-      timer = visible
-        ? window.setTimeout(activateWhenQuiet, SCENE_ACTIVATE_DWELL_MS)
-        : window.setTimeout(() => { timer = null; setOnScreen(false); }, SCENE_DEACTIVATE_LINGER_MS);
-    // Rooted at the transcript's own scroller: a margin on the viewport root
-    // is clipped by that scroller and would prefetch nothing.
-    }, { root: scrollParentOf(element), rootMargin: SCENE_ACTIVATE_MARGIN, threshold: 0 });
-    observer.observe(element);
-    return () => {
-      clear();
-      window.removeEventListener("scroll", onScroll, true);
-      observer.disconnect();
-    };
-  }, [target, enabled]);
-  return onScreen;
-}
-
 export function SceneFrame({
   source,
   live = false,
@@ -345,40 +137,24 @@ export function SceneFrame({
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant.
-  const { sessionId } = useChatRuntimeScope();
+  const { sessionId, pin } = useChatRuntimeScope();
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
+  const title = (!failed && parsed.title) || "Generated view";
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  /** The current document, for the two callbacks that stamp a settle with it. */
-  const srcRef = useRef<string | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const [height, setHeight] = useState(() => (scopeKey && knownHeights.get(scopeKey)) || 220);
-  /**
-   * The document that has reported it is up (ready, or settled, or the ready
-   * timeout passed) — stamped like {@link settledSrc}, never a bare flag. A
-   * remount reuses the same cached URL, so a boolean or a stale stamp would
-   * call a frame that has not loaded yet ready.
-   */
-  const [readySrc, setReadySrc] = useState<string | null>(null);
+  const [height, setHeight] = useState(() => knownSceneHeight(scopeKey) ?? 220);
   const [sceneError, setSceneError] = useState<string | null>(null);
-  const [proofState, setProofState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [proofState, setProofState] = useState<keyof typeof PROOF_LABEL>("idle");
   const [expanded, setExpanded] = useState(false);
   /** True while the Proof button is grabbing the view; hides the toolbar from the picture. */
   const [capturingProof, setCapturingProof] = useState(false);
   /** This mount's settle-time still; see the capture effect. */
   const [still, setStill] = useState<string | null>(null);
-  /**
-   * The document that has reported it is done animating — not a boolean.
-   * A caller can keep ONE mounted frame and swap its source; stamped with the
-   * src it belongs to, a stale settle simply is not one.
-   */
-  const [settledSrc, setSettledSrc] = useState<string | null>(null);
-  /** The document whose frame may be shown; it stays hidden under the still until then. */
-  const [revealedSrc, setRevealedSrc] = useState<string | null>(null);
-  /** Bumped when a settle capture that was waiting for visibility should retry. */
+  /** Bumped when a capture that was waiting for visibility should retry. */
   const [stillAttempt, setStillAttempt] = useState(0);
-  /** One still per mounted scene: a second capture would only cost a window grab. */
+  /** One still per document: a second capture would only cost a window grab. */
   const stillTakenRef = useRef(false);
   /** Consecutive captures thrown away for moving; sets the retry backoff. */
   const captureMissesRef = useRef(0);
@@ -396,8 +172,8 @@ export function SceneFrame({
 
   /**
    * The scene threw before it was up: almost always a blank or half-drawn
-   * view. It collapses to one row (Retry, Show code, Show anyway) instead of
-   * holding a tall empty box with an error in its corner.
+   * view. It collapses to one inline banner (Retry, Show code, Show anyway)
+   * instead of holding a tall empty box with an error in its corner.
    */
   const [drawFailed, setDrawFailed] = useState(false);
   const [showAnyway, setShowAnyway] = useState(false);
@@ -409,6 +185,7 @@ export function SceneFrame({
   const theme = useSceneTheme();
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  const themeKey = sceneThemeSignature(theme);
 
   const [fontFaceCss, setFontFaceCss] = useState<string | null>(sceneFontFaceCssNow);
   useEffect(() => {
@@ -429,10 +206,7 @@ export function SceneFrame({
    * document and reload a frame the user is watching.
    */
   const restoredRef = useRef(false);
-  restoredRef.current = expandedVariant
-    || rehydrated
-    || Boolean(pictureSrc)
-    || (scopeKey !== null && playedScopes.has(scopeKey));
+  restoredRef.current = expandedVariant || rehydrated || Boolean(pictureSrc) || hasScenePlayed(scopeKey);
 
   // A fence that is still arriving draws nothing: one placeholder now beats a
   // frame that reloads on every tick.
@@ -440,23 +214,16 @@ export function SceneFrame({
     if (failed || streaming || undecided || !wantFrame || fontFaceCss === null) return null;
     const builtTheme = themeRef.current;
     const restored = restoredRef.current;
-    const key = `${scopeKey ?? ""}|${attempt}|${restored ? 1 : 0}|${themeSignature(builtTheme)}|${fontFaceCss.length}|${source}`;
-    const cached = documentCache.get(key);
-    if (cached) {
-      rememberBounded(documentCache, key, cached);
-      return { ...cached, theme: builtTheme, restored };
-    }
-    const nonce = mintSceneNonce();
-    const html = buildSceneDocument({
+    const key = `${scopeKey ?? ""}|${attempt}|${restored ? 1 : 0}|${sceneThemeSignature(builtTheme)}|${fontFaceCss.length}|${source}`;
+    const { html, nonce } = cachedSceneDocument(key, (fresh) => buildSceneDocument({
       html: parsed.html,
       title: parsed.title,
       theme: builtTheme,
       scopeKey,
-      nonce,
+      nonce: fresh,
       restored,
       fontFaceCss,
-    });
-    rememberBounded(documentCache, key, { html, nonce });
+    }));
     return { html, nonce, theme: builtTheme, restored };
     // `source` is in the key, so `parsed` adds nothing; theme is applied live.
   }, [failed, streaming, undecided, wantFrame, fontFaceCss, parsed, scopeKey, source, attempt]);
@@ -469,19 +236,41 @@ export function SceneFrame({
    */
   const [prepared, setPrepared] = useState<{ url: string; nonce: string; theme: SceneTheme; restored: boolean } | null>(null);
   const src = doc && prepared && prepared.nonce === doc.nonce ? prepared.url : null;
+  const srcRef = useRef<string | null>(null);
   const nonceRef = useRef<string | null>(null);
-  const builtThemeRef = useRef<SceneTheme | null>(null);
+  /** The theme the frame currently has: built in, or last posted. */
+  const frameThemeRef = useRef<SceneTheme | null>(null);
   useEffect(() => {
     srcRef.current = src;
     nonceRef.current = src ? prepared?.nonce ?? null : null;
-    builtThemeRef.current = src ? prepared?.theme ?? null : null;
+    frameThemeRef.current = src ? prepared?.theme ?? null : null;
   }, [src, prepared]);
 
-  /** True only for a settle this document reported; see {@link settledSrc}. */
-  const settled = settledSrc !== null && settledSrc === src;
-  const status: Status = src !== null && readySrc === src ? "running" : "loading";
-  const readySrcRef = useRef<string | null>(null);
-  readySrcRef.current = readySrc;
+  const [stage, setStage] = useState<FrameStage | null>(null);
+  const current = stage && src !== null && stage.src === src ? stage : null;
+  const ready = Boolean(current?.ready);
+  const settled = Boolean(current?.settled);
+  const frameShown = Boolean(current?.revealed);
+  const readyRef = useRef(false);
+  readyRef.current = ready;
+  /** Advance the stage of the document at `forSrc`; a stage for another document starts over. */
+  const advanceStage = useCallback((forSrc: string | null, patch: Partial<Omit<FrameStage, "src">>) => {
+    if (!forSrc) return;
+    setStage((previous) => ({
+      ...(previous && previous.src === forSrc ? previous : { src: forSrc, ready: false, settled: false, revealed: false }),
+      ...patch,
+    }));
+  }, []);
+
+  // A new document gets its own capture latch. When the frame comes down the
+  // stage is dropped: a remount is handed the same cached URL, and a stage left
+  // from the last mount would call the new, unloaded frame ready, settled and
+  // revealed — a blank frame where the still should be.
+  useEffect(() => {
+    stillTakenRef.current = false;
+    captureMissesRef.current = 0;
+    if (src === null) setStage(null);
+  }, [src]);
 
   // Prefer the real scheme; blob is the preview path. Both give the frame an
   // origin of its own, which is the property that matters.
@@ -493,7 +282,7 @@ export function SceneFrame({
     let revoked: string | null = null;
     let cancelled = false;
     const show = (url: string) => setPrepared({ url, nonce: doc.nonce, theme: doc.theme, restored: doc.restored });
-    const cachedUrl = preparedUrlCache.get(doc.html);
+    const cachedUrl = cachedPreparedUrl(doc.html);
     if (cachedUrl) {
       show(cachedUrl);
       return;
@@ -511,7 +300,7 @@ export function SceneFrame({
         .then((url) => {
           if (cancelled) return;
           if (typeof url === "string" && url.length > 0) {
-            rememberBounded(preparedUrlCache, doc.html, url);
+            rememberPreparedUrl(doc.html, url);
             show(url);
           } else {
             fallBackToBlob();
@@ -527,20 +316,10 @@ export function SceneFrame({
     };
   }, [doc]);
 
-  const postToFrame = useCallback((message: Parameters<typeof sceneFrameMessage>[0]) => {
+  const postToFrame = useCallback((message: SceneFrameInbound) => {
     // The frame's origin is opaque, so "*" is the only target that reaches it.
-    // Only ADE's theme travels this way; nothing in it is private.
     try { frameRef.current?.contentWindow?.postMessage(sceneFrameMessage(message), "*"); } catch { /* frame gone */ }
   }, []);
-
-  /** Send the current theme if the document was built with another one. */
-  const syncTheme = useCallback(() => {
-    const built = builtThemeRef.current;
-    const current = themeRef.current;
-    if (!built || sameSceneTheme(built, current)) return;
-    builtThemeRef.current = current;
-    postToFrame({ type: "theme", payload: current });
-  }, [postToFrame]);
 
   /**
    * A scene opens links only while its frame has focus (a click inside it
@@ -551,7 +330,7 @@ export function SceneFrame({
    * ADE navigates, or the page opens in ADE's browser.
    */
   const lastOpenRef = useRef(0);
-
+  const latestDataRef = useRef<SceneDataPayload | null>(null);
   const openFromScene = useCallback((url: string) => {
     const now = Date.now();
     const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
@@ -565,11 +344,19 @@ export function SceneFrame({
       return;
     }
     if (/^https?:\/\//i.test(url)) {
-      openUrlInAdeBrowser(url);
+      // A scene with live ADE data could build a URL around that data and
+      // send it out on a click. Such a scene may open only the web pages it
+      // was written with or that ADE sent it (a PR's GitHub link), never one
+      // assembled at run time.
+      if (!failed && parsed.data.length && !source.includes(url) && !urlInSceneData(latestDataRef.current, url)) {
+        setSceneError("This scene shows live ADE data, so it can only open the web links written in it.");
+        return;
+      }
+      openUrlInAdeBrowser(url, { runtimePin: pin });
       return;
     }
     setSceneError("A scene can open ADE links (ade://) and web pages only.");
-  }, []);
+  }, [failed, parsed, source, pin]);
 
   // Only messages from this frame's own contentWindow are considered, every one
   // is shape-checked before it reaches state, and every one must name the
@@ -582,8 +369,9 @@ export function SceneFrame({
       if (!message.nonce || message.nonce !== nonceRef.current) return;
       if (message.type === "error") {
         setSceneError(message.payload.message);
-        // Thrown before the frame said it was up: the view did not draw.
-        if (readySrcRef.current !== srcRef.current) setDrawFailed(true);
+        // Thrown before the frame said it was up: the view did not draw. A
+        // policy block (a remote font or image) is reported, not collapsed.
+        if (!message.payload.policy && !readyRef.current) setDrawFailed(true);
         return;
       }
       if (message.type === "emit") {
@@ -597,46 +385,45 @@ export function SceneFrame({
       if (message.payload.height) {
         const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, message.payload.height));
         setHeight(next);
-        if (scopeKey) knownHeights.set(scopeKey, next);
+        rememberSceneHeight(scopeKey, next);
       }
+      // A document that has settled has loaded, whether or not its ready
+      // arrived first.
       if (message.type === "settled") {
-        // A document that has settled has loaded, whether or not its ready
-        // arrived first.
-        setReadySrc(srcRef.current);
-        setSettledSrc(srcRef.current);
-        if (scopeKey) playedScopes.add(scopeKey);
+        advanceStage(srcRef.current, { ready: true, settled: true });
+        markScenePlayed(scopeKey);
       }
-      if (message.type === "ready") setReadySrc(srcRef.current);
+      if (message.type === "ready") advanceStage(srcRef.current, { ready: true });
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [onEmit, scopeKey, syncTheme, openFromScene, postToFrame]);
+  }, [onEmit, scopeKey, openFromScene, advanceStage]);
 
   // Live ADE data, for a scene that asked for it, while its frame is up.
-  const latestDataRef = useRef<SceneDataPayload | null>(null);
-  const statusRef = useRef<Status>(status);
-  statusRef.current = status;
   const sendData = useCallback((payload: SceneDataPayload) => {
     latestDataRef.current = payload;
-    if (statusRef.current === "running") postToFrame({ type: "data", payload });
+    if (readyRef.current) postToFrame({ type: "data", payload });
   }, [postToFrame]);
   const dataFeed = !failed && src && parsed.data.length
     ? <SceneDataFeed sources={parsed.data} send={sendData} />
     : null;
 
-  // The frame is up (however it got there: ready, settled, or the ready
-  // timeout), or the theme switched while it is: hand it the current palette
-  // and the latest data snapshot.
+  // The frame is up (ready, settled, or the ready timeout), or the theme
+  // switched while it is: hand it the current palette if it has another one,
+  // and the latest data snapshot when it comes up.
   useEffect(() => {
-    if (status !== "running") return;
-    syncTheme();
-  }, [theme, status, syncTheme]);
+    if (!ready) return;
+    const frameTheme = frameThemeRef.current;
+    if (!frameTheme || sceneThemeSignature(frameTheme) === themeKey) return;
+    frameThemeRef.current = themeRef.current;
+    postToFrame(sceneThemeMessage(themeRef.current));
+  }, [ready, themeKey, postToFrame]);
   useEffect(() => {
-    if (status === "running" && latestDataRef.current) postToFrame({ type: "data", payload: latestDataRef.current });
-  }, [status, postToFrame]);
+    if (ready && latestDataRef.current) postToFrame({ type: "data", payload: latestDataRef.current });
+  }, [ready, postToFrame]);
 
   // A different scene in the same mounted frame (its source swapped) owns none
-  // of the previous scene's picture.
+  // of the previous scene's picture or failure.
   useEffect(() => {
     setStill(null);
     setSceneError(null);
@@ -644,118 +431,95 @@ export function SceneFrame({
     setShowAnyway(false);
   }, [source, scopeKey]);
 
-  // A new document is a new scene and gets its own wait; an expired deadline
-  // from the previous one would mark it settled on sight. The one-capture latch
-  // is reset with it. When the frame comes down, every per-document stamp is
-  // dropped: a remount is handed the same cached URL, and a stamp left over
-  // from the last mount would call the new, unloaded frame ready, settled and
-  // revealed — a blank frame where the still should be.
-  useEffect(() => {
-    stillTakenRef.current = false;
-    captureMissesRef.current = 0;
-    if (src === null) {
-      setReadySrc(null);
-      setSettledSrc(null);
-      setRevealedSrc(null);
-    }
-  }, [src]);
-
-  /**
-   * Reveal. A frame coming back under its still stays hidden until it has
-   * drawn (ready, then two frames for the paint), so the swap from picture to
-   * live view shows no blank and no replayed entrance. A frame with nothing
-   * over it shows at once: its entrance is the point.
-   */
   /**
    * The theme a picture was drawn in. A still from before a theme switch must
    * not cover the frame (the reader would see the old palette flash) and is
-   * re-taken once the scene is live in the new one. A picture this mount did
+   * taken again once the scene is live in the new one. A picture this mount did
    * not take is assumed current when first seen.
    */
-  const themeKey = themeSignature(theme);
   const [pictureTheme, setPictureTheme] = useState<string | null>(null);
   useEffect(() => {
     if (!pictureSrc) { setPictureTheme(null); return; }
-    setPictureTheme((current) => current ?? themeSignature(themeRef.current));
+    setPictureTheme((existing) => existing ?? sceneThemeSignature(themeRef.current));
   }, [pictureSrc]);
   const stillStale = Boolean(pictureSrc) && pictureTheme !== null && pictureTheme !== themeKey;
-  // A stale picture releases this mount's one-capture latch, so the live
-  // scene is pictured again in the current theme.
+  // A stale picture releases the one-capture latch.
   useEffect(() => {
     if (!stillStale) return;
     stillTakenRef.current = false;
     setStillAttempt((value) => value + 1);
   }, [stillStale]);
-  const coveredByStill = Boolean(pictureSrc) && !stillStale && Boolean(prepared?.restored);
+  // A picture from another theme is never shown; the space is held until the frame draws.
+  const visiblePicture = stillStale ? null : pictureSrc;
+
+  /**
+   * Reveal. A frame coming back under its still stays hidden until it has
+   * drawn (up, then two frames for the paint), so the swap from picture to
+   * live view shows no blank and no replayed entrance. A frame with nothing
+   * over it shows at once: its entrance is the point.
+   */
+  const coveredByStill = Boolean(visiblePicture) && Boolean(prepared?.restored);
   useEffect(() => {
-    if (!src) return;
-    if (!coveredByStill) { setRevealedSrc(src); return; }
-    if (status !== "running") {
-      // A scene that never says ready is not necessarily broken; do not hold
-      // its still over it forever.
-      const timer = window.setTimeout(() => setRevealedSrc(src), SCENE_LIMITS.readyTimeoutMs);
-      return () => window.clearTimeout(timer);
-    }
+    if (!src || frameShown) return;
+    if (!coveredByStill) { advanceStage(src, { revealed: true }); return; }
+    if (!ready) return;
     let second = 0;
     const first = window.requestAnimationFrame(() => {
-      second = window.requestAnimationFrame(() => setRevealedSrc(src));
+      second = window.requestAnimationFrame(() => advanceStage(src, { revealed: true }));
     });
     return () => {
       window.cancelAnimationFrame(first);
       if (second) window.cancelAnimationFrame(second);
     };
-  }, [src, status, coveredByStill]);
-  const frameShown = Boolean(src) && revealedSrc === src;
+  }, [src, ready, frameShown, coveredByStill, advanceStage]);
 
   // A scene that never reports ready is not necessarily broken — it may simply
-  // not call ade.ready() — so this stops the wait rather than the scene.
+  // not call ade.ready() — so this stops the wait rather than the scene. A
+  // prepared URL that never came up may have been evicted in main; it is
+  // forgotten so the next mount prepares it again.
   useEffect(() => {
-    if (status !== "loading" || !src) return;
+    if (ready || !src) return;
     const armedSrc = src;
     const timer = window.setTimeout(() => {
-      // A prepared URL that never came up may have been evicted in main (a
-      // 404 page never says ready): forget it, so the next mount re-prepares.
-      for (const [html, url] of preparedUrlCache) if (url === armedSrc) preparedUrlCache.delete(html);
-      setReadySrc(armedSrc);
+      forgetPreparedUrl(armedSrc);
+      advanceStage(armedSrc, { ready: true });
     }, SCENE_LIMITS.readyTimeoutMs);
     return () => window.clearTimeout(timer);
-  }, [status, src]);
+  }, [ready, src, advanceStage]);
 
   /**
    * The host's own settle deadline, for a frame that never reports one. One
    * quiet window longer than the frame's own cap, so a frame that IS going to
-   * report gets to do it first. Armed per document, stamping the document it
-   * was armed for.
+   * report gets to do it first.
    */
   useEffect(() => {
-    if (status !== "running" || settled || !src) return;
+    if (!ready || settled || !src) return;
     const armedSrc = src;
     const timer = window.setTimeout(
-      () => setSettledSrc(armedSrc),
+      () => advanceStage(armedSrc, { settled: true }),
       SCENE_SETTLE_MAX_MS + SCENE_SETTLE_QUIET_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [status, settled, src]);
+  }, [ready, settled, src, advanceStage]);
 
   /**
-   * Take the still, once, for a scene that has none yet.
+   * Take the still, for a scene with none (or one from another theme).
    *
    * It runs while the scene is live, after it settles, and only when the whole
-   * view is on screen and on top (see {@link measureCapturableSceneRect}); it
-   * waits on scroll and an IntersectionObserver for that moment, with no
-   * deadline. A scene that already has a picture takes no new one: a scene now
-   * remounts every time it scrolls back, and each capture is a window grab, a
-   * PNG encode and a file.
+   * view is on screen and on top (see `measureCapturableSceneRect`); it waits
+   * on scroll and an IntersectionObserver for that moment, with no deadline. A
+   * scene with a current picture takes no new one: a scene remounts every time
+   * it scrolls back, and each capture is a window grab, a PNG encode and a file.
    */
   useEffect(() => {
-    if (expandedVariant || !settled || stillTakenRef.current || status !== "running" || !src || (pictureSrc && !stillStale)) return;
+    if (expandedVariant || !settled || stillTakenRef.current || !src || visiblePicture) return;
     const capture = window.ade?.scene?.snapshot;
     const shell = shellRef.current;
     if (typeof capture !== "function" || !shell) return;
     if (!measureCapturableSceneRect(shell)) {
       const retry = () => {
-        const current = shellRef.current;
-        if (current && measureCapturableSceneRect(current)) setStillAttempt((attempt) => attempt + 1);
+        const shellNow = shellRef.current;
+        if (shellNow && measureCapturableSceneRect(shellNow)) setStillAttempt((value) => value + 1);
       };
       window.addEventListener("scroll", retry, { capture: true, passive: true });
       let observer: IntersectionObserver | null = null;
@@ -775,7 +539,6 @@ export function SceneFrame({
     stillTakenRef.current = true;
     let cancelled = false;
     let retryTimer: number | null = null;
-    const title = (!failed && parsed.title) || "Generated view";
     void captureSceneShell(shell, capture)
       .then(async (result) => {
         if (cancelled) return;
@@ -785,7 +548,7 @@ export function SceneFrame({
           stillTakenRef.current = false;
           const misses = captureMissesRef.current++;
           retryTimer = window.setTimeout(
-            () => setStillAttempt((attempt) => attempt + 1),
+            () => setStillAttempt((value) => value + 1),
             Math.min(SCENE_CAPTURE_RETRY_MS * 2 ** misses, SCENE_CAPTURE_RETRY_MAX_MS),
           );
           return;
@@ -793,7 +556,7 @@ export function SceneFrame({
         captureMissesRef.current = 0;
         const { dataUrl } = result;
         setStill(dataUrl);
-        setPictureTheme(themeSignature(themeRef.current));
+        setPictureTheme(sceneThemeSignature(themeRef.current));
         if (scopeKey) rememberSceneStill(scopeKey, { dataUrl });
         const store = window.ade?.scene?.storeStill;
         if (typeof store !== "function" || !scopeKey) return;
@@ -810,7 +573,7 @@ export function SceneFrame({
       cancelled = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, [expandedVariant, settled, status, src, stillAttempt, scopeKey, failed, parsed, sessionId, pictureSrc, stillStale]);
+  }, [expandedVariant, settled, src, stillAttempt, scopeKey, title, sessionId, visiblePicture]);
 
   /**
    * File the view as proof: a fresh grab of what is on screen now, so a scene
@@ -839,16 +602,12 @@ export function SceneFrame({
     }
     dataUrl ??= still ?? (pictureSrc?.startsWith("data:") ? pictureSrc : null);
     try {
-      const ok = await attach({
-        dataUrl,
-        title: (!failed && parsed.title) || "Generated view",
-        sessionId: sessionId ?? null,
-      });
+      const ok = await attach({ dataUrl, title, sessionId: sessionId ?? null });
       setProofState(ok ? "saved" : "failed");
     } catch {
       setProofState("failed");
     }
-  }, [failed, parsed, still, pictureSrc, sessionId]);
+  }, [title, still, pictureSrc, sessionId]);
 
   if (streaming) {
     // Deliberately not the parse-failure block: a fence that is two lines in is
@@ -858,11 +617,11 @@ export function SceneFrame({
       <div className="my-3 w-screen max-w-full" data-testid="chat-scene" data-scene-status="drawing">
         <div
           className="flex items-end rounded-md px-3 py-2"
-          style={{ height: (scopeKey && knownHeights.get(scopeKey)) || MIN_HEIGHT, background: COLORS.recessedBg }}
+          style={{ height: knownSceneHeight(scopeKey) ?? MIN_HEIGHT, background: COLORS.recessedBg }}
         >
           <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
             <Sparkle size={10} weight="fill" style={{ color: COLORS.accent }} />
-            {(!failed && parsed.title) || "Generated view"}
+            {title}
             <span style={{ color: COLORS.textDim }}>
               · drawing · {source.split("\n").length} lines · {Math.max(1, Math.round(source.length / 1024))} KB
             </span>
@@ -887,8 +646,6 @@ export function SceneFrame({
     );
   }
 
-  const title = parsed.title ?? "Generated view";
-
   if (expandedVariant) {
     return (
       <div className="h-full w-full" data-testid="chat-scene-expanded">
@@ -912,41 +669,23 @@ export function SceneFrame({
   if (collapsed) {
     return (
       <div className="my-3 w-screen max-w-full" data-testid="chat-scene" data-scene-status="failed">
-        <div
-          className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-3 py-2 text-[12px]"
-          style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.borderMuted}`, color: COLORS.textMuted }}
-        >
-          <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: COLORS.warning }}>
-            <WarningCircle size={12} weight="bold" />
-            <span className="truncate" title={sceneError ?? undefined}>
-              {title} did not draw{sceneError ? `: ${sceneError}` : ""}
-            </span>
-          </span>
-          <span className="ml-auto inline-flex items-center gap-1">
-            <button
-              type="button"
-              data-testid="chat-scene-retry"
-              className="rounded px-1.5 py-0.5 opacity-80 hover:opacity-100"
-              onClick={() => { setDrawFailed(false); setSceneError(null); setAttempt((value) => value + 1); }}
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 opacity-80 hover:opacity-100"
-              onClick={() => setShowCode((value) => !value)}
-            >
-              {showCode ? "Hide code" : "Show code"}
-            </button>
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 opacity-80 hover:opacity-100"
-              onClick={() => setShowAnyway(true)}
-            >
-              Show anyway
-            </button>
-          </span>
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: `scene-failed-${scopeKey ?? "anon"}`,
+            tone: "warning",
+            title: `${title} did not draw`,
+            detail: sceneError ?? undefined,
+            actions: [
+              {
+                label: "Retry",
+                onClick: () => { setDrawFailed(false); setSceneError(null); setAttempt((value) => value + 1); },
+              },
+              { label: showCode ? "Hide code" : "Show code", variant: "secondary", onClick: () => setShowCode((value) => !value) },
+              { label: "Show anyway", variant: "link", onClick: () => setShowAnyway(true) },
+            ],
+          }}
+        />
         {showCode ? <div className="mt-2"><HighlightedCode code={source} language="html" /></div> : null}
       </div>
     );
@@ -954,11 +693,10 @@ export function SceneFrame({
 
   const frameMounted = Boolean(src);
   const dataStatus = frameMounted ? (frameShown ? "running" : "loading") : pictureSrc ? "still" : "idle";
-  // A picture from another theme is never shown: it would flash the old
-  // palette. The space is held empty until the frame draws.
-  const visiblePicture = stillStale ? null : pictureSrc;
   const toolbarPinned = Boolean(sceneError) || proofState === "saving" || proofState === "failed";
-  const showToolbar = !capturingProof;
+  let toolbarVisibility = "pointer-events-none opacity-0 group-hover/scene:pointer-events-auto group-hover/scene:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100";
+  if (capturingProof) toolbarVisibility = "pointer-events-none opacity-0";
+  else if (toolbarPinned) toolbarVisibility = "opacity-100";
 
   return (
     <div
@@ -1005,20 +743,12 @@ export function SceneFrame({
             }}
           />
         ) : null}
-        {!frameMounted && !visiblePicture ? (
-          <div aria-hidden style={{ height: (scopeKey && knownHeights.get(scopeKey)) || height }} />
-        ) : null}
+        {!frameMounted && !visiblePicture ? <div aria-hidden style={{ height }} /> : null}
       </div>
 
       {/* Hover toolbar: says what this is, expands it, files it as proof. */}
       <div
-        className={`absolute right-1 top-1 flex items-center gap-0.5 rounded-md p-0.5 transition-opacity duration-150 ${
-          showToolbar && toolbarPinned
-            ? "opacity-100"
-            : showToolbar
-              ? "pointer-events-none opacity-0 group-hover/scene:pointer-events-auto group-hover/scene:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100"
-              : "pointer-events-none opacity-0"
-        }`}
+        className={`absolute right-1 top-1 flex items-center gap-0.5 rounded-md p-0.5 transition-opacity duration-150 ${toolbarVisibility}`}
         style={{
           background: "color-mix(in srgb, var(--chat-canvas-bg, var(--color-bg)) 92%, transparent)",
           border: `1px solid ${COLORS.borderMuted}`,
@@ -1054,7 +784,7 @@ export function SceneFrame({
           title="Save this view to the proof drawer"
         >
           <Camera size={12} weight="bold" />
-          {proofState === "saved" ? "Saved" : proofState === "saving" ? "Saving…" : proofState === "failed" ? "Not saved" : "Proof"}
+          {PROOF_LABEL[proofState]}
         </button>
       </div>
 

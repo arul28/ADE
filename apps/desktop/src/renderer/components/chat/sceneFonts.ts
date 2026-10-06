@@ -1,6 +1,8 @@
 import geistVariableUrl from "../../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
 import jetbrainsMonoUrl from "../../../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
 
+import { isWoff2, SCENE_FONT_FACES, sceneFontFaceRule } from "../../../shared/sceneFontFaces";
+
 /**
  * ADE's own fonts, for scene frames.
  *
@@ -18,10 +20,13 @@ import jetbrainsMonoUrl from "../../../../node_modules/@fontsource-variable/jetb
 
 const FONT_LOAD_TIMEOUT_MS = 1_500;
 
-const FACES: Array<{ family: string; url: string }> = [
-  { family: "Geist", url: geistVariableUrl },
-  { family: "JetBrains Mono", url: jetbrainsMonoUrl },
-];
+// The `?url` import of each face in SCENE_FONT_FACES; Vite needs the literal
+// specifiers above to bundle them.
+const URL_BY_FAMILY: Record<string, string> = {
+  Geist: geistVariableUrl,
+  "JetBrains Mono": jetbrainsMonoUrl,
+};
+const FACES = SCENE_FONT_FACES.flatMap((face) => (URL_BY_FAMILY[face.family] ? [{ family: face.family, url: URL_BY_FAMILY[face.family]! }] : []));
 
 let loaded: string | null = null;
 let pending: Promise<string> | null = null;
@@ -39,9 +44,8 @@ async function faceCss(face: { family: string; url: string }): Promise<string> {
   const response = await fetch(face.url);
   if (!response.ok) return "";
   const bytes = new Uint8Array(await response.arrayBuffer());
-  // woff2 magic. Anything else is not a font we bundled.
-  if (bytes.length < 4 || bytes[0] !== 0x77 || bytes[1] !== 0x4f || bytes[2] !== 0x46 || bytes[3] !== 0x32) return "";
-  return `@font-face { font-family: "${face.family}"; src: url(data:font/woff2;base64,${toBase64(bytes)}) format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }`;
+  if (!isWoff2(bytes)) return "";
+  return sceneFontFaceRule(face.family, toBase64(bytes));
 }
 
 /** The `@font-face` CSS, once it is known. Null until the first load finishes. */

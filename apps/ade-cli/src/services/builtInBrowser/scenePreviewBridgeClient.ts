@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 import type { ScenePreviewRequest, ScenePreviewResult } from "../../../../desktop/src/shared/scenePreview";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
+import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
 
 /**
  * The desktop app's scene previewer as the runtime daemon reaches it.
@@ -21,10 +19,9 @@ export function isScenePreviewBridgeMethod(name: string): name is ScenePreviewBr
   return (SCENE_PREVIEW_BRIDGE_METHODS as readonly string[]).includes(name);
 }
 
-const CONNECT_TIMEOUT_MS = 3_000;
 /** Above the previewer's own deadline, so the desktop's clearer error arrives first. */
 const RENDER_TIMEOUT_MS = 45_000;
-const NO_DESKTOP = "Previewing a scene needs the ADE desktop app on this machine, and none is attached.";
+export const SCENE_PREVIEW_NO_DESKTOP = "Previewing a scene needs the ADE desktop app on this machine, and none is attached.";
 
 export type ScenePreviewer = {
   render(request: ScenePreviewRequest): Promise<ScenePreviewResult>;
@@ -35,69 +32,22 @@ export function createScenePreviewBridgeClient(args: {
   socketPath: string;
   getAuthToken: () => string | null;
 }): ScenePreviewer {
-  const { socketPath } = args;
-  const isNamedPipe = socketPath.startsWith("\\\\");
-  let client: JsonRpcClient | null = null;
-  let connecting: Promise<JsonRpcClient> | null = null;
-  let disposed = false;
-
-  const ensureClient = async (): Promise<JsonRpcClient> => {
-    if (client) return client;
-    if (disposed) throw new Error("The scene preview bridge was disposed.");
-    if (!connecting) {
-      connecting = (async () => {
-        if (!isNamedPipe && !fs.existsSync(socketPath)) throw new Error(NO_DESKTOP);
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        try {
-          const next = await Promise.race([
-            JsonRpcClient.connect(socketPath),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Timed out connecting to the ADE desktop app.")), CONNECT_TIMEOUT_MS);
-            }),
-          ]);
-          next.onClose(() => {
-            if (client === next) client = null;
-          });
-          client = next;
-          return next;
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      })().finally(() => {
-        connecting = null;
-      });
-    }
-    return await connecting;
-  };
-
+  const connection = createDesktopBridgeConnection({
+    ...args,
+    unavailableMessage: SCENE_PREVIEW_NO_DESKTOP,
+    closedMessage: "The scene preview bridge was disposed.",
+  });
+  // One render in flight at a time, as the desktop runs them. Queued here, so
+  // each request's timeout starts when it is sent: a preview waiting behind two
+  // slow ones would otherwise time out in transit and drop the shared socket.
+  let queue: Promise<unknown> = Promise.resolve();
   return {
-    async render(request) {
-      if (disposed) throw new Error("The scene preview bridge was disposed.");
-      const token = args.getAuthToken()?.trim();
-      if (!token) throw new Error(NO_DESKTOP);
-      const c = await ensureClient();
-      try {
-        return await c.request<ScenePreviewResult>(
-          `${SCENE_PREVIEW_BRIDGE_PREFIX}render`,
-          { request, [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: token },
-          { timeoutMs: RENDER_TIMEOUT_MS },
-        );
-      } catch (error) {
-        // A render's own failure is an answer; only a transport failure drops the socket.
-        if (client === c && !(error instanceof JsonRpcResponseError)) {
-          client = null;
-          try { c.close(); } catch { /* ignore */ }
-        }
-        throw error;
-      }
+    render: (request) => {
+      const run = queue.then(() =>
+        connection.request<ScenePreviewResult>(`${SCENE_PREVIEW_BRIDGE_PREFIX}render`, { request }, RENDER_TIMEOUT_MS));
+      queue = run.catch(() => undefined);
+      return run;
     },
-    dispose() {
-      disposed = true;
-      const c = client;
-      client = null;
-      if (c) {
-        try { c.close(); } catch { /* ignore */ }
-      }
-    },
+    dispose: () => connection.close(),
   };
 }

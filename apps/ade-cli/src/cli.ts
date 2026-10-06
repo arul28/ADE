@@ -72,6 +72,7 @@ import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
+import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
@@ -10652,9 +10653,12 @@ function buildScenePlan(args: string[]): CliPlan {
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);
-  const width = widthRaw ? Number(widthRaw) : undefined;
-  if (widthRaw && (!Number.isFinite(width) || (width as number) < 320 || (width as number) > 1600)) {
-    throw new CliUsageError("--width is a number of CSS px from 320 to 1600.");
+  let width: number | undefined;
+  if (widthRaw) {
+    width = Number(widthRaw);
+    if (!Number.isFinite(width) || width < SCENE_PREVIEW_WIDTH.min || width > SCENE_PREVIEW_WIDTH.max) {
+      throw new CliUsageError(`--width is a number of CSS px from ${SCENE_PREVIEW_WIDTH.min} to ${SCENE_PREVIEW_WIDTH.max}.`);
+    }
   }
   // A bare "-" (stdin) is not a positional to firstPositional, which skips flags.
   const target = args.includes("-") ? "-" : firstPositional(args);

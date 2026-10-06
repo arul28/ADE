@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-import { SCENE_FALLBACK_THEME, sameSceneTheme, type SceneTheme } from "../../../shared/chatScene";
+import { SCENE_FALLBACK_THEME, sceneThemeSignature, type SceneTheme } from "../../../shared/chatScene";
 
 /**
  * ADE's resolved theme, as a scene frame needs it, kept current.
@@ -58,7 +58,7 @@ let observer: MutationObserver | null = null;
 
 function refresh(): void {
   const next = readSceneTheme();
-  if (current && sameSceneTheme(current, next)) return;
+  if (current && sceneThemeSignature(current) === sceneThemeSignature(next)) return;
   current = next;
   for (const listener of listeners) listener();
 }

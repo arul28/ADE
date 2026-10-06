@@ -56,8 +56,14 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
-import { sceneSourceFromInput } from "../../desktop/src/shared/scenePreview";
 import {
+  SCENE_PREVIEW_MAX_SOURCE_BYTES,
+  SCENE_PREVIEW_WIDTH,
+  sceneSourceFromInput,
+} from "../../desktop/src/shared/scenePreview";
+import { SCENE_PREVIEW_NO_DESKTOP } from "./services/builtInBrowser/scenePreviewBridgeClient";
+import {
+  SCENE_DATA_MAX_SESSIONS,
   projectSceneLanes,
   projectScenePrs,
   projectSceneSessions,
@@ -797,14 +803,14 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "preview_scene",
-    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the ADE desktop app on this machine.",
+    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene (written on this runtime's machine, under the project's .ade/cache/scene-previews) and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the ADE desktop app on this machine.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["source"],
       properties: {
-        source: { type: "string", minLength: 1, maxLength: 400000, description: "The scene: a fence body or a whole ```scene fence." },
-        width: { type: "number", minimum: 320, maximum: 1600, description: "Frame width in CSS px. A chat's reply column is about 720." },
+        source: { type: "string", minLength: 1, maxLength: SCENE_PREVIEW_MAX_SOURCE_BYTES, description: "The scene: a fence body or a whole ```scene fence." },
+        width: { type: "number", minimum: SCENE_PREVIEW_WIDTH.min, maximum: SCENE_PREVIEW_WIDTH.max, description: "Frame width in CSS px. A chat's reply column is about 720." },
         theme: { type: "string", enum: ["dark", "light"] },
       }
     }
@@ -1546,7 +1552,7 @@ async function scenePreviewData(runtime: AdeRuntime, source: string): Promise<Sc
   const payload: SceneDataPayload = { at: new Date().toISOString() };
   try {
     if (wanted.has("lanes")) payload.lanes = projectSceneLanes(await runtime.laneService.list({ includeStatus: true }));
-    if (wanted.has("sessions")) payload.sessions = projectSceneSessions(await Promise.resolve(runtime.sessionService.list({ limit: 100 })));
+    if (wanted.has("sessions")) payload.sessions = projectSceneSessions(await Promise.resolve(runtime.sessionService.list({ limit: SCENE_DATA_MAX_SESSIONS })));
     if (wanted.has("prs")) payload.prs = projectScenePrs(runtime.prService?.listAll() ?? []);
   } catch {
     // A preview without data still checks the layout; the empty state shows.
@@ -7090,7 +7096,7 @@ async function runTool(args: {
     if (!previewer) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
-        "Previewing a scene needs the ADE desktop app on this machine, and none is attached.",
+        SCENE_PREVIEW_NO_DESKTOP,
       );
     }
     const theme = toolArgs.theme === "light" ? "light" : "dark";

@@ -9,7 +9,8 @@ import type { LaneListSnapshot, LaneSummary, PrSummary, TerminalSessionSummary }
  * `ade://` links only: no paths, transcripts or file contents.
  */
 
-const MAX_SESSIONS = 100;
+/** The most chats a snapshot carries, newest first. */
+export const SCENE_DATA_MAX_SESSIONS = 100;
 const MAX_PRS = 100;
 
 export type SceneDataPayload = {
@@ -89,7 +90,7 @@ export function projectSceneLanes(lanes: LaneSummary[], snapshots: LaneListSnaps
 export function projectSceneSessions(sessions: TerminalSessionSummary[]): NonNullable<SceneDataPayload["sessions"]> {
   return sessions
     .filter((session) => !session.archivedAt)
-    .slice(0, MAX_SESSIONS)
+    .slice(0, SCENE_DATA_MAX_SESSIONS)
     .map((session) => ({
       id: session.id,
       title: session.title,

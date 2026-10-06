@@ -1,6 +1,4 @@
-import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
   DemoAnalysis,
@@ -9,7 +7,7 @@ import type {
   DemoRenderResult,
 } from "../../../../desktop/src/shared/demoVideo/demoContract";
 import { isDemoEngineInputPath } from "../../../../desktop/src/main/services/demoVideo/demoMp4Source";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
+import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
 
 /**
  * The desktop app's Chromium demo engine as the runtime daemon reaches it.
@@ -31,7 +29,6 @@ export function isDemoEngineBridgeMethod(name: string): name is DemoEngineBridge
   return (DEMO_ENGINE_BRIDGE_METHODS as readonly string[]).includes(name);
 }
 
-const CONNECT_TIMEOUT_MS = 3_000;
 /** Above the engine's own 30-minute cap, so the desktop's clearer error arrives first. */
 const JOB_TIMEOUT_MS = 35 * 60_000;
 const CANCEL_TIMEOUT_MS = 5_000;
@@ -41,63 +38,17 @@ export function createDemoEngineBridgeClient(args: {
   getAuthToken: () => string | null;
   logger: Logger;
 }): DemoEngine & { dispose(): void } {
-  const { socketPath, logger } = args;
-  const isNamedPipe = socketPath.startsWith("\\\\");
-  let client: JsonRpcClient | null = null;
-  let connecting: Promise<JsonRpcClient> | null = null;
-  let disposed = false;
+  const { logger } = args;
+  const NO_DESKTOP = "Rendering this demo needs the ADE desktop app on this machine, and none is attached.";
+  const connection = createDesktopBridgeConnection({
+    socketPath: args.socketPath,
+    getAuthToken: args.getAuthToken,
+    unavailableMessage: NO_DESKTOP,
+    closedMessage: "The demo engine bridge was disposed.",
+  });
 
-  const ensureClient = async (): Promise<JsonRpcClient> => {
-    if (client) return client;
-    if (disposed) throw new Error("The demo engine bridge was disposed.");
-    if (!connecting) {
-      connecting = (async () => {
-        if (!isNamedPipe && !fs.existsSync(socketPath)) {
-          throw new Error("Rendering this demo needs the ADE desktop app on this machine, and none is attached.");
-        }
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        try {
-          const next = await Promise.race([
-            JsonRpcClient.connect(socketPath),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Timed out connecting to the ADE desktop app.")), CONNECT_TIMEOUT_MS);
-            }),
-          ]);
-          next.onClose(() => {
-            if (client === next) client = null;
-          });
-          client = next;
-          return next;
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      })().finally(() => {
-        connecting = null;
-      });
-    }
-    return await connecting;
-  };
-
-  const call = async <T,>(method: DemoEngineBridgeMethod, params: Record<string, unknown>, timeoutMs: number): Promise<T> => {
-    if (disposed) throw new Error("The demo engine bridge was disposed.");
-    const token = args.getAuthToken()?.trim();
-    if (!token) throw new Error("Rendering this demo needs the ADE desktop app on this machine, and none is attached.");
-    const c = await ensureClient();
-    try {
-      return await c.request<T>(
-        `${DEMO_ENGINE_BRIDGE_PREFIX}${method}`,
-        { ...params, [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: token },
-        { timeoutMs },
-      );
-    } catch (error) {
-      // A job's own failure is an answer; only a transport failure drops the socket.
-      if (client === c && !(error instanceof JsonRpcResponseError)) {
-        client = null;
-        try { c.close(); } catch { /* ignore */ }
-      }
-      throw error;
-    }
-  };
+  const call = <T,>(method: DemoEngineBridgeMethod, params: Record<string, unknown>, timeoutMs: number): Promise<T> =>
+    connection.request<T>(`${DEMO_ENGINE_BRIDGE_PREFIX}${method}`, params, timeoutMs);
 
   /** Runs one job; an abort cancels it on the desktop and rejects here at once. */
   const runJob = <T,>(method: "analyze" | "render", params: Record<string, unknown>, signal?: AbortSignal): Promise<T> => {
@@ -128,12 +79,7 @@ export function createDemoEngineBridgeClient(args: {
     render: (request: DemoRenderRequest, options = {}) =>
       runJob<DemoRenderResult>("render", { request }, options.signal),
     dispose() {
-      disposed = true;
-      const c = client;
-      client = null;
-      if (c) {
-        try { c.close(); } catch { /* ignore */ }
-      }
+      connection.close();
     },
   };
 }
