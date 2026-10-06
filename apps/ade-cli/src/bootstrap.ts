@@ -205,6 +205,7 @@ import {
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
+import { createScenePreviewBridgeClient, type ScenePreviewer } from "./services/builtInBrowser/scenePreviewBridgeClient";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
@@ -441,6 +442,11 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
+  /**
+   * `ade scene preview`: the attached desktop's scene renderer, over the
+   * desktop bridge. Null while no desktop has attached to this brain.
+   */
+  getScenePreviewer?: () => ScenePreviewer | null;
   macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
@@ -1735,10 +1741,12 @@ export async function createAdeRuntime(args: {
       current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
       /** The desktop's Chromium demo engine, over the same bridge. */
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
+      /** The desktop's scene previewer, over the same bridge. */
+      scenePreview: ScenePreviewer | null;
       isAttached: () => boolean;
       /** Why a desktop that tried to attach could not; null otherwise. */
       unattachedReason: () => string | null;
-    } = { current: null, demoEngine: null, isAttached: () => false, unattachedReason: () => null };
+    } = { current: null, demoEngine: null, scenePreview: null, isAttached: () => false, unattachedReason: () => null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1801,6 +1809,9 @@ export async function createAdeRuntime(args: {
       const demoEngine = desktopBridgeHolder.demoEngine;
       desktopBridgeHolder.demoEngine = null;
       demoEngine?.dispose();
+      const scenePreview = desktopBridgeHolder.scenePreview;
+      desktopBridgeHolder.scenePreview = null;
+      scenePreview?.dispose();
     });
     teardown.push(() => appControlService?.dispose());
     if (appControlService) {
@@ -1934,6 +1945,10 @@ export async function createAdeRuntime(args: {
         socketPath: builtInBrowserBridgeSocketPath,
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
+      });
+      desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
       });
       desktopBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
       // Released by the teardown step registered before appControlService's.
@@ -3298,6 +3313,7 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      getScenePreviewer: () => (desktopBridgeHolder.isAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
       workToolsStateService,

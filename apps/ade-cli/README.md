@@ -532,6 +532,9 @@ ade tools status --text                           # pinned agent CLIs: installed
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
 ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
+ade scene preview /tmp/chart.html --text         # render a scene the way a chat will: screenshot path, timings, problems
+cat draft.md | ade scene preview - --theme light  # a fence or a bare body on stdin; --width sets the frame width (default 720)
+
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init

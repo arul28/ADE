@@ -556,6 +556,55 @@ Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
   it off): composer/banner ~10 pts, user bubbles (`ade-liquid-glass`) ~5, shell
   header ~4. Changing it changes the look; it is a design decision.
 
+### Chat scenes (measured with `scripts/perf-chat-scenes.mjs`)
+
+Scenes (```` ```scene ```` frames) are live while on screen and a still
+elsewhere. Every scene frame of a window shares ONE extra renderer process
+(sandboxed opaque-origin frames are out of process); it exits when the last
+frame unmounts. Bench: launch the dev app with App Control, seed a chat with
+scene fences, then
+`node scripts/perf-chat-scenes.mjs --port <cdp> --session <scene chat> --park <small chat> --reload [--no-sampler] [--focus-scene N]`.
+It reads CPU per process from `ps` (CDP's browser-process cpuTime stops
+tracking across dev-app restarts) and A/Bs best in one app session by swapping
+files; see the header. Use `--no-sampler` for idle numbers: the bench's own
+rAF loop makes the host produce a frame every refresh, and every live frame
+then costs the host an intersection update per frame (+2–3 points that an
+idle app does not pay).
+
+Preserve all of these:
+
+- **Idle in the frame, not in the host.** Once settled and untouched, the SDK
+  pauses endless CSS/WAAPI animations and SVG SMIL (`pauseAnimations`), and
+  batches `requestAnimationFrame` to one flush per 250 ms. 240 Hz display, a
+  canvas particle loop + a blurred CSS shimmer + SMIL spinners on screen:
+  scene process 0.2% of a core, GPU 6.2% vs 6.4% for the same scenes as
+  stills (`--no-sampler`). The old freeze-without-still path left those loops
+  running at GPU 42%.
+- **Endless animations do not hold a settle back.** A loop never finishes, so
+  waiting on it only delayed the idle (and the still) to the 4 s cap.
+- **Mount only where the reader stops.** A frame mounts after a 120 ms dwell
+  AND 150 ms with no scroll of the scene's own scroll ancestors (not any
+  scroll: a streaming terminal scrolls constantly). Without the gate a steady
+  scroll through six scenes cost the scene process 12% of a core in mounts.
+  It still costs ~5–8% while scrolling past frames that stay mounted (they
+  linger 4 s off screen); GPU while scrolling is LOWER than with stills
+  (36–51% vs 39–58%), since big PNG stills cost more to raster.
+- **Remounts reuse the document and its prepared URL** (renderer cache of 24;
+  main's store is LRU on read). Per-document stamps (`readySrc`,
+  `settledSrc`, `revealedSrc`) are cleared when the frame unmounts, or a
+  remount on the same cached URL reads as ready and shows a blank frame.
+- **A scene with a still takes no new still.** Each capture is a window grab,
+  a PNG encode and a file; scenes now remount on every scroll back.
+- **One theme observer for the app** (`sceneTheme.ts`), and a theme change is
+  posted into frames, never a document rebuild.
+- **Live data is a child component** (`SceneDataFeed`) mounted only for a
+  scene that asked for data and only while its frame is up, so lane and
+  session store updates re-render nothing else; sends are deduped by content
+  and throttled to one a second.
+- Memory: the shared scene process is ~100–170 MB while any scene is live.
+  A parked chat or surface (`content-visibility: hidden`) reads as off screen
+  and unmounts its frames after the linger.
+
 ### Composer floats over the thread
 
 The transcript scrolls behind the composer and its status chips

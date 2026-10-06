@@ -927,6 +927,92 @@ describe("adeRpcServer", () => {
     expect(payload.checksCounts.total).toBe(0);
   });
 
+  describe("preview_scene", () => {
+    const PREVIEW_RESULT = {
+      title: "Chart",
+      width: 720,
+      height: 240,
+      readyMs: 12,
+      settledMs: 300,
+      screenshotBase64: "AAAA",
+      problems: [],
+    };
+
+    async function sceneHandler(render: (request: any) => Promise<unknown>) {
+      const { runtime } = createRuntime();
+      (runtime as { getScenePreviewer?: () => unknown }).getScenePreviewer = () => ({
+        render,
+        dispose: () => {},
+      });
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+      await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+      return { handler, runtime };
+    }
+
+    it("errors when no desktop is attached", async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+      await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+      const result = await callTool(handler, "preview_scene", { source: "<p>x</p>" });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.error)).toMatch(/needs the ADE desktop app/);
+    });
+
+    it("sends a data snapshot only for a scene that asked for one", async () => {
+      const render = vi.fn(async (_request: { data?: Record<string, unknown> }) => PREVIEW_RESULT);
+      const { handler } = await sceneHandler(render);
+
+      await callTool(handler, "preview_scene", {
+        source: '<!-- @scene data="lanes" -->\n<p>x</p>',
+      });
+      const asked = render.mock.calls[0]![0];
+      expect(asked.data).toBeTruthy();
+      expect(asked.data?.lanes).toBeDefined();
+      expect(asked.data?.prs).toBeUndefined();
+      expect(asked.data?.sessions).toBeUndefined();
+
+      render.mockClear();
+      await callTool(handler, "preview_scene", { source: "<p>x</p>" });
+      expect(render.mock.calls[0]![0]).not.toHaveProperty("data");
+    });
+
+    it("reports ok when the only problems are lint, and not when the render failed", async () => {
+      const render = vi.fn(async () => ({
+        ...PREVIEW_RESULT,
+        problems: [{ kind: "lint", message: "a remote image will not load" }],
+      }));
+      const { handler } = await sceneHandler(render);
+
+      const lintOnly = await callTool(handler, "preview_scene", { source: "<p>x</p>" });
+      expect(lintOnly.structuredContent.ok).toBe(true);
+      expect(lintOnly.structuredContent.screenshotPath).toMatch(/scene-previews/);
+      // The bytes travel once and are filed; the answer names the file.
+      expect(lintOnly.structuredContent.screenshotBase64).toBeUndefined();
+
+      render.mockResolvedValueOnce({
+        ...PREVIEW_RESULT,
+        problems: [{ kind: "error", message: "the scene threw" }],
+      });
+      const broke = await callTool(handler, "preview_scene", { source: "<p>x</p>" });
+      expect(broke.structuredContent.ok).toBe(false);
+      expect(broke.structuredContent.problems).toHaveLength(1);
+    });
+
+    it("keeps only the newest preview PNGs", async () => {
+      const render = vi.fn(async () => PREVIEW_RESULT);
+      const { handler, runtime } = await sceneHandler(render);
+
+      for (let i = 0; i < 21; i += 1) {
+        await callTool(handler, "preview_scene", { source: `<p>${i}</p>` });
+      }
+
+      const dir = path.join(runtime.projectRoot, ".ade", "cache", "scene-previews");
+      const kept = fs.readdirSync(dir).filter((name) => name.startsWith("scene-") && name.endsWith(".png"));
+      expect(kept).toHaveLength(20);
+    });
+  });
+
   it("exposes direct PTY RPC methods with enriched create/list responses", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

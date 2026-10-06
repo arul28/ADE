@@ -14,8 +14,8 @@ import {
  * is a broker query that may cross to another machine, where the only bound is
  * the 30 s IPC budget, and the user is looking at a blank box for every second
  * of it. Running the code is the safe end of the trade — it is what every
- * scene did before stills existed — and a late answer is not wasted, because
- * the picture replaces the frozen frame when it lands.
+ * scene did before stills existed — and a late answer is not wasted: the
+ * picture stands in for the scene whenever its frame is down.
  *
  * It bounds the INDEX LISTING only. Once the index has named a record, the
  * question is no longer whether a picture exists; see {@link useSceneStillLatch}.
@@ -23,7 +23,10 @@ import {
 export const SCENE_STILL_INDEX_WAIT_MS = 1_500;
 
 export type SceneStillLatch = {
-  /** Show the picture and never mount a frame: the code has already run. */
+  /**
+   * The scene already ran and left a picture: start from it, and when the
+   * frame comes up, bring the scene back restored (no replayed entrance).
+   */
   rehydrated: boolean;
   /** Not yet knowable. Draw a placeholder; do not run anything. */
   undecided: boolean;
@@ -32,13 +35,12 @@ export type SceneStillLatch = {
 };
 
 /**
- * Whether this mount shows a picture or runs the scene's code.
+ * Whether this mount starts from a picture the scene already left.
  *
  * Latched on the FIRST render that can answer rather than derived, because
- * `live` going false at the end of a turn must not yank a frame the user is
- * watching: a scene that was live on this mount plays out and freezes the way
- * it always did. Only a mount that begins settled — scrollback, a remount, a
- * reopened chat — skips execution.
+ * `live` going false at the end of a turn must not turn a scene the user just
+ * watched play into a "rehydrated" one. Only a mount that begins settled —
+ * scrollback, a remount, a reopened chat — starts from its picture.
  *
  * Three ways to reach an answer, and the order is the whole design:
  *
@@ -119,8 +121,7 @@ export function useSceneStillLatch({
    * 30 s call budget, and a chat whose machine is slow to answer held every
    * settled scene in the transcript at a placeholder for that whole time. Past
    * this the mount decides "no still" and runs the scene; a picture that turns
-   * up afterwards still swaps in, because the freeze shows the stored still
-   * over the frame the moment it resolves.
+   * up afterwards still stands in for the scene whenever its frame is down.
    */
   useEffect(() => {
     if (!undecided) return;

@@ -41,6 +41,15 @@ import {
 } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
 import {
+  SCENE_PREVIEW_BRIDGE_PREFIX,
+  isScenePreviewBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient";
+import {
+  SCENE_PREVIEW_MAX_SOURCE_BYTES,
+  type ScenePreviewRequest,
+  type ScenePreviewResult,
+} from "../../../shared/scenePreview";
+import {
   type DemoEngine,
   type DemoPlan,
 } from "../../../shared/demoVideo/demoContract";
@@ -96,6 +105,8 @@ type BridgeConnectionState = {
  * recorded action session, touches no tab and clears no presence, so an agent
  * that ends a session and keeps browsing must keep its globe.
  */
+const BUILT_IN_BROWSER_METHOD_PREFIX = "built_in_browser.";
+
 const TURN_ENDING_BRIDGE_METHODS = new Set<string>(["closeTab", "startHandoff"]);
 
 export type BuiltInBrowserDesktopBridgeServer = {
@@ -145,6 +156,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * Resolved per call: the updater is built after the bridge starts.
    */
   getAppUpdateInstaller?: (() => RemoteUpdateInstaller | null) | null;
+  /**
+   * `ade scene preview`: renders one scene in a hidden window, served to the
+   * runtime daemon as `scene_preview.render`. Absent: not found.
+   */
+  scenePreview?: ((request: ScenePreviewRequest) => Promise<ScenePreviewResult>) | null;
   /**
    * Windows: this desktop is running elevated, so the background service
    * cannot open its bridge pipe. The caller tells the user.
@@ -319,22 +335,28 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     logger.info("built_in_browser_bridge.recordings_released_on_close", { count: keys.length });
   }
 
+  // The engines served besides the built-in browser, each under its own method
+  // prefix. Everything else must be `built_in_browser.*`.
+  const engines: Array<{
+    prefix: string;
+    handle: (name: string, params: Record<string, unknown>, connection: BridgeConnectionState) => Promise<unknown>;
+  }> = [
+    { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params, connection) => handleAppControlRecorder(name, params, connection) },
+    { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params, connection) => handleDemoEngine(name, params, connection) },
+    { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
+  ];
+
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
-    const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
-    const isDemoEngineMethod = method.startsWith(DEMO_ENGINE_BRIDGE_PREFIX);
+    const engine = engines.find((entry) => method.startsWith(entry.prefix)) ?? null;
     const isAppUpdateMethod = method.startsWith(DESKTOP_APP_UPDATE_BRIDGE_PREFIX);
-    if (!method.startsWith("built_in_browser.") && !isRecorderMethod && !isDemoEngineMethod && !isAppUpdateMethod) {
+    if (!engine && !isAppUpdateMethod && !method.startsWith(BUILT_IN_BROWSER_METHOD_PREFIX)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, app_control_recorder.*, demo_engine.* and app_update.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles ${[BUILT_IN_BROWSER_METHOD_PREFIX, DESKTOP_APP_UPDATE_BRIDGE_PREFIX, ...engines.map((entry) => entry.prefix)].map((prefix) => `${prefix}*`).join(", ")}`,
       );
     }
-    const name = method.slice(
-      isRecorderMethod
-        ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length
-        : isDemoEngineMethod ? DEMO_ENGINE_BRIDGE_PREFIX.length : "built_in_browser.".length,
-    );
+    const name = method.slice((engine?.prefix ?? BUILT_IN_BROWSER_METHOD_PREFIX).length);
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
     const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
       ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
@@ -345,12 +367,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         "Built-in browser bridge authentication failed.",
       );
     }
-    if (isRecorderMethod) {
-      return await handleAppControlRecorder(name, rawParams, connection);
-    }
-    if (isDemoEngineMethod) {
-      return await handleDemoEngine(name, rawParams, connection);
-    }
+    if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
       if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
@@ -635,6 +652,37 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         JsonRpcErrorCode.internalError,
         error instanceof Error ? error.message : String(error),
       );
+    }
+  }
+
+  /**
+   * `ade scene preview`, for the runtime daemon. Bridge auth is the only gate.
+   * The scene source is the only input: no path is read or written here, and
+   * the screenshot comes back in the answer for the daemon to file.
+   */
+  async function handleScenePreview(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const preview = args.scenePreview ?? null;
+    if (!preview || !isScenePreviewBridgeMethod(name)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${SCENE_PREVIEW_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`,
+      );
+    }
+    const request = isRecord(params.request) ? params.request : null;
+    const source = request && typeof request.source === "string" ? request.source : "";
+    if (!source.trim()) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "A scene preview needs the scene's source.");
+    if (Buffer.byteLength(source, "utf8") > SCENE_PREVIEW_MAX_SOURCE_BYTES) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "That scene is too large to preview.");
+    }
+    try {
+      return await preview({
+        source,
+        ...(typeof request?.width === "number" ? { width: request.width } : {}),
+        ...(request?.theme === "light" || request?.theme === "dark" ? { theme: request.theme } : {}),
+        ...(request && "data" in request && request.data != null ? { data: request.data } : {}),
+      });
+    } catch (error) {
+      throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));
     }
   }
 

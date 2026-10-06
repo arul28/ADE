@@ -412,6 +412,7 @@ import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBr
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
+import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
@@ -1931,6 +1932,13 @@ app.whenReady().then(async () => {
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
       getAppUpdateInstaller: () => remoteUpdateInstaller,
+      // `ade scene preview`: a hidden, isolated window per render. The fonts
+      // come from the packaged renderer's assets, or the packages in a dev run.
+      scenePreview: (request) => renderScenePreview(request, {
+        appPath: app.getAppPath(),
+        rendererDir: path.join(__dirname, "../renderer"),
+        logger: builtInBrowserBridgeLogger,
+      }),
       // Windows: an elevated desktop's pipe refuses the background service.
       // A lasting state, so the renderer docks a banner for it.
       onElevatedDesktop: () => {

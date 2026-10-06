@@ -72,6 +72,7 @@ import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
+import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
@@ -536,6 +537,7 @@ export type FormatterId =
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
+  | "scene-preview"
   | "proof-filed"
   | "proof-published"
   | "ios-sim-status"
@@ -3111,6 +3113,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     host-absolute path the desktop wrote; read that file directly, or call
     "ade actions run work_tools.readObservationPreview" when the caller cannot
     see this machine's filesystem.
+`,
+  scene: `${ADE_BANNER}
+  Scenes
+
+  Render a \`\`\`scene the way a chat will, before you put it in a reply: the
+  same document, SDK, policy and sandbox, in a hidden window of the ADE
+  desktop app. Prints the path of a PNG of the drawn scene (read it to check
+  the layout) and every problem found: script errors, blocked requests, a
+  scene that never settles, and source mistakes the policy turns into blanks.
+  Needs the ADE desktop app on this machine.
+
+    $ ade scene preview /tmp/chart.html --text         Preview a scene file
+    $ ade scene preview /tmp/chart.html --theme light  In the light theme
+    $ ade scene preview /tmp/chart.html --width 980    At another frame width (default 720)
+    $ cat draft.md | ade scene preview - --text        A fence or a body on stdin
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -10628,6 +10645,61 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
 }
 
+/** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
+function buildScenePlan(args: string[]): CliPlan {
+  // Flags with values come out first: `ade scene --theme light preview f`
+  // would otherwise read `light` as the verb.
+  // Reject an option as another flag's operand before readValue consumes it,
+  // so `--theme --width 980` reports the missing theme value instead of eating
+  // `--width` and losing the width.
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (
+      (args[index] === "--theme" || args[index] === "--width")
+      && args[index + 1]?.startsWith("--")
+    ) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
+  const theme = readValue(args, ["--theme"]);
+  if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
+  const widthRaw = readValue(args, ["--width"]);
+  const stdin = args.includes("-");
+  const sub = firstPositional(args);
+  if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene preview <file>`);
+  let width: number | undefined;
+  if (widthRaw) {
+    width = Number(widthRaw);
+    if (!Number.isFinite(width) || width < SCENE_PREVIEW_WIDTH.min || width > SCENE_PREVIEW_WIDTH.max) {
+      throw new CliUsageError(`--width is a number of CSS px from ${SCENE_PREVIEW_WIDTH.min} to ${SCENE_PREVIEW_WIDTH.max}.`);
+    }
+  }
+  // A bare "-" (stdin) is not a positional to firstPositional, which skips flags.
+  const target = stdin ? "-" : firstPositional(args);
+  if (!target) throw new CliUsageError("ade scene preview needs a file, or - for stdin: ade scene preview /tmp/chart.html");
+  let source: string;
+  try {
+    source = target === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(target), "utf8");
+  } catch (error) {
+    throw new CliUsageError(`Could not read ${target === "-" ? "stdin" : target}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!source.trim()) throw new CliUsageError("The scene is empty.");
+  return {
+    kind: "execute",
+    label: "scene preview",
+    formatter: "scene-preview",
+    needsLiveRuntime: "Scene preview",
+    minTimeoutMs: 60_000,
+    steps: [
+      actionCallStep("result", "preview_scene", {
+        source,
+        ...(theme ? { theme } : {}),
+        ...(width ? { width } : {}),
+      }),
+    ],
+  };
+}
+
 function buildTestsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions")
@@ -17894,6 +17966,7 @@ function buildCliPlan(
       ],
     };
   if (primary === "tests" || primary === "test") return buildTestsPlan(args);
+  if (primary === "scene" || primary === "scenes") return buildScenePlan(args);
   if (
     primary === "proof" ||
     primary === "computer-use" ||
@@ -27230,6 +27303,27 @@ function proofListScopeLabel(value: unknown, artifactCount: number): string {
   return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
 }
 
+/** `ade scene preview --text`: the picture's path, timings, then one problem per line. */
+function formatScenePreview(value: unknown): string {
+  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const problems = Array.isArray(record.problems) ? record.problems as Array<{ kind?: unknown; message?: unknown }> : [];
+  const ms = (raw: unknown) => (typeof raw === "number" ? `${raw} ms` : "never");
+  const lines = [
+    `${record.ok ? "ok" : "problems found"}${typeof record.title === "string" ? ` · ${record.title}` : ""}`,
+    `screenshot  ${typeof record.screenshotPath === "string" ? record.screenshotPath : "(none)"}`,
+    `size        ${record.width ?? "?"} × ${record.height ?? "?"} px (the chat clamps height to 120–960)`,
+    `ready       ${ms(record.readyMs)}`,
+    `settled     ${ms(record.settledMs)}`,
+  ];
+  if (problems.length) {
+    lines.push("", "problems");
+    for (const problem of problems) {
+      lines.push(`  [${String(problem.kind ?? "?")}] ${String(problem.message ?? "").replace(/\s+/g, " ").trim()}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function formatProofList(value: unknown): string {
   const artifacts = firstArray(value, ["artifacts", "items"]);
   const header = proofListScopeLabel(value, artifacts.length);
@@ -29301,6 +29395,8 @@ function formatTextOutput(
       return formatTestsRuns(value);
     case "proof-list":
       return formatProofList(value);
+    case "scene-preview":
+      return formatScenePreview(value);
     case "proof-filed":
       return formatProofFiled(value);
     case "proof-published":

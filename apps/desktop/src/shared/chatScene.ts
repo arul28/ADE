@@ -25,12 +25,15 @@
  * outside that same allowlist (`will-frame-navigate` in `main.ts`).
  *
  * Two further risks remain and are handled elsewhere. It can draw something
- * misleading, so the host gives every frame permanent "generated view" chrome and a title —
- * a scene must never be mistakable for ADE's own UI. And it can burn CPU: the
- * bounds on that today are the source-size cap below, the clamped frame height,
- * and the fact that a scene stops at the end of its turn on any surface that
- * can snapshot it. There is no CPU watchdog; a runaway scene on a surface with
- * no capture route will keep running until the transcript is closed.
+ * misleading, so the host labels every scene on hover and a scene can never
+ * approve, confirm or reach anything: its only ways out are the messages
+ * {@link parseSceneHostMessage} accepts. And it can burn CPU and GPU. The bounds
+ * on that are the source-size cap below, the clamped frame height, the host
+ * running a frame only while its scene is on screen (a still stands in
+ * otherwise), and the SDK idling a settled scene nobody is touching: endless
+ * animations pause and `requestAnimationFrame` drops to a few frames a second
+ * until the pointer or focus comes back. There is no CPU watchdog for a busy
+ * script loop.
  *
  * Division of labour with mosaic: a scene SHOWS, a mosaic ASKS. Approvals and
  * destructive confirmations stay in mosaic and in ADE's native surfaces — a
@@ -105,12 +108,13 @@ export const SCENE_LIMITS = {
    * The renderer checks `maxSourceBytes` before it ever calls `scene.prepare`,
    * but the document store is bounded by document COUNT, so a renderer that
    * skipped that check could pin 64 unbounded strings in main. This is the
-   * server-side bound: the fence source plus the fixed template, with room for
-   * the template rather than a second magic number at the IPC edge.
+   * server-side bound: the fence source plus the fixed template and the two
+   * inlined app fonts (~150 KB as data URLs; see `sceneFonts.ts`), with room
+   * for both rather than a second magic number at the IPC edge.
    */
-  maxDocumentBytes: 192_000,
+  maxDocumentBytes: 400_000,
   maxTitleLength: 120,
-  /** A scene that never calls ade.ready() is frozen anyway after this. */
+  /** A scene that never reports ready is treated as up after this, so its still is not held over it forever. */
   readyTimeoutMs: 8_000,
 } as const;
 
@@ -149,11 +153,27 @@ export const SCENE_CONTENT_SECURITY_POLICY = [
   "object-src 'none'",
 ].join("; ");
 
+/**
+ * Live ADE data a scene may ask for on its marker line,
+ * `<!-- @scene title="…" data="lanes,prs" -->`. The host sends each one as a
+ * read-only snapshot and again when it changes; see `sceneData.ts`.
+ */
+export const SCENE_DATA_SOURCES = ["lanes", "sessions", "prs"] as const;
+export type SceneDataSource = (typeof SCENE_DATA_SOURCES)[number];
+
 export type ParsedScene = {
   title: string | null;
   /** The agent's markup, unwrapped from any document tags it supplied. */
   html: string;
+  /** The live sources the scene asked for, in a fixed order; empty for none. */
+  data: SceneDataSource[];
 };
+
+function readSceneDataSources(raw: string | undefined): SceneDataSource[] {
+  if (!raw) return [];
+  const asked = new Set(raw.toLowerCase().split(/[\s,]+/).filter(Boolean));
+  return SCENE_DATA_SOURCES.filter((source) => asked.has(source));
+}
 
 export type SceneParseFailure = {
   reason: "empty" | "too-large";
@@ -357,6 +377,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
 
   const lines = raw.split("\n");
   let title: string | null = null;
+  let data: SceneDataSource[] = [];
   let bodyStart = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (!lines[i].trim().length) {
@@ -368,6 +389,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
       const attrs = readMarkerAttributes(marker[1] ?? "");
       const parsed = (attrs.title ?? "").trim();
       if (parsed.length) title = parsed.slice(0, SCENE_LIMITS.maxTitleLength);
+      data = readSceneDataSources(attrs.data);
       bodyStart = i + 1;
     }
     break;
@@ -375,7 +397,7 @@ export function parseSceneFence(source: string): ParsedScene | SceneParseFailure
 
   const html = unwrapDocument(lines.slice(bodyStart).join("\n"));
   if (!html.length) return { reason: "empty", detail: "Scene has no markup." };
-  return { title, html };
+  return { title, html, data };
 }
 
 export function isSceneParseFailure(value: ParsedScene | SceneParseFailure): value is SceneParseFailure {
@@ -404,6 +426,11 @@ export function summarizeSceneFence(source: string): string {
  */
 export type SceneTheme = {
   bg: string;
+  /**
+   * A raised fill for cards. Must be a value that resolves on its own inside
+   * the frame: a `var(--color-fg)` reference means nothing there, and an
+   * invalid custom property turned every `var(--surface)` transparent.
+   */
   surface: string;
   border: string;
   fg: string;
@@ -414,323 +441,80 @@ export type SceneTheme = {
   danger: string;
   fontSans: string;
   fontMono: string;
+  /** `color-scheme` for form controls and scrollbars. */
+  scheme: "dark" | "light";
+  /** The transcript's prose size in px, so scene text sits at the reply's size. */
+  fontSize: number;
 };
 
 export const SCENE_FALLBACK_THEME: SceneTheme = {
-  bg: "#0d0b14",
-  surface: "rgba(255,255,255,0.035)",
+  bg: "#0f0f11",
+  surface: "rgba(255,255,255,0.04)",
   border: "rgba(255,255,255,0.10)",
-  fg: "#ece9f5",
-  fgMuted: "rgba(236,233,245,0.58)",
-  accent: "#a78bfa",
+  fg: "#F0F0F2",
+  fgMuted: "rgba(240,240,242,0.58)",
+  accent: "#A78BFA",
   success: "#4ade80",
   warning: "#fbbf24",
   danger: "#f87171",
-  fontSans: "Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-  fontMono: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSans: "Geist, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+  fontMono: "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace",
+  scheme: "dark",
+  fontSize: 13,
 };
 
-function escapeForScript(value: unknown): string {
-  // `</script>` inside a JSON blob would close the tag early. U+2028 and U+2029
-  // are legal inside a JSON string but are literal line terminators in JS
-  // source, so both have to travel as escapes.
-  return JSON.stringify(value ?? null)
-    .replace(/</g, "\\u003c")
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
-}
-
-/**
- * The in-frame SDK.
- *
- * Deliberately dependency-free: the frame has `connect-src 'none'`, so it could
- * not fetch an animation library even if one were referenced, and inlining a
- * third-party one would put its licence inside every generated view. The Web
- * Animations API and CSS animations are native to Chromium, cost nothing, and
- * are what models reach for anyway.
- *
- * A const rather than a function: it never varies, so building it per scene
- * only re-trimmed the same four kilobytes.
- */
-const SCENE_SDK_SOURCE = `
-(function () {
-  var listeners = Object.create(null);
-  var reducedMotion = false;
-  try { reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
-
-  // Measure the CONTENT, not the frame. document.documentElement is sized by
-  // the iframe element itself, so measuring it lets a scene grow but never
-  // shrink below the host's initial guess.
-  function measure() {
-    var body = document.body;
-    if (!body) return 0;
-    var style = window.getComputedStyle(body);
-    return Math.ceil(body.scrollHeight + parseFloat(style.marginTop || "0") + parseFloat(style.marginBottom || "0"));
-  }
-
-  // Every message carries the nonce of the document it was sent from. The host
-  // keeps ONE mounted frame and swaps its src, and a contentWindow's identity
-  // survives that swap — so without this an outgoing document's late 'settled'
-  // is indistinguishable from the incoming one's.
-  function post(type, payload) {
-    var message = { __adeScene: 1, type: type, payload: payload };
-    try {
-      if (window.__ADE_SCENE_NONCE__) message.nonce = String(window.__ADE_SCENE_NONCE__);
-    } catch (e) {}
-    try { parent.postMessage(message, "*"); } catch (e) {}
-  }
-
-  var ade = {
-    data: window.__ADE_SCENE_DATA__ || null,
-    theme: window.__ADE_SCENE_THEME__ || null,
-    reducedMotion: reducedMotion,
-    on: function (event, fn) {
-      if (typeof fn !== "function") return function () {};
-      (listeners[event] = listeners[event] || []).push(fn);
-      return function () {
-        listeners[event] = (listeners[event] || []).filter(function (f) { return f !== fn; });
-      };
-    },
-    emit: function (name, payload) { post("emit", { name: String(name), payload: payload }); },
-    ready: function () { post("ready", { height: measure() }); },
-    resize: function () { post("resize", { height: measure() }); },
-    /** WAAPI wrapper that collapses to the end state under reduced motion. */
-    animate: function (target, keyframes, options) {
-      var el = typeof target === "string" ? document.querySelector(target) : target;
-      if (!el) return null;
-      var opts = Object.assign({ duration: 420, easing: "cubic-bezier(.22,.61,.36,1)", fill: "both" }, options || {});
-      if (reducedMotion) opts.duration = 0;
-      return el.animate(keyframes, opts);
-    },
-    /** Count a number up; the single most-wanted effect in a live view. */
-    countUp: function (target, to, options) {
-      var el = typeof target === "string" ? document.querySelector(target) : target;
-      if (!el) return;
-      var o = options || {};
-      var from = typeof o.from === "number" ? o.from : 0;
-      var duration = reducedMotion ? 0 : (typeof o.duration === "number" ? o.duration : 900);
-      var decimals = typeof o.decimals === "number" ? o.decimals : 0;
-      var start = null;
-      function frame(now) {
-        if (start === null) start = now;
-        var t = duration <= 0 ? 1 : Math.min(1, (now - start) / duration);
-        var eased = 1 - Math.pow(1 - t, 3);
-        el.textContent = (from + (to - from) * eased).toFixed(decimals);
-        if (t < 1) requestAnimationFrame(frame);
-      }
-      requestAnimationFrame(frame);
-    },
-  };
-
-  window.ade = ade;
-
-  window.addEventListener("message", function (event) {
-    var msg = event.data;
-    if (!msg || msg.__adeSceneHost !== 1) return;
-    var fns = listeners[msg.type] || [];
-    for (var i = 0; i < fns.length; i++) {
-      try { fns[i](msg.payload); } catch (e) { post("error", { message: String(e && e.message || e) }); }
-    }
-  });
-
-  window.addEventListener("error", function (event) {
-    post("error", { message: String(event.message || "scene error") });
-  });
-
-  // Report height once layout settles so the host can size the frame, and again
-  // on any resize the scene causes itself.
-  function reportHeight() { post("resize", { height: measure() }); }
-
-  /*
-   * Settle watch: tell the host the moment this view has finished moving.
-   *
-   * The host needs it because a scene's still has to be taken WHILE the scene
-   * is still up. Freezing at the end of the turn was too late for anything the
-   * user had scrolled past, and too early for nothing — the animation the
-   * author wrote is exactly the part that must have played before the picture
-   * is worth keeping.
-   *
-   * Two signals, because neither alone is enough. getAnimations() sees
-   * WAAPI and CSS animations (ade.animate, a keyframed reveal) but not a
-   * requestAnimationFrame loop; the MutationObserver sees ade.countUp writing
-   * into a text node but not a transform that never touches the DOM. Quiet on
-   * both for SETTLE_QUIET_MS is the definition of stopped.
-   *
-   * Reported exactly once. A scene that keeps animating forever hits the cap
-   * and is reported anyway — a frame of a loop is a truthful picture of a view
-   * that loops — and a late mutation after that must not produce a second
-   * settle, because the host acts on the first one.
-   */
-  var settleReported = false;
-  var quietTimer = null;
-  var capTimer = null;
-  var settleObserver = null;
-
-  function animationsRunning() {
-    try {
-      if (typeof document.getAnimations !== "function") return false;
-      var running = document.getAnimations();
-      for (var i = 0; i < running.length; i++) {
-        if (running[i].playState === "running") return true;
-      }
-      return false;
-    } catch (e) {
-      // A browser without the API cannot report an animation; the mutation
-      // half still speaks for itself.
-      return false;
-    }
-  }
-
-  function reportSettled() {
-    if (settleReported) return;
-    settleReported = true;
-    if (quietTimer !== null) clearTimeout(quietTimer);
-    if (capTimer !== null) clearTimeout(capTimer);
-    try { if (settleObserver) settleObserver.disconnect(); } catch (e) {}
-    post("settled", { height: measure() });
-  }
-
-  function armQuiet() {
-    if (settleReported) return;
-    if (quietTimer !== null) clearTimeout(quietTimer);
-    quietTimer = setTimeout(function () {
-      // Re-arm rather than settle while something is still playing: a long
-      // animation mutates nothing, so the debounce alone would call it quiet
-      // half a second in.
-      if (animationsRunning()) { armQuiet(); return; }
-      reportSettled();
-    }, ${SCENE_SETTLE_QUIET_MS});
-  }
-
-  function watchForSettle() {
-    if (settleObserver || settleReported) return;
-    try {
-      settleObserver = new MutationObserver(armQuiet);
-      settleObserver.observe(document.documentElement, {
-        childList: true, subtree: true, attributes: true, characterData: true,
-      });
-    } catch (e) {
-      settleObserver = null;
-    }
-    capTimer = setTimeout(reportSettled, ${SCENE_SETTLE_MAX_MS});
-    armQuiet();
-  }
-
-  window.addEventListener("load", function () {
-    reportHeight();
-    post("ready", { height: measure() });
-    // Started from 'ready' on purpose: the cap is measured from the moment the
-    // scene is up, not from a document that has not run its script yet.
-    watchForSettle();
-  });
-  if (typeof ResizeObserver === "function") {
-    try { new ResizeObserver(reportHeight).observe(document.body); } catch (e) {}
-  }
-})();
-`.trim();
-
-function baseStyles(theme: SceneTheme): string {
-  return `
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: transparent; }
-body {
-  color: var(--fg);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  padding: 18px 20px;
-}
-:root {
-  --bg: ${theme.bg};
-  --surface: ${theme.surface};
-  --border: ${theme.border};
-  --fg: ${theme.fg};
-  --fg-muted: ${theme.fgMuted};
-  --accent: ${theme.accent};
-  --success: ${theme.success};
-  --warning: ${theme.warning};
-  --danger: ${theme.danger};
-  --font-sans: ${theme.fontSans};
-  --font-mono: ${theme.fontMono};
-  color-scheme: dark;
-}
-a { color: var(--accent); }
-code, pre { font-family: var(--font-mono); }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 999px; }
-::-webkit-scrollbar-track { background: transparent; }
-`.trim();
-}
-
-export type SceneDocumentArgs = {
-  html: string;
-  title?: string | null;
-  theme?: SceneTheme;
-  data?: unknown;
-  /**
-   * Transcript-row key. It lands on `<body>` so two byte-identical scenes at
-   * different positions produce different documents — without it the host's
-   * memo yields the same string and both rows share one frame.
-   */
-  scopeKey?: string | null;
-  /**
-   * This DOCUMENT's identity, echoed back on every message the frame sends.
-   *
-   * The scope key cannot do this job: it names a scene's position in the
-   * transcript, and a caller may swap document after document into one frame
-   * under one key. What the host has to tell apart is the outgoing document
-   * from the incoming one, and only a value minted per build can do that.
-   *
-   * Carried in the document itself, so it survives both delivery paths — the
-   * `ade-scene:` URL and the blob fallback both serve these exact bytes.
-   */
-  nonce?: string | null;
-};
-
-/**
- * The scope key, made safe for an HTML attribute without losing identity.
- *
- * A plain strip of everything outside `[A-Za-z0-9_:-]` was lossy: two transcript
- * keys differing only in stripped characters produced the same attribute, the
- * same document, and therefore the same memoized frame — the exact bug the key
- * exists to prevent. Percent-encoding is reversible, so every key stays
- * distinct, and its output is already limited to the unreserved set plus `%` —
- * none of which can close an attribute or open a tag.
- */
-function sceneScopeAttribute(scopeKey: string): string {
-  return encodeURIComponent(scopeKey);
-}
-
-/**
- * Assemble the document served to the frame. The CSP meta is the FIRST element
- * in <head> on purpose: a policy that arrives after markup has already parsed
- * is a policy that arrived too late. In Electron the same policy is also sent
- * as a response header by the `ade-scene:` handler, so neither half is load
- * bearing alone.
- */
-export function buildSceneDocument(args: SceneDocumentArgs): string {
-  const theme = args.theme ?? SCENE_FALLBACK_THEME;
-  const title = (args.title ?? "Generated view").slice(0, SCENE_LIMITS.maxTitleLength);
+/** The CSS custom properties a theme becomes inside the frame. */
+export function sceneThemeVariables(theme: SceneTheme): Array<[string, string]> {
   return [
-    "<!doctype html>",
-    '<html lang="en"><head>',
-    `<meta http-equiv="Content-Security-Policy" content="${SCENE_CONTENT_SECURITY_POLICY}">`,
-    '<meta name="referrer" content="no-referrer">',
-    '<meta charset="utf-8">',
-    `<title>${title.replace(/[<>&]/g, "")}</title>`,
-    `<style>${baseStyles(theme)}</style>`,
-    "<script>",
-    `window.__ADE_SCENE_DATA__ = ${escapeForScript(args.data ?? null)};`,
-    `window.__ADE_SCENE_THEME__ = ${escapeForScript(theme)};`,
-    `window.__ADE_SCENE_NONCE__ = ${escapeForScript(args.nonce ?? null)};`,
-    "</script>",
-    `<script>${SCENE_SDK_SOURCE}</script>`,
-    `</head><body${args.scopeKey ? ` data-scene-scope="${sceneScopeAttribute(args.scopeKey)}"` : ""}>`,
-    args.html,
-    "</body></html>",
-  ].join("\n");
+    ["--bg", theme.bg],
+    ["--surface", theme.surface],
+    ["--border", theme.border],
+    ["--fg", theme.fg],
+    ["--fg-muted", theme.fgMuted],
+    ["--accent", theme.accent],
+    ["--success", theme.success],
+    ["--warning", theme.warning],
+    ["--danger", theme.danger],
+    ["--font-sans", theme.fontSans],
+    ["--font-mono", theme.fontMono],
+    ["--font-size", `${theme.fontSize}px`],
+  ];
 }
+
+/** One string per theme: equal exactly when two themes would draw a scene identically. */
+export function sceneThemeSignature(theme: SceneTheme): string {
+  return JSON.stringify([sceneThemeVariables(theme), theme.scheme]);
+}
+
+/**
+ * A message from the host into a scene frame. The frame acts on these only when
+ * they come from its parent window.
+ *
+ * - `theme`: ADE's theme changed; the SDK re-applies the variables and
+ *   `color-scheme`, updates `ade.theme`, and calls `ade.on("theme")` listeners.
+ * - `data`: new live data; the SDK sets `ade.data` and calls `ade.on("data")`.
+ */
+export type SceneFrameInbound =
+  | { type: "theme"; payload: SceneThemeMessagePayload }
+  /** A snapshot of the live sources the scene asked for (`sceneData.ts`). */
+  | { type: "data"; payload: unknown };
+
+/**
+ * A theme as the frame applies it: the resolved theme for `ade.theme`, and the
+ * CSS variables it becomes, built by {@link sceneThemeVariables} so a live
+ * switch sets exactly what the first paint set.
+ */
+export type SceneThemeMessagePayload = { theme: SceneTheme; variables: Array<[string, string]> };
+
+export function sceneThemeMessage(theme: SceneTheme): SceneFrameInbound {
+  return { type: "theme", payload: { theme, variables: sceneThemeVariables(theme) } };
+}
+
+/** The envelope the in-frame SDK listens for. */
+export function sceneFrameMessage(message: SceneFrameInbound): { __adeSceneHost: 1 } & SceneFrameInbound {
+  return { __adeSceneHost: 1, ...message };
+}
+
 
 /**
  * A scene's still, once the bytes are on disk.
@@ -770,10 +554,17 @@ export type SceneHostMessage = { nonce?: string } & (
    */
   | { type: "settled"; payload: { height?: number } }
   | { type: "emit"; payload: { name: string; payload?: unknown } }
-  | { type: "error"; payload: { message: string } }
+  /** `policy`: a request the scene policy blocked (a remote font, an image), not a thrown error. */
+  | { type: "error"; payload: { message: string; policy?: true } }
+  /**
+   * Open a link: an `ade://` deeplink in ADE, or an http(s) page in ADE's
+   * browser. Sent by `ade.open(url)` and by any `<a href>` click in the scene.
+   * The host acts on it only right after the user clicked inside the frame.
+   */
+  | { type: "open"; payload: { url: string } }
 );
 
-const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error"]);
+const ALLOWED_MESSAGE_TYPES = new Set(["ready", "resize", "settled", "emit", "error", "open"]);
 
 /**
  * Validate an inbound frame message. The frame is untrusted, so shape-check
@@ -798,7 +589,12 @@ export function parseSceneHostMessage(value: unknown): SceneHostMessage | null {
   }
   if (type === "error") {
     const message = typeof payload.message === "string" ? payload.message.slice(0, 500) : "scene error";
-    return { ...nonce, type: "error", payload: { message } };
+    return { ...nonce, type: "error", payload: { message, ...(payload.policy === true ? { policy: true as const } : {}) } };
+  }
+  if (type === "open") {
+    const url = typeof payload.url === "string" ? payload.url.trim() : "";
+    if (!url.length || url.length > 2048) return null;
+    return { ...nonce, type: "open", payload: { url } };
   }
   const height = typeof payload.height === "number" && Number.isFinite(payload.height)
     ? Math.max(0, Math.min(4000, Math.round(payload.height)))

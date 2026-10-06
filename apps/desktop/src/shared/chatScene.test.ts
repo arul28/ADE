@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSceneDocument,
   hasOpenSceneFence,
   openFence,
   openFenceLanguage,
@@ -14,6 +13,7 @@ import {
   sceneScopeKeyFor,
   summarizeSceneFence,
 } from "./chatScene";
+import { buildSceneDocument } from "./chatSceneDocument";
 
 describe("parseSceneFence", () => {
   it("reads the title off the marker line and keeps the markup", () => {

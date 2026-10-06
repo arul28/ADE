@@ -204,6 +204,9 @@ export function buildAdeBootstrapGuidance(
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
+    // The one scene line every agent sees. Without it the skill was opened only
+    // when a model happened to read the index, so scenes almost never appeared.
+    "Visuals: when status across many items (lanes, PRs, checks), a comparison or a trend would read faster as a picture, add one ```scene block; it can show live ADE data. Skip it for short answers, single facts and plain lists. Read `ade-scene` first; check it with `ade scene preview`.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
