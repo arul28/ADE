@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.92] - 2026-10-06
+
+### Desktop
+
+- Multi-machine connect, disconnect, switch, and send do what you tapped (#1484).
+- Remote viewers see agent-opened PRs; remote Update & restart reports whether it landed (#1489, #1487).
+- Interactive scenes: live in scrollback, agent self-check, live ADE data (#1485).
+- Imported chats resume on any provider account (#1482).
+- Lanes outside .ade/worktrees, and default-branch auto-pull in the brain (#1481, #1486, #1479).
+- The brain starts when launchd leaves it pending (#1488).
+- Windows performance round 2 and spawn freeze fixes (#1480, #1483).
+
 ## [1.2.91] - 2026-10-05
 
 ### Desktop
@@ -2340,7 +2352,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.91...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.92...HEAD
+[1.2.92]: https://github.com/arul28/ADE/compare/v1.2.91...v1.2.92
 [1.2.91]: https://github.com/arul28/ADE/compare/v1.2.90...v1.2.91
 [1.2.90]: https://github.com/arul28/ADE/compare/v1.2.89...v1.2.90
 [1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89

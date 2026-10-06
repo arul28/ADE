@@ -1,0 +1,27 @@
+---
+title: "v1.2.92"
+description: "Release notes for ADE v1.2.92 - October 6, 2026"
+---
+
+ADE 1.2.92 makes multi-machine connections do what you tap, brings interactive scenes, imports lanes from outside .ade/worktrees, and speeds up Windows again.
+
+## Remote and multi-machine
+
+- Connect, disconnect, switch, and send across machines do what you tapped (#1484).
+- Remote viewers see agent-opened PRs and act on the lane's own machine (#1489).
+- Update & restart updates the far machine's open ADE app and says whether it landed (#1487).
+
+## Agents and chats
+
+- Interactive scenes stay live in scrollback, agents self-check them, and they can read live ADE data (#1485).
+- Imported chats resume their conversation on any provider account (#1482).
+
+## Lanes
+
+- Lanes outside .ade/worktrees: import, CLI project support, and Electron lane deletes (#1481), with edge cases closed (#1486).
+- Default-branch auto-pull runs in the brain (#1479).
+
+## Runtime and Windows
+
+- The brain starts when launchd leaves it pending (#1488).
+- Windows performance: no brain freezes from process spawns, cheaper spinners and chat switches, and an update that relaunches (#1480, #1483).
