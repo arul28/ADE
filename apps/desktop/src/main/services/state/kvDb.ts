@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
+import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
@@ -2012,11 +2013,7 @@ function deferColumnChange(db: DatabaseSyncType, change: CrsqlChangeRow): void {
 
 /** A lock, busy timeout or read-only database: the write may work later. */
 function isTransientSqliteError(error: unknown): boolean {
-  const message = String((error as { message?: unknown })?.message ?? error).toLowerCase();
-  return message.includes("database is locked")
-    || message.includes("sqlite_busy")
-    || message.includes("database is busy")
-    || isReadonlyDatabaseError(error);
+  return isSqliteBusyOrLockedError(error) || isReadonlyDatabaseError(error);
 }
 
 /** Whether `table` has column `cid`, with one `pragma table_info` per table. */
