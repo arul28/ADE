@@ -1400,7 +1400,9 @@ export function LaneGitActionsPane({
           notice: `Moved unstaged changes to new lane ${created.name}.`,
           error: null,
         });
-        await refreshLaneGitState(actionLaneId);
+        // Best-effort: the lane already exists, so a failed re-read must not
+        // turn the success into an error.
+        await refreshLaneGitState(actionLaneId).catch(() => undefined);
         return;
       }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
