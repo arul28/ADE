@@ -184,7 +184,7 @@ The heap filled with App Control screencast frames. A session pushes a 80–350 
 
 ### Backlog, measured but not applied
 
-- **CSS spinners cost main-thread time.** Any running `animate-spin` (SVG or HTML) or the stepped `activity-hdr-pulse` forces a full main-thread frame at display rate: ~240 style recalcs/s and ~130 ms/s of main-thread work with three spinners on screen, ~15% of a renderer core whenever chats run. Chrome's trace reports the transform animation as composited (`compositeFailed: 0`), a lone spinner on an empty page still costs it, page zoom and the device scale factor do not change it, and plain Chrome does not show it. Root cause not found. Options: a Chromium-level fix, pausing indicators in an unfocused window, or swapping spinners for composited opacity pulses (a visual decision).
+- **CSS spinners cost main-thread time.** Any running `animate-spin` (SVG or HTML) or the stepped `activity-hdr-pulse` forces a full main-thread frame at display rate: ~240 style recalcs/s and ~130 ms/s of main-thread work with three spinners on screen, ~15% of a renderer core whenever chats run. Chrome's trace reports the transform animation as composited (`compositeFailed: 0`), a lone spinner on an empty page still costs it, page zoom and the device scale factor do not change it, and plain Chrome does not show it. Root cause not found. Options: a Chromium-level fix, pausing indicators in an unfocused window, or swapping spinners for composited opacity pulses (a visual decision). *Applied in the Windows pass below: spinners now turn in 30 steps a second.*
 - **Streaming a long tight list is O(n²).** The settled/tail cut sits only on blank lines, so a 60-item list stays in the tail and is re-parsed and re-rendered every reveal frame: 707 commits and ~22% of a core in script over 8 s for one visible streaming chat (~2–3 ms a frame). Cutting between list items risks a visible gap and wrong numbering for `1.`-only lists; memoizing `li` by content is the safer half.
 - **The draft lives in `AgentChatPane`**, so each keystroke still renders the whole pane (~4 ms script). Moving it into the composer removes that.
 - **Chat switch**: header 20–60 ms, transcript 100–200 ms cold and ~60 ms warm on long real chats. Hover or pointerdown prefetch would make most switches warm; the forced history reconcile on a cache hit could wait for idle.
@@ -198,3 +198,46 @@ The heap filled with App Control screencast frames. A session pushes a 80–350 
 - Three brains ran on the shared `~/.ade` (installed plus two lane dev brains). A dev window also re-spawns its dev brain after the launcher stops it, so stop the whole process group.
 - An orphaned `python3 -` heredoc from another lane's agent spun at 100% of a core for 11.5 hours.
 - A desktop `tsc --noEmit` from another agent held 4.7 GB and 1.7 cores; several agents typechecking at once saturates the machine.
+
+---
+
+## Windows pass (2026-10-05)
+
+Trigger: ADE on Windows felt slow everywhere, and no performance pass had been run there. Method: attach the inspector to the installed brain on the Windows PC (`process._debugProcess`), take 10-minute CPU profiles and attribute busy time to the nearest ADE frame, then reproduce each cost in isolation (the real `runGit`, the real credential store, the real resolver) or on a lane dev build (own named pipe, `--no-sync`) and measure before and after. Renderer costs were measured by OS-level process CPU with no debugger attached, and by Chromium traces for the per-frame breakdown. The PC: Windows 11, 240 Hz display at 110% scaling, an 80-entry `PATH`.
+
+### What the installed brain was doing
+
+Its log recorded 1,643 `brain.event_loop_near_miss` warnings, 20-50 a day on busy days, median 3.6-5.9 s, worst 15 s, almost all during background work. Over a 10-minute profile, 61 s of JavaScript ran, in 156 blocks of 100 ms or more:
+
+| Busy time | Where | Why it is a Windows cost |
+|---|---|---|
+| 20.3 s | `spawn` under `runGitOnce` | libuv runs `CreateProcess` on the calling thread |
+| ~13 s | credential `getSync`: lock file create/write/delete, `sleepSync`, decrypt | file create/delete passes through Defender |
+| 6.3 s | `os.networkInterfaces()` in `readLocalNetworkMetadata` | synchronous adapter enumeration, ~3 calls a second |
+| 4.7 s | CLI discovery: `stat` per PATHEXT name x 2 casings x every dir | 80-entry PATH, 29,536 stats per pass |
+| 2.6 s | `git remote get-url origin`, `where.exe`, `gh auth token` | a spawn per poll |
+
+### Applied
+
+| Change | Where | Measured |
+|---|---|---|
+| Git spawns run on a worker thread; tree kill runs `taskkill` to completion in the worker before killing the leader | `services/shared/offThreadSpawn.ts`, `services/git/git.ts` | Real `runGit`, 256 calls: worst event-loop gap 146-1,179 ms -> 15-16 ms; wall and main CPU at parity |
+| A settled credential read is reused while one `stat` shows the file unchanged; expires with the 5 s quarantine probe | `ade-cli/.../credentials/credentialStore.ts` | 300 `getSync`: 323 ms -> 3.2 ms |
+| Network interface list reused for 5 s | `ade-cli/.../sync/deviceRegistryService.ts` | ~6 s per 10 min -> ~0 |
+| CLI discovery lists each directory once (10 s), no `where.exe` | `services/ai/cliExecutableResolver.ts`, `authDetector.ts` | 14 lookups: 450 ms / 29,536 stats -> 37 ms cold, 5 ms warm / 6 stats |
+| Origin URL from the repo git cache | `ade-cli/src/headlessLinearServices.ts` | 43 spawns per 5 min -> one per 5 min |
+| `gh auth token` and `tailscale status` off the event loop | same files, `execFileOffThread` | 83-121 ms blocks -> none |
+| Every spinner turns in 30 steps a second | `renderer/index.css` (`--animate-spin`) and the custom spin keyframes | One 16px spinner, renderer + GPU: ~58% of a core -> idle noise; per 2 s main-thread task 436 -> 145 ms, layerize 214 -> 25 ms |
+
+Whole-brain check, dev brain near idle, same 5-minute window: busy 5,267 -> 2,791 ms, blocks >= 50 ms 17 -> 8, worst 784 -> 346 ms.
+
+Why spinners: Electron does not composite CSS rotations (keyframes, the `rotate` property and the Web Animations API alike, in ADE's document or a bare iframe, with or without DevTools attached). Each display frame re-runs paint and layerize for the whole window and the GPU composites it, so the cost scales with the refresh rate. Opacity animations are composited and stay cheap; the pulses were already quantized with `steps()` for a related GPU cost.
+
+### Backlog, measured but not applied
+
+- **Single SQLite writes of 190-346 ms** (`writeOwnRow`, `setLastError`) in the dev brain. WAL with `synchronous = NORMAL` is already set; the likely causes are lock waits against a second brain on the same project database (a dev setup artifact) or WAL checkpoints. Needs a measurement on a single-brain machine before any change.
+- **`ensureLocalDevice` writes the device row on every call** with a fresh `last_seen_at`, several times a second, and each write replicates to peers. Skipping unchanged writes for a few seconds touches sync semantics; decide what `last_seen_at` freshness peers need first.
+- **Stepped animations still tick every frame.** Blink re-evaluates a `steps()` animation each vsync even when its value has not changed; the tick is ~0.25 ms with nothing to repaint. Removing it needs a timer-driven spinner (30 updates a second) shared by the 190 `animate-spin` call sites.
+- **Chat switch** on the dev build: ~300 ms warm, ~650 ms cold, ~200 ms of it script. Measured on React's development build; re-measure on a production renderer before optimizing (`vite build` + `vite preview`, with `VITE_DEV_SERVER_URL` pointed at it).
+- **Claude follow-ups respawn the CLI on Windows** (no background-job reattach), so every turn pays a process launch; see `docs/development/windows-support.md`.
+- Smooth sheen animations (`ade-launch-rail-sheen`, `ade-reasoning-ultra-sheen`, `ade-workflow-card-sheen`, `chv-sweep`, `prs-shimmer`) and decorative onboarding loops are not quantized yet.
