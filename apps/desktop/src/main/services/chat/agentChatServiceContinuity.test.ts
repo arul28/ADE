@@ -1150,7 +1150,16 @@ describe("explicit provider-thread continuity recovery", () => {
       && entry.event.detail?.spawnedSession?.sessionId === result.newSessionId)).toBe(true);
   });
 
-  it("moves a stale Claude SDK pointer into continuity recovery and records the prior pointer", async () => {
+  it.each([
+    { surfacedBy: "the turn's stream", streamError: "session not found", permissionModeError: null },
+    // The permission-mode switch is the first call on a resumed query, so a
+    // missing thread usually surfaces there; it must not quietly start fresh.
+    {
+      surfacedBy: "the permission-mode switch",
+      streamError: null,
+      permissionModeError: "Claude Code returned an error result: No conversation found with session ID: sdk-stale",
+    },
+  ])("moves a stale Claude SDK pointer into continuity recovery when $surfacedBy reports it", async ({ streamError, permissionModeError }) => {
     let streamCall = 0;
     const handle = {
       send: vi.fn().mockResolvedValue(undefined),
@@ -1160,11 +1169,14 @@ describe("explicit provider-thread continuity recovery", () => {
           yield { type: "system", subtype: "init", session_id: "sdk-stale", slash_commands: [] };
           return;
         }
-        throw new Error("session not found");
+        if (streamError) throw new Error(streamError);
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })()),
       close: vi.fn(),
       sessionId: "sdk-stale",
-      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      setPermissionMode: permissionModeError
+        ? vi.fn().mockRejectedValue(new Error(permissionModeError))
+        : vi.fn().mockResolvedValue(undefined),
     };
     vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
     vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);

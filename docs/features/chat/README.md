@@ -3704,6 +3704,14 @@ represented by a synthetic single entry.
   `ade chat switch-account <session> --account <id>`; TUI: `/switch-account
   <account-id>`. Chats on a saved key or custom provider have no account to
   switch, and the switch is refused for them.
+- **A Claude resume never quietly starts blank.** Before a resume, a thread
+  missing from the chat's account home is copied in from whichever account
+  holds the newest copy (`ensureClaudeThreadInSessionHome`). A thread found
+  nowhere fails the turn into `thread_missing` continuity recovery, even when
+  the miss first surfaces from `setPermissionMode`. After a teardown (a switch,
+  a usage-limit move), the chat resumes the thread last persisted while its
+  runtime was live; the hydrate-time `claudeBackgroundResumeSessionId` is used
+  only by background-job chats, so it cannot bring back an older thread.
 - **Launch injection happens once, in `buildAgentRuntimeEnv`.** Every process a
   chat starts — the Claude SDK query, the Claude background CLI, the Codex
   app-server, slash-command discovery, rollout lookup — inherits the same
