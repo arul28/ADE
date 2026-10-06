@@ -10364,9 +10364,19 @@ export function createAgentChatService(args: {
     return resolved.instance;
   };
 
-  /** The config home this chat's Claude or Codex account resumes its thread from. */
-  const sessionConfigHome = (managed: ManagedChatSession): string | null =>
-    resolveSessionInstance(managed)?.configHome ?? null;
+  /**
+   * The config home this chat's Claude or Codex runtime resumes its thread
+   * from: the account's home, unless a harness preset launches the CLI in its
+   * own — the same order `buildAgentRuntimeEnv` applies them in.
+   */
+  const sessionConfigHome = (managed: ManagedChatSession): string | null => {
+    const provider = managed.session.provider;
+    const key = provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : null;
+    if (!key) return null;
+    const instance = resolveSessionInstance(managed);
+    const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
+    return presetHome || instance?.configHome || null;
+  };
 
   /**
    * The resolved harness preset (or bare provider-card key) for a chat.
@@ -44446,18 +44456,19 @@ export function createAgentChatService(args: {
     threadId: string,
     sourceConfigHome: string,
   ): Promise<void> => {
-    const account = resolveSessionInstance(managed);
-    if (!account || pathsEqual(account.configHome, sourceConfigHome)) return;
+    const targetHome = sessionConfigHome(managed);
+    if (!targetHome || pathsEqual(targetHome, sourceConfigHome)) return;
     const moved = await moveProviderThread({
       provider,
       threadId,
       fromConfigHome: sourceConfigHome,
-      toConfigHome: account.configHome,
+      toConfigHome: targetHome,
     });
     if (moved.ok || moved.reason === "same_home") return;
     throw externalChatImportError(
       "EXTERNAL_CHAT_SESSION_READ_FAILED",
-      `Could not copy the imported ${importProviderLabel(provider)} conversation to the "${account.label}" account: ${moved.message}`,
+      `Could not copy the imported ${importProviderLabel(provider)} conversation into ${targetHome}, `
+        + `where this chat resumes from: ${moved.message}`,
     );
   };
 
