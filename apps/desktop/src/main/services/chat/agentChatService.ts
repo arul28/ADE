@@ -692,7 +692,12 @@ import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
-import { findInstanceHoldingThread, moveProviderThread, providerThreadIsInHome } from "./providerThreadMove";
+import {
+  findInstanceHoldingNewestClaudeThread,
+  findInstanceHoldingThread,
+  moveProviderThread,
+  providerThreadIsInHome,
+} from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSwitchAccountArgs,
@@ -10432,7 +10437,7 @@ export function createAgentChatService(args: {
       const others = getMachineProviderInstanceStore()
         .list("claude")
         .filter((instance) => !pathsEqual(instance.configHome, targetHome));
-      holder = findInstanceHoldingThread("claude", threadId, others);
+      holder = await findInstanceHoldingNewestClaudeThread(threadId, others);
     } catch {
       holder = null;
     }

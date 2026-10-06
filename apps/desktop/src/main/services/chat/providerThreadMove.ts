@@ -121,6 +121,28 @@ export function findInstanceHoldingThread<T extends { configHome: string; isDefa
   return ordered.find((instance) => providerThreadIsInHome(provider, threadId, instance.configHome)) ?? null;
 }
 
+/**
+ * The account holding the most recently written copy of a Claude thread. A
+ * move leaves its source copy behind, so the first holder can be stale.
+ */
+export async function findInstanceHoldingNewestClaudeThread<T extends { configHome: string }>(
+  threadId: string,
+  instances: readonly T[],
+): Promise<T | null> {
+  let newest: { instance: T; mtimeMs: number } | null = null;
+  for (const instance of instances) {
+    const filePath = await findClaudeThreadFile(instance.configHome, threadId);
+    if (!filePath) continue;
+    try {
+      const { mtimeMs } = await fs.promises.stat(filePath);
+      if (!newest || mtimeMs > newest.mtimeMs) newest = { instance, mtimeMs };
+    } catch {
+      // Removed between the lookup and the stat.
+    }
+  }
+  return newest?.instance ?? null;
+}
+
 async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {
   const named = args.sourcePath ? path.resolve(args.sourcePath) : null;
   const sourcePath = named
