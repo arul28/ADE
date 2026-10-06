@@ -122,6 +122,8 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          // Machine names come from the directory: a rename shows at once.
+          self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
           self.hiddenMachines.reconcile(
             // Both keys a row can be hidden under: the device identity, and

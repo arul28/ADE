@@ -54,7 +54,7 @@ struct HubQuickConnectSection: View {
     let accountTargets = accountMachines.map(Target.account)
     let accountIdentities = Set(accountMachines.compactMap { normalizedIdentity($0.deviceId) })
     let savedTargets = savedHosts.compactMap { host -> Target? in
-      if let identity = normalizedIdentity(host.hostIdentity), accountIdentities.contains(identity) {
+      if let identity = identity(of: .saved(host)), accountIdentities.contains(identity) {
         return nil
       }
       return .saved(host)
@@ -62,31 +62,22 @@ struct HubQuickConnectSection: View {
     return accountTargets + savedTargets
   }
 
-  /// The machine the phone was last on first, then online machines, then the
-  /// rest, each group in directory order.
-  private var orderedTargets: [Target] {
-    let lastIdentity = normalizedIdentity(
-      syncService.activeHostProfile?.hostIdentity ?? syncService.activeHostProfile?.lastHostDeviceId
-    )
-    func rank(_ target: Target) -> Int {
-      if let lastIdentity, identity(of: target) == lastIdentity { return 0 }
-      return isOnline(target) ? 1 : 2
-    }
-    return targets.enumerated()
-      .sorted { lhs, rhs in
-        let (left, right) = (rank(lhs.element), rank(rhs.element))
-        return left == right ? lhs.offset < rhs.offset : left < right
-      }
-      .map(\.element)
-  }
-
-  /// Every online machine gets a card (up to four), so the one the user wants
-  /// is never hidden behind "See all machines" just for its directory order.
-  /// With none online, the first two still show.
+  /// The cards on screen, in directory order with the machine the phone was
+  /// last on first. Every online machine gets one (up to four), so the machine
+  /// the user wants is never behind "See all machines" for its directory
+  /// order; with none online, the first two show. The last-used machine and
+  /// the one being connected always keep their card.
   private var visibleTargets: [Target] {
-    let ordered = orderedTargets
-    let online = ordered.filter(isOnline)
-    return Array((online.isEmpty ? ordered : online).prefix(online.isEmpty ? 2 : 4))
+    let lastIdentity = syncService.activeHostProfile?.machineIdentity
+    let entries = targets.map { target in
+      (target: target, online: isOnline(target), isLast: lastIdentity != nil && identity(of: target) == lastIdentity)
+    }
+    let ordered = entries.filter(\.isLast) + entries.filter { !$0.isLast }
+    let anyOnline = ordered.contains(where: \.online)
+    let shown = ordered.filter { entry in
+      !anyOnline || entry.online || entry.isLast || connectingId == entry.target.id
+    }
+    return Array(shown.prefix(anyOnline ? 4 : 2)).map(\.target)
   }
 
   private func identity(of target: Target) -> String? {

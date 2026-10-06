@@ -4536,7 +4536,7 @@ final class SyncService: ObservableObject {
   private var lastInboundMessageAt: TimeInterval?
   private var allowAutoReconnect = true
   /// User-initiated disconnects should stay disconnected until the user explicitly reconnects or pairs again.
-  private(set) var autoReconnectPausedByUser = false
+  private var autoReconnectPausedByUser = false
   /// When a saved pairing exists but discovery has not resolved the host yet, wait
   /// for live Bonjour data instead of dialing stale cached IPs on launch.
   private var autoReconnectAwaitingLiveDiscovery = false
@@ -6749,16 +6749,24 @@ final class SyncService: ObservableObject {
       // machines: a shared address (a DHCP lease, the previous machine's route
       // still current while the next one is saved) or a shared display name
       // must never merge them, or one machine's pairing is silently dropped.
-      let identity = syncNonEmpty(profile.hostIdentity ?? profile.lastHostDeviceId)?.lowercased()
       let matchedIndex = identityKeys.lazy.compactMap { keyToIndex[$0] }.first { index in
-        let other = canonicalProfiles[index]
-        guard let identity,
-              let otherIdentity = syncNonEmpty(other.hostIdentity ?? other.lastHostDeviceId)?.lowercased()
+        guard let identity = profile.machineIdentity,
+              let otherIdentity = canonicalProfiles[index].machineIdentity
         else { return true }
         return identity == otherIdentity
       }
       if let index = matchedIndex {
-        if shouldPreferProfile(profile, over: canonicalProfiles[index]) {
+        let existing = canonicalProfiles[index]
+        // An older profile that never learned its identity may merge with an
+        // identified one, but the identified profile always wins, in either
+        // order: it is the one its pairing token is keyed by.
+        let replaces: Bool
+        switch (existing.machineIdentity != nil, profile.machineIdentity != nil) {
+        case (false, true): replaces = true
+        case (true, false): replaces = false
+        default: replaces = shouldPreferProfile(profile, over: existing)
+        }
+        if replaces {
           canonicalProfiles[index] = profile
         }
         for key in identityKeys { keyToIndex[key] = index }
@@ -20631,35 +20639,34 @@ final class SyncService: ObservableObject {
       let ack = try decode(payload, as: SyncChangesetAckPayload.self)
       handleChangesetAck(ack)
     case "brain_status":
-      if let dict = payload as? [String: Any] {
-        // A status from the previous machine's socket can land just after the
-        // phone switched to another one. Writing it would stamp the old
-        // machine's id and name onto the new machine's saved profile, which
-        // read as the same machine and dropped one of the two pairings.
-        let statusDeviceId = syncNonEmpty((dict["brain"] as? [String: Any])?["deviceId"] as? String)
-        let activeIdentity = syncNonEmpty(activeHostProfile?.hostIdentity)
-        let statusIsForActiveMachine = statusDeviceId == nil || activeIdentity == nil
-          || statusDeviceId?.lowercased() == activeIdentity?.lowercased()
-        if let brain = dict["brain"] as? [String: Any], statusIsForActiveMachine {
-          setHostName(brain["deviceName"] as? String)
-          updateProfile { profile in
-            profile.hostName = brain["deviceName"] as? String
-            profile.lastHostDeviceId = brain["deviceId"] as? String
-          }
-          if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
-            let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
-            let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
-            recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
-          }
+      // A status from the previous machine's socket can land just after the
+      // phone switched to another one. Writing it would stamp the old
+      // machine's id, name and relay route onto the new machine's saved
+      // profile, which then read as the same machine and dropped a pairing.
+      let statusMachine = ((payload as? [String: Any])?["brain"] as? [String: Any])
+        .flatMap { syncNonEmpty($0["deviceId"] as? String)?.lowercased() }
+      let statusIsForActiveMachine = statusMachine == nil
+        || activeHostProfile?.machineIdentity == nil
+        || statusMachine == activeHostProfile?.machineIdentity
+      if statusIsForActiveMachine,
+         let dict = payload as? [String: Any],
+         let brain = dict["brain"] as? [String: Any] {
+        setHostName(brain["deviceName"] as? String)
+        updateProfile { profile in
+          profile.hostName = brain["deviceName"] as? String
+          profile.lastHostDeviceId = brain["deviceId"] as? String
+        }
+        if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
+          let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
+          let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
+          recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
         }
         // Relay reachability can flip live. `brain_status` always carries
         // `cloudRelayWssUrl` on new hosts: a wss route when the relay is up,
         // JSON null when it was turned off. Track both so an already-paired
         // phone gains the relay the moment the host enables it, and drops it
         // the moment it goes away. Key absent = older host → leave as-is.
-        if !statusIsForActiveMachine {
-          // Another machine's relay route; see above.
-        } else if let url = dict["cloudRelayWssUrl"] as? String, syncIsFullWebSocketRoute(url) {
+        if let url = dict["cloudRelayWssUrl"] as? String, syncIsFullWebSocketRoute(url) {
           updateProfile { profile in
             let merged = syncMergedRelayCandidates(advertised: url, existing: profile.savedRelayCandidates)
             profile.savedRelayCandidates = merged.isEmpty ? nil : merged
@@ -25379,6 +25386,28 @@ extension SyncService {
     // Leave the previous machine's project; the Hub is the landing surface.
     projectHubPresented = true
     return await reconnect(toSavedHost: host)
+  }
+
+  /// Make another machine primary; the previous primary stays connected as a
+  /// fleet machine when it was live. One that was not live stays off.
+  @discardableResult
+  func switchFocusKeepingPrevious(toMachineKey machineKey: String) async -> Bool {
+    if let previous = focusedMachineKey, previous != machineKey, connectionState == .connected {
+      machineFleet?.markConnected(machineKey: previous)
+    }
+    return await switchFocus(toMachineKey: machineKey)
+  }
+
+  /// A primary machine is chosen and connected or connecting. Without one, a
+  /// machine the user connects becomes primary rather than a fleet machine.
+  var primaryIsAttached: Bool {
+    focusedMachineKey != nil && (connectionState == .connected || connectionState == .connecting)
+  }
+
+  /// The user disconnected the primary: it stays off until they connect it
+  /// again, and lists as available rather than as an unreachable primary.
+  var primaryDisconnectedByUser: Bool {
+    connectionState == .disconnected && autoReconnectPausedByUser
   }
 
   /// Settings "Forget on this phone": the machine leaves the connected set,

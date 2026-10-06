@@ -162,9 +162,12 @@ final class DeepLinkRouter {
   }
 
   /// Routes a scanned/opened pairing URL — `https://ade-app.dev/pair#<payload>`
-  /// or `ade://pair#<payload>` — into the pairing flow. The payload rides the
-  /// fragment; we hand the whole URL to `SyncService` for the settings screen
-  /// to parse and present (reconnect for a known machine, PIN for a new one).
+  /// — into the pairing flow. The payload rides the fragment; we hand the whole
+  /// URL to `SyncService` for the settings screen to parse and present
+  /// (reconnect for a known machine, PIN for a new one). `ade://pair#…` is
+  /// claimed too, so no other handler acts on it, but `PairingQrPayload`
+  /// accepts only the https form: any app can open a custom-scheme link, and a
+  /// known machine's routes must not be re-pointed by one.
   private func routePairingURL(_ url: URL) -> Bool {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
     let scheme = components.scheme?.lowercased()

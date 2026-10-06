@@ -125,11 +125,7 @@ struct HubConnectionPill: View {
           machines: account.machines
         )
       },
-      hostDisplayName: accountMachinePresentationName(
-        hostIdentity: syncService.activeHostProfile?.hostIdentity,
-        fallback: syncService.hostName,
-        machines: account.machines
-      )
+      hostDisplayName: syncService.focusedMachineAccountName
     )
   }
 
@@ -1102,16 +1098,10 @@ struct HubNoMachineState: View {
     syncService.canReconnectToSavedHost
   }
 
-  /// The account's name for the machine when it has one ("windows"), the
-  /// computer's own host name otherwise, as the hub pill names it.
+  /// The account's name for the machine when it has one ("windows"), as the
+  /// hub pill names it. `account` is observed so a rename shows at once.
   private var machineDisplayName: String? {
-    let name = syncService.hostName ?? syncService.activeHostProfile?.hostName
-    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return accountMachinePresentationName(
-      hostIdentity: syncService.activeHostProfile?.hostIdentity,
-      fallback: trimmed?.isEmpty == false ? trimmed : nil,
-      machines: account.machines
-    )
+    syncService.focusedMachineAccountName
   }
 
   private var statusText: String {

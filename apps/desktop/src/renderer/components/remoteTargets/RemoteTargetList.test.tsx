@@ -1854,6 +1854,7 @@ describe("RemoteTargetList", () => {
         detailOpen={false}
         onToggleDetail={onToggleDetail}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
       />,
     );
 
@@ -1870,6 +1871,7 @@ describe("RemoteTargetList", () => {
         detailOpen
         onToggleDetail={onToggleDetail}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
       />,
     );
     expect(screen.getByText("Finish setup on the other computer")).toBeTruthy();
@@ -1889,6 +1891,7 @@ describe("RemoteTargetList", () => {
         detailOpen={false}
         onToggleDetail={vi.fn()}
         onConnect={vi.fn()}
+        onCancelConnect={vi.fn()}
         onRenamed={onRenamed}
       />,
     );

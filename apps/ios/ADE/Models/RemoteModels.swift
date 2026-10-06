@@ -217,6 +217,14 @@ struct HostConnectionProfile: Codable, Equatable {
   }
 }
 
+extension HostConnectionProfile {
+  /// The machine's device identity, lowercased: the one stable way to tell two
+  /// machines apart. Nil for an older pairing that never learned it.
+  var machineIdentity: String? {
+    (nonEmptyTrimmed(hostIdentity) ?? nonEmptyTrimmed(lastHostDeviceId))?.lowercased()
+  }
+}
+
 /// A new-chat creation queued while offline. Persisted (App Group defaults) so
 /// the Work list can render a "Pending sync" row that survives relaunch. `id`
 /// is the stable command id of the queued `chat.create`; when that command
