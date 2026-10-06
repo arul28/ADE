@@ -4,6 +4,7 @@ import type { WorktreeParentRef } from "../../../shared/types";
 import {
   findAdeManagedWorktreeRoot,
   findLinkedLaneWorktreeRoot,
+  gitCommonDirOf,
   linkedWorktreeParentRoot,
   readGitDirPointer,
   realpathIfExists,
@@ -24,16 +25,19 @@ export function resolveGitMetadataDirectory(projectRoot: string): string | null 
 
 /**
  * The linked worktrees Git records for the repository at `projectRoot` that
- * belong to this ADE project, read from `<gitdir>/worktrees/<name>/gitdir` (the
- * path of that checkout's `.git` file) without spawning git. Lanes are not only
+ * belong to this ADE project, read from `<common>/worktrees/<name>/gitdir` (the
+ * path of that checkout's `.git` file) without spawning git. The shared Git
+ * directory is used, not the project's own, so a project that is itself a
+ * linked worktree (or a checkout of a bare repository) still finds its lanes. Lanes are not only
  * under `.ade/worktrees/`: a sibling `repo-worktrees/feature` checkout is a
  * lane too. Missing folders are left out, and so is a worktree opened as an ADE
  * project of its own — the same rule the CLI uses to pick a checkout's project.
  */
 export function listLinkedLaneWorktreeRoots(projectRoot: string): string[] {
-  const gitDir = resolveGitMetadataDirectory(projectRoot);
-  if (!gitDir) return [];
-  const adminRoot = path.join(gitDir, "worktrees");
+  const commonGitDir = gitCommonDirOf(projectRoot);
+  if (!commonGitDir) return [];
+  const project = realpathIfExists(projectRoot);
+  const adminRoot = path.join(commonGitDir, "worktrees");
   let names: string[];
   try {
     names = fs.readdirSync(adminRoot);
@@ -46,9 +50,9 @@ export function listLinkedLaneWorktreeRoots(projectRoot: string): string[] {
       const pointer = fs.readFileSync(path.join(adminRoot, name, "gitdir"), "utf8").trim();
       if (!pointer) continue;
       const worktreeRoot = path.dirname(path.resolve(adminRoot, name, pointer));
-      if (!fs.statSync(worktreeRoot).isDirectory()) continue;
+      if (!fs.statSync(worktreeRoot).isDirectory() || pathsEqual(realpathIfExists(worktreeRoot), project)) continue;
       const owner = findLinkedLaneWorktreeRoot(worktreeRoot);
-      if (owner && pathsEqual(owner.projectRoot, realpathIfExists(projectRoot))) roots.push(worktreeRoot);
+      if (owner && pathsEqual(owner.projectRoot, project)) roots.push(worktreeRoot);
     } catch {
       // pruned or unreadable entry
     }
