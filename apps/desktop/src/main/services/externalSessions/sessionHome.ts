@@ -3,7 +3,9 @@ import type { ExternalSessionHome, LaneSummary } from "../../../shared/types";
 import { pathContains, realishPath } from "./discoveryUtils";
 import { pathComparisonKey, pathsEqual } from "../shared/pathCompare";
 
-export type SessionHomeLane = Pick<LaneSummary, "id" | "name" | "branchRef" | "color" | "laneType" | "worktreePath">;
+export type SessionHomeLane = Pick<LaneSummary, "id" | "name" | "branchRef" | "color" | "laneType" | "worktreePath"> & {
+  attachedRootPath?: string | null;
+};
 
 type IndexedLane = { lane: SessionHomeLane; root: string };
 
@@ -28,9 +30,12 @@ function startsWithWorktreesSegment(relative: string): boolean {
  * match wins and a primary-lane match through `.ade/worktrees/` is rejected.
  */
 export function createSessionHomeResolver(lanes: readonly SessionHomeLane[]): SessionHomeResolver {
+  // An attached lane may be known only by its attached root, so both count.
   const indexed: IndexedLane[] = lanes
-    .filter((lane) => lane.worktreePath?.trim())
-    .map((lane) => ({ lane, root: realishPath(lane.worktreePath) }))
+    .flatMap((lane) => [lane.worktreePath, lane.attachedRootPath]
+      .map((root) => root?.trim())
+      .filter((root): root is string => Boolean(root))
+      .map((root) => ({ lane, root: realishPath(root) })))
     .sort((left, right) => right.root.length - left.root.length);
   const memo = new Map<string, ExternalSessionHome | null>();
 

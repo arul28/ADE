@@ -6,6 +6,7 @@ import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { ProjectLaunchContext } from "./types";
 import { gitOwnershipMessage, parseGitOwnershipError } from "../services/projects/gitOwnership";
 import { findLinkedLaneWorktreeRoot } from "../services/projects/projectRoots";
+import { isPathInside } from "../../../desktop/src/main/services/shared/pathCompare";
 
 function normalizeRoot(value: string): string {
   return path.resolve(value);
@@ -133,10 +134,8 @@ export function chooseInitialLane(
       const worktreePath = normalizeRoot(lane.worktreePath);
       const attachedRootPath = lane.attachedRootPath ? normalizeRoot(lane.attachedRootPath) : null;
       return (
-        workspaceRoot === worktreePath
-        || workspaceRoot.startsWith(`${worktreePath}${path.sep}`)
-        || (attachedRootPath !== null
-          && (workspaceRoot === attachedRootPath || workspaceRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+        isPathInside(workspaceRoot, worktreePath)
+        || (attachedRootPath !== null && isPathInside(workspaceRoot, attachedRootPath))
       );
     });
   if (byPath) return byPath;

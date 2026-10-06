@@ -697,8 +697,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   const projectScopeRoots = async (): Promise<string[]> => {
     const roots = new Set(deriveProjectScopeRoots(args.projectRoot));
     for (const lane of await sharedLanes()) {
-      const worktreePath = lane.worktreePath?.trim();
-      if (worktreePath) roots.add(worktreePath);
+      for (const root of [lane.worktreePath, lane.attachedRootPath]) {
+        const trimmed = root?.trim();
+        if (trimmed) roots.add(trimmed);
+      }
     }
     return Array.from(roots);
   };
