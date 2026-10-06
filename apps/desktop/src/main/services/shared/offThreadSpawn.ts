@@ -371,6 +371,7 @@ export function execFileOffThread(
     };
     const timer = setTimeout(() => kill(new Error(`${command} timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
     const collect = (sink: Buffer[]) => (data: Buffer) => {
+      if (failure) return;
       bytes += data.length;
       if (bytes > maxBuffer) {
         kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
