@@ -188,6 +188,24 @@ final class WindowControl {
         }
     }
 
+    /// The lane's display moved: every window the lane holds on the old rect
+    /// moves by the same offset, so the layout survives, and the placement
+    /// follows. The sweep's escape check is the backstop for a window this
+    /// misses, and it reads the new placement.
+    func displayMoved(laneId: String, from old: DisplayPlacement, to new: DisplayPlacement, displayId: CGDirectDisplayID) {
+        let dx = new.origin.x - old.origin.x
+        let dy = new.origin.y - old.origin.y
+        let held = Set(ownership.windows(forLane: laneId).map { CGWindowID($0.windowId) })
+        var moved = 0
+        for window in listWindows(windowIds: held) where !window.minimized && old.frame.intersects(window.frame) {
+            guard let element = axWindow(for: window) else { continue }
+            if Self.setFrame(element, window.frame.offsetBy(dx: dx, dy: dy)) { moved += 1 }
+        }
+        setPlacement(laneId: laneId, placement: new, displayId: displayId)
+        log("lane \(laneId)'s display moved from \(old.origin) to \(new.origin); moved \(moved) of its windows with it")
+        emitWindowsChanged(laneId: laneId)
+    }
+
     func clearPlacement(laneId: String) {
         lock.lock()
         defer { lock.unlock() }

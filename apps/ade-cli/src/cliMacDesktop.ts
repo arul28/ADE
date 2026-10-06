@@ -417,11 +417,16 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
         `mac-desktop scroll: unknown direction '${direction}'. Valid values: up, down, left, right.`,
       );
     }
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    if ((x == null) !== (y == null)) {
+      throw new CliUsageError("screen scroll requires both --x and --y when scrolling at a point.");
+    }
     return desktopAction("screen scroll", "scroll", {
       ...laneClaim(),
       direction,
       amount: readNumberOption(args, ["--amount", "--lines"]),
-      ...macDesktopTargetFromToken(rest[1] ?? null),
+      ...(x == null ? macDesktopTargetFromToken(rest[1] ?? null) : { x, y }),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...realMode(),
     }, "mac-desktop-action");
@@ -439,6 +444,9 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       from,
       to,
       durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
+      // A drag stays inside the window it starts in by default; --real is for
+      // a drop onto another app or the Dock.
+      ...realMode(),
     }, "mac-desktop-action");
   }
   if (sub === "wait" || sub === "wait-for") {

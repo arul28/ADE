@@ -3883,8 +3883,9 @@ async function resolveUnboundCallerLane(
  *
  * - It never speaks for someone else. `chatSessionId`, `controllerId` and
  *   `holderId` are stripped, so its input is held under no one's lease: the
- *   accessibility-mode commands work (they check no lease), and `mode: "real"`
- *   is refused by the service because no lease is held by an anonymous caller.
+ *   accessibility- and background-mode commands work (they check no lease),
+ *   and `mode: "real"` is refused by the service because no lease is held by
+ *   an anonymous caller.
  *   `requestInputLease` is refused outright rather than stripped: the lease is
  *   granted to the chat that asks, after a card in that chat, and this caller
  *   has no chat to ask in. A person who wants real input takes control from

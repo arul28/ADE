@@ -44,7 +44,7 @@ struct VirtualDisplayHandle {
     let name: String
     let displayId: CGDirectDisplayID
     let mode: String
-    let placement: DisplayPlacement
+    var placement: DisplayPlacement
     let createdAt: Date
     /// Nil in `offscreen-region` mode: there is no display object, only a rect.
     let display: NSObject?
@@ -117,6 +117,35 @@ final class VirtualDisplayHost {
         lock.lock()
         defer { lock.unlock() }
         return handles.values.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Lanes whose virtual display the window server has moved, with where it
+    /// is now. The handles are updated in place.
+    ///
+    /// Adding a display makes macOS re-arrange the others: a lane's display
+    /// that sat at x = -2560 can be pushed to -5120 when another lane's
+    /// display (this helper's or another ADE's) takes its old spot. Nothing
+    /// re-read the origin, so the lane kept clamping, capturing and parking
+    /// at the old rect, which now belonged to the other lane's screen.
+    typealias DisplayMove = (laneId: String, displayId: CGDirectDisplayID, from: DisplayPlacement, to: DisplayPlacement)
+
+    func refreshMovedPlacements() -> [DisplayMove] {
+        lock.lock()
+        defer { lock.unlock() }
+        var moved: [DisplayMove] = []
+        for (laneId, handle) in handles where handle.mode == "virtual" {
+            let bounds = CGDisplayBounds(handle.displayId)
+            guard bounds.width > 0, bounds.origin != handle.placement.origin else { continue }
+            let next = DisplayPlacement(
+                origin: bounds.origin,
+                width: handle.placement.width,
+                height: handle.placement.height,
+                scale: handle.placement.scale
+            )
+            moved.append((laneId: laneId, displayId: handle.displayId, from: handle.placement, to: next))
+            handles[laneId]?.placement = next
+        }
+        return moved
     }
 
     /// Creates, or returns, the lane's display.

@@ -739,6 +739,7 @@ ade mac-desktop release --window <id> --text          # give a window back; omit
 ade mac-desktop open <app|path|url> --text            # launch onto the display; args after -- belong to the app
 ade mac-desktop observe --text                        # screenshot + numbered elements
 ade mac-desktop click <handle> --text                 # also: type, press, scroll, drag, wait
+ade mac-desktop click --x 900 --y 420 --right --text  # a point: delivered to the app alone, no pointer moves; --real only for hover or a drop onto another app
 ade mac-desktop type "reddit" --submit --text         # --submit presses Return after the text
 ade mac-desktop press return --cmd --text             # modifiers: --cmd --shift --alt --control
 ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --text
