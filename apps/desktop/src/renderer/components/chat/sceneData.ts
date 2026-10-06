@@ -63,17 +63,16 @@ export function SceneDataFeed({
   const snapshots = useAppStore((state) => (scope.pin ? NO_SNAPSHOTS : state.laneSnapshots));
   const sessions = useSessionsForPin(scope.binding);
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
-  /** Bumped by every PR change the chat's machine announces (checks, reviews, state). */
-  const [prRevision, setPrRevision] = useState(0);
   useEffect(() => {
     if (!wantPrs) return;
     return window.ade.prs.onEvent((event) => {
-      if (event.type === "prs-updated") setPrRevision((value) => value + 1);
+      // The event carries the machine's PR list, as `useLanePrs` reads it.
+      if (event.type === "prs-updated") setPrs(event.prs);
     }, scope.pin);
   }, [wantPrs, scope.pin]);
 
-  // PRs: once, on every announced PR change, and when lanes change. Coalesced
-  // with every other reader of the same list.
+  // PRs: read once and when lanes change (coalesced with every other reader of
+  // the same list), and taken from each `prs-updated` the machine announces.
   useEffect(() => {
     if (!wantPrs) return;
     let cancelled = false;
@@ -81,7 +80,7 @@ export function SceneDataFeed({
       .then((list) => { if (!cancelled) setPrs(Array.isArray(list) ? list : []); })
       .catch(() => { if (!cancelled) setPrs((existing) => existing ?? []); });
     return () => { cancelled = true; };
-  }, [wantPrs, lanes, prRevision, scope.rootPath, scope.pin]);
+  }, [wantPrs, lanes, scope.rootPath, scope.pin]);
 
   const sendRef = useRef(send);
   sendRef.current = send;

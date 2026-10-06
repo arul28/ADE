@@ -22,7 +22,7 @@ import { COLORS } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { openChatDeeplinkTarget } from "./ChipText";
+import { openChatDeeplinkTarget } from "./chatDeeplinks";
 import { HighlightedCode } from "./CodeHighlighter";
 import {
   captureSceneShell,
@@ -79,7 +79,7 @@ const SCENE_OPEN_MIN_INTERVAL_MS = 800;
 
 /** Every whole http(s) URL written in a scene's source. */
 function webUrlsIn(source: string): Set<string> {
-  return new Set(source.match(/https?:\/\/[^\s"'<>`)]+/g) ?? []);
+  return new Set(source.match(/https?:\/\/[^\s"'<>`]+/g) ?? []);
 }
 
 /** True when `url` is a web link ADE itself put in a scene's data snapshot. */
@@ -205,7 +205,9 @@ export function SceneFrame({
   // scrolled past during a ten-minute turn must not run all that time), and
   // always as the expanded view. During its turn the scroll-pause gate is off,
   // since a streaming transcript scrolls itself on every delta.
-  const onScreen = useSceneOnScreen(wrapperRef, !expandedVariant && !failed && !streaming, { ignoreScroll: live });
+  // Off while collapsed: the collapsed banner has no wrapper, and the observer
+  // must re-attach to the scene's wrapper when Retry or Show anyway brings it back.
+  const onScreen = useSceneOnScreen(wrapperRef, !expandedVariant && !failed && !streaming && !collapsed, { ignoreScroll: live });
   const wantFrame = (expandedVariant || onScreen) && !collapsed;
 
   /**
@@ -441,6 +443,7 @@ export function SceneFrame({
     setSceneError(null);
     setDrawFailed(false);
     setShowAnyway(false);
+    setPictureTheme(null);
     latestDataRef.current = null;
   }, [source, scopeKey]);
 
