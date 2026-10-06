@@ -87,7 +87,7 @@ describe("AgentCliAuthCard", () => {
         tracked: true,
         toolType: "shell",
         startupCommand: "npm install -g @openai/codex",
-      });
+      }, null);
     });
     expect(onRevealTerminal).toHaveBeenCalledWith({
       terminalId: "terminal-auth-1",
@@ -119,7 +119,7 @@ describe("AgentCliAuthCard", () => {
         title: "auth",
         toolType: "shell",
         startupCommand: "codex login",
-      }));
+      }), null);
     });
     expect(onRevealTerminal).toHaveBeenCalledWith({
       terminalId: "terminal-auth-1",
@@ -208,11 +208,11 @@ describe("AgentCliAuthCard", () => {
       expect(window.ade.lanes.list).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: false,
-      });
+      }, null);
       expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-default",
         startupCommand: "npm install -g @openai/codex",
-      }));
+      }), null);
     });
   });
 });

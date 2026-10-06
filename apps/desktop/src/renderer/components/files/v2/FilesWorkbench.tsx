@@ -969,7 +969,7 @@ export function FilesWorkbench({
       }
     };
 
-    const unsub = window.ade.files.onChange((event) => {
+    const unsub = files.onChange((event) => {
       const ev = event as FileChangeEvent;
       // `*` is the web adapter's stand-in when it has not learned any workspace
       // id yet; it still means "this project's files moved".

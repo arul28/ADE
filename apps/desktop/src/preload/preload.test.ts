@@ -8120,6 +8120,58 @@ describe("per-chat runtime routing", () => {
     );
   });
 
+  it("delivers a pinned machine's file changes plus this computer's loose folders, and nothing else", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineB);
+      await bridge.app.getWindowSession();
+      const pinnedLaneEdit = { workspaceId: "lane-on-a", type: "modified", path: "src/app.ts" };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [{
+              id: 11,
+              timestamp: "2026-07-28T12:00:01.000Z",
+              category: "file",
+              payload: { type: "file_change", event: pinnedLaneEdit },
+            }],
+            nextCursor: 11,
+            hasMore: false,
+            eventEpoch: "machine-a-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onChange = vi.fn();
+      const remove = bridge.files.onChange(onChange, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const localFilesListeners = on.mock.calls
+        .filter(([channel]) => channel === IPC.filesChange)
+        .map(([, listener]) => listener);
+      expect(localFilesListeners.length).toBeGreaterThan(0);
+      // This process watches loose folders whatever the pin says, so their
+      // changes arrive on local IPC; a lane id on local IPC is this computer's
+      // lane, not the pinned machine's, and must not leak into the pane.
+      const looseFolderEdit = { workspaceId: "external-local:abc123", type: "modified", path: "notes.md" };
+      const localLaneEdit = { workspaceId: "lane-on-a", type: "modified", path: "src/other.ts" };
+      for (const listener of localFilesListeners) {
+        listener({}, looseFolderEdit);
+        listener({}, localLaneEdit);
+      }
+
+      expect(onChange).toHaveBeenCalledWith(pinnedLaneEdit);
+      expect(onChange).toHaveBeenCalledWith(looseFolderEdit);
+      expect(onChange).not.toHaveBeenCalledWith(localLaneEdit);
+
+      remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("delivers pinned PTY data and exit events without rebinding the active project", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));

@@ -329,6 +329,61 @@ describe("prPollingService", () => {
     }));
   });
 
+  it("discovers an agent-opened lane PR while other PRs are already tracked", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    // A PR opened with `gh pr create` has no row until a repo snapshot maps it
+    // to its lane; a tracked-PR refresh never sees it.
+    const tracked = createSummary({ id: "pr-tracked", githubPrNumber: 101, laneId: "lane-1" });
+    const opened = createSummary({ id: "pr-opened", githubPrNumber: 202, laneId: "lane-2", title: "Agent PR" });
+    let rows: PrSummary[] = [tracked];
+    let githubHasOpenedPr = false;
+    const events: any[] = [];
+    const prService = {
+      listAll: () => rows,
+      discoverLanePullRequests: vi.fn(async () => {
+        if (githubHasOpenedPr) rows = [tracked, opened];
+        return rows;
+      }),
+      refresh: vi.fn(async () => rows),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(1);
+
+    githubHasOpenedPr = true;
+    // Inside the 10-minute window only tracked rows refresh.
+    for (let index = 0; index < 9; index += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === "prs-updated" && event.prs.some((pr: PrSummary) => pr.id === opened.id))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "prs-updated",
+      prs: expect.arrayContaining([expect.objectContaining({ id: opened.id, laneId: "lane-2" })]),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "opened",
+      prId: opened.id,
+    }));
+  });
+
   it("throttles empty-cache discovery to a slow cadence and stays idle-cheap", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

@@ -12170,29 +12170,31 @@ export function createPrService({
   const syncLanePr = async (laneId: string): Promise<PrSummary | null> => {
     const normalizedLaneId = String(laneId ?? "").trim();
     if (!normalizedLaneId) return null;
+    const readCurrent = (): PrSummary | null =>
+      withGithubStackMembership(getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null);
     try {
-      const existing = withGithubStackMembership(
-        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
-      );
+      const existing = readCurrent();
       if (existing && !existing.unmapped) {
         // Mapped row: refresh by id (heals merged/closed via fetchPr), then
         // return the fresh row summary so the caller sees the new state.
         const refreshed = await refreshPrIds([existing.id]);
         return withGithubStackMembership(
-          refreshed.find((pr) => pr.id === existing.id)
-          ?? getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary
-          ?? null
-        );
+          refreshed.find((pr) => pr.id === existing.id) ?? null
+        ) ?? readCurrent();
       }
-      // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
-      // merged PR on the lane branch gets backfilled/mapped, then re-read.
+      // Not mapped: ask GitHub for an open PR on the lane's own branch first.
+      // That is one request, where the repo-wide sweep below pages through
+      // closed history and took about a minute on a busy repo.
+      await tryAutoMapLaneByBranch(normalizedLaneId);
+      const branchMapped = readCurrent();
+      if (branchMapped && !branchMapped.unmapped) return branchMapped;
+      // Still nothing (or an unmapped GitHub projection): pull state:"all" so
+      // a merged PR on the lane branch gets backfilled/mapped, then re-read.
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
       // instead of returning possibly-stale local projections. It is a direct
       // user action, so it is also allowed past the GitHub failure ladder.
       await getGithubSnapshot({ force: true, includeExternalClosed: true });
-      return withGithubStackMembership(
-        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
-      );
+      return readCurrent();
     } catch (error) {
       logger.warn("prs.sync_lane_pr_failed", {
         laneId: normalizedLaneId,

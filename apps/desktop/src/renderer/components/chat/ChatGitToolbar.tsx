@@ -19,8 +19,8 @@ import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
-import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { chatRunsOnThisComputer, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
@@ -309,6 +309,19 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       unsubscribe();
     };
   }, [refreshPr, runtimePinKey]);
+
+  // See `requestMachinePrReconcile`; the subscription above re-reads the PR
+  // when the reconcile finishes.
+  const laneOnOtherMachine = !chatRunsOnThisComputer(scope);
+  useEffect(() => {
+    if (!laneOnOtherMachine) return;
+    const request = () => requestMachinePrReconcile(projectRoot, runtimePinRef.current);
+    request();
+    window.addEventListener("focus", request);
+    return () => {
+      window.removeEventListener("focus", request);
+    };
+  }, [laneOnOtherMachine, projectRoot, runtimePinKey]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.

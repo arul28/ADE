@@ -652,9 +652,10 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 // ---------------------------------------------------------------------------
 // PR reconcile-on-focus: global anti-stampede limiter.
 //
-// The always-on brain has NO PR poller, so unfocused projects go stale unless a
-// webhook fires. When a project comes into focus/opens we run a throttled
-// catch-up reconcile (prService.reconcileOnFocus). Per-project throttle +
+// The brain's PR poller only refreshes tracked rows each tick and discovers new
+// lane PRs on a slow cadence, so when a project comes into focus/opens we run a
+// throttled catch-up reconcile (prService.reconcileOnFocus). Projects on other
+// machines: see `requestMachinePrReconcile`. Per-project throttle +
 // single-flight lives on each prService instance; THIS module-level limiter
 // caps the whole app at RECONCILE_GLOBAL_MAX concurrent reconciles and staggers
 // extra opens with jitter so launching several projects at once cannot stampede

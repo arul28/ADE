@@ -83,7 +83,7 @@ export function UserMessageIssueContext({
             void window.ade?.lanes?.detachLinearIssueFromSession?.({
               chatSessionId: sessionId,
               issueId: issue.id,
-            });
+            }, machinePin);
           }
           setLinearDetailsIssueId(null);
         }}
@@ -108,7 +108,7 @@ export function UserMessageIssueContext({
             void window.ade?.lanes?.detachGitHubIssueFromSession?.({
               chatSessionId: sessionId,
               issueId: issue.id,
-            });
+            }, machinePin);
           }
           setGitHubDetailsIssueId(null);
         }}

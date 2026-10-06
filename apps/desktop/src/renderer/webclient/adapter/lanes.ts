@@ -196,10 +196,16 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
     getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),
     attachGitHubIssueToSession: (args: unknown) => call("lanes.attachGitHubIssueToSession", args, [], false),
-    detachGitHubIssueFromSession: (args: unknown) => call("lanes.detachGitHubIssueFromSession", args, false, false),
+    detachGitHubIssueFromSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("detachGitHubIssueFromSession", pin);
+      return call("lanes.detachGitHubIssueFromSession", args, false, false);
+    },
     listGitHubIssuesForSession: (args: unknown) => call("lanes.listGitHubIssuesForSession", args, []),
     listGitHubIssuesForLaneSessions: (args: unknown) => call("lanes.listGitHubIssuesForLaneSessions", args, []),
-    rebaseStart: (args: unknown) => call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false),
+    rebaseStart: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("rebaseStart", pin);
+      return call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false);
+    },
     rebasePush: (args: unknown) => call("lanes.rebasePush", args, null, false),
     rebaseRollback: (args: unknown) => call("lanes.rebaseRollback", args, null, false),
     rebaseAbort: (args: unknown) => call("lanes.rebaseAbort", args, null, false),
@@ -210,7 +216,10 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     deferRebaseSuggestion: async (args: unknown) => {
       await call("lanes.deferRebaseSuggestion", args, undefined, false);
     },
-    listAutoRebaseStatuses: () => call("lanes.listAutoRebaseStatuses", {}, []),
+    listAutoRebaseStatuses: async (pin?: RuntimePinArg) => {
+      guardPin("listAutoRebaseStatuses", pin);
+      return call("lanes.listAutoRebaseStatuses", {}, []);
+    },
     dismissAutoRebaseStatus: async (args: unknown) => {
       await call("lanes.dismissAutoRebaseStatus", args, undefined, false);
     },
