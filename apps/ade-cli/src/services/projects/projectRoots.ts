@@ -65,7 +65,10 @@ export function linkedWorktreeParentRoot(worktreeRoot: string): string | null {
   if (path.basename(commonGitDir) !== ".git") return null;
   try {
     const back = fs.readFileSync(path.join(adminDir, "gitdir"), "utf8").trim();
-    if (!back || !pathsEqual(path.resolve(adminDir, back), path.join(worktreeRoot, ".git"))) return null;
+    if (!back || !pathsEqual(
+      realpathIfExists(path.resolve(adminDir, back)),
+      realpathIfExists(path.join(worktreeRoot, ".git")),
+    )) return null;
   } catch {
     return null;
   }
@@ -107,7 +110,11 @@ function parentHasLaneAt(parentRoot: string, worktreeRoot: string): boolean {
       "select worktree_path, attached_root_path from lanes where archived_at is null",
     ).all<{ worktree_path?: string | null; attached_root_path?: string | null }>();
     return rows.some((row) => [row.worktree_path, row.attached_root_path].some(
-      (candidate) => typeof candidate === "string" && candidate.trim() && pathsEqual(path.resolve(candidate), worktreeRoot),
+      (candidate) => typeof candidate === "string"
+        && candidate.trim()
+        // Git and ADE can store `/var/...` while realpath resolves the same
+        // macOS checkout as `/private/var/...`; compare both in realpath space.
+        && pathsEqual(realpathIfExists(path.resolve(candidate)), worktreeRoot),
     ));
   } catch {
     return false;

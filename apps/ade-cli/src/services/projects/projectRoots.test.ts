@@ -17,7 +17,7 @@ const { DatabaseSync } = require("node:sqlite") as {
 
 const roots: string[] = [];
 
-function makeLinkedWorktree(options: { ownDatabase?: boolean; registered?: boolean } = {}) {
+function makeLinkedWorktree(options: { ownDatabase?: boolean; registered?: boolean; absolutePointers?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linked-worktree-"));
   roots.push(root);
   const parent = path.join(root, "repository");
@@ -31,8 +31,11 @@ function makeLinkedWorktree(options: { ownDatabase?: boolean; registered?: boole
   fs.mkdirSync(admin, { recursive: true });
   fs.mkdirSync(nested, { recursive: true });
   fs.mkdirSync(path.join(worktree, ".ade"), { recursive: true });
-  fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${path.relative(worktree, admin)}\n`);
-  fs.writeFileSync(path.join(admin, "gitdir"), `${path.relative(admin, path.join(worktree, ".git"))}\n`);
+  const gitdirPointer = options.absolutePointers ? admin : path.relative(worktree, admin);
+  const worktreeGitFile = path.join(worktree, ".git");
+  const backPointer = options.absolutePointers ? worktreeGitFile : path.relative(admin, worktreeGitFile);
+  fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${gitdirPointer}\n`);
+  fs.writeFileSync(path.join(admin, "gitdir"), `${backPointer}\n`);
 
   const db = new DatabaseSync(path.join(parentAde, "ade.db"));
   db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
@@ -55,16 +58,16 @@ afterEach(() => {
 
 describe("linked lane project roots", () => {
   it("resolves a registered sibling worktree to its parent project", () => {
-    const fixture = makeLinkedWorktree({ ownDatabase: true, registered: true });
+    const fixture = makeLinkedWorktree({ ownDatabase: true, registered: true, absolutePointers: true });
 
     expect(findLinkedLaneWorktreeRoot(fixture.nested)).toEqual({
-      projectRoot: fixture.parent,
-      workspaceRoot: fixture.worktree,
+      projectRoot: fs.realpathSync.native(fixture.parent),
+      workspaceRoot: fs.realpathSync.native(fixture.worktree),
     });
     expect(isRegisteredLinkedLanePath(fixture.nested)).toBe(true);
     expect(detectProjectLaunchContext({ cwd: fixture.nested })).toMatchObject({
-      projectRoot: fixture.parent,
-      workspaceRoot: fixture.worktree,
+      projectRoot: fs.realpathSync.native(fixture.parent),
+      workspaceRoot: fs.realpathSync.native(fixture.worktree),
       laneHint: null,
     });
   });
@@ -73,8 +76,8 @@ describe("linked lane project roots", () => {
     const fixture = makeLinkedWorktree();
 
     expect(findLinkedLaneWorktreeRoot(fixture.nested)).toEqual({
-      projectRoot: fixture.parent,
-      workspaceRoot: fixture.worktree,
+      projectRoot: fs.realpathSync.native(fixture.parent),
+      workspaceRoot: fs.realpathSync.native(fixture.worktree),
     });
     expect(isRegisteredLinkedLanePath(fixture.nested)).toBe(false);
   });
