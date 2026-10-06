@@ -292,7 +292,14 @@ tears down the process answering the call, so the client confirms by
 reconnecting and reading the version. A brain cannot report on its own
 replacement. Embedded/test runtimes have no installed service and refuse rather
 than pretend. The desktop surfaces this as **Update & restart** on a connected
-machine that is behind, over `ade.remoteRuntime.updateAndRestart`.
+machine that is behind, over `ade.remoteRuntime.updateAndRestart`. When the
+host's desktop app is open, the brain hands the request to that app over the
+desktop bridge (`app_update.install`) instead, because an open app owns the
+brain and would put its own runtime back over a standalone update; the app runs
+its own consented install and its post-update transaction restarts the brain.
+While a standalone brain update is in flight (`runtime/update-status.json`), the
+desktop's connection pool does not repair the service. See
+[remote runtime](./features/remote-runtime/README.md#machineupdateandrestart).
 
 The version a caller names and the release it has to download are not spelled
 the same way. ADE publishes releases under `v`-prefixed tags while clients carry

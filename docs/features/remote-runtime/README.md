@@ -370,7 +370,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   build it has already seen published — using the shared
   `compareUpdateVersions`; a machine level with us gets no button. The click
   calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
-  renders the host's step-attributed message in the row.
+  renders the host's step-attributed message in the row, then checks the
+  machine's reported version against the reply's `pendingVersion`
+  (`describeMachineUpdateAttempt`) to say whether the update landed.
 - `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel with
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
@@ -1656,6 +1658,40 @@ instead of saying "something went wrong". The `restart` step comes back
 `pending` on purpose: it tears down the process answering the call, so the
 client confirms by reconnecting and reading the version. A brain cannot report
 on its own replacement.
+
+Which updater runs depends on whether the host's desktop app is open. A brain
+served by an open app belongs to that app: the app re-registers its own runtime
+whenever it sees the brain go missing, so a standalone runtime installed under
+it is replaced again within milliseconds (on 2026-10-05 a Mac Studio's open app
+put 1.2.90 back 10 ms after a remote update installed 1.2.91). So the host asks
+first. The desktop announces its bridge token on `ade/initialize`, and the brain
+calls `app_update.install` on that bridge
+(`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
+(`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its own
+feed, then answers `installing` (staged: it runs its consented
+`quitAndInstall` 1.5 s after replying, so the reply reaches the caller before
+the service uninstall takes the brain down), `downloading` (it installs when
+the download finishes, giving up after 30 minutes), `already_current`,
+`no_update`, `unsupported` (development and channel builds), or `failed`. The
+app's post-update transaction then restarts the brain on the new build. This is
+the same path on macOS and Windows. With no app attached, an app too old to
+know the method, or `unsupported`, the standalone `ade brain update` runs as
+before. The reply's `route` says which (`desktop_app` or `standalone`), and
+`pendingVersion` names the version the machine should come back on.
+
+A brain update this app did not start (`ade brain update` on the machine, or a
+remote one that fell back to the standalone route) writes its progress to
+`<ADE home>/runtime/update-status.json`. While that file says `staged` (2 min),
+`applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop's
+connection pool treats it as an update window and does not repair the service,
+so an open app cannot put its older runtime back over the new one.
+
+The client does not trust "reconnecting…". It records `pendingVersion` (or,
+from a host that predates it, `targetVersion` for an applied update) and checks
+the machine against it: once the machine reports that version the row says
+"Updated to X"; if it has not after 5 minutes (35 for a download) it says
+"Still on Y — the update to X didn't apply" with the version it is actually on.
+The button stays busy until then.
 
 ### Account state and reachability
 

@@ -4390,9 +4390,55 @@ describe("service repair storm control", () => {
     return logger.info.mock.calls.map((call) => String(call[0]));
   }
 
+  // The pool also reads `<ADE_HOME>/runtime/update-status.json`; keep it off
+  // this machine's real ADE home, where a real brain update may have run.
+  let repairAdeHome = "";
+  let originalRepairAdeHome: string | undefined;
+  beforeEach(() => {
+    originalRepairAdeHome = process.env.ADE_HOME;
+    repairAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-repair-home-"));
+    process.env.ADE_HOME = repairAdeHome;
+  });
+
   afterEach(() => {
     vi.useRealTimers();
+    if (originalRepairAdeHome === undefined) delete process.env.ADE_HOME;
+    else process.env.ADE_HOME = originalRepairAdeHome;
+    removeTempDir(repairAdeHome);
   });
+
+  it.each([
+    ["applying", 0, false],
+    ["restarting", 4 * 60_000, false],
+    ["succeeded", 30_000, false],
+    ["succeeded", 61_000, true],
+    ["applying", 6 * 60_000, true],
+    ["failed", 0, true],
+    ["staging", 0, true],
+  ])(
+    "a brain update left %s %ims ago lets repair reinstall the service: %s",
+    async (state, ageMs, expectInstall) => {
+      // `ade brain update` (or a remote "Update & restart" on the standalone
+      // route) restarts the service itself. Repairing inside that window put
+      // this app's older runtime back over the new one (2026-10-05).
+      vi.useFakeTimers();
+      const nowMs = Date.parse("2026-10-06T01:43:12.000Z");
+      vi.setSystemTime(new Date(nowMs));
+      const runtimeDir = path.join(repairAdeHome, "runtime");
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runtimeDir, "update-status.json"),
+        JSON.stringify({ state, updatedAt: new Date(nowMs - ageMs).toISOString(), version: "1.2.91" }),
+      );
+      const { pool, install } = createRepairPool();
+      try {
+        await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+        expect(install).toHaveBeenCalledTimes(expectInstall ? 1 : 0);
+      } finally {
+        pool.dispose();
+      }
+    },
+  );
 
   it("spreads repeated repairs out instead of one installer per attempt", () => {
     expect(serviceRepairBackoffMs(0)).toBe(0);

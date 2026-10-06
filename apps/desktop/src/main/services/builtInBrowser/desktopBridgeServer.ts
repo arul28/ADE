@@ -36,6 +36,11 @@ import {
   isDemoEngineBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/demoEngineBridgeClient";
 import {
+  DESKTOP_APP_UPDATE_BRIDGE_PREFIX,
+  DESKTOP_APP_UPDATE_INSTALL_METHOD,
+} from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
+import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
+import {
   type DemoEngine,
   type DemoPlan,
 } from "../../../shared/demoVideo/demoContract";
@@ -133,6 +138,13 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * `demo_engine.*`. Absent: those methods are not found.
    */
   demoEngine?: DemoEngine | null;
+  /**
+   * This app's updater, served to the runtime daemon as `app_update.install`
+   * so "Update & restart" pressed on another machine installs this app's
+   * update instead of a standalone runtime this app would then replace.
+   * Resolved per call: the updater is built after the bridge starts.
+   */
+  getAppUpdateInstaller?: (() => RemoteUpdateInstaller | null) | null;
   /**
    * Windows: this desktop is running elevated, so the background service
    * cannot open its bridge pipe. The caller tells the user.
@@ -311,10 +323,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     const method = request.method ?? "";
     const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
     const isDemoEngineMethod = method.startsWith(DEMO_ENGINE_BRIDGE_PREFIX);
-    if (!method.startsWith("built_in_browser.") && !isRecorderMethod && !isDemoEngineMethod) {
+    const isAppUpdateMethod = method.startsWith(DESKTOP_APP_UPDATE_BRIDGE_PREFIX);
+    if (!method.startsWith("built_in_browser.") && !isRecorderMethod && !isDemoEngineMethod && !isAppUpdateMethod) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, app_control_recorder.* and demo_engine.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, app_control_recorder.*, demo_engine.* and app_update.*`,
       );
     }
     const name = method.slice(
@@ -337,6 +350,16 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     if (isDemoEngineMethod) {
       return await handleDemoEngine(name, rawParams, connection);
+    }
+    if (isAppUpdateMethod) {
+      const installer = args.getAppUpdateInstaller?.() ?? null;
+      if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          `Action '${method}' is not exposed by the desktop bridge.`,
+        );
+      }
+      return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
     }
     if (name === "authenticate") {
       return { authenticated: true };

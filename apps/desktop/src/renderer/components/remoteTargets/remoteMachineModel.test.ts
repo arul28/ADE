@@ -10,11 +10,15 @@ import {
   PUBLISH_FAILING_ALARM_MS,
   accountMachineMatchesTarget,
   assignMachineSections,
+  describeMachineUpdateAttempt,
   describePublishHealth,
   formatLastSeen,
   formatRemoteTargetError,
   formatVersionSkewNote,
   isVersionSkewWarning,
+  MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
+  MACHINE_UPDATE_INSTALL_GRACE_MS,
+  machineUpdateAttemptFromResult,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 
@@ -459,5 +463,54 @@ describe("formatRemoteTargetError", () => {
         "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
       ),
     ).toMatch(/SSH server closed the connection before ADE could finish the SSH handshake/);
+  });
+});
+
+describe("describeMachineUpdateAttempt", () => {
+  const startedAtMs = 1_000_000;
+  const installing = machineUpdateAttemptFromResult(
+    { ok: true, updateApplied: true, targetVersion: "1.2.91", route: "desktop_app", pendingVersion: "1.2.91", message: "Installing" },
+    "fallback",
+    startedAtMs,
+  );
+  const downloading = machineUpdateAttemptFromResult(
+    { ok: true, updateApplied: false, targetVersion: "1.2.91", route: "desktop_app", pendingVersion: "1.2.91", message: "Downloading" },
+    "fallback",
+    startedAtMs,
+  );
+  // A host from before `pendingVersion`: its reply on 2026-10-05 said
+  // "Updating to 1.2.91 — reconnecting…" while the machine stayed on 1.2.90.
+  const olderHost = machineUpdateAttemptFromResult(
+    { ok: true, updateApplied: true, targetVersion: "1.2.91", message: "Updating to 1.2.91 — reconnecting…" },
+    "fallback",
+    startedAtMs,
+  );
+
+  it.each([
+    ["landed: the machine reports the target", installing, { connected: true, version: "1.2.91" }, 0, { ok: true, inFlight: false, landed: true }],
+    ["landed: the machine reports something newer", installing, { connected: true, version: "1.2.92" }, 0, { ok: true, inFlight: false, landed: true }],
+    ["waiting: still old inside the grace", installing, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS - 1, { ok: true, inFlight: true, landed: false }],
+    ["failed: still old after the grace", installing, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
+    ["failed: an older host's update that never landed", olderHost, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
+    ["failed: never came back", installing, { connected: false, version: null }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
+    ["waiting: a download gets longer than an install", downloading, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: true, inFlight: true, landed: false }],
+    ["failed: a download that never landed", downloading, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_DOWNLOAD_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
+  ] as const)("%s", (_label, attempt, machine, elapsedMs, expected) => {
+    const status = describeMachineUpdateAttempt(attempt, machine, startedAtMs + elapsedMs);
+    expect(status.ok).toBe(expected.ok);
+    expect(status.inFlight).toBe(expected.inFlight);
+    // Landed is the one settled-ok state that replaces the host's own line.
+    expect(status.ok && !status.inFlight && status.message !== attempt.message).toBe(expected.landed);
+    if (!expected.ok && machine.connected) expect(status.message).toContain(machine.version);
+  });
+
+  it("shows a refusal as-is, with nothing in flight", () => {
+    const attempt = machineUpdateAttemptFromResult(
+      { ok: false, updateApplied: false, targetVersion: "1.2.91", route: "desktop_app", pendingVersion: null, message: "No newer version." },
+      "fallback",
+      startedAtMs,
+    );
+    expect(describeMachineUpdateAttempt(attempt, { connected: true, version: "1.2.90" }, startedAtMs + 10 * 60_000))
+      .toEqual({ ok: false, message: "No newer version.", inFlight: false });
   });
 });

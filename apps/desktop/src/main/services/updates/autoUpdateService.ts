@@ -1190,12 +1190,17 @@ export function createAutoUpdateService({
    * older release is ignored, and a check that fails leaves the staged update
    * untouched. `userInitiated` is recorded for the logs only.
    */
-  function checkForUpdates(options: { userInitiated?: boolean } = {}): void {
+  /**
+   * Settles when the check (and any download it started) is over. Never
+   * rejects: failures land on the snapshot. Timers and the Settings button
+   * fire and forget; a caller that must know the outcome awaits it.
+   */
+  function checkForUpdates(options: { userInitiated?: boolean } = {}): Promise<void> {
     logger.info("autoUpdate.check_requested", {
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
     });
-    void runUpdateCheck();
+    return runUpdateCheck();
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {

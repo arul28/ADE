@@ -323,9 +323,13 @@ identity (a chat, run, step or attempt), and it refuses without
 `confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
 sends.
 
-`machine.updateAndRestart` is the host half of "Update & restart": it checks for
-a newer build for this machine's channel, applies it, and asks the login service
-to restart the brain, reporting one step at a time. It is CTO-gated and always
+`machine.updateAndRestart` is the host half of "Update & restart". When this
+machine's desktop app is open it asks that app to install its own update over
+the desktop bridge (`app_update.install`), since an open app owns the brain and
+replaces a standalone runtime installed under it. Otherwise it checks for a
+newer build for this machine's channel, applies it, and asks the login service
+to restart the brain. Either way it reports one step at a time and names the
+route it took. It is CTO-gated and always
 user-initiated. On the machine itself, `ade brain update` is the typed
 equivalent and does not need a running brain; the RPC exists for a client that
 is not on the machine (the desktop's remote-machine card), which the CLI has no

@@ -744,6 +744,48 @@ export function readLocalRuntimeInfo(value: unknown): {
  */
 export const LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS = 120_000;
 
+/**
+ * How long each `ade brain update` state counts as "an update owns the
+ * service". Bounded so a crashed updater that never writes its last state
+ * cannot keep this desktop from ever repairing the service again.
+ */
+const BRAIN_UPDATE_IN_FLIGHT_MS: Readonly<Record<string, number>> = {
+  staged: 2 * 60_000,
+  applying: 5 * 60_000,
+  restarting: 5 * 60_000,
+  // Written right after the restart is REQUESTED; the new brain may not have
+  // bound the socket yet.
+  succeeded: 60_000,
+};
+
+/**
+ * The state `ade brain update` (or a remote "Update & restart" that ran it)
+ * left in `<adeHome>/runtime/update-status.json`, when it is recent enough to
+ * still own the service. Null otherwise, and on any read or parse failure.
+ */
+function readInFlightBrainUpdate(
+  runtimeDir: string,
+  nowMs: number = Date.now(),
+): { state: string; version: string | null } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, "update-status.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const state = typeof record.state === "string" ? record.state : "";
+  const windowMs = BRAIN_UPDATE_IN_FLIGHT_MS[state];
+  if (!windowMs) return null;
+  const updatedAtMs = typeof record.updatedAt === "string" ? Date.parse(record.updatedAt) : Number.NaN;
+  if (!Number.isFinite(updatedAtMs)) return null;
+  const ageMs = nowMs - updatedAtMs;
+  // A timestamp from the future is a clock step, not a fresh update.
+  if (ageMs < 0 || ageMs > windowMs) return null;
+  return { state, version: typeof record.version === "string" ? record.version : null };
+}
+
 /** Told to callers whose connect attempt was refused while an update runs. */
 export const LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE =
   "ADE is applying an update. The background service is restarting.";
@@ -1127,6 +1169,8 @@ export class LocalRuntimeConnectionPool {
   // Wall clock after which an update window stops suppressing repair. Zero
   // means no update is being applied.
   private updateWindowUntilMs = 0;
+  /** Logs a brain update's window once, not on every connect attempt inside it. */
+  private loggedBrainUpdateWindow = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private readonly projectRegistrationsByRoot = new Map<string, {
@@ -2538,6 +2582,20 @@ export class LocalRuntimeConnectionPool {
   }
 
   private isUpdateWindowActive(): boolean {
+    // A brain update this app did not start -- `ade brain update`, or
+    // "Update & restart" pressed on another machine -- removes and restarts the
+    // service the same way. Repairing into that window re-registers this app's
+    // own runtime over the one just installed (2026-10-05: the Mac Studio's
+    // open app put 1.2.90 back 10 ms after the updater finished 1.2.91).
+    const brainUpdate = readInFlightBrainUpdate(resolveMachineAdeLayout().runtimeDir);
+    if (brainUpdate) {
+      if (!this.loggedBrainUpdateWindow) {
+        this.loggedBrainUpdateWindow = true;
+        this.logger.info("local_runtime.brain_update_in_flight", brainUpdate);
+      }
+      return true;
+    }
+    this.loggedBrainUpdateWindow = false;
     if (this.updateWindowUntilMs === 0) return false;
     if (Date.now() < this.updateWindowUntilMs) return true;
     this.updateWindowUntilMs = 0;

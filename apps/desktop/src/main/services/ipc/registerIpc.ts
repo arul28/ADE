@@ -13344,7 +13344,7 @@ export function registerIpc({
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
     // Only reachable from the Settings button. Every entry point now runs the
     // same check, so `userInitiated` only labels the log line.
-    getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
+    void getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
   ipcMain.handle(IPC.updateGetState, () => {
