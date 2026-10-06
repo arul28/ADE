@@ -30,6 +30,18 @@ class FakeAutoUpdater extends EventEmitter {
   quitAndInstallCalled = false;
   setFeedURL = vi.fn();
   checkForUpdates = vi.fn<[], Promise<unknown>>(async () => null);
+  /**
+   * The assertions on this spy pin `(isSilent, isForceRunAfter) = (true, true)`,
+   * and both halves are load-bearing on Windows — do not relax them to
+   * `expect.anything()`.
+   *
+   * ADE's NSIS target is `oneClick: false`, so app-builder-lib's
+   * `installSection.nsh` starts the app from exactly one place:
+   * `${if} ${isForceRun} ${andIf} ${Silent}`. With `isSilent: false` there is no
+   * `/S`, `${Silent}` is false, and nothing relaunches ADE after the install —
+   * which is the bug these flags fixed. `runAfterFinish: false` also compiles
+   * out the finish page's run checkbox, so there is no second route.
+   */
   quitAndInstall = vi.fn(() => {
     if (this.quitAndInstallCalled) {
       throw new Error("install call ignored");
@@ -735,7 +747,7 @@ describe("createAutoUpdateService", () => {
     releasePrepare();
     await expect(installPromise).resolves.toBe(true);
     expect(service.getSnapshot()).toMatchObject({ status: "installing", version: "1.2.61" });
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     service.dispose();
   });
@@ -828,7 +840,7 @@ describe("createAutoUpdateService", () => {
     });
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     expect(readState(globalStatePath)).toEqual({
       pendingInstallUpdate: {
@@ -1342,7 +1354,7 @@ describe("createAutoUpdateService", () => {
     await expect(service.quitAndInstall()).resolves.toBe(true);
 
     expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(readState(globalStatePath)).toEqual({
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
@@ -1414,7 +1426,7 @@ describe("createAutoUpdateService", () => {
 
     finishDownload();
     await expect(installPromise).resolves.toBe(true);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(service.getSnapshot()).toMatchObject({
       status: "installing",
       version: "1.2.4",
@@ -1698,7 +1710,7 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
       updater.quitAndInstall.mock.invocationCallOrder[0],
     );
@@ -1836,7 +1848,7 @@ describe("createAutoUpdateService", () => {
     expect(updater.downloadUpdate.mock.invocationCallOrder[0]).toBeLessThan(
       beforeQuitAndInstall.mock.invocationCallOrder[0],
     );
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(fs.readFileSync(downloadedFile, "utf8")).toBe("restored zip");
 
     service.dispose();
@@ -1899,7 +1911,7 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
 
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
     fs.unlinkSync(stagedFile);
 
@@ -2392,7 +2404,7 @@ describe("createAutoUpdateService", () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
       event: "ade_update_auto_applied",
       surface: "desktop",
@@ -2460,7 +2472,7 @@ describe("createAutoUpdateService", () => {
     });
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     service.dispose();
   });
 
@@ -2528,7 +2540,7 @@ describe("createAutoUpdateService", () => {
 
     idle = true;
     await vi.advanceTimersByTimeAsync(13_000);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
 
     service.dispose();
   });
