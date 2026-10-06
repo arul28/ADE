@@ -18,6 +18,7 @@ import { mapPlatform } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -53,6 +54,24 @@ type ClusterStateRow = {
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
 const TAILSCALE_STATUS_CACHE_MS = 30_000;
+/**
+ * `os.networkInterfaces()` is a synchronous adapter enumeration — ~3.5 ms on a
+ * quiet Windows PC, more with VPN and Hyper-V adapters — and the brain asks for
+ * the local device several times a second (status reads, snapshots, every
+ * incoming sync message). A Windows brain profile spent ~6 s of every 10
+ * minutes here. Addresses change on a network switch, not between two
+ * messages, so a few seconds of reuse costs nothing anyone can see.
+ */
+const NETWORK_INTERFACES_CACHE_MS = 5_000;
+let networkInterfacesCache: { expiresAt: number; value: ReturnType<typeof os.networkInterfaces> } | null = null;
+
+function readNetworkInterfaces(): ReturnType<typeof os.networkInterfaces> {
+  const now = Date.now();
+  if (networkInterfacesCache && networkInterfacesCache.expiresAt > now) return networkInterfacesCache.value;
+  const value = os.networkInterfaces();
+  networkInterfacesCache = { expiresAt: now + NETWORK_INTERFACES_CACHE_MS, value };
+  return value;
+}
 
 let tailscaleStatusCache:
   | {
@@ -86,6 +105,11 @@ function execFileText(
   commandArgs: string[],
   timeoutMs: number,
 ): Promise<string | null> {
+  if (offThreadSpawnEnabled()) {
+    // A Windows spawn on the event loop blocked the brain ~100 ms per probe.
+    return execFileOffThread(command, commandArgs, { timeoutMs, maxBuffer: 1024 * 1024 })
+      .then(({ exitCode, stdout, error }) => (error || exitCode !== 0 ? null : stdout));
+  }
   return new Promise((resolve) => {
     execFile(command, commandArgs, {
       encoding: "utf8",
@@ -194,7 +218,7 @@ function isTailscaleAddress(ipAddress: string): boolean {
 const VIRTUAL_ADAPTER_PATTERN = /^vEthernet \((WSL|Default Switch)|docker|^br-|virbr|vmnet|vboxnet/i;
 
 function readLocalNetworkMetadata(): LocalNetworkMetadata {
-  const interfaces = os.networkInterfaces();
+  const interfaces = readNetworkInterfaces();
   const lan: string[] = [];
   const tailscale: string[] = [];
   for (const [interfaceName, entries] of Object.entries(interfaces)) {

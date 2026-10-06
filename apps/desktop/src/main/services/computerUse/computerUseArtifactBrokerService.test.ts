@@ -1194,7 +1194,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(result.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
   });
 
-  it("rejects symlinked artifact paths that escape the project artifact directory", () => {
+  it("rejects symlinked artifact paths that escape the project artifact directory", (ctx) => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1206,11 +1206,23 @@ describe("computerUseArtifactBrokerService", () => {
     const outsideFile = path.join(outsideDir, "secret.txt");
     const artifactDir = path.join(projectRoot, ".ade", "artifacts");
     const symlinkPath = path.join(artifactDir, "linked-secret.txt");
-    fs.mkdirSync(artifactDir, { recursive: true });
-    fs.writeFileSync(outsideFile, "secret", "utf8");
-    fs.symlinkSync(outsideFile, symlinkPath);
 
     try {
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(outsideFile, "secret", "utf8");
+      try {
+        fs.symlinkSync(outsideFile, symlinkPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EPERM" || code === "EACCES") {
+          // Some Windows hosts do not grant symlink creation to the test
+          // process. Skip explicitly, while still cleaning the temp root.
+          ctx.skip();
+          return;
+        }
+        throw error;
+      }
+
       expect(() =>
         broker.ingest({
           backend: {

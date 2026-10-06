@@ -3806,6 +3806,7 @@ describe("ptyService", () => {
       process.env.APPDATA = appData;
       process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
       mocks.fileStats.set(agentPath, { isDirectory: false, size: 1 });
+      mocks.dirEntries.set(path.dirname(agentPath), [path.basename(agentPath)]);
       try {
         const harness = createHarness();
         await harness.service.create({
@@ -3847,6 +3848,7 @@ describe("ptyService", () => {
       process.env.USERPROFILE = home;
       process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
       mocks.fileStats.set(claudePath, { isDirectory: false, size: 1 });
+      mocks.dirEntries.set(path.dirname(claudePath), [path.basename(claudePath)]);
       try {
         const harness = createHarness();
         const guidance = "ADE guidance\nsecond line with %USERPROFILE% inside";

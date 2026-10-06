@@ -644,7 +644,7 @@ function ProgressScreen({ title, message }: { title: string; message: string }) 
             borderRadius: "50%",
             border: "2px solid color-mix(in srgb, var(--color-fg) 20%, transparent)",
             borderTopColor: "var(--color-accent)",
-            animation: "ade-web-spin 0.8s linear infinite",
+            animation: "ade-web-spin 0.8s steps(24) infinite",
           }}
         />
         {message}

@@ -67,7 +67,7 @@
   to { transform: rotate(360deg); }
 }
 .ade-notice-spin {
-  animation: ade-notice-spin 900ms linear infinite;
+  animation: ade-notice-spin 900ms steps(27) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
