@@ -1579,6 +1579,7 @@ export function createPrService({
   getLinearLiveStatusService,
   openExternal,
   onHotRefreshChanged,
+  refreshDefaultBranchAfterMerge,
 }: {
   db: AdeDb;
   logger: Logger;
@@ -1597,6 +1598,12 @@ export function createPrService({
   getLinearLiveStatusService?: () => LinearLiveStatusService | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
+  /**
+   * Fast-forwards the primary checkout after a PR merges into `baseBranch`,
+   * so a lane created right after the merge starts from the merged default
+   * branch instead of waiting for the background auto-pull. Never throws.
+   */
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 }) {
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
@@ -8038,6 +8045,7 @@ export function createPrService({
    */
   const runPostMergeCleanup = async (args: {
     prId: string;
+    baseBranch?: string;
     mergeCommitSha: string | null;
     archiveLane: boolean;
     /**
@@ -8059,6 +8067,7 @@ export function createPrService({
       return { branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false };
     }
     const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const baseBranch = args.baseBranch ?? row.base_branch;
     const headBranch = row.head_branch;
     let branchDeleted = false;
     let laneArchived = false;
@@ -8073,14 +8082,23 @@ export function createPrService({
 
       await fetchRemoteTrackingBranch({
         projectRoot,
-        targetBranch: row.base_branch,
+        targetBranch: baseBranch,
       }).catch((error) => {
         logger.warn("prs.fetch_base_branch_failed", {
           prId: row.id,
-          baseBranch: row.base_branch,
+          baseBranch,
           error: getErrorMessage(error),
         });
       });
+      try {
+        await refreshDefaultBranchAfterMerge?.(baseBranch);
+      } catch (error) {
+        logger.warn("prs.default_branch_refresh_failed", {
+          prId: row.id,
+          baseBranch,
+          error: getErrorMessage(error),
+        });
+      }
       try {
         laneService.invalidateCache?.();
       } catch (cacheError) {
@@ -8349,10 +8367,20 @@ export function createPrService({
     args: LandPrArgs,
     mergeCommitSha: string | null,
     operationId: string,
+    baseBranch: string,
   ): Promise<{ branchDeleted: boolean; laneArchived: boolean }> => {
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
+      try {
+        await refreshDefaultBranchAfterMerge?.(baseBranch);
+      } catch (error) {
+        logger.warn("prs.default_branch_refresh_failed", {
+          prNumber: target.prNumber,
+          baseBranch,
+          error: getErrorMessage(error),
+        });
+      }
       // A PR with no local row has no lane to archive, but the head branch is
       // still deletable — and the CLI, TUI and mobile all offer it. Reporting
       // `branchDeleted: false` unconditionally made that opt-in a silent no-op
@@ -8380,6 +8408,7 @@ export function createPrService({
 
     const cleanup = await runPostMergeCleanup({
       prId: target.row.id,
+      baseBranch,
       mergeCommitSha,
       archiveLane: Boolean(args.archiveLane),
       deleteRemoteBranch: Boolean(args.deleteRemoteBranch),
@@ -8412,6 +8441,7 @@ export function createPrService({
     forgetActivityInputs,
     markHotRefresh: (prIds) => markHotRefresh(prIds),
     refreshOne,
+    refreshDefaultBranchAfterMerge,
     invalidateGithubSnapshotCache,
     delay,
     headChange,
@@ -8464,8 +8494,10 @@ export function createPrService({
       headChanged,
     });
 
+    let mergeBaseBranch = String(row?.base_branch ?? "").trim();
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
+      mergeBaseBranch = asString(latestPull?.base?.ref).trim() || mergeBaseBranch;
       const latestState = toPrState({
         state: asString(latestPull?.state) || row?.state || "open",
         draft: Boolean(latestPull?.draft),
@@ -8517,7 +8549,7 @@ export function createPrService({
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
-      const cleanup = await finishSuccessfulMerge(target, args, mergeCommitSha, op.operationId);
+      const cleanup = await finishSuccessfulMerge(target, args, mergeCommitSha, op.operationId, mergeBaseBranch);
 
       return {
         prId: args.prId,
@@ -8548,6 +8580,7 @@ export function createPrService({
             args,
             adminAttempt.mergeCommitSha,
             op.operationId,
+            mergeBaseBranch,
           );
           return {
             prId: args.prId,

@@ -54,12 +54,16 @@ export type AutoPullDecision =
   | { pull: true; reason: "eligible" }
   | { pull: false; reason: AutoPullSkipReason | "not-evaluated" };
 
+export function isDefaultBranchMerge(baseBranch: string, defaultBranch: string): boolean {
+  return normalizeBranchName(baseBranch).trim() === normalizeBranchName(defaultBranch).trim();
+}
+
 export type AutoPullEligibilityInput = {
   /** The lane is the project's primary checkout. Only it is auto-pulled. */
   isPrimary: boolean;
   /** The live HEAD branch, or null when HEAD is detached. */
   headBranchRef: string | null;
-  /** The lane's recorded default branch, e.g. `main`. */
+  /** The project's detected default branch, e.g. `main`. */
   defaultBranchRef: string;
   /** Tracked changes in the index. Untracked files do not block a fast-forward. */
   staged: number;
@@ -134,7 +138,7 @@ export function detectInProgressGitOperation(gitDir: string): string | null {
 export type AutoPullPrimaryLane = {
   laneId: string;
   worktreePath: string;
-  /** The lane's recorded branch, i.e. the project's default branch. */
+  /** The project's detected default branch. */
   branchRef: string;
 };
 
@@ -151,6 +155,8 @@ export type DefaultBranchAutoPullDeps = {
   readWorktreeStatus: (worktreePath: string) => Promise<AutoPullWorktreeStatus | null>;
   detectInProgressOperation: (worktreePath: string) => Promise<string | null>;
   isWorktreeLocked: (laneId: string) => boolean;
+  /** Atomically reserve the worktree for the pull, or return null if another operation owns it. */
+  acquireWorktreeLock: (lane: AutoPullPrimaryLane) => { release: () => void } | null;
   readSyncStatus: (laneId: string) => Promise<BranchSyncState>;
   fetch: (laneId: string) => Promise<void>;
   pullFastForward: (laneId: string) => Promise<void>;
@@ -169,7 +175,10 @@ export type AutoPullRunResult = {
 };
 
 export type DefaultBranchAutoPullService = {
-  /** One decision-and-maybe-pull pass. Never throws. */
+  /**
+   * One decision-and-maybe-pull pass. Never throws. A call made while a pass
+   * is running resolves with one follow-up pass that starts after it.
+   */
   runOnce: () => Promise<AutoPullRunResult>;
   start: () => void;
   stop: () => void;
@@ -188,7 +197,8 @@ export function createDefaultBranchAutoPullService(
   const clearTimer = deps.clearTimer ?? clearTimeout;
 
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let running = false;
+  let inflight: Promise<AutoPullRunResult> | null = null;
+  let queued: Promise<AutoPullRunResult> | null = null;
   let started = false;
   let disposed = false;
 
@@ -196,9 +206,7 @@ export function createDefaultBranchAutoPullService(
     deps.logger?.[level]?.(event, data);
   };
 
-  const runOnce = async (): Promise<AutoPullRunResult> => {
-    if (running) return { pulled: false, reason: "not-evaluated" };
-    running = true;
+  const runPass = async (): Promise<AutoPullRunResult> => {
     try {
       const primary = deps.getPrimaryLane();
       if (!primary) return { pulled: false, reason: "no-primary-lane" };
@@ -239,47 +247,87 @@ export function createDefaultBranchAutoPullService(
         return { pulled: false, reason: "fetch-failed" };
       }
 
-      const postSync = await deps.readSyncStatus(primary.laneId).catch(() => null);
-      if (!postSync) return { pulled: false, reason: "not-evaluated" };
-      const postDecision = evaluateDefaultBranchAutoPull({
-        isPrimary: true,
-        headBranchRef: status?.headBranchRef ?? null,
-        defaultBranchRef: primary.branchRef,
-        staged: status?.staged ?? 0,
-        unstaged: status?.unstaged ?? 0,
-        inProgressOperation,
-        worktreeLocked,
-        sync: postSync,
-        phase: "post-fetch",
-      });
-      if (!postDecision.pull) {
-        log("debug", "git.auto_pull_skipped", { laneId: primary.laneId, reason: postDecision.reason });
-        return { pulled: false, reason: postDecision.reason, behind: postSync.behind };
+      let worktreeLock: { release: () => void } | null;
+      try {
+        worktreeLock = deps.acquireWorktreeLock(primary);
+      } catch (error) {
+        log("warn", "git.auto_pull_lock_failed", {
+          laneId: primary.laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { pulled: false, reason: "not-evaluated" };
+      }
+      if (!worktreeLock) {
+        log("debug", "git.auto_pull_skipped", { laneId: primary.laneId, reason: "worktree-locked" });
+        return { pulled: false, reason: "worktree-locked" };
       }
 
       try {
-        await deps.pullFastForward(primary.laneId);
-      } catch (error) {
-        // A race between the status read and the pull, or a remote that moved
-        // again, is a warning for the log only.
-        log("warn", "git.auto_pull_failed", {
-          laneId: primary.laneId,
-          behind: postSync.behind,
-          error: error instanceof Error ? error.message : String(error),
+        // Fetch does not mutate the worktree, so acquire after it. Re-read all
+        // worktree gates under the lease to cover mutations that began during
+        // the network request, then keep the lease through the fast-forward.
+        const [lockedStatus, lockedOperation, postSync] = await Promise.all([
+          deps.readWorktreeStatus(primary.worktreePath).catch(() => null),
+          deps.detectInProgressOperation(primary.worktreePath).catch(() => null),
+          deps.readSyncStatus(primary.laneId).catch(() => null),
+        ]);
+        if (!postSync) return { pulled: false, reason: "not-evaluated" };
+        const postDecision = evaluateDefaultBranchAutoPull({
+          isPrimary: true,
+          headBranchRef: lockedStatus?.headBranchRef ?? null,
+          defaultBranchRef: primary.branchRef,
+          staged: lockedStatus?.staged ?? 0,
+          unstaged: lockedStatus?.unstaged ?? 0,
+          inProgressOperation: lockedOperation,
+          worktreeLocked: false,
+          sync: postSync,
+          phase: "post-fetch",
         });
-        return { pulled: false, reason: "pull-failed", behind: postSync.behind };
-      }
+        if (!postDecision.pull) {
+          log("debug", "git.auto_pull_skipped", { laneId: primary.laneId, reason: postDecision.reason });
+          return { pulled: false, reason: postDecision.reason, behind: postSync.behind };
+        }
 
-      log("info", "git.auto_pull_pulled", { laneId: primary.laneId, behind: postSync.behind });
-      return { pulled: true, reason: "eligible", behind: postSync.behind };
+        try {
+          await deps.pullFastForward(primary.laneId);
+        } catch (error) {
+          // A remote that moved again or another Git failure is log-only.
+          log("warn", "git.auto_pull_failed", {
+            laneId: primary.laneId,
+            behind: postSync.behind,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { pulled: false, reason: "pull-failed", behind: postSync.behind };
+        }
+
+        log("info", "git.auto_pull_pulled", { laneId: primary.laneId, behind: postSync.behind });
+        return { pulled: true, reason: "eligible", behind: postSync.behind };
+      } finally {
+        worktreeLock.release();
+      }
     } catch (error) {
       log("warn", "git.auto_pull_error", {
         error: error instanceof Error ? error.message : String(error),
       });
       return { pulled: false, reason: "not-evaluated" };
-    } finally {
-      running = false;
     }
+  };
+
+  // Passes never overlap. A request that arrives mid-pass (a merge landing
+  // while the timer pass is fetching) queues exactly one follow-up pass, so it
+  // still sees the remote as of after its own trigger.
+  const runOnce = (): Promise<AutoPullRunResult> => {
+    if (inflight) {
+      queued ??= inflight.then(() => {
+        queued = null;
+        return runOnce();
+      });
+      return queued;
+    }
+    inflight = runPass().finally(() => {
+      inflight = null;
+    });
+    return inflight;
   };
 
   const schedule = (delayMs: number) => {

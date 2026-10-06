@@ -6775,6 +6775,9 @@ describe("usage ledger end-to-end accuracy", () => {
         fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
         const db = new DatabaseSync(path.join(root, ".ade", "ade.db"));
         db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+        if (root === projectRoot) {
+          db.prepare("insert into lanes(worktree_path, attached_root_path, archived_at) values (?, null, null)").run(lane);
+        }
         db.close();
       }
       const base = Date.now();
