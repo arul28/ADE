@@ -21178,8 +21178,10 @@ async function runRuntimeCommand(
   // is no watchdog. It reads a file and, at most, kills one pid.
   if (sub === "watchdog-check") {
     const { runBrainWatchdogCheck } = await import("./services/runtime/brainWatchdogCheck");
+    const { kickstartLaunchdServiceAfterExit } = await import("./serviceManager/installLaunchd");
     return runBrainWatchdogCheck({
       runtimeDir: resolveMachineAdeLayout().runtimeDir,
+      restartService: process.platform === "darwin" ? kickstartLaunchdServiceAfterExit : undefined,
     });
   }
 

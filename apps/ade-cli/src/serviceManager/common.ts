@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
@@ -136,6 +137,11 @@ export type AdeServiceCommand = {
   args: string[];
   env?: Record<string, string>;
 };
+
+/** The uid launchd domains are keyed by (`gui/<uid>`, `user/<uid>`). */
+export function currentUid(): number {
+  return typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+}
 
 export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ADE_RUNTIME_SERVICE_NAME?.trim();
@@ -584,7 +590,7 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 

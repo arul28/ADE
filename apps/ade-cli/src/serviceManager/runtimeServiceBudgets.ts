@@ -53,3 +53,12 @@ export const RUNTIME_SERVICE_START_WAIT_MS = 90_000;
  * the supervisor did not, and the socket appears the moment the brain is up.
  */
 export const RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS = 60_000;
+
+/**
+ * How long the renderer waits on project recovery's Repair. `repair()` can wait
+ * out an in-flight restart, then reinstall the service, wait for its socket and
+ * ping it -- four legs of RUNTIME_SERVICE_START_WAIT_MS each -- plus the short
+ * stop and database steps. Below that sum the renderer reports an IPC timeout
+ * for a repair that is still running and hides the step that actually failed.
+ */
+export const PROJECT_REPAIR_IPC_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS * 4 + 60_000;
