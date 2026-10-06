@@ -294,6 +294,40 @@ Claude Code ships no `control.sock` there. Both halves needed correcting.
   paths (missing key, malformed key) are verified against a stand-in pipe server
   on this host.
 
+### Chat switch, measured end to end
+
+The per-call numbers above are isolated. Driven through the real UI on a
+production renderer, the catalog memo is worth about 4 ms of script per warm
+switch — real and repeatable, but a fraction of the switch, because the catalog
+work is only part of what a pane mount does.
+
+Harness, which is the part worth keeping: `vite build` of the renderer served by
+`vite preview`, loaded in a plain Electron window with **no preload**, so the
+renderer's own `browserMock` supplies `window.ade`. No brain, no account, no
+project database, no `ade` CLI. The mock normally serves `{ groups: [] }`, which
+short-circuits `descriptorsFromAgentChatModelCatalog` and would measure the memo
+as exactly zero, so it was temporarily given a catalog the size of this machine's
+real one (83 models, two thirds dynamic ids). Switches are driven by clicking the
+two mock chat rows and read from `Performance.getMetrics` deltas over a 1.5 s
+settle window.
+
+| | warm median task | warm median script |
+|---|---|---|
+| before, 12 switches | 38.2 ms | 26.8 ms |
+| before, 20 switches | 38.6 ms | 28.0 ms |
+| after, 12 switches | 33.9 ms | 22.6 ms |
+| after, 20 switches | 37.4 ms | 23.6 ms |
+
+Script time — the metric the change actually targets — falls consistently from
+26.8-28.0 ms to 22.6-23.6 ms, about 15%. Total task time overlaps between runs
+(30-67 ms either way) and is not a signal on its own; style and layout do not
+move, as expected. Kept on that basis.
+
+Two limits on the number: the mock has two short chats, so the transcript share
+of a switch is small and the catalog share correspondingly larger than in a real
+long chat; and the dynamic ids in the harness catalog are synthetic. A real Work
+tab with dozens of chats mounts more of this per switch, not less.
+
 ### Closed by measurement, not by code
 
 - **The 190-346 ms SQLite writes are a second brain, not ADE's writes.** The
