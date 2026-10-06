@@ -82,6 +82,15 @@ type RuntimeCatalogScopeState = {
   // reason as `descriptorsById`: one cap, one eviction, and a reset cannot
   // leave a parallel map holding descriptors for a machine this window dropped.
   // `registryGeneration` pins it to the registry it was built against.
+  //
+  // The memo matches on the catalog's OBJECT IDENTITY, so a catalog is immutable
+  // for as long as it is remembered here. That holds today by construction —
+  // one writer (`sharedCatalogFetch`) hands over whole snapshots straight from
+  // IPC, and nothing in the renderer mutates a catalog's `groups`, `providers`
+  // or `subsections` in place. Anything that starts editing a remembered
+  // catalog instead of replacing it has to call `rememberRuntimeCatalog` again,
+  // or this memo will keep serving the models and availability ids the catalog
+  // had before the edit.
   parsedCatalog: {
     catalog: AgentChatModelCatalog;
     registryGeneration: number;

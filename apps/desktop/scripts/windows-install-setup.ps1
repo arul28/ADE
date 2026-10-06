@@ -24,7 +24,7 @@ function Invoke-CliQuiet([string[]]$Arguments) {
   & $cliWrapper @Arguments 2>$null | Out-String
 }
 
-# Appends one timing line per install step to $ADE_HOMEuntime\install-steps.log.
+# Appends one timing line per install step to <ADE_HOME>/runtime/install-steps.log.
 #
 # The installer is the one part of an ADE update that leaves no account of
 # itself: electron-builder's common.nsh sets `ShowInstDetails nevershow`, NSIS
@@ -50,12 +50,25 @@ function Write-AdeInstallStep([string]$Step, [double]$Seconds, [string]$Detail =
 }
 
 # Runs one install step, timing it, and records how long it took either way.
+#
+# A native command that exits nonzero does NOT throw, not even under
+# `$ErrorActionPreference = "Stop"` -- every caller here checks $LASTEXITCODE
+# itself, right after this returns. So the exit code is read here too: a step
+# that failed must not be logged as "ok", or the log we added to attribute a slow
+# or broken install would be the one thing lying about it. Only cmdlets run
+# between the body and that read, so $LASTEXITCODE still belongs to the body when
+# the caller sees it.
 function Invoke-AdeTimedStep([string]$Step, [scriptblock]$Body) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   try {
     & $Body
     $sw.Stop()
-    Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "ok"
+    $exit = $LASTEXITCODE
+    if (($exit -is [int]) -and ($exit -ne 0)) {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed exit=$exit"
+    } else {
+      Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "ok"
+    }
   } catch {
     $sw.Stop()
     Write-AdeInstallStep $Step $sw.Elapsed.TotalSeconds "failed"
