@@ -733,6 +733,12 @@ describe("createAgentChatService", () => {
       ].join("\n");
       fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
       fs.writeFileSync(sourcePath, transcript, "utf8");
+      // The same id, newer, in another project folder (a session moved with
+      // `/cd`): the import must carry the transcript it chose, not the newest.
+      const elsewhere = path.join(defaultHome, "projects", "-somewhere-else", `${externalSessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+      fs.writeFileSync(elsewhere, "{}\n", "utf8");
+      fs.utimesSync(elsewhere, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
       // A second Claude login that new chats start on. Written as the registry
       // file rather than through `create()`, which also locks the folder down.
       const workHome = path.join(tmpHomeRoot, "provider-homes", "claude", "work");

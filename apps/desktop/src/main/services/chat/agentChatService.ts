@@ -44455,6 +44455,7 @@ export function createAgentChatService(args: {
     provider: "claude" | "codex",
     threadId: string,
     sourceConfigHome: string,
+    sourcePath?: string,
   ): Promise<void> => {
     const targetHome = sessionConfigHome(managed);
     if (!targetHome || pathsEqual(targetHome, sourceConfigHome)) return;
@@ -44463,6 +44464,7 @@ export function createAgentChatService(args: {
       threadId,
       fromConfigHome: sourceConfigHome,
       toConfigHome: targetHome,
+      ...(sourcePath ? { sourcePath } : {}),
     });
     if (moved.ok || moved.reason === "same_home") return;
     throw externalChatImportError(
@@ -44552,7 +44554,8 @@ export function createAgentChatService(args: {
       mirrorClaudeSessionPointer(managed, targetClaudeSessionId, {
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
-      await placeImportedThreadInChatAccount(managed, "claude", targetClaudeSessionId, claudeConfigDir());
+      // The exact transcript this import read: one id can sit in several project folders.
+      await placeImportedThreadInChatAccount(managed, "claude", targetClaudeSessionId, claudeConfigDir(), targetTranscriptPath);
       const repair = repairClaudeResumeTranscript(targetClaudeSessionId, managed.laneWorktreePath, sessionConfigHome(managed));
       if (repair.repaired) {
         logger.warn("agent_chat.external_import_claude_thinking_transcript_repaired", {
