@@ -23139,6 +23139,23 @@ async function runServe(
     });
   };
 
+  // The bridge token this machine's desktop app announced when it connected.
+  // "Update & restart" uses it to ask that app to install its own update: an
+  // app that owns the brain puts its own runtime back over a standalone one.
+  let machineDesktopBridgeAuthToken: string | null = null;
+  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+    const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
+    const routing = await requestDesktopAppUpdate({
+      socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
+      authToken: machineDesktopBridgeAuthToken,
+      targetVersion,
+    });
+    headlessProjectLogger.info("brain.remote_update_route", routing.attached
+      ? { route: "desktop_app", outcome: routing.result.outcome, version: routing.result.version }
+      : { route: "standalone", detail: routing.detail });
+    return routing;
+  };
+
   // This brain's agents reaching the account's other machines. One per brain
   // (it owns the agents' paired connections), built on first use; an embedded
   // guest has no machine authority and gets none.
@@ -23227,7 +23244,11 @@ async function runServe(
             version: VERSION,
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
+            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
+          onDesktopBridgeAuthToken: (authToken: string) => {
+            machineDesktopBridgeAuthToken = authToken;
+          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
       getRuntimeStatus: () => {

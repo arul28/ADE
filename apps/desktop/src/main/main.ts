@@ -417,6 +417,7 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
@@ -1916,6 +1917,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  // "Update & restart" pressed on another machine, forwarded by this machine's
+  // brain. Built once the update service exists, further down.
+  let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
   ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
@@ -1926,6 +1930,7 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      getAppUpdateInstaller: () => remoteUpdateInstaller,
       // Windows: an elevated desktop's pipe refuses the background service.
       // A lasting state, so the renderer docks a banner for it.
       onElevatedDesktop: () => {
@@ -2995,6 +3000,13 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  remoteUpdateInstaller = createRemoteUpdateInstaller({
+    getService: () => autoUpdateService,
+    // The same gate as the update checks themselves: a development or channel
+    // build has no feed of its own, so the brain updates its standalone runtime.
+    supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    logger: updateLogger,
   });
   // Opt-in, default off: ADE holds no power assertion until the user picks a
   // level, and even then only while an agent turn is actually running. Turns
@@ -7635,6 +7647,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
+        remoteUpdateInstaller?.dispose();
         builtInBrowserBridgeServer?.dispose();
       } catch {
         // ignore

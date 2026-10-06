@@ -14,11 +14,16 @@
  */
 
 import type {
+  RemoteRuntimeUpdateRoute,
   RemoteRuntimeUpdateStep,
   RemoteRuntimeUpdateStepId,
   RemoteRuntimeUpdateStepStatus,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
+import type {
+  DesktopAppUpdateInstallResult,
+  DesktopAppUpdateRouting,
+} from "./desktopAppUpdateBridge";
 
 export type MachineUpdateAndRestartResult = {
   ok: boolean;
@@ -29,6 +34,15 @@ export type MachineUpdateAndRestartResult = {
   steps: RemoteRuntimeUpdateStep[];
   /** One plain line for the client to show. Names the failed step. */
   message: string;
+  /** Which updater took the request: the open desktop app, or the standalone runtime. */
+  route: RemoteRuntimeUpdateRoute;
+  /**
+   * The version the client should see once it reconnects, when the update is
+   * still in flight. Null when nothing is expected to change (a failure, or a
+   * plain restart). The client checks the machine against it rather than
+   * trusting "reconnecting…".
+   */
+  pendingVersion: string | null;
 };
 
 export type MachineUpdateCheck = {
@@ -73,6 +87,15 @@ export type MachineUpdateAndRestartDeps = {
    * `pending`, and the client confirms by reconnecting and reading the version.
    */
   requestRestart: () => { ok: boolean; detail: string };
+  /**
+   * Hand the update to this machine's open desktop app, when there is one.
+   *
+   * Asked first. An app that owns the brain re-registers its own (older)
+   * runtime the moment the standalone update restarts the service, so with an
+   * app open the app's own update is the only one that lands. Absent, or
+   * `attached: false`: no capable app is open and the standalone path runs.
+   */
+  requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
 };
 
 export type MachineUpdateControlsArgs = {
@@ -86,6 +109,8 @@ export type MachineUpdateControlsArgs = {
    * time: after an update the on-disk runtime is a different file.
    */
   requestRestart: () => Promise<{ status: number | null; stdout: string; stderr: string }>;
+  /** See `MachineUpdateAndRestartDeps.requestDesktopAppUpdate`. */
+  requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
 };
 
 // One comparator for the whole app. Slightly wider than the old local
@@ -200,6 +225,7 @@ export function createMachineUpdateControls(
       }, 500);
       return { ok: true, detail: "Restarting the background service." };
     },
+    ...(args.requestDesktopAppUpdate ? { requestDesktopAppUpdate: args.requestDesktopAppUpdate } : {}),
   };
 }
 
@@ -211,7 +237,7 @@ function step(
   return { id, status, detail };
 }
 
-export async function runMachineUpdateAndRestart(
+async function runStandaloneUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
   targetVersion: string | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
@@ -230,6 +256,8 @@ export async function runMachineUpdateAndRestart(
       targetVersion: null,
       steps,
       message: `Couldn't check for an update — ${detail}`,
+      route: "standalone",
+      pendingVersion: null,
     };
   }
   steps.push(step("check", "ok", check.detail));
@@ -260,6 +288,8 @@ export async function runMachineUpdateAndRestart(
         targetVersion: check.targetVersion,
         steps,
         message: `Couldn't install the update — ${applied.detail}`,
+        route: "standalone",
+        pendingVersion: null,
       };
     }
     updateApplied = true;
@@ -278,6 +308,8 @@ export async function runMachineUpdateAndRestart(
         targetVersion: check.targetVersion,
         steps,
         message: `Updating to ${check.targetVersion ?? "the newest version"} — reconnecting…`,
+        route: "standalone",
+        pendingVersion: check.targetVersion,
       };
     }
   }
@@ -294,6 +326,8 @@ export async function runMachineUpdateAndRestart(
       message: updateApplied
         ? `Updated ADE, but the background service didn't restart — ${restart.detail}`
         : `The background service didn't restart — ${restart.detail}`,
+      route: "standalone",
+      pendingVersion: null,
     };
   }
   steps.push(step("restart", "pending", restart.detail));
@@ -306,5 +340,114 @@ export async function runMachineUpdateAndRestart(
     message: updateApplied
       ? `Updating to ${check.targetVersion ?? "the newest version"} — reconnecting…`
       : "Restarting — reconnecting…",
+    route: "standalone",
+    pendingVersion: updateApplied ? check.targetVersion : null,
   };
+}
+
+/**
+ * Map the desktop app's answer onto the same step-by-step result the
+ * standalone path reports, so the asking client renders either the same way.
+ */
+function desktopAppResult(
+  answer: DesktopAppUpdateInstallResult,
+  targetVersion: string | null,
+): MachineUpdateAndRestartResult {
+  const version = answer.version ?? targetVersion;
+  const named = version ?? "the newest version";
+  const base = {
+    currentVersion: answer.currentVersion,
+    targetVersion: version,
+    route: "desktop_app" as const,
+  };
+  switch (answer.outcome) {
+    case "installing":
+      return {
+        ...base,
+        ok: true,
+        updateApplied: true,
+        steps: [
+          step("check", "ok", `The ADE app on this machine has ${named} ready.`),
+          step("apply", "pending", answer.message || `The ADE app is installing ${named}.`),
+          step("restart", "pending", "The app restarts the background service after it installs."),
+        ],
+        message: `Installing ADE ${named} — the app on that machine restarts, then reconnecting…`,
+        pendingVersion: version,
+      };
+    case "downloading":
+      return {
+        ...base,
+        ok: true,
+        updateApplied: false,
+        steps: [
+          step("check", "ok", `The ADE app on this machine found ${named}.`),
+          step("apply", "pending", answer.message || `Downloading ${named}; it installs when the download finishes.`),
+          step("restart", "pending", "The app restarts the background service after it installs."),
+        ],
+        message: `Downloading ADE ${named} on that machine — it installs and restarts when the download finishes.`,
+        pendingVersion: version,
+      };
+    case "no_update":
+      return {
+        ...base,
+        ok: false,
+        updateApplied: false,
+        steps: [step("check", "failed", answer.message || "The ADE app found no newer version.")],
+        message: answer.message
+          || `The ADE app on that machine found no newer version than ${answer.currentVersion ?? "the one it runs"}.`,
+        pendingVersion: null,
+      };
+    case "failed":
+    default:
+      return {
+        ...base,
+        ok: false,
+        updateApplied: false,
+        steps: [step("apply", "failed", answer.message || "The ADE app could not install the update.")],
+        message: `Couldn't update the ADE app on that machine — ${answer.message || "it did not say why"}`,
+        pendingVersion: null,
+      };
+  }
+}
+
+export async function runMachineUpdateAndRestart(
+  deps: MachineUpdateAndRestartDeps,
+  targetVersion: string | null = null,
+): Promise<MachineUpdateAndRestartResult> {
+  if (deps.requestDesktopAppUpdate) {
+    let routing: DesktopAppUpdateRouting;
+    try {
+      routing = await deps.requestDesktopAppUpdate(targetVersion);
+    } catch (error) {
+      routing = { attached: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (routing.attached) {
+      const answer = routing.result;
+      // "unsupported" is a development or channel build with no updater of its
+      // own: there is nothing to defer to, so the standalone runtime updates.
+      // "already_current" means the app is already there and only the brain
+      // lags -- a restart picks the app's runtime back up, an apply would not.
+      if (answer.outcome === "already_current") {
+        const restart = deps.requestRestart();
+        return {
+          ok: restart.ok,
+          updateApplied: false,
+          currentVersion: answer.currentVersion,
+          targetVersion: answer.version ?? targetVersion,
+          steps: [
+            step("check", "ok", answer.message || "The ADE app is already on the newest version."),
+            step("apply", "skipped", "Already on the newest version."),
+            step("restart", restart.ok ? "pending" : "failed", restart.detail),
+          ],
+          message: restart.ok
+            ? "The ADE app is already up to date — restarting its background service, reconnecting…"
+            : `The background service didn't restart — ${restart.detail}`,
+          route: "desktop_app",
+          pendingVersion: restart.ok ? answer.currentVersion : null,
+        };
+      }
+      if (answer.outcome !== "unsupported") return desktopAppResult(answer, targetVersion);
+    }
+  }
+  return await runStandaloneUpdateAndRestart(deps, targetVersion);
 }
