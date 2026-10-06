@@ -2597,19 +2597,26 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
     $ ade mac-desktop click <handle> --text            Click what you observed
     $ ade mac-desktop click --text "Sign in" --text    Click by visible text
-    $ ade mac-desktop click --x 900 --y 420 --real     Click a point with real input
+    $ ade mac-desktop click --x 900 --y 420 --text     Click a point (no pointer moves)
+    $ ade mac-desktop click --x 900 --y 420 --right    Right-click; --double for a double click
     $ ade mac-desktop type "hello" --clear --text      Type into the focused element
     $ ade mac-desktop type "reddit" --submit --text    Type, then press Return
     $ ade mac-desktop press return --text              One key (return, tab, escape, f5…)
     $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
                                                        --alt (option) --control
     $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
+    $ ade mac-desktop scroll down --x 900 --y 420      Scroll the view under a point
     $ ade mac-desktop drag --from <handle> --to 900,420
     $ ade mac-desktop wait --label "Done" --timeout 8000 --text
 
   Every acting command re-observes and prints what the screen looks like now.
-  Accessibility input is the default and needs no approval; --real posts real
-  pointer/keyboard events and needs one lease per chat:
+  None of the commands above moves the user's pointer or needs approval. A
+  handle or text target uses Accessibility; a point (--x/--y), a right or double
+  click, a scroll at a point and a drag are delivered to the app under the point
+  alone, so custom-drawn apps (DAWs, games, canvases) and Electron apps work
+  too. --real posts through the user's own pointer instead: it is only for a
+  control that appears on hover or a drop onto another app or the Dock, and it
+  needs one lease per chat:
 
     $ ade mac-desktop lease --reason "drag the file onto the dock" --text
 

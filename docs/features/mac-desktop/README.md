@@ -29,16 +29,23 @@ virtual — on one global coordinate plane. A window parked at `x = 8000` is a
 real window with a real accessibility tree and real ScreenCaptureKit content. It
 is simply not where the user is looking.
 
-Three rules make the isolation hold:
+Four rules make the isolation hold:
 
 - **Capture is window-scoped or display-scoped, never screen-scoped.** ADE
   captures the virtual display, or one window on it.
 - **Input is Accessibility-scoped by default.** `AXUIElementPerformAction` and
   `AXUIElementSetAttributeValue` act on a specific element in a specific
   process. They move no pointer and steal no focus.
-- **Real pointer and keyboard events need a lease.** `CGEvent` posts are global,
-  so they are the one capability that can disturb the user. A chat asks for them
-  once, through the normal pending-input card, and holds a lease afterwards.
+- **Pointer input is process-scoped.** A point click, a right or double click,
+  a scroll at a point and a drag are posted to the process that owns the lane
+  window under the point, never through the window server. They move no
+  pointer, leave the user's frontmost app alone, and need no lease. See
+  [Background input](#background-input).
+- **Real pointer and keyboard events need a lease.** `CGEvent` posts through the
+  HID tap are global and move the user's one pointer, so they are the one
+  capability that can disturb the user. A chat asks for them once, through the
+  normal pending-input card, and holds a lease afterwards. Only a hover and a
+  drop onto another app still need them.
 
 ### The known limit
 
@@ -80,6 +87,8 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol. Every log line goes to stderr, and the Node client copies each line into the brain log. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
@@ -94,7 +103,7 @@ required.
 | `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the macOS `DesktopSeatProvider`. One method per driver op; the only file that knows the op names. The Windows sibling is `windowsDesktop/windowsDesktopSeatProvider.ts` (see [Windows Desktop](../windows-desktop/README.md#source-file-map)). |
 | `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopNextStep.ts` | The `next` step on an `unconfirmed` effect: one input method to try next (`observe`, `real_input`, `lease` or `browser`) and why, from the element, its app, the mode and the lease. Pure. The CLI prints it as the `next:` line. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopNextStep.ts` | The `next` step on an `unconfirmed` effect: one input method to try next (`observe`, `background_input`, `real_input`, `lease` or `browser`) and why, from the element, its app, the mode and the lease. Pure. The CLI prints it as the `next:` line. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
@@ -396,6 +405,60 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   `callerRoot` (sent by `ade mac-desktop` on every call) is inside a lane
   worktree, the call is bound to that lane and a different `--lane` is refused;
   from the project root or outside every worktree it may name any lane.
+
+## Background input
+
+`mode: "background"` delivers pointer events to the process that owns the lane
+window under the point, and to nothing else. It is what a Mac seat uses for a
+point click (`click --x/--y`), a right or double click, a scroll at a point and
+a drag, unless the caller passes `--real`. An Accessibility click on an element
+with no press action, and a right or double click on a handle, fall back to it
+at the element's centre; the reply says `via: background` and the result's
+`mode` is `background`. A Windows seat has no background path and keeps
+`real`.
+
+A bare `CGEventPostToPid` is dropped: AppKit resolves a posted mouse event's
+window from fields the window server normally fills in, and a click that
+arrives without the window server also arrives without the activation AppKit
+expects first. What makes it land, measured live on macOS 27 against an AppKit
+fixture (a standard button and a view that refuses first mouse), an Electron 41
+fixture, and Ableton Live 12 (custom-drawn: a browser click, a wheel scroll, a
+right-click that opened Live's own context menu, and a pick from that menu):
+
+1. **Route.** The window id in fields 91, 92 and 51, the pid in 40, click
+   group 58, the button number, the touch subtype (7 = 3), pressure, and the
+   window-local location set with the private `CGEventSetWindowLocation`. A
+   `mouseMoved` at the target goes first. Without the route, nothing lands;
+   with it alone, a button and a text field work but a view that refuses first
+   mouse drops the click.
+2. **Focus without activation.** `BackgroundEventRecord.focus` and the
+   `makeKey` down/up pair, posted to the target with `SLPSPostEventRecordTo`.
+   The app believes its window is key and spends its activating click on the
+   make-key pair, so the real click is delivered. No record goes to the user's
+   app, so its frontmost state does not change.
+3. **SkyLight posting.** `SLEventPostToPid`, falling back to `CGEventPostToPid`
+   when the symbol is missing.
+4. **Guard.** If the target makes itself frontmost, the user's app is put back
+   with `SLPSSetFrontProcessWithOptions(…, kCPSNoWindows)`. Any other change of
+   front is the user's and is never undone.
+
+`GetProcessForPID` lives in HIServices, which a helper that never touched
+Carbon has not loaded; `BackgroundInput` opens it explicitly. A missing private
+symbol degrades that step and is listed in the reply's `background.degraded`;
+nothing here falls back to the HID tap.
+
+The target is the frontmost window under the point that belongs to an app with
+a window on the lane, at any window level (a context menu is its own window
+above the one that opened it), and only on the lane's display. A point off the
+display is refused.
+
+Known limits: a hover (`mouseMoved`) is not delivered, because AppKit routes
+moves by the real pointer, so hover-only controls need `--real`. Chromium
+reports no held button during a background drag (`buttons === 0` in the page),
+so a web drag that checks the button state needs `--real` or App Control.
+Chromium's accessibility tree stays closed on macOS 27 even with
+`AXManualAccessibility` set, so an Electron window lists only its frame:
+click it by point, or use App Control for the DOM.
 
 ## Streaming
 
@@ -881,6 +944,9 @@ the main display's visible frame. It never reports `virtual` for a display it
 did not get.
 
 ### Keyboard without a lease
+
+(Pointer events have the same property on the background path: see
+[Background input](#background-input).)
 
 `AccessibilityDriver` types by setting `kAXValueAttribute` where the element has
 one. Where it does not — a canvas, a terminal view, some Electron text areas —

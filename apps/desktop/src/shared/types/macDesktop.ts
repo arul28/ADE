@@ -441,10 +441,15 @@ export type MacDesktopObserveArgs = {
  * How an input command reaches the app.
  *
  * `accessibility` is the default and needs no lease: it performs an action on
- * one element in one process and moves no pointer. `real` posts a `CGEvent`,
- * which is global to the machine, so it is the one capability behind the lease.
+ * one element in one process and moves no pointer. `background` delivers
+ * pointer events (a click at a point, a right or double click, a scroll, a
+ * drag) to the process that owns the lane window under the point and nowhere
+ * else, so it moves no pointer either and needs no lease; it is what a point
+ * target gets on a Mac. `real` posts a `CGEvent` through the window server,
+ * which moves the user's one pointer, so it is the one capability behind the
+ * lease. A hover is real-only.
  */
-export type MacDesktopInputMode = "accessibility" | "real";
+export type MacDesktopInputMode = "accessibility" | "background" | "real";
 
 /** One way of naming what to act on, in the order the service resolves them. */
 export type MacDesktopTarget = {
@@ -452,7 +457,7 @@ export type MacDesktopTarget = {
   handle?: string | null;
   /** Case-insensitive match against an element's title, label, or value. */
   text?: string | null;
-  /** Global screen point. Needs `mode: "real"` unless an element is under it. */
+  /** Global screen point. Delivered as `background` input on a Mac, `real` elsewhere. */
   x?: number | null;
   y?: number | null;
   windowId?: number | null;

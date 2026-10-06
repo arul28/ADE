@@ -704,6 +704,23 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const handleDriverEvent = (event: Record<string, unknown> & { event: string }): void => {
     const laneId = asNullableString(event.laneId);
     switch (event.event) {
+      case "display-created": {
+        // The helper re-publishes a lane's display when macOS moved it (adding
+        // any display re-arranges the others). The first create is stored from
+        // the request's own reply; an echo with the same origin changes nothing.
+        const reported = asRecord(event.display);
+        const movedLaneId = asNullableString(reported.laneId);
+        const stored = movedLaneId ? ownership.getDisplay(movedLaneId) : null;
+        if (!movedLaneId || !stored) return;
+        const origin = {
+          x: asNumber(asRecord(reported.origin).x, stored.origin.x),
+          y: asNumber(asRecord(reported.origin).y, stored.origin.y),
+        };
+        if (origin.x === stored.origin.x && origin.y === stored.origin.y) return;
+        const updated = ownership.setDisplay({ ...stored, origin });
+        emit({ type: "display-created", display: updated });
+        return;
+      }
       case "windows-changed": {
         if (!laneId) return;
         const windows = asWindows(event.windows);

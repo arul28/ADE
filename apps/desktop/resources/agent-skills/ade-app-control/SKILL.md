@@ -73,6 +73,15 @@ environment. It forwards the debug flags on its own for npm, pnpm, yarn and bun
 scripts and for a direct `electron` command. `--cwd` resolves a relative path
 from the directory you run `ade` in.
 
+An installed Electron app (Slack, a packaged build of the app you work on) is
+launched the same way: name its binary and add `$ADE_APP_CONTROL_DEBUG_FLAGS`,
+which ADE fills in itself, so it works in zsh too. The app must not already be
+running; quit the user's copy only if they say so.
+
+```bash
+ade app-control launch --command '/Applications/Slack.app/Contents/MacOS/Slack $ADE_APP_CONTROL_DEBUG_FLAGS' --text
+```
+
 `connect` attaches to an app you did not launch. The app must already expose a
 CDP port (`--remote-debugging-port`). When you attach to something that is
 already running, `ade app-control claim --lane <lane-id> --text` attributes it

@@ -2,8 +2,10 @@
  * What an agent should try after a Mac Desktop action ADE could not confirm.
  *
  * Input on the lane's display is a ladder: an accessibility action first
- * (silent, scoped to one element), then real pointer and keyboard events
- * (global, behind the user's lease). An `unconfirmed` effect alone left each
+ * (silent, scoped to one element), then background pointer events at the
+ * element (delivered to its app alone, no lease), then real pointer and
+ * keyboard events (global, behind the user's lease) for the little that only
+ * the real pointer reaches, such as a hover. An `unconfirmed` effect alone left each
  * agent to guess, and most repeated the accessibility action that had just done
  * nothing. This names one next method and why, from what this process already
  * knows: the element, its app, the input mode, and the lease.
@@ -56,6 +58,8 @@ export type MacDesktopNextStepInput = {
   lease: MacDesktopLeaseDecision;
   /** A Windows seat: `--real` needs no approval card, so none is suggested. */
   realInputNeedsNoCard?: boolean;
+  /** This seat delivers background pointer input (a Mac). */
+  backgroundAvailable?: boolean;
 };
 
 /** Is the element web content (inside an `AXWebArea`)? Elements are walked by `parentIndex`. */
@@ -160,6 +164,7 @@ function realInputStep(
  */
 function realClickCommand(
   args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count">,
+  real = true,
 ): string | null {
   const { resolved } = args;
   if (args.action !== "click" || !resolved) return null;
@@ -167,7 +172,26 @@ function realClickCommand(
   if (count > 2) return null;
   const button = args.button === "right" ? " --right" : "";
   const repeat = count === 2 ? " --double" : "";
-  return `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}${button}${repeat} --real --text`;
+  return `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}${button}${repeat}${real ? " --real" : ""} --text`;
+}
+
+/**
+ * The background rung: the same click as a pointer event delivered to the
+ * app alone. Only for a click on an element with a frame; keys have no
+ * background form (they already go to the app alone).
+ */
+function backgroundStep(
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "backgroundAvailable">,
+  why: string,
+): ComputerUseActionNextStep | null {
+  if (!args.backgroundAvailable || args.action !== "click") return null;
+  const command = realClickCommand(args, false);
+  if (!command) return null;
+  return {
+    method: "background_input",
+    reason: `${why}; click it where it is drawn instead — background input moves no pointer and needs no approval`,
+    command,
+  };
 }
 
 /** The step for an element that is disabled: wait, do not change method. */
@@ -203,6 +227,14 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
     };
   }
 
+  if (args.mode === "background") {
+    return {
+      method: "observe",
+      reason: "the app received the input and nothing changed yet; check the screenshot or wait for the label you expect before you retry — only a control that appears on hover needs --real, which moves the user's pointer and needs their approval",
+      command: null,
+    };
+  }
+
   const why = accessibilityMissReason(args.action, resolved, webContent);
   if (!why) {
     const prefix = resolved?.actions?.includes("AXPress") ? "the element accepts AXPress, so the" : "the";
@@ -212,7 +244,7 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
       command: null,
     };
   }
-  return realInputStep(args, why);
+  return backgroundStep(args, why) ?? realInputStep(args, why);
 }
 
 /**
@@ -233,6 +265,7 @@ export function macDesktopRefusedNextStep(args: {
   count?: number | null;
   lease: MacDesktopLeaseDecision;
   realInputNeedsNoCard?: boolean;
+  backgroundAvailable?: boolean;
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
   if (!/answered no press action/i.test(args.message)) return null;

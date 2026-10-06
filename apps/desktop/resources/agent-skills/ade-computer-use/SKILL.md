@@ -13,17 +13,25 @@ then follow that surface's loop.
 | What you need to drive | Surface | Skill |
 |---|---|---|
 | An iOS or SwiftUI app | `ade apple` | **ade-apple** |
-| Any macOS app, or anything that must not touch the user's own screen | `ade mac-desktop` (the lane's private display) | this skill, below |
+| Any macOS app — native, Electron, or custom-drawn (DAWs such as FL Studio or Ableton, games, canvases) — or anything that must not touch the user's own screen | `ade mac-desktop` (the lane's private display) | this skill, below |
 | Any Windows app (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
-| A dev Electron app you launch or attach to | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
+| An Electron app whose DOM you need — labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 
-Pick App Control over Mac Desktop for an Electron app you build: it acts
-through the DOM, so labels, selectors and test ids work, and it records and
-proves the app's own window. App Control never needs the user's screen. If you
-want the app fully separate from the user's screen, you may move its window
-onto the lane's Mac Desktop with `ade mac-desktop claim --window <id>`. This is
-optional.
+Pick App Control for an Electron app whose DOM you need: it acts through the
+DOM, so labels, selectors, test ids and hover work, and it records and proves
+the app's own window. That covers your dev build (`ade app-control launch`)
+and an installed app such as Slack or a packaged build of the app you work on:
+start it with a debug port, then attach (`ade mac-desktop open "<App>" --
+--remote-debugging-port=9333`, then `ade app-control connect --cdp-port 9333`).
+Otherwise Mac Desktop drives an Electron window by point, like any other app.
+
+**Only ADE's surfaces stay off the user's screen.** Anything else that clicks,
+types or captures — an MCP server, `osascript` or System Events,
+`cliclick`, `screencapture`, a browser-automation CLI, a Chrome you open
+yourself — acts on the user's real screen, pointer and focus. Do not use them
+for task work. When an ADE surface cannot do a step, say which step and why,
+and ask; do not switch tools silently.
 
 Note: `ade desktop` is a different command. It launches the ADE desktop app.
 
@@ -59,6 +67,8 @@ input method to try next and why, and often a command to run:
 
 - `observe` — keep the same method. Look at the new screen, or `wait` for the
   label you expect. The action probably applied, or the element is disabled.
+- `background_input` — run the click it prints: the same click at the
+  element's point, delivered to the app alone. No approval, no pointer moves.
 - `real_input` — repeat the same command with `--real`.
 - `lease` — real input is the fix, but this chat must ask for it first. Run
   the `ade mac-desktop lease` command it prints, then repeat with `--real`.
@@ -212,6 +222,7 @@ Use these directly; you do not need `--help` for them.
 | Open an app, file or URL | `ade screen open "Safari" --text` |
 | What is on screen | `ade screen observe --text` |
 | Click a control by its label | `ade screen click --text "Sign in" --text` |
+| Click a point from the screenshot (no pointer moves) | `ade screen click --x 900 --y 420 --text` (add `--right` or `--double`) |
 | Type, then press Return | `ade screen type "reddit" --submit --text` |
 | Press one key | `ade screen press return --text` (also `tab`, `escape`) |
 | Wait for a label to appear | `ade screen wait --label "Done" --timeout 8000 --text` |
@@ -271,8 +282,15 @@ ade mac-desktop observe --window <id> --map --limit 80 --text
 
 An observation gives you a screenshot and a numbered element list:
 `[3] AXButton "Sign in" (912,430)`. The number is a handle valid only for that
-observation. **Act by handle, not by coordinates** — a point is a guess that
-the layout did not move. Add `--map` when you want a numbered image to look at.
+observation. **Act by handle when there is one** — a point is a guess that the
+layout did not move. Add `--map` when you want a numbered image to look at.
+
+Some apps list almost nothing: an Electron window shows its three window
+buttons, and a custom-drawn app (FL Studio, Ableton, a game, a canvas) shows
+its panels but not the controls inside them. Then act by point: read the
+control's position off the screenshot (global screen points, the same plane as
+the element list) and click it with `--x/--y`. That is still delivered to the
+app alone and moves no pointer.
 
 ### 3. Act — the result already contains the next observation
 
@@ -286,6 +304,9 @@ ade mac-desktop press return --text
 ade mac-desktop press tab --text
 ade mac-desktop press return --cmd --text
 ade mac-desktop scroll down --amount 5 --text
+ade mac-desktop click --x 900 --y 420 --text            # a point, from the screenshot
+ade mac-desktop click --x 900 --y 420 --right --text    # context menu; --double for a double click
+ade mac-desktop scroll down --x 900 --y 420 --amount 5 --text
 ade mac-desktop drag --from obs-a1b2:e:3 --to 900,420 --text
 ade mac-desktop wait --label "Saved" --timeout 8000 --text
 ```
@@ -300,20 +321,27 @@ step worked; `ok` alone does not confirm it.
 If the change takes time to show, run `wait` for a label instead of acting
 again. If a handle is refused as expired, observe again and retry.
 
-### 4. Real input needs one approval per chat
+### 4. Nothing here moves the user's pointer — except `--real`
 
-Accessibility actions are the default and need nothing. On a Mac, real pointer
-and keyboard events (`--real`, a point click, a drag) are global to the Mac, so
-they sit behind a lease the user grants once per chat (a Windows private seat
-needs none; on the Windows shared seat the user's yes covers it):
+Every command above runs without approval and leaves the user's pointer,
+keyboard and frontmost app alone. A handle or text target uses Accessibility.
+A point click, a right or double click, a scroll at a point and a drag are
+delivered to the app under the point and nowhere else (`mode background` in
+the reply), so custom-drawn and Electron apps work too. A handle whose element
+has no press action is clicked that way automatically. Keys and text already
+go to the app alone.
+
+`--real` is different: it posts through the user's one pointer, which jumps
+onto the lane's screen for every event. On a Mac it sits behind a lease the
+user grants once per chat (a Windows private seat needs none; on the Windows
+shared seat the user's yes covers it). Use it only for what background input
+cannot reach: a control that appears only on hover, or a drop onto another
+app or the Dock. Tell the user their pointer will move before you ask:
 
 ```bash
 ade mac-desktop lease --reason "drag the file onto the Dock" --text
-ade mac-desktop click --x 900 --y 420 --real --text
+ade mac-desktop drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
 ```
-
-Ask for it only when accessibility input genuinely cannot do the job — a drag,
-a native menu, a control with no `AXPress`.
 
 ## Rules that will bite you
 

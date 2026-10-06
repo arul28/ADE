@@ -14,11 +14,15 @@ public struct WindowHitCandidate: Equatable {
     public var pid: pid_t
     public var frame: CGRect
     public var minimized: Bool
+    /// The window-server id, for a background event that must name the exact
+    /// window it is for. Zero when the caller only needs the process.
+    public var windowId: UInt32
 
-    public init(pid: pid_t, frame: CGRect, minimized: Bool) {
+    public init(pid: pid_t, frame: CGRect, minimized: Bool, windowId: UInt32 = 0) {
         self.pid = pid
         self.frame = frame
         self.minimized = minimized
+        self.windowId = windowId
     }
 }
 
@@ -27,10 +31,13 @@ public enum WindowHitTest {
     /// window-server order, front to back, which is what `CGWindowListCopyWindowInfo`
     /// returns. A minimized window has no frame on screen and is skipped.
     public static func pid(at point: CGPoint, in candidates: [WindowHitCandidate]) -> pid_t? {
-        for candidate in candidates where !candidate.minimized {
-            if candidate.frame.contains(point) { return candidate.pid }
-        }
-        return nil
+        window(at: point, in: candidates)?.pid
+    }
+
+    /// The frontmost candidate under `point`, whole: a background event names
+    /// its window as well as its process.
+    public static func window(at point: CGPoint, in candidates: [WindowHitCandidate]) -> WindowHitCandidate? {
+        candidates.first { !$0.minimized && $0.frame.contains(point) }
     }
 
     /// Where keys go: the frontmost window of the lane, or nil for none.

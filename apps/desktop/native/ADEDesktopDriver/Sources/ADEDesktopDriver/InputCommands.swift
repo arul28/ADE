@@ -28,6 +28,9 @@ extension DriverRuntime {
         if mode == "real" {
             return try realCommand(laneId: laneId, command: command, payload: payload, request: request)
         }
+        if mode == "background" {
+            return try backgroundCommand(laneId: laneId, command: command, payload: payload)
+        }
         return try accessibilityCommand(laneId: laneId, command: command, payload: payload)
     }
 
@@ -122,7 +125,24 @@ extension DriverRuntime {
         switch command {
         case "click":
             let (element, record) = try resolve(payload: payload)
-            try accessibility.click(element, record: record)
+            let button = payload["button"]?.stringValue ?? "left"
+            let count = payload["count"]?.intValue ?? 1
+            // Accessibility has no right click and no double click: a press is
+            // a press. Those go to the element's centre as background input,
+            // which moves no pointer either.
+            if button.lowercased() == "right" || count > 1 {
+                return try backgroundClick(laneId: laneId, element: record, button: button, count: count)
+            }
+            do {
+                try accessibility.click(element, record: record)
+            } catch let error as DriverError where error.code == DriverErrorCode.invalidArgument {
+                // No press action at all, as on a custom-drawn view or a web
+                // group: click where it is drawn instead.
+                guard let fallback = try? backgroundClick(laneId: laneId, element: record, button: button, count: count) else {
+                    throw error
+                }
+                return fallback
+            }
             return ["resolvedIndex": .int(record.index)]
         case "type":
             let (text, target) = TypeCommand.split(payload)
@@ -397,6 +417,144 @@ extension DriverRuntime {
             )
         }
         return ["resolvedIndex": resolvedIndex]
+    }
+
+    /// The `background` mode: pointer events delivered to the process that
+    /// owns the lane window under the point. See `BackgroundInput` for why it
+    /// needs no lease.
+    private func backgroundCommand(
+        laneId: String,
+        command: String,
+        payload: [String: JSONValue]
+    ) throws -> [String: JSONValue] {
+        guard let placement = windows.placement(forLane: laneId) else {
+            throw DriverError(
+                code: DriverErrorCode.noDisplay,
+                message: "Lane \(laneId) has no display to deliver background input on."
+            )
+        }
+        var resolvedIndex: JSONValue = .null
+        func point(_ key: String) throws -> CGPoint {
+            let raw: CGPoint
+            if let object = payload[key]?.objectValue,
+               let x = object["x"]?.doubleValue,
+               let y = object["y"]?.doubleValue {
+                raw = CGPoint(x: x, y: y)
+            } else if let x = payload["x"]?.doubleValue, let y = payload["y"]?.doubleValue {
+                raw = CGPoint(x: x, y: y)
+            } else {
+                let (_, record) = try resolve(payload: payload[key]?.objectValue ?? payload)
+                resolvedIndex = .int(record.index)
+                raw = CGPoint(x: record.frame.midX, y: record.frame.midY)
+            }
+            guard placement.frame.contains(raw) else {
+                throw DriverError(
+                    code: DriverErrorCode.invalidArgument,
+                    message: "(\(Int(raw.x)), \(Int(raw.y))) is not on this lane's display; background input only reaches the lane's own windows."
+                )
+            }
+            return raw
+        }
+        let report: BackgroundInput.Report
+        let target: BackgroundInput.Target
+        switch command {
+        case "click":
+            let at = try point("at")
+            target = try backgroundTarget(laneId: laneId, at: at, placement: placement)
+            report = backgroundInput.click(
+                target: target,
+                at: at,
+                button: payload["button"]?.stringValue ?? "left",
+                count: payload["count"]?.intValue ?? 1
+            )
+        case "scroll":
+            let at = try point("at")
+            target = try backgroundTarget(laneId: laneId, at: at, placement: placement)
+            report = try backgroundInput.scroll(
+                target: target,
+                at: at,
+                direction: payload["direction"]?.stringValue ?? "down",
+                amount: payload["amount"]?.intValue ?? 3
+            )
+        case "drag":
+            let from = try point("from")
+            let to = try point("to")
+            target = try backgroundTarget(laneId: laneId, at: from, placement: placement)
+            report = backgroundInput.drag(
+                target: target,
+                from: from,
+                to: to,
+                durationMs: payload["durationMs"]?.intValue ?? 300
+            )
+        default:
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: "\"\(command)\" has no background form. A hover needs real input (--real); keys and text already go to the app alone."
+            )
+        }
+        return [
+            "resolvedIndex": resolvedIndex,
+            "via": .string("background"),
+            "background": .object(report.asJSON(target: target)),
+        ]
+    }
+
+    private func backgroundClick(
+        laneId: String,
+        element record: ObservedElement,
+        button: String,
+        count: Int
+    ) throws -> [String: JSONValue] {
+        guard let placement = windows.placement(forLane: laneId) else {
+            throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
+        }
+        let center = CGPoint(x: record.frame.midX, y: record.frame.midY)
+        guard record.frame.width > 0, record.frame.height > 0, placement.frame.contains(center) else {
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: "\(record.role) has no on-screen frame on this lane's display to click."
+            )
+        }
+        let target = try backgroundTarget(laneId: laneId, at: center, placement: placement)
+        let report = backgroundInput.click(target: target, at: center, button: button, count: count)
+        return [
+            "resolvedIndex": .int(record.index),
+            "via": .string("background"),
+            "background": .object(report.asJSON(target: target)),
+        ]
+    }
+
+    /// The frontmost window under `point` that belongs to an app on this
+    /// lane's display, at any level: a context menu or popover is its own
+    /// window above the one that opened it.
+    ///
+    /// Only apps that have a window on the lane are candidates, and only
+    /// windows on the lane's display, so a background event can never reach a
+    /// window on the user's own screen.
+    private func backgroundTarget(
+        laneId: String,
+        at point: CGPoint,
+        placement: DisplayPlacement
+    ) throws -> BackgroundInput.Target {
+        let lanePids = Set(windows.listWindows(laneId: laneId).map(\.pid))
+        let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let candidates: [WindowHitCandidate] = raw.compactMap { entry in
+            guard let pid = entry[kCGWindowOwnerPID as String] as? Int32, lanePids.contains(pid),
+                  let number = entry[kCGWindowNumber as String] as? UInt32,
+                  let layer = entry[kCGWindowLayer as String] as? Int, layer < 1000,
+                  let bounds = entry[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  placement.frame.intersects(frame)
+            else { return nil }
+            return WindowHitCandidate(pid: pid, frame: frame, minimized: false, windowId: number)
+        }
+        guard let hit = WindowHitTest.window(at: point, in: candidates) else {
+            throw DriverError(
+                code: DriverErrorCode.noWindow,
+                message: "No window of this lane is under (\(Int(point.x)), \(Int(point.y))). Observe first and aim inside a window."
+            )
+        }
+        return BackgroundInput.Target(pid: hit.pid, windowId: hit.windowId, frame: hit.frame)
     }
 
     /// "Is this point still somewhere this lane is allowed to drag?", re-asked

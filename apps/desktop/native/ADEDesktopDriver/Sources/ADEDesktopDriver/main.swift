@@ -51,6 +51,7 @@ final class DriverRuntime: NSObject {
     lazy var accessibility = AccessibilityDriver(handles: handles, log: log)
     private lazy var capture = CaptureEngine(log: log, emit: emit)
     lazy var realInput = RealInput(leases: leases, log: log)
+    lazy var backgroundInput = BackgroundInput(log: log)
 
     /// "A real gesture is holding the mouse button right now." Consulted by the
     /// dispatcher below, set by the `drag` path in `InputCommands`, and read by
@@ -550,6 +551,7 @@ final class DriverRuntime: NSObject {
         let width = request.int("width") ?? 2560
         let height = request.int("height") ?? 1440
         let scale = request.int("scale") ?? 2
+        watchDisplayReconfiguration()
         let handle = displays.create(laneId: laneId, name: name, width: width, height: height, scale: scale)
         windows.setPlacement(laneId: laneId, placement: handle.placement, displayId: handle.displayId)
         touch(laneId)
@@ -559,7 +561,46 @@ final class DriverRuntime: NSObject {
         )
         updatePermissionProbe()
         emit(DriverEvent(event: "display-created", fields: ["display": .object(json)]))
+        // Adding this display may have pushed another lane's aside.
+        relocateMovedDisplays()
         return json
+    }
+
+    /// Follows every lane display the window server moved, and republishes
+    /// it as `display-created` (every client upserts on it).
+    func relocateMovedDisplays() {
+        for move in displays.refreshMovedPlacements() {
+            guard let handle = displays.handle(forLane: move.laneId) else { continue }
+            windows.displayMoved(laneId: move.laneId, from: move.from, to: move.to, displayId: handle.displayId)
+            let json = handle.asJSON(
+                windowCount: ownership.windows(forLane: move.laneId).count,
+                lastActivityAt: lastActivity[move.laneId] ?? Date()
+            )
+            emit(DriverEvent(event: "display-created", fields: ["display": .object(json)]))
+        }
+    }
+
+    /// macOS re-arranges displays when any display comes or goes, including
+    /// another ADE helper's. Registered once; the work runs on the main queue
+    /// a beat after the change completes, coalesced.
+    private var displayReconfigurationRegistered = false
+    private var relocationScheduled = false
+    func watchDisplayReconfiguration() {
+        guard !displayReconfigurationRegistered else { return }
+        displayReconfigurationRegistered = true
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        CGDisplayRegisterReconfigurationCallback({ _, flags, refcon in
+            guard let refcon, !flags.contains(.beginConfigurationFlag) else { return }
+            let runtime = Unmanaged<DriverRuntime>.fromOpaque(refcon).takeUnretainedValue()
+            DispatchQueue.main.async {
+                guard !runtime.relocationScheduled else { return }
+                runtime.relocationScheduled = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    runtime.relocationScheduled = false
+                    runtime.relocateMovedDisplays()
+                }
+            }
+        }, refcon)
     }
 
     private func destroyDisplay(_ request: DriverRequest) throws -> [String: JSONValue] {

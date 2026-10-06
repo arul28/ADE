@@ -2095,6 +2095,19 @@ export function createAppControlLaneController(context: AppControlLaneController
       ) {
         command = insertDebugFlagsIntoDirectElectronCommand(command, [...APP_CONTROL_RENDER_FLAGS]);
       }
+      if (process.platform !== "win32") {
+        // The launch terminal is the user's shell, and zsh — the macOS default
+        // — does not word-split an unquoted parameter: `$ADE_APP_CONTROL_DEBUG_FLAGS`
+        // reached the app as ONE argument, Electron could not read a port out
+        // of it and bound a different one, and App Control waited on the port
+        // it had asked for until the user gave up. ADE knows the flags, so a
+        // reference to the variable is inlined here, quoted or not, the same
+        // way the `{ADE_APP_CONTROL_DEBUG_FLAGS}` placeholder is.
+        command = command.replace(
+          /"?\$(?:\{ADE_APP_CONTROL_DEBUG_FLAGS\}|ADE_APP_CONTROL_DEBUG_FLAGS\b)"?/g,
+          debugFlags.map(shellQuote).join(" "),
+        );
+      }
       if (command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")) {
         command = command.replace(/\{ADE_APP_CONTROL_DEBUG_FLAGS\}/g, debugFlags.map(shellQuote).join(" "));
       }

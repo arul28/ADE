@@ -119,6 +119,9 @@ public final class NewWindowTracker: @unchecked Sendable {
         /// Try again on the next sweep. `isFirst` is true only once per
         /// window, so the caller logs once.
         case retry(isFirst: Bool)
+        /// A launched app's window, past the quick attempts: tried again on
+        /// a backed-off schedule. `isFirst` marks the move to that schedule.
+        case retryLater(isFirst: Bool)
         /// Stop trying. The caller logs this once.
         case giveUp
     }
@@ -128,6 +131,13 @@ public final class NewWindowTracker: @unchecked Sendable {
     /// a real new window is ready long before that.
     public static let defaultMaxNotReadyAttempts = 3
 
+    /// How many slow attempts a window of an app the LANE launched gets after
+    /// the quick ones, each after a cooldown of 2, 4, 8, then 10 sweeps: about
+    /// three minutes. Giving up leaves the window wherever macOS put it, which
+    /// for a launched app is the user's own screen; an app still loading
+    /// (Ableton Live publishes its window seconds before its accessibility
+    /// element) used to land there for good.
+    public static let launchedSlowAttempts = 20
     private struct Watch {
         var laneId: String
         var launched: Bool
@@ -135,6 +145,8 @@ public final class NewWindowTracker: @unchecked Sendable {
         /// there when a claimed app started to be watched.
         var settled: Set<UInt32>
         var notReady: [UInt32: Int]
+        /// Sweeps left to skip before a slow retry.
+        var cooldown: [UInt32: Int] = [:]
     }
 
     private let lock = NSLock()
@@ -235,9 +247,18 @@ public final class NewWindowTracker: @unchecked Sendable {
         let live = Set(current)
         watch.settled.formIntersection(live)
         watch.notReady = watch.notReady.filter { live.contains($0.key) }
+        var cooling = Set<UInt32>()
+        for (windowId, left) in watch.cooldown {
+            if !live.contains(windowId) || left <= 1 {
+                watch.cooldown.removeValue(forKey: windowId)
+            } else {
+                watch.cooldown[windowId] = left - 1
+                cooling.insert(windowId)
+            }
+        }
         watches[pid] = watch
         return current.filter {
-            unowned.contains($0) && !watch.settled.contains($0) && !minimized.contains($0)
+            unowned.contains($0) && !watch.settled.contains($0) && !minimized.contains($0) && !cooling.contains($0)
         }
     }
 
@@ -248,6 +269,7 @@ public final class NewWindowTracker: @unchecked Sendable {
         guard var watch = watches[pid] else { return }
         watch.settled.insert(windowId)
         watch.notReady.removeValue(forKey: windowId)
+        watch.cooldown.removeValue(forKey: windowId)
         watches[pid] = watch
     }
 
@@ -262,6 +284,13 @@ public final class NewWindowTracker: @unchecked Sendable {
         defer { lock.unlock() }
         guard var watch = watches[pid] else { return .giveUp }
         let attempts = (watch.notReady[windowId] ?? 0) + 1
+        let slow = attempts - maxNotReadyAttempts
+        if slow >= 0, watch.launched, slow < Self.launchedSlowAttempts {
+            watch.notReady[windowId] = attempts
+            watch.cooldown[windowId] = min(1 << min(slow + 1, 4), 10)
+            watches[pid] = watch
+            return .retryLater(isFirst: slow == 0)
+        }
         if attempts >= maxNotReadyAttempts {
             watch.notReady.removeValue(forKey: windowId)
             watch.settled.insert(windowId)
