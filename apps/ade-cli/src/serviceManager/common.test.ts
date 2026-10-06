@@ -883,6 +883,7 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
       // A successful install also arms the wedge watchdog.
       { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
       { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
@@ -957,6 +958,7 @@ describe("launchd service install", () => {
       "unload",
       "-axo",
       "load",
+      "kickstart",
       "unload",
       "load",
     ]);
@@ -996,6 +998,7 @@ describe("launchd service install", () => {
       "unload",
       "-axo",
       "load",
+      "kickstart",
       // The watchdog agent is (re)armed alongside the repaired brain.
       "unload",
       "load",
@@ -1035,6 +1038,8 @@ describe("launchd service install", () => {
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      // The post-load kickstart.
       { status: 0, stdout: "", stderr: "" },
       // The handover poll sees launchd's replacement child running.
       { status: 0, stdout: "state = running\npid = 4321\n", stderr: "" },
@@ -1250,6 +1255,7 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
       // A successful install also arms the wedge watchdog.
       { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
       { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
@@ -1281,10 +1287,62 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
+      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
       // A successful install also arms the wedge watchdog.
       { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
       { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
     ]);
+  });
+
+  // A launchd domain in on-demand-only mode ignores RunAtLoad and KeepAlive:
+  // after `load` the job sits at `runs = 0` until something asks for it. The
+  // install has to start it itself, and when launchd refuses, say why.
+  it.each([
+    { name: "starts the job launchd left pending", kickstart: { status: 0, stdout: "", stderr: "" } },
+    {
+      name: "names launchd's refusal when the kickstart fails",
+      kickstart: { status: 113, stdout: "", stderr: 'Could not find service "com.ade.runtime" in domain for user gui: 501' },
+    },
+  ])("launchd never starts a loaded agent: $name", async ({ kickstart }) => {
+    const homeDir = makeTempHome("ade-launchd-pending-");
+    const kickstarts: string[][] = [];
+    let started = false;
+    const spawnSync: ServiceManagerSpawnSync = (command, args) => {
+      if (command === "/usr/bin/osascript") return { status: 0, stdout: "1\n", stderr: "" };
+      if (command === "launchctl" && args[0] === "kickstart") {
+        kickstarts.push(args);
+        if (kickstart.status === 0) started = true;
+        return kickstart;
+      }
+      if (command === "launchctl" && args[0] === "print") {
+        return started
+          ? { status: 0, stdout: "state = running\npid = 5555\n", stderr: "" }
+          : { status: 0, stdout: "state = not running\nruns = 0\npended nondemand spawn = speculative\n", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => started,
+      handoverTimeoutMs: 200,
+      handoverPollMs: 10,
+      currentPid: 9999,
+      parentPid: () => null,
+      terminateDeps: { kill: vi.fn(), pidAlive: () => false },
+    });
+
+    expect(kickstarts[0]).toEqual(["kickstart", currentLaunchdDomain()]);
+    if (kickstart.status === 0) {
+      expect(result).toMatchObject({ ok: true, restarted: true });
+      expect(kickstarts).toHaveLength(1);
+    } else {
+      expect(result).toMatchObject({ ok: false, failureStep: "replacement_pid" });
+      expect(result.message).toContain("launchctl kickstart failed");
+      expect(result.message).toContain("Could not find service");
+    }
   });
 
   // DARWIN-GATE: the Background Items read reaches macOS `SMAppService` through
@@ -1430,6 +1488,7 @@ describe("launchd service install", () => {
       ["launchctl", "unload"],
       ["ps", "-axo"],
       ["launchctl", "load"],
+      ["launchctl", "kickstart"],
       ["launchctl", "unload"],
       ["launchctl", "load"],
     ]);
@@ -1542,7 +1601,7 @@ describe("launchd service install", () => {
     });
     expect(fs.existsSync(servicePath)).toBe(true);
     expect(calls.map((call) => call.args[0]))
-      .toEqual(["print", "unload", "-axo", "load", "unload", "load"]);
+      .toEqual(["print", "unload", "-axo", "load", "kickstart", "unload", "load"]);
   });
 
   it("refuses to uninstall a launch agent from a descendant of the loaded service", () => {

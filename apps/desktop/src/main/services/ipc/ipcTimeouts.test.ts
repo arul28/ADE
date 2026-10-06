@@ -20,6 +20,7 @@ import {
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 describe("ipcInvokeTimeoutMs", () => {
   it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
@@ -135,6 +136,14 @@ describe("ipcInvokeTimeoutMs", () => {
     // the same budget — on the default the renderer reports "Repair failed" for
     // a repair that is still running.
     expect(ipcInvokeTimeoutMs(IPC.accountRepairSession)).toBeGreaterThanOrEqual(WORST_CASE_MS);
+  });
+
+  it("outlasts every leg project recovery's Repair can wait on", () => {
+    // repair() may first wait out an in-flight restart, then stops the service
+    // (10s socket wait), reinstalls it, waits for the socket and pings the brain;
+    // each of the four waits is bounded by RUNTIME_SERVICE_START_WAIT_MS.
+    const WORST_CASE_MS = RUNTIME_SERVICE_START_WAIT_MS * 4 + 10_000;
+    expect(ipcInvokeTimeoutMs(IPC.recoveryRepair)).toBeGreaterThanOrEqual(WORST_CASE_MS);
   });
 
   it("gives retryable remote runtime actions enough time to reconnect", () => {
