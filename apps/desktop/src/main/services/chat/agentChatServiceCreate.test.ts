@@ -47,6 +47,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
@@ -705,6 +706,61 @@ describe("createAgentChatService", () => {
           sessionId: externalSessionId,
         },
       });
+    });
+
+    it("puts an imported Claude conversation in the account the new chat runs on", async () => {
+      const externalSessionId = "22222222-3333-4444-5555-666666666666";
+      const slug = tmpRoot.replace(/[^A-Za-z0-9]/g, "-");
+      const defaultHome = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const sourcePath = path.join(defaultHome, "projects", slug, `${externalSessionId}.jsonl`);
+      const transcript = [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          timestamp: "2026-07-06T10:00:00.000Z",
+          cwd: tmpRoot,
+          sessionId: externalSessionId,
+          message: { role: "user", content: [{ type: "text", text: "Remember the plan we agreed on." }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-1",
+          timestamp: "2026-07-06T10:00:02.000Z",
+          cwd: tmpRoot,
+          sessionId: externalSessionId,
+          message: { role: "assistant", content: [{ type: "text", text: "Noted: ship the Windows parity work first." }] },
+        }),
+      ].join("\n");
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(sourcePath, transcript, "utf8");
+      // A second Claude login that new chats start on. Written as the registry
+      // file rather than through `create()`, which also locks the folder down.
+      const workHome = path.join(tmpHomeRoot, "provider-homes", "claude", "work");
+      fs.mkdirSync(workHome, { recursive: true });
+      fs.mkdirSync(resolveMachineAdeDir(), { recursive: true });
+      fs.writeFileSync(path.join(resolveMachineAdeDir(), "provider-instances.json"), JSON.stringify({
+        version: 1,
+        instances: [{ id: "work", provider: "claude", label: "Work", configHome: workHome, createdAt: "2026-07-06T09:00:00.000Z" }],
+        defaults: { claude: "work" },
+        settings: {},
+        presetBindings: [],
+      }), "utf8");
+
+      const { service } = createService();
+      const result = await service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: false,
+      });
+
+      expect((await service.getSessionSummary(result.chatSessionId))?.instanceId).toBe("work");
+      expect(readPersistedChatState(result.chatSessionId).claudeBackgroundResumeSessionId).toBe(externalSessionId);
+      // The Work login resumes from its own home, so the conversation has to be there.
+      const resumedPath = path.join(workHome, "projects", slug, `${externalSessionId}.jsonl`);
+      expect(fs.readFileSync(resumedPath, "utf8")).toBe(transcript);
+      expect(fs.existsSync(sourcePath)).toBe(true);
     });
 
     it("rejects a cross-provider replay import whose transcript has no messages", async () => {

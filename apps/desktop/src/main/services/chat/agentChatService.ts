@@ -10364,6 +10364,10 @@ export function createAgentChatService(args: {
     return resolved.instance;
   };
 
+  /** The config home this chat's Claude or Codex account resumes its thread from. */
+  const sessionConfigHome = (managed: ManagedChatSession): string | null =>
+    resolveSessionInstance(managed)?.configHome ?? null;
+
   /**
    * The resolved harness preset (or bare provider-card key) for a chat.
    *
@@ -29465,7 +29469,7 @@ export function createAgentChatService(args: {
         // already torn down above, so repairing the transcript and re-warming
         // lets the next message resume cleanly.
         if (!isAuthFailure && runtime.sdkSessionId && isCorruptThinkingTranscriptError(effectiveError)) {
-          const repair = repairClaudeResumeTranscript(runtime.sdkSessionId, managed.laneWorktreePath);
+          const repair = repairClaudeResumeTranscript(runtime.sdkSessionId, managed.laneWorktreePath, sessionConfigHome(managed));
           if (repair.repaired) {
             logger.warn("agent_chat.claude_thinking_transcript_repaired", {
               sessionId: managed.session.id,
@@ -39290,7 +39294,7 @@ export function createAgentChatService(args: {
     // Repair a corrupted thinking history before resuming directly (the warm
     // path already ran this in pre-warm). No-op for healthy transcripts.
     if (!runtime.warmQuery && options.resume) {
-      const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath);
+      const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath, sessionConfigHome(managed));
       if (repair.repaired) {
         logger.warn("agent_chat.claude_thinking_transcript_repaired", {
           sessionId: managed.session.id,
@@ -39677,7 +39681,7 @@ export function createAgentChatService(args: {
         // so a corrupted thinking history can't wedge the resume (see
         // claudeThinkingTranscriptRepair). No-op for healthy transcripts.
         if (options.resume) {
-          const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath);
+          const repair = repairClaudeResumeTranscript(options.resume, managed.laneWorktreePath, sessionConfigHome(managed));
           if (repair.repaired) {
             logger.warn("agent_chat.claude_thinking_transcript_repaired", {
               sessionId: managed.session.id,
@@ -43651,7 +43655,8 @@ export function createAgentChatService(args: {
         mainSessionIdHint: transport.nativeSessionId,
         sideFiles,
         targetCwd: args.destinationLanePath,
-        configDir: claudeConfigDir(),
+        // Placed where this chat's account resumes from, not the default home.
+        configDir: sessionConfigHome(args.managed) ?? claudeConfigDir(),
       });
       if (args.managed.runtime?.kind === "claude") {
         await resetClaudeQuerySession(args.managed, args.managed.runtime, "session_reset", { clearSdkSessionId: true });
@@ -43661,14 +43666,18 @@ export function createAgentChatService(args: {
       }
       args.managed.claudeBackgroundResumeSessionId = placed.newSessionId;
       mirrorClaudeSessionPointer(args.managed, placed.newSessionId);
-      repairClaudeResumeTranscript(placed.newSessionId, args.managed.laneWorktreePath);
+      repairClaudeResumeTranscript(placed.newSessionId, args.managed.laneWorktreePath, sessionConfigHome(args.managed));
       persistChatState(args.managed);
       return;
     }
 
     if (transport.provider === "codex" && transport.kind === "codex-rollout") {
       const today = new Date();
-      const codexHome = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+      // The rollout goes where this chat's account runs `thread/fork` from.
+      const codexHome = path.resolve(
+        sessionConfigHome(args.managed)
+          ?? (process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+      );
       const destinationDir = path.join(
         codexHome,
         "sessions",
@@ -44424,6 +44433,34 @@ export function createAgentChatService(args: {
     };
   };
 
+  /**
+   * Discovery reads an imported thread from this machine's default config
+   * home, but the new chat starts on whichever account new chats use, and a
+   * resume reads only that account's home. Without this copy the provider
+   * finds nothing to resume and quietly starts a blank conversation, while the
+   * replayed history in the chat makes it look continued.
+   */
+  const placeImportedThreadInChatAccount = async (
+    managed: ManagedChatSession,
+    provider: "claude" | "codex",
+    threadId: string,
+    sourceConfigHome: string,
+  ): Promise<void> => {
+    const account = resolveSessionInstance(managed);
+    if (!account || pathsEqual(account.configHome, sourceConfigHome)) return;
+    const moved = await moveProviderThread({
+      provider,
+      threadId,
+      fromConfigHome: sourceConfigHome,
+      toConfigHome: account.configHome,
+    });
+    if (moved.ok || moved.reason === "same_home") return;
+    throw externalChatImportError(
+      "EXTERNAL_CHAT_SESSION_READ_FAILED",
+      `Could not copy the imported ${importProviderLabel(provider)} conversation to the "${account.label}" account: ${moved.message}`,
+    );
+  };
+
   const importClaudeExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
     laneWorktreePath: string,
@@ -44504,7 +44541,8 @@ export function createAgentChatService(args: {
       mirrorClaudeSessionPointer(managed, targetClaudeSessionId, {
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
-      const repair = repairClaudeResumeTranscript(targetClaudeSessionId, managed.laneWorktreePath);
+      await placeImportedThreadInChatAccount(managed, "claude", targetClaudeSessionId, claudeConfigDir());
+      const repair = repairClaudeResumeTranscript(targetClaudeSessionId, managed.laneWorktreePath, sessionConfigHome(managed));
       if (repair.repaired) {
         logger.warn("agent_chat.external_import_claude_thinking_transcript_repaired", {
           sessionId: managed.session.id,
@@ -44630,6 +44668,13 @@ export function createAgentChatService(args: {
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
+      // Before the runtime starts: its app-server reads threads from its own home.
+      await placeImportedThreadInChatAccount(
+        managed,
+        "codex",
+        externalThreadId,
+        path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+      );
       const runtime = await ensureCodexSessionRuntime(managed);
       forkedProviderRuntime = runtime;
       let targetThreadId = externalThreadId;
