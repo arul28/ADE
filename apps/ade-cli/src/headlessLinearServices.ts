@@ -96,6 +96,7 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
+import { runGitRepoCached } from "../../desktop/src/main/services/git/git";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
@@ -537,12 +538,17 @@ async function ghAuthTokenAsync(): Promise<Pick<
   };
 }
 
+/**
+ * The origin URL from the repo-scoped git cache: it changes only when someone
+ * edits the remote, and a `remote`/`config` command through `runGit` drops it.
+ * Uncached, the brain spawned this git every few seconds.
+ */
 async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
-  const result = await runCommandAsync("git", ["remote", "get-url", "origin"], {
-    cwd: projectRoot,
-    timeoutMs: 2_000,
-    maxBuffer: 64 * 1024,
-  });
+  const result = await runGitRepoCached(
+    ["remote", "get-url", "origin"],
+    { cwd: projectRoot, timeoutMs: 2_000, maxOutputBytes: 64 * 1024 },
+    { key: "remote-url:origin", cacheClass: "stable" },
+  );
   const remote = result.exitCode === 0 ? result.stdout.trim() : "";
   return remote || null;
 }
