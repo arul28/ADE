@@ -12184,8 +12184,14 @@ export function createPrService({
           ?? null
         );
       }
-      // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
-      // merged PR on the lane branch gets backfilled/mapped, then re-read.
+      // Not mapped: ask GitHub for an open PR on the lane's own branch first.
+      // That is one request, where the repo-wide sweep below pages through
+      // closed history and took about a minute on a busy repo.
+      await tryAutoMapLaneByBranch(normalizedLaneId);
+      const branchMapped = getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      if (branchMapped && !branchMapped.unmapped) return withGithubStackMembership(branchMapped);
+      // Still nothing (or an unmapped GitHub projection): pull state:"all" so
+      // a merged PR on the lane branch gets backfilled/mapped, then re-read.
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
       // instead of returning possibly-stale local projections. It is a direct
       // user action, so it is also allowed past the GitHub failure ladder.

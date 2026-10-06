@@ -143,7 +143,11 @@ export function SceneFrame({
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant.
-  const { sessionId, pin, laneId } = useChatRuntimeScope();
+  const { sessionId, pin, laneId, isRemote } = useChatRuntimeScope();
+  // Filing goes through this computer's main process into the bound local
+  // project, so a chat on another machine would never see the still in its
+  // drawer. Offer the button only where it can land.
+  const canFileProof = !isRemote && pin == null;
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
   const title = (!failed && parsed.title) || "Generated view";
@@ -792,7 +796,7 @@ export function SceneFrame({
         >
           <ArrowsOutSimple size={13} weight="bold" />
         </button>
-        <button
+        {canFileProof ? <button
           type="button"
           onClick={() => { void fileProof(); }}
           data-testid="chat-scene-proof"
@@ -803,7 +807,7 @@ export function SceneFrame({
         >
           <Camera size={12} weight="bold" />
           {PROOF_LABEL[proofState]}
-        </button>
+        </button> : null}
       </div>
 
       {expanded ? (

@@ -700,6 +700,11 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const pin = runtimePin ?? null;
+  // Event subscriptions key on the pin's key: a local pin object is rebuilt on
+  // every cross-machine merge, and re-subscribing a pinned pump drops events.
+  const pinRef = useRef<OpenProjectBinding | null>(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned
@@ -955,14 +960,9 @@ export function LaneGitActionsPane({
       }
       return;
     }
-    if (pin) {
-      // `lanes.listAutoRebaseStatuses` has no pin parameter; reading the local
-      // machine's statuses for a foreign lane would be wrong, not merely stale.
-      if (isViewingLane(targetLaneId)) setAutoRebaseStatus(null);
-      return;
-    }
     try {
-      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      // The pin reads the statuses of the lane's own machine.
+      const statuses = await window.ade.lanes.listAutoRebaseStatuses(pin);
       const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
       patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { autoRebaseStatus: nextStatus });
       if (isViewingLane(targetLaneId)) {
@@ -1229,7 +1229,7 @@ export function LaneGitActionsPane({
   }, [active, isViewingLane, laneId, pin, projectStateKey]);
 
   useEffect(() => {
-    if (!active || pin) return;
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
       if (!laneId) {
@@ -1239,9 +1239,9 @@ export function LaneGitActionsPane({
       const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
       patchLaneGitActionsCachedState(projectStateKey, laneId, { autoRebaseStatus: nextStatus });
       setAutoRebaseStatus(nextStatus);
-    });
+    }, pinRef.current);
     return unsubscribe;
-  }, [active, laneId, pin, projectStateKey]);
+  }, [active, laneId, pinKey, projectStateKey]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -1530,13 +1530,12 @@ export function LaneGitActionsPane({
         return;
       }
 
-      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
       const start = await window.ade.lanes.rebaseStart({
         laneId,
         scope: "lane_only",
         pushMode: "none",
         actor: "user"
-      });
+      }, pin);
       if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
         throw new Error(start.run.error ?? "Rebase failed.");
       }
@@ -2306,13 +2305,12 @@ export function LaneGitActionsPane({
                       return;
                     }
                     void runAction("rebase", async () => {
-                      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
                       const start = await window.ade.lanes.rebaseStart({
                         laneId,
                         scope: "lane_only",
                         pushMode: "none",
                         actor: "user"
-                      });
+                      }, pin);
                       if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
                         throw new Error(start.run.error ?? "Rebase failed.");
                       }

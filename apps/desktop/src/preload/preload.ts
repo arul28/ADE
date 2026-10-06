@@ -6622,8 +6622,12 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "attachLinearIssueToSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesAttachLinearIssueToSession, args),
       ),
-    detachLinearIssueFromSession: async (args: { chatSessionId: string; issueId?: string }): Promise<boolean> =>
-      callProjectRuntimeActionOr("lane", "detachLinearIssueFromSession", { args }, () =>
+    // The link lives on the chat's machine, so a pinned chat names it.
+    detachLinearIssueFromSession: async (
+      args: { chatSessionId: string; issueId?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "detachLinearIssueFromSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDetachLinearIssueFromSession, args),
       ),
     listLinearIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionLinearIssueLink[]> =>
@@ -6645,8 +6649,11 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "attachGitHubIssueToSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesAttachGitHubIssueToSession, args),
       ),
-    detachGitHubIssueFromSession: async (args: { chatSessionId: string; issueId?: string }): Promise<boolean> =>
-      callProjectRuntimeActionOr("lane", "detachGitHubIssueFromSession", { args }, () =>
+    detachGitHubIssueFromSession: async (
+      args: { chatSessionId: string; issueId?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "detachGitHubIssueFromSession", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDetachGitHubIssueFromSession, args),
       ),
     listGitHubIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionGitHubIssueLink[]> =>
@@ -6755,7 +6762,16 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
       );
     },
-    onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
+    onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void, pin?: OpenProjectBinding | null) => {
+      // A pinned Git pane shows a lane on another machine, so it listens to
+      // that machine's auto-rebase feed instead of this one's.
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<AutoRebaseEventPayload>(payload, "lane_auto_rebase_event"),
+        cb,
+        "auto rebase",
+      );
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: AutoRebaseEventPayload,
@@ -7395,7 +7411,16 @@ const adeBridge = {
             { args: { sessionId } },
           )
         : sessionDeltaCache.get(sessionId),
-    onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
+    onChanged: (cb: (ev: TerminalSessionChangedEvent) => void, pin?: OpenProjectBinding | null) => {
+      // A pinned terminal drawer holds sessions on another machine; only that
+      // machine's feed says when one of them is deleted.
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        toTerminalSessionChangedEvent,
+        cb,
+        "session",
+      );
+      if (removePinned) return removePinned;
       const removeLocal = subscribeLocalSessionChangedEvents(cb);
       const removeRemote = subscribeRemoteSessionChangedEvents(cb);
       return () => {
@@ -10824,7 +10849,20 @@ const adeBridge = {
         pin,
       );
     },
-    onChange: (cb: (ev: FileChangeEvent) => void) => {
+    onChange: (cb: (ev: FileChangeEvent) => void, pin?: OpenProjectBinding | null) => {
+      // A pinned pane starts its watcher on the lane's machine
+      // (`watchChanges(args, pin)`), so it has to hear that machine's
+      // `file_change` feed too, or edits made there never reach the tree.
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<FileChangeEvent>(payload, "file_change"),
+        (event) => {
+          clearGitReadCaches();
+          cb(event);
+        },
+        "file change",
+      );
+      if (removePinned) return removePinned;
       const unsubscribeRuntime = subscribeRemoteFileChangeEvents(cb);
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -11918,6 +11956,13 @@ const adeBridge = {
       callPrReadRuntimeActionOr(null, "reconcileOnFocus", { args: { force: true } }, () =>
         ipcRenderer.invoke(IPC.prsReconcileNow),
       ),
+    // The throttled catch-up a window focus runs, sent to the machine that
+    // owns the lane. Main schedules it on focus only for a project open on
+    // this computer, so a lane on another machine asks for it here. Locally
+    // that focus hook already covers it, hence the no-op fallback.
+    reconcileOnFocus: async (pin?: OpenProjectBinding | null): Promise<void> => {
+      await callPrReadRuntimeActionOr(pin, "reconcileOnFocus", { args: {} }, async () => undefined);
+    },
     listAll: async (pin?: OpenProjectBinding | null): Promise<PrSummary[]> =>
       callPrReadRuntimeActionOr(pin, "listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),

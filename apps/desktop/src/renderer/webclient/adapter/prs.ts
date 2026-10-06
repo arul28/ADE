@@ -217,6 +217,11 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       await call("prs.reconcileOnFocus", { force: true }, undefined, false);
       invalidatePrsReads();
     },
+    reconcileOnFocus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.reconcileOnFocus", pin, infra);
+      await call("prs.reconcileOnFocus", {}, undefined, false);
+      invalidatePrsReads();
+    },
     listAll: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.listAll", pin, infra);
       return await listPrs();

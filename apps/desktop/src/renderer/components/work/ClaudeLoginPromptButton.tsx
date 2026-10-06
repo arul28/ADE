@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { SpinnerGap, Terminal, X } from "@phosphor-icons/react";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { CLAUDE_AUTH_LOGIN_COMMAND } from "../../lib/claudeAuthPrompt";
 import { cn } from "../ui/cn";
 
@@ -33,9 +34,12 @@ async function resolveClaudeLoginLaneId(laneId?: string | null): Promise<string>
 export async function createClaudeLoginTerminal({
   laneId,
   chatSessionId,
+  runtimePin = null,
 }: {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** The machine the lane lives on; the login has to run in that CLI's home. */
+  runtimePin?: OpenProjectBinding | null;
 } = {}): Promise<ClaudeLoginTerminalCreated> {
   if (!window.ade?.pty?.create) {
     throw new Error("Terminal sessions are not available in this ADE runtime.");
@@ -50,7 +54,7 @@ export async function createClaudeLoginTerminal({
     tracked: true,
     toolType: "shell",
     startupCommand: CLAUDE_AUTH_LOGIN_COMMAND,
-  });
+  }, runtimePin);
   return {
     laneId: resolvedLaneId,
     terminalId: created.sessionId,
@@ -119,6 +123,7 @@ export function ClaudeLoginPromptButton({
   storageKey,
   laneId,
   chatSessionId,
+  runtimePin = null,
   onRevealTerminal,
   onTerminalCreated,
   dismissible = true,
@@ -128,6 +133,7 @@ export function ClaudeLoginPromptButton({
   storageKey: string;
   laneId?: string | null;
   chatSessionId?: string | null;
+  runtimePin?: OpenProjectBinding | null;
   onRevealTerminal?: (terminal: RevealTerminalRequest) => void;
   onTerminalCreated?: (terminal: ClaudeLoginTerminalCreated) => void;
   dismissible?: boolean;
@@ -159,7 +165,7 @@ export function ClaudeLoginPromptButton({
     setOpening(true);
     setError(null);
     void (async () => {
-      const reveal = await createClaudeLoginTerminal({ laneId, chatSessionId });
+      const reveal = await createClaudeLoginTerminal({ laneId, chatSessionId, runtimePin });
       onRevealTerminal?.(reveal);
       onTerminalCreated?.(reveal);
       if (!chatSessionId) {
@@ -172,7 +178,7 @@ export function ClaudeLoginPromptButton({
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setOpening(false));
-  }, [chatSessionId, laneId, onRevealTerminal, onTerminalCreated, opening]);
+  }, [chatSessionId, laneId, onRevealTerminal, onTerminalCreated, opening, runtimePin]);
 
   if (!visible || (dismissible && dismissed)) return null;
 

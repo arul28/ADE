@@ -10,6 +10,7 @@ const prRefreshInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
 const prSurfaceWarmInFlight = new Map<string, InFlightEntry<void>>();
 const linkedPrRefreshInFlight = new Map<string, InFlightEntry<PrSummary | null>>();
 const linkedPrRecentRefresh = new Map<string, { refreshedAt: number; result: PrSummary | null }>();
+const machineReconcileRequestedAt = new Map<string, number>();
 
 export const LINKED_PR_LIVE_REFRESH_COOLDOWN_MS = 5_000;
 
@@ -184,6 +185,33 @@ export function warmPrSurfaceCoalesced(options?: {
   );
 }
 
+export const MACHINE_PR_RECONCILE_COOLDOWN_MS = 60_000;
+
+/**
+ * Ask another machine's brain for its focus catch-up reconcile.
+ *
+ * That reconcile is what maps a PR an agent opened with `gh pr create` to its
+ * lane. Main runs it on window focus only for a project open on this computer,
+ * so a chat whose lane lives on another machine asks here. The brain throttles
+ * it as well; this cooldown only keeps every header mount and refocus from
+ * paying a round trip.
+ */
+export function requestMachinePrReconcile(
+  projectRoot: string | null | undefined,
+  pin?: OpenProjectBinding | null,
+): void {
+  const reconcile = window.ade?.prs?.reconcileOnFocus;
+  if (typeof reconcile !== "function") return;
+  const key = projectKey(projectRoot, pin);
+  const now = Date.now();
+  const last = machineReconcileRequestedAt.get(key);
+  if (last != null && now - last < MACHINE_PR_RECONCILE_COOLDOWN_MS) return;
+  machineReconcileRequestedAt.set(key, now);
+  void reconcile(pin ?? null).catch(() => {
+    // best-effort; the next focus asks again once the cooldown passes
+  });
+}
+
 export function clearPrReadInFlightForTest(): void {
   prListInFlight.clear();
   githubSnapshotInFlight.clear();
@@ -191,4 +219,5 @@ export function clearPrReadInFlightForTest(): void {
   prSurfaceWarmInFlight.clear();
   linkedPrRefreshInFlight.clear();
   linkedPrRecentRefresh.clear();
+  machineReconcileRequestedAt.clear();
 }

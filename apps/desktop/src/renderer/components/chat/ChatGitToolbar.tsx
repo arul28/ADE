@@ -20,7 +20,7 @@ import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
-import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
@@ -309,6 +309,22 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       unsubscribe();
     };
   }, [refreshPr, runtimePinKey]);
+
+  // A lane on another machine gets no focus reconcile from this computer, so a
+  // PR an agent opened there with `gh pr create` never reached its database
+  // and the pill stayed empty until a manual sync. Ask that machine for the
+  // catch-up on open and on refocus; the subscription above re-reads the PR
+  // when it finishes.
+  const laneOnOtherMachine = isRemote || runtimePinKey != null;
+  useEffect(() => {
+    if (!laneOnOtherMachine) return;
+    const request = () => requestMachinePrReconcile(projectRoot, runtimePinRef.current);
+    request();
+    window.addEventListener("focus", request);
+    return () => {
+      window.removeEventListener("focus", request);
+    };
+  }, [laneOnOtherMachine, projectRoot, runtimePinKey]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.

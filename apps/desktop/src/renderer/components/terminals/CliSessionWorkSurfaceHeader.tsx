@@ -139,12 +139,19 @@ function SessionActionsButton({
   );
 }
 
-function ClaudeLoginHeaderAction({ session }: { session: TerminalSessionSummary }) {
+function ClaudeLoginHeaderAction({
+  session,
+  runtimePin,
+}: {
+  session: TerminalSessionSummary;
+  runtimePin: OpenProjectBinding | null;
+}) {
   return (
     <ClaudeLoginPromptButton
       visible={shouldShowClaudeCliLoginPrompt(session)}
       storageKey={`cli:${session.id}`}
       laneId={session.laneId}
+      runtimePin={runtimePin}
     />
   );
 }
@@ -299,7 +306,7 @@ export function CliSessionWorkSurfaceHeader({
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>
-          <ClaudeLoginHeaderAction session={session} />
+          <ClaudeLoginHeaderAction session={session} runtimePin={runtimePin} />
           <SessionStatusDot session={session} />
           <CliSurfaceTrailingActions
             session={session}

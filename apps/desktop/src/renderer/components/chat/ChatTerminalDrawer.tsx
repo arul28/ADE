@@ -463,6 +463,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.
+  // Keyed on the pin's key: re-subscribing a pinned pump on every rebuilt pin
+  // object would drop the events buffered in between.
   useEffect(() => {
     const sessionsBridge = window.ade?.sessions;
     if (!sessionsBridge?.onChanged) return undefined;
@@ -473,7 +475,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         if (!removed) return prev;
         if (removed.ptyId) {
           window.ade.pty
-            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pin)
+            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pinRef.current)
             .catch(() => {});
         }
         const next = prev.filter((tab) => tab.sessionId !== event.sessionId);
@@ -483,8 +485,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         });
         return next;
       });
-    });
-  }, [pin]);
+    }, pinRef.current);
+  }, [pinKey]);
 
   useEffect(() => {
     if (!open) return undefined;
