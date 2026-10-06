@@ -259,6 +259,40 @@ runs, while the trace repeats to within 2%.
 | An unfiltered catalog parse is memoized per machine scope, keyed on the catalog object's identity and a new registry generation; a `filter`ed caller (the open picker, harness reach) keeps the uncached path | `ModelPicker/modelCatalog.ts`, `shared/modelRegistry.ts` | `descriptorsFromAgentChatModelCatalog` on this machine's real 83-model catalog: 0.448 -> 0.002 ms a call |
 | `getModelById` caches the descriptors its parse-and-construct tail builds for dynamic ids (`pi:...`, OpenCode refs, `ollama/...`, `cursor/...`, `droid/...`), dropped on a registry-generation change | `shared/modelRegistry.ts` | 110 mixed ids: 0.112 -> 0.019 ms |
 | Model-label and lane-name sorts go through one shared `Intl.Collator` | `shared/formatting.ts` and its five hot callers | 110-label sort: 1.40 -> 0.023 ms; `handoffAvailableModelIds` 0.967 -> 0.046 ms a call |
+| Claude Code's daemon is discovered on Windows too: `\.\pipe\cc-daemon-<nonce>-control`, nonce from `<config dir>/daemon/pipe.key` | `chat/agentChatService.ts` | Endpoint, line protocol and fail-closed paths verified against a stand-in pipe server; the one live consumer could previously only answer `unknown` |
+
+### Claude background-job reattach on Windows
+
+The backlog said each Claude follow-up respawns the CLI on Windows because
+Claude Code ships no `control.sock` there. Both halves needed correcting.
+
+- **Claude Code does have a Windows daemon.** Its own bundle resolves the
+  control endpoint as `\.\pipe\cc-daemon-<nonce>-control` on Windows and
+  `<tmp>/cc-daemon-<uid>/<hash>/control.sock` elsewhere, with the nonce in
+  `<config dir>/daemon/pipe.key` validated as 16 hex characters. It even reports
+  `sockDir: \.\pipe\cc-daemon-*` in its own diagnostics. ADE implemented the
+  POSIX half only, so `resolveClaudeDaemonControlSocket` could never return an
+  endpoint on Windows.
+- **The respawn the backlog described was unreachable anyway.**
+  `_runClaudeBackgroundTurn` — the whole `claude --bg` turn path, including
+  `dispatchClaudeBackgroundPrompt` and its reply-into-a-live-job branch — has no
+  callers. No Claude chat turn goes through it, so no turn was paying a respawn
+  for want of a socket. Left in place; deleting a path this size is the owner's
+  call, not a perf pass's.
+- **What was actually broken is settle teardown.**
+  `hasLiveClaudeBackgroundJob` deliberately answers `unknown` rather than `gone`
+  when it cannot reach a daemon, so a settle does not mistake a running job for
+  a finished one. On Windows it could only ever answer `unknown`, so a session
+  carrying a recorded `claudeBackgroundJobShort` spent the confirmation budget
+  and reported residue that did not exist — the exact failure the comment above
+  it was written to prevent. Narrow today, because only the dead path and
+  restored records set that field.
+- **Not verified:** an exchange with a live Claude daemon. `claude --bg` refuses
+  to start from a non-TTY until the workspace trust prompt is accepted, and
+  faking that means writing the user's Claude config. The endpoint construction,
+  the `proto: 1` line protocol over a Windows named pipe, and both fail-closed
+  paths (missing key, malformed key) are verified against a stand-in pipe server
+  on this host.
 
 ### Closed by measurement, not by code
 

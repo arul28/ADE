@@ -4148,6 +4148,44 @@ function claudeDaemonBaseDir(): string | null {
   }
 }
 
+/**
+ * The nonce Claude Code's daemon names its Windows control pipe with.
+ *
+ * Windows has no Unix socket, so the daemon publishes
+ * `\\.\pipe\cc-daemon-<nonce>-control` instead of a `control.sock` file and
+ * writes the nonce to `<config dir>/daemon/pipe.key`. It validates the file as
+ * 16 hex characters, so anything else is a half-written or stale key, not an
+ * endpoint to guess at.
+ */
+function readClaudeDaemonPipeNonce(): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(claudeConfigDir(), "daemon", "pipe.key"), "utf8").trim();
+    return /^[a-f0-9]{16}$/.test(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Claude Code's control endpoint on this platform, before any liveness check. */
+function claudeDaemonControlEndpoints(): string[] {
+  if (process.platform === "win32") {
+    const nonce = readClaudeDaemonPipeNonce();
+    return nonce ? [`\\\\.\\pipe\\cc-daemon-${nonce}-control`] : [];
+  }
+  const baseDir = claudeDaemonBaseDir();
+  if (!baseDir || !fs.existsSync(baseDir)) return [];
+  let entries;
+  try {
+    entries = fs.readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(baseDir, entry.name, "control.sock"))
+    .filter((socketPath) => fs.existsSync(socketPath));
+}
+
 async function sendClaudeDaemonRequest(
   socketPath: string,
   request: ClaudeDaemonRequest,
@@ -4206,21 +4244,10 @@ async function sendClaudeDaemonRequest(
 }
 
 async function resolveClaudeDaemonControlSocket(): Promise<string | null> {
-  const baseDir = claudeDaemonBaseDir();
-  if (!baseDir || !fs.existsSync(baseDir)) return null;
-  let entries;
-  try {
-    entries = fs.readdirSync(baseDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const socketPath = path.join(baseDir, entry.name, "control.sock");
-    if (!fs.existsSync(socketPath)) continue;
+  for (const endpoint of claudeDaemonControlEndpoints()) {
     try {
-      const pong = await sendClaudeDaemonRequest(socketPath, { op: "ping" });
-      if (pong.ok === true) return socketPath;
+      const pong = await sendClaudeDaemonRequest(endpoint, { op: "ping" });
+      if (pong.ok === true) return endpoint;
     } catch {
       // Try the next candidate.
     }
