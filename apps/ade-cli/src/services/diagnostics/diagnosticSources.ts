@@ -392,15 +392,16 @@ function journalPlan(
   };
 }
 
+/** The `gui/<uid>/<service>` launchd target the print plan and Notes name. */
+function launchdTarget(env: NodeJS.ProcessEnv): string {
+  return `gui/${currentUid()}/${resolveRuntimeServiceName(env)}`;
+}
+
 /**
  * launchd's own view of the job: state, pid, last exit, and why it last ran.
  * The plist says what the agent SHOULD do; this says what launchd did with it,
  * and "loaded but never started" is invisible without it.
  */
-function launchdTarget(env: NodeJS.ProcessEnv): string {
-  return `gui/${currentUid()}/${resolveRuntimeServiceName(env)}`;
-}
-
 function launchdPrintPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
   const target = launchdTarget(env);
   return { display: `launchctl print ${target}`, command: "launchctl", args: ["print", target] };
