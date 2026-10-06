@@ -2719,6 +2719,22 @@ describe("laneService delete outside .ade/worktrees", () => {
       expect(events.at(-1).progress.overallStatus).toBe("completed");
       expect(events.at(-1).progress.leftoverWorktree.path).toBe(worktreePath);
 
+      // A removal that dies partway (a file Windows still holds, an `.asar`
+      // Electron's fs refuses) takes some files with it, the marker included.
+      // The retry must still be allowed, not refused as a replaced folder.
+      const partialRemove = vi.spyOn(fs.promises, "rm").mockImplementationOnce(async (target) => {
+        for (const name of fs.readdirSync(String(target))) {
+          if (name !== "work.txt") fs.rmSync(path.join(String(target), name), { force: true });
+        }
+        throw Object.assign(new Error("EIO: i/o error, rmdir"), { code: "EIO" });
+      });
+      try {
+        await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/EIO/);
+      } finally {
+        partialRemove.mockRestore();
+      }
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+
       await service.deleteLeftoverWorktree("lane-external");
       expect(fs.existsSync(worktreePath)).toBe(false);
       await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/no longer waiting/i);

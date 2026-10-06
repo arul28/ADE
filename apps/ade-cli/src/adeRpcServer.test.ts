@@ -2556,6 +2556,106 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it.each([
+    {
+      name: "absolute path in another sibling lane outside .ade/worktrees",
+      laneKind: "worktree",
+      relativePath: false,
+      rejectLaneList: false,
+    },
+    {
+      name: "another sibling lane known only by attachedRootPath",
+      laneKind: "attached",
+      relativePath: false,
+      rejectLaneList: false,
+    },
+    {
+      name: "relative path resolving into another managed lane",
+      laneKind: "managed-relative",
+      relativePath: true,
+      rejectLaneList: false,
+    },
+    {
+      name: "path from another lane when lane discovery rejects",
+      laneKind: "worktree",
+      relativePath: false,
+      rejectLaneList: true,
+    },
+  ])("refuses $name before storing the proof", async ({ laneKind, relativePath, rejectLaneList }) => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const callerLaneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    const callerRoot = relativePath ? path.join(callerLaneRoot, "apps", "ade-cli") : callerLaneRoot;
+    const otherLaneRoot = laneKind === "managed-relative"
+      ? fixture.runtime.laneService.getLaneWorktreePath("lane-2")
+      : fs.mkdtempSync(path.join(os.tmpdir(), "ade-other-lane-root-"));
+    fs.mkdirSync(callerLaneRoot, { recursive: true });
+    fs.mkdirSync(callerRoot, { recursive: true });
+    fs.mkdirSync(otherLaneRoot, { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+    if (rejectLaneList) {
+      fixture.runtime.laneService.list.mockRejectedValueOnce(new Error("lane listing unavailable"));
+    } else {
+      const otherLane = laneKind === "attached"
+        ? { worktreePath: null, attachedRootPath: otherLaneRoot }
+        : { worktreePath: otherLaneRoot, attachedRootPath: null };
+      fixture.runtime.laneService.list.mockResolvedValueOnce([
+        { worktreePath: callerLaneRoot, attachedRootPath: null },
+        otherLane,
+      ] as any);
+    }
+
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+
+    try {
+      const proofPath = relativePath
+        ? path.join(path.relative(callerRoot, otherLaneRoot), "shot.png")
+        : path.join(otherLaneRoot, "shot.png");
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        callerRoot,
+        inputs: [{ kind: "screenshot", title: "Other lane proof", path: proofPath }],
+      });
+
+      expect(response.isError).toBe(true);
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+      if (!rejectLaneList) {
+        expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+          "Artifact paths from another lane worktree are not authorized",
+        );
+      }
+    } finally {
+      if (laneKind !== "managed-relative") fs.rmSync(otherLaneRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows an artifact path inside the caller's own lane", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const callerLaneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(callerLaneRoot, { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      inputs: [{ kind: "screenshot", title: "Caller lane proof", path: path.join(callerLaneRoot, "shot.png") }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledTimes(1);
+  });
+
 
 
   it("rejects standalone chat calls to ADE spawn_agent", async () => {
