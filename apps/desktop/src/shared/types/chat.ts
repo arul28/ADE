@@ -3009,6 +3009,13 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    */
   claudeBackgroundJobShort?: string | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
+  /**
+   * Work the live turn still has open (running commands, tool calls,
+   * foreground subagents, pending approvals), from the host's per-turn fold.
+   * Omitted when zero or when no turn is live. A silent turn with open work is
+   * waiting on it; a silent turn with none may be stuck.
+   */
+  turnOpenWorkCount?: number;
   activeBackgroundTaskCount?: number;
   /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
   backgroundWork?: SessionBackgroundWork;

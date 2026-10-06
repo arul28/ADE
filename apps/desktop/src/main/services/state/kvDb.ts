@@ -4649,6 +4649,8 @@ export async function openKvDb(
 
   // Registered by the session layer once the settle chokepoint exists.
   let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
+  /** Columns a newer peer sent that this build lacks; each is logged once per process. */
+  const skippedUnknownSyncColumns = new Set<string>();
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
@@ -4843,6 +4845,18 @@ export async function openKvDb(
       // settle notice and abort.
       const candidateSettleTuple: RemoteSettleTupleChange[] = [];
       const settleTupleBefore = new Map<string, string | null>();
+      // One `pragma table_info` per table per batch, not per change.
+      const columnsByTable = new Map<string, Set<string>>();
+      const hasIncomingColumn = (tableName: string, columnName: string): boolean => {
+        let columns = columnsByTable.get(tableName);
+        if (!columns) {
+          columns = new Set(
+            allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`).map((column) => column.name),
+          );
+          columnsByTable.set(tableName, columns);
+        }
+        return columns.has(columnName);
+      };
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
@@ -4862,6 +4876,23 @@ export async function openKvDb(
           // Reachable whenever a table is moved local-only while a paired peer
           // is still on a build that replicates it — i.e. during every rollout.
           if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
+          // A column this build does not have (a newer peer added it) is
+          // skipped, not applied. cr-sqlite rejects the insert with "SQL logic
+          // error", which rolls back the whole batch; the peer's outbound
+          // cursor only advances on an ok ack, so every later batch replays
+          // the same poison and ALL sync with that peer stops until this
+          // machine updates. Skipping keeps every other change flowing. The
+          // cost is bounded: this machine misses that column's value until the
+          // row changes again after it updates. `-1` is cr-sqlite's row
+          // sentinel (create/delete), never a real column.
+          if (rawChange.cid !== "-1" && !hasIncomingColumn(rawChange.table, rawChange.cid)) {
+            const key = `${rawChange.table}.${rawChange.cid}`;
+            if (!skippedUnknownSyncColumns.has(key)) {
+              skippedUnknownSyncColumns.add(key);
+              logger.warn("sync.unknown_column_skipped", { table: rawChange.table, column: rawChange.cid });
+            }
+            continue;
+          }
           // Decoded before the apply, reported only after it: an undecodable
           // key still applies, it is simply not reconciled.
           let settleTupleChange: RemoteSettleTupleChange | null = null;

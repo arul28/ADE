@@ -436,6 +436,7 @@ export function createSessionService({
   runSettleTeardown,
   onRemoteSettleWrite,
   onSettleResidue,
+  listSpawnedChildSessionIds,
 }: {
   db: AdeDb;
   /**
@@ -465,6 +466,13 @@ export function createSessionService({
   onRemoteSettleWrite?: (args: { columns: string[]; changesetSessionCount: number }) => void;
   /** Fired only for residue attached to a settle that actually landed. */
   onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+  /**
+   * Sessions spawned by this one (subagents, peers). Late-bound like teardown,
+   * because the chat service that knows the lineage is built later. A settled
+   * parent settles its children too, so a lane is not left holding orphan
+   * subagents of work the user already filed away.
+   */
+  listSpawnedChildSessionIds?: (sessionId: string) => Promise<string[]>;
 }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -1142,6 +1150,31 @@ export function createSessionService({
       if (!outcome) continue;
       settled.push(...outcome.settled);
       aborted.push(...outcome.aborted);
+    }
+
+    // Children follow a parent that actually settled. They are settled through
+    // the same window (teardown included), and the recursion reaches
+    // grandchildren. A child that refuses is left as it is and is not reported
+    // as an abort: the caller asked about the parent, and the PR-merge poller
+    // must not treat a busy subagent as a failure to file the merged lane.
+    if (settled.length && listSpawnedChildSessionIds) {
+      const requested = new Set(ids);
+      const children: string[] = [];
+      for (const parentId of settled) {
+        let childIds: string[] = [];
+        try {
+          childIds = await listSpawnedChildSessionIds(parentId);
+        } catch {
+          childIds = [];
+        }
+        for (const childId of childIds) {
+          if (!requested.has(childId) && !children.includes(childId)) children.push(childId);
+        }
+      }
+      if (children.length) {
+        const cascaded = await settleManyWithTeardown(children, options);
+        settled.push(...cascaded.settled);
+      }
     }
 
     return { settled, aborted };

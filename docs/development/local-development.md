@@ -422,8 +422,9 @@ A dev brain is spawned detached so it survives the Electron restarts a dev
 loop is made of, which also means it survives the app going away for good. One
 ran orphaned on the shared home for five hours. Launcher-spawned brains now
 exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
-`scripts/dev-shared.mjs`); raise or clear it when debugging a deliberately
-quiet brain. For work that only needs to read or drive a lane, give the brain
+`scripts/dev-shared.mjs`); set `ADE_DEV_RUNTIME_IDLE_EXIT_MS` (milliseconds,
+`0` disables it) on the launch command to raise or clear it, for example when
+testing in the dev app for longer than the budget. For work that only needs to read or drive a lane, give the brain
 its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
 sharing `~/.ade`. Because the dev
 brain does not host sync it never publishes to the account, which is why the

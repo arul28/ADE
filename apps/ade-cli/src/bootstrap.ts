@@ -1092,13 +1092,16 @@ export async function createAdeRuntime(args: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-    } = { run: null, report: null, residue: null };
+      children: ((sessionId: string) => Promise<string[]>) | null;
+    } = { run: null, report: null, residue: null, children: null };
     const sessionService = createSessionService({
       db,
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      listSpawnedChildSessionIds: async (sessionId) =>
+        settleTeardownRef.children ? await settleTeardownRef.children(sessionId) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -2315,6 +2318,7 @@ export async function createAdeRuntime(args: {
       settleTeardownRef.run = settleWiring.runSettleTeardown;
       settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
       settleTeardownRef.residue = settleWiring.onSettleResidue;
+      settleTeardownRef.children = settleWiring.listSpawnedChildSessionIds;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService

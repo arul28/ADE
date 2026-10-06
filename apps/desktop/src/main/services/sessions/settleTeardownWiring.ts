@@ -37,6 +37,8 @@ export type SettleTeardownChatService = {
   hasLiveClaudeBackgroundJob: (
     short: string | null | undefined,
   ) => Promise<"alive" | "gone" | "unknown">;
+  /** Sessions this one spawned, so a settled parent can settle its children. */
+  listSpawnedChildSessionIds?: (sessionId: string) => Promise<string[]>;
 };
 
 export type SettleTeardownWiringDeps = {
@@ -58,6 +60,7 @@ export type SettleTeardownWiring = {
   runSettleTeardown: (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>;
   onRemoteSettleWrite: (args: { columns: string[]; changesetSessionCount: number }) => void;
   onSettleResidue: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+  listSpawnedChildSessionIds: (sessionId: string) => Promise<string[]>;
 };
 
 export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): SettleTeardownWiring {
@@ -109,6 +112,8 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
 
   return {
     runSettleTeardown,
+    listSpawnedChildSessionIds: async (sessionId) =>
+      (await deps.agentChatService.listSpawnedChildSessionIds?.(sessionId)) ?? [],
     onSettleResidue: ({ provider, items }) => {
       // One event per settle that had residue, not one per failed job: a fleet
       // that fails to stop must not become a burst. Coarse properties only —

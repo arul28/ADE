@@ -619,11 +619,13 @@ function ClosedCliSessionSurface({
   onResume,
   onToggleToolsPane,
   toolsPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
   runtimePin?: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
+  onOpenFullView?: () => void;
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContinue?: (
@@ -699,6 +701,7 @@ function ClosedCliSessionSurface({
           onContextMenu={onContextMenu}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
@@ -761,8 +764,10 @@ function CliSessionSurface({
   onStopRunningSession,
   onToggleToolsPane,
   toolsPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary & { ptyId: string };
+  onOpenFullView?: () => void;
   lanes: LaneSummary[];
   /** See `SessionSurface.runtimePin`. */
   runtimePin?: OpenProjectBinding | null;
@@ -790,6 +795,7 @@ function CliSessionSurface({
           onStopRunningSession={onStopRunningSession}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
           onTogglePrPane={session.laneId ? () => workSidebar.setTool("pr") : undefined}
           prPaneOpen={workSidebar.tool === "pr"}
           runtimePin={runtimePin}
@@ -813,7 +819,7 @@ function CliSessionSurface({
   );
 }
 
-function SessionSurface({
+export function SessionSurface({
   session,
   sessionTitleById,
   lanes,
@@ -835,6 +841,7 @@ function SessionSurface({
   onToggleTerminalPane,
   onOpenTerminalPane,
   terminalPaneOpen,
+  onOpenFullView,
 }: {
   session: TerminalSessionSummary;
   sessionTitleById?: ReadonlyMap<string, string>;
@@ -868,6 +875,8 @@ function SessionSurface({
   onToggleTerminalPane?: () => void;
   onOpenTerminalPane?: () => void;
   terminalPaneOpen?: boolean;
+  /** Focus grid: "open in full view" replaces the Tools toggle in the header. */
+  onOpenFullView?: () => void;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -897,6 +906,7 @@ function SessionSurface({
         shouldAutofocusComposer={surfaceActive && shouldAutofocus}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onOpenFullView={onOpenFullView}
         onToggleTerminalPane={onToggleTerminalPane}
         onOpenTerminalPane={onOpenTerminalPane}
         terminalPaneOpen={terminalPaneOpen}
@@ -920,6 +930,7 @@ function SessionSurface({
           onStopRunningSession={onStopRunningSession}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
+          onOpenFullView={onOpenFullView}
         />
       );
     }
@@ -940,6 +951,7 @@ function SessionSurface({
             onStopRunningSession={onStopRunningSession}
             onToggleToolsPane={onToggleToolsPane}
             toolsPaneOpen={toolsPaneOpen}
+            onOpenFullView={onOpenFullView}
             runtimePin={runtimePin}
           />
         ) : null}
@@ -972,6 +984,7 @@ function SessionSurface({
         onResume={onResumeCliSession}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onOpenFullView={onOpenFullView}
       />
     );
   }
@@ -1252,8 +1265,20 @@ export function WorkViewArea({
       onOpenChatSession={onOpenChatSession}
       onContinueCliSession={onContinueCliSession}
       onResumeCliSession={onResumeCliSession}
-      onToggleToolsPane={onToggleWorkSidebar}
-      toolsPaneOpen={workSidebarOpen}
+      // One Tools pane serves the focused tile. Only that tile's toggle reads
+      // open; another tile's toggle moves the pane to that chat rather than
+      // closing it.
+      onToggleToolsPane={onToggleWorkSidebar
+        ? () => {
+          if (session.id === activeItemId || !workSidebarOpen) {
+            if (session.id !== activeItemId) onSelectItem(session.id);
+            onToggleWorkSidebar();
+            return;
+          }
+          onSelectItem(session.id);
+        }
+        : undefined}
+      toolsPaneOpen={workSidebarOpen && session.id === activeItemId}
       onToggleTerminalPane={onToggleTerminalPane}
       onOpenTerminalPane={onOpenTerminalPane}
       terminalPaneOpen={terminalPaneOpen}
@@ -1279,7 +1304,7 @@ export function WorkViewArea({
         onFocusSession={onSelectItem}
         onAddSessionToGrid={(dragged, target, edge) => onAddSessionToGrid?.(dragged, target, edge)}
         onRemoveFromGrid={(sessionId) => onRemoveSessionFromGrid?.(sessionId)}
-        className="ade-work-grid-tiling h-full min-h-0 px-2 pb-2"
+        className="ade-work-grid-tiling h-full min-h-0"
       />
     ) : workAreaMode === "single" && activeSession ? (
       <SingleSessionGridDropZone

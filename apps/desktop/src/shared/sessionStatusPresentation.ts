@@ -517,6 +517,49 @@ export function turnStallSilenceMs(
   return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
 }
 
+type TurnStallInput = {
+  lastActivityAt?: string | null;
+  currentTurnStartedAt?: string | null;
+  turnOpenWorkCount?: number | null;
+};
+
+/**
+ * How long a live turn has been stalled, or null when it is not stalled.
+ *
+ * Stalled means: a turn is live, it owns no open work (no running command,
+ * tool, foreground subagent or pending approval, per the host's fold), and it
+ * has been silent past `TURN_STALL_AFTER_MS`. A turn waiting on a long test run
+ * owns open work, so it is never called stalled. The caller decides the turn
+ * is live (its canonical phase is running); this answers only the stall.
+ */
+export function sessionTurnStallMs(session: TurnStallInput, nowMs: number = Date.now()): number | null {
+  if (!session.currentTurnStartedAt) return null;
+  if ((session.turnOpenWorkCount ?? 0) > 0) return null;
+  return turnStallSilenceMs(session, nowMs);
+}
+
+/**
+ * The next instant one of these live turns crosses the stall bar, so a
+ * surface can re-evaluate exactly then instead of polling. Null when none can.
+ */
+export function nextTurnStallDeadlineMs(sessions: Iterable<TurnStallInput>, nowMs: number = Date.now()): number | null {
+  let next: number | null = null;
+  for (const session of sessions) {
+    if (!session.currentTurnStartedAt || (session.turnOpenWorkCount ?? 0) > 0) continue;
+    const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
+    const turnMs = Date.parse(session.currentTurnStartedAt);
+    const anchorMs = Math.max(
+      Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
+      Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
+    );
+    if (!Number.isFinite(anchorMs)) continue;
+    const deadline = anchorMs + TURN_STALL_AFTER_MS;
+    if (deadline <= nowMs) continue;
+    if (next === null || deadline < next) next = deadline;
+  }
+  return next;
+}
+
 export function formatFutureDuration(timestampMs: number, nowMs: number): string {
   if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return "";
   const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));

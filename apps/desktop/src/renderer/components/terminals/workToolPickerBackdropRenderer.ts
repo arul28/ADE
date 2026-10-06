@@ -484,11 +484,19 @@ export function createBackdropRenderer(options: {
     requestRender();
   };
   const measureLayout = () => {
+    const previous = bounds;
     bounds = canvas.getBoundingClientRect();
     // Resizing a WebGL canvas clears it. A running loop repaints on its next
     // frame, but a paused one (window blurred, tab hidden) would stay blank,
     // so repaint the last moment now.
     if (resizeCanvas()) draw(reduceMotion ? 0 : lastSeconds);
+    // Only a canvas that actually moved or changed size is a sign of life. A
+    // layout pass that changed nothing (the window-level observers fire for
+    // far more than this canvas) must not restart the freeze clock, or any
+    // streaming chat on screen keeps the backdrop drawing forever.
+    const moved = previous.x !== bounds.x || previous.y !== bounds.y
+      || previous.width !== bounds.width || previous.height !== bounds.height;
+    if (!moved) return;
     lastActivity = performance.now();
     updatePointerTarget();
     requestRender();
@@ -517,6 +525,17 @@ export function createBackdropRenderer(options: {
       layoutRaf = 0;
       if (!disposed) measureLayout();
     });
+  };
+  /**
+   * Capture-phase scroll fires for every scroller in the window, chats
+   * included, and a streaming chat scrolls itself several times a second. Only
+   * a scroller that contains the canvas can move it, so every other scroll is
+   * ignored without measuring.
+   */
+  const onAnyScroll = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Node && target !== document && !target.contains(canvas)) return;
+    updateLayout();
   };
   const onVisibilityChange = () => {
     visible = document.visibilityState === "visible";
@@ -557,7 +576,7 @@ export function createBackdropRenderer(options: {
   window.addEventListener("pointermove", onPointerMove, { passive: true });
   if (cursorEnabled) {
     window.addEventListener("pointercancel", onPointerLeave);
-    window.addEventListener("scroll", updateLayout, true);
+    window.addEventListener("scroll", onAnyScroll, true);
     document.documentElement.addEventListener("pointerleave", onPointerLeave);
   }
 
@@ -648,7 +667,7 @@ export function createBackdropRenderer(options: {
       window.removeEventListener("pointermove", onPointerMove);
       if (cursorEnabled) {
         window.removeEventListener("pointercancel", onPointerLeave);
-        window.removeEventListener("scroll", updateLayout, true);
+        window.removeEventListener("scroll", onAnyScroll, true);
         document.documentElement.removeEventListener("pointerleave", onPointerLeave);
       }
       context.deleteBuffer(buffer);

@@ -194,9 +194,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     top.push({
       kind: "action",
       key: "work-pin",
-      label: isWorkPinned
-        ? "Unpin from Work sidebar"
-        : "Pin to Work sidebar",
+      label: isWorkPinned ? "Unpin" : "Pin",
       icon: isWorkPinned ? PushPinSlash : PushPin,
       onSelect: () => { onClose(); onToggleWorkPin(pinId); },
     });

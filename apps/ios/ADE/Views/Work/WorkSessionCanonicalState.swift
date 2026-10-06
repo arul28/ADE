@@ -154,8 +154,8 @@ enum SessionSettleOverride: String, Equatable {
 ///      "active" override suppresses this tier entirely,
 ///   3. ended branch — stopped, failed, chat ready/ended,
 ///   4. running-chat turn failure,
-///   5. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
-///   6. idle — ready(chat)/idle,
+///   5. idle — ready(chat)/idle; a resting session is never stale,
+///   6. stale — a live run silent ≥ `sessionStaleAfterSeconds`,
 ///   7. running.
 ///
 /// Snooze is deliberately absent: it is a visibility overlay and never changes
@@ -247,17 +247,19 @@ func workCanonicalSessionState(
     return CanonicalSessionState(phase: .failed)
   }
 
-  // 5. Stale: running but silent past the threshold.
-  if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
-    return CanonicalSessionState(phase: .stale)
-  }
-
   // Idle chats between turns are ready (calm); idle agent CLIs stay calm here —
-  // there is no deterministic ask.
+  // there is no deterministic ask. A resting session is never stale: chat rows
+  // keep status "running" between turns, so checking silence first filed every
+  // reply older than three hours as busy. Mirrors desktop `canonicalSessionState`.
   if runtimeLower == "idle" {
     return chat
       ? CanonicalSessionState(phase: .ready)
       : CanonicalSessionState(phase: .idle)
+  }
+
+  // 5. Stale: a live run silent past the threshold.
+  if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
+    return CanonicalSessionState(phase: .stale)
   }
 
   return CanonicalSessionState(phase: .running)

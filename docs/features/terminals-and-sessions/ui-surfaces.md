@@ -162,7 +162,7 @@ touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
 removing the marker closes them again. Notification deep links add the open
 marker so a Settled destination cannot remain hidden.
 
-In by-lane list mode the funnel's **Fold busy lanes** chip
+In by-lane list mode the toolbar's **Focus** pill
 (persisted as `workFoldBusyLanes`) moves every lane whose live rows are all
 Working or Waiting — or Done in a way the user has already left — onto a
 collapsed **Working** shelf, the first shelf inside the quiet zone (above
@@ -171,12 +171,25 @@ Only the user opens or closes it: the open chat's lane folds like any other, so
 its card is hidden until the user unfolds the shelf. The rule lives
 in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
 cannot disagree with the board's columns. A lane folds only when at least one
-live row is actually busy: a raised hand (`needs_you`), a stale run, or a
-finished row the user has not left holds the whole lane out with its rows
-visible. Snoozed and settled rows take no part. A finished nested row (attached
-shell, subagent) can never hold its lane out — nobody opens a helper to mark it
-seen — though a nested raised hand still can. Pins and the primary lane never
-fold. Turning the option off forgets the return state, so turning it back on
+live row is actually busy: a raised hand (`needs_you`), a stale run, a stalled
+turn, or a finished row the user has not left holds the whole lane out with its
+rows visible. Snoozed and settled rows take no part. A finished nested row
+(attached shell, subagent) can never hold its lane out — nobody opens a helper
+to mark it seen — though a nested raised hand still can. Pinned lanes never
+fold; the primary lane folds like any other.
+
+A **stalled turn** is a live chat turn that has been silent for
+`TURN_STALL_AFTER_MS` (five minutes) and owns no open work. The host folds
+every emitted chat event into the turn's open work (`trackTurnInFlight`:
+running commands, tool calls, foreground subagents, pending approvals) and
+reports the count on the summary as `turnOpenWorkCount`, so a turn waiting on a
+long test run is never called stalled. `sessionTurnStallMs` is the one rule;
+the row's status slot shows **No output** with the time since the last output
+(`sessionStalledPresentation`), and the slot and the sidebar each re-evaluate
+exactly at the next stall deadline (`nextTurnStallDeadlineMs`) instead of
+polling. A resting chat is never stale or stalled: `canonicalSessionState`
+checks idle before silence, because a chat row keeps status `running` between
+turns and the old order filed every reply older than three hours as busy. Turning the option off forgets the return state, so turning it back on
 takes a fresh baseline instead of floating every lane at once.
 
 Each by-lane header carries one rolled-up status dot
@@ -318,9 +331,23 @@ Also renders:
   command palette and displays the configured shortcut. **Hide sessions**
   is not in the chat/CLI header. When the list is collapsed, a thin left
   rail in `TerminalsPage` shows the same glyph as **Show sessions**.
-- an expandable filter panel with group selector (Lane / Status / Time), lane
-  sort, status/tool/machine chips, Has PR / Dirty, the by-lane **Fold busy
-  lanes** Focus chip, and `LaneCombobox`
+- the one-row toolbar: Search (the word drops below a 360px toolbar, the glyph
+  and shortcut stay), the **Focus** pill with its Focus-grid half, the
+  List/Board toggle (dimmed while the grid is on), the funnel (it shows the
+  number of active filters), and New chat
+- an expandable filter panel (`WorkFilterPanel`) with one control shape: a
+  label and a menu button per setting. **View** holds Group by and Sort by
+  (single-select menus; they never hide a chat). **Show only** holds Status,
+  Agent and Machine (multi-select menus with checkmarks; none picked means
+  Any), the `LaneCombobox` (`dense`), and the Has a PR / Uncommitted changes
+  checkboxes, with Reset when anything is on. Status colours stay out of the
+  panel.
+- pins: **Pin** / **Unpin** on a chat writes the synced
+  `terminal_sessions.pinned` column on the machine that owns the row, so a pin
+  follows the user to every machine and the phone; pinned rows lead their
+  section and show a pin glyph. Desktop pins made before pins synced move
+  into the column once. Lane pins stay in this window's view state
+  (`workPinnedLaneIds`); pinned lanes sort above the primary lane.
 - the actual list of `SessionCard` rows (memoized)
 - a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
   Work flow uses the host's `close-on-create` behavior: it closes as
@@ -577,6 +604,92 @@ Constants:
 
 - `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`
 - `TERMINAL_TILE_MIN_WIDTH = 320`, `TERMINAL_TILE_MIN_HEIGHT = 220`
+
+## Focus grid
+
+The Focus pill's grid half (`workFocusGrid`, only while Focus is on) replaces
+the work area with every chat that waits for the user. It is the normal Work
+grid (`WorkGridView` over `PaneTilingLayout`, standard chat surfaces with their
+own headers, chat action panes and floating previews); what differs:
+
+- **Membership comes from the sidebar, not from drags.** `workFocusQueue` in
+  `workLaneFocus.ts` applies the same per-row rule as the fold and returns each
+  agent chat in an unfolded lane that is not Working or Waiting (plus stale and
+  stalled runs). Plain shells never get a tile; a nested row gets one only
+  while it asks for the user. Chats from other machines are included through
+  their row's binding (remembered with `machineRouter.rememberSessionPin`).
+  `SessionListPane` reports the list (`WorkFocusQueueItem`: session + binding)
+  through `onFocusQueueChange`, so the grid and the list cannot disagree.
+- **No Tools pane.** Each chat header shows **Open in full view**
+  (`onOpenFullView`, `WorkHeaderOpenFullViewButton`) where the Tools toggle
+  would be. It leaves the grid and opens that chat in the normal view, Tools and
+  all. A sidebar click on a tile focuses it; on a chat with no tile it opens the
+  chat in the normal view. New chat leaves the grid, because the draft draws in
+  the normal view.
+- **Stable layout.** `stableFocusOrder` keeps tiles in place as chats come and
+  go. The layout is saved per SET of chats (`makeGridLayoutId(project,
+  "focus-<hash of the ids>")`): the same chats come back exactly as arranged, and
+  a new set starts from the even auto layout instead of squeezing a newcomer
+  into the largest tile.
+- **Pages.** `focusFit` measures the grid's own box (ResizeObserver) at
+  `FOCUS_TILE_MIN_WIDTH` × `FOCUS_TILE_MIN_HEIGHT` (420 × 480; a shorter tile is mostly composer, so a laptop-height grid gets one row and more pages): columns, rows,
+  and a capacity between one and `MAX_WORK_GRID_TILES`. `focusEvenPages` uses
+  as few pages as that capacity allows and spreads the chats evenly (8 with
+  room for 6 → 4 + 4; 7 → 4 + 3). `focusPageColumns` lays a page out side by
+  side first: as few rows as the width allows, tiles spread evenly over them
+  (4 with room for 3 columns → 2 × 2; 3 → one row). The column count goes to
+  `WorkGridView` as its seed and into the saved-layout key. Only the page on
+  screen is mounted.
+- **Roster.** The roster shows where every waiting chat is. Its place depends
+  on the project sidebar:
+  - **Sidebar open.** The sidebar is the roster. `TerminalsPage` builds
+    `focusMarks` (page, on screen, unseen) and passes them to `SessionListPane`.
+    Only the focused tile's card gets the selected fill (`TerminalsPage`
+    passes it as the selected chat while the grid shows). The other cards on
+    screen get no mark. A card on another page gets a "Page N" tag, with
+    an accent dot when the chat arrived there unseen.
+    `WorkFocusToolbarPager` ("‹ 1–3/6 ›") sits next to the Focus pill and takes
+    the List/Board toggle's place. The grid has no board, and the pill's grid
+    half leaves the grid. The search shows no "⌘K" key while the pager shows,
+    so the row fits a narrow sidebar. The bottom strip does not show.
+  - **Sidebar collapsed.** `WorkFocusRoster` shows under the grid: one chip per
+    waiting chat (agent logo and title only, no status and no tooltip), grouped
+    by page. The page on screen is lit with the accent, and the focused chat is
+    highlighted. A chip goes to its page and focuses that tile. A right-click on
+    a chip opens the same menu as a sidebar card. Chips get wider on wide
+    screens (container queries). The right side reads "Chats 5–7 of 7 / Page 2
+    of 2" (or "N waiting" on one page). The strip has the sidebar footer's
+    height (41px) and top rule. It scrolls sideways, keeps the lit page in
+    view, and fades at its edges.
+
+  A chat that arrived on another page carries an accent dot (on its chip or
+  card, and on the arrow toward it) until the user gets there. A sideways
+  two-finger swipe over the grid flips one page (`wheelScrollsInside` lets a
+  wide code block keep the swipe). The new page slides in once (180 ms, off
+  under reduced motion). A sidebar click on a chat on another page goes there.
+- **PR badge.** With no Tools pane, a tile's PR badge always opens the PRs
+  tab (`prOpensPrsTab` on `ChatGitToolbar`), never GitHub. A lane on another
+  machine has no PR row here, so its PR is routed by number and repo, which the
+  PRs tab resolves without a local row.
+- **Machine.** Each tile gets its chat's binding straight from the Focus list.
+  Relying on the remembered pin sent another machine's chat to this one,
+  because the pin lands one effect after the tile's first render.
+
+### Grid chrome (all Work grids)
+
+Tiles meet edge to edge with no outer padding. The splitter takes no layout
+width: a 1px line is the resting divider, the hit area overlays both edges, and
+the line turns accent on hover or drag (the same gesture as the tools-pane
+splitter). Tiles are square and borderless; the lane tint stays on the header.
+The centred header reserves the right cluster's measured width on both sides;
+when that leaves under 140px the title moves left and truncates, and labelled
+header links (`.ade-header-collapsible-label`) collapse to their icon below a
+640px header width.
+
+One Tools pane serves the focused tile: only that tile's toggle reads open (an
+accent fill behind the glyph), another tile's toggle moves the pane to that
+chat, and the pane shows **For ● lane · chat** under its header while the
+active chat belongs to a grid (`WorkSidebar showOwner`).
 
 ## Grid mode: `PaneTilingLayout` + `workSessionTiling.ts`
 

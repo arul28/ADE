@@ -433,6 +433,8 @@ export type TerminalSessionSummary = {
   usageLimitResume?: AgentChatUsageLimitResume | null;
   /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
   chatActivityMode?: "planning" | null;
+  /** Live-turn open work, projected from the chat summary (`turnOpenWorkCount`). */
+  turnOpenWorkCount?: number;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
   activeBackgroundTaskCount?: number;
   /**

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, SquaresFour, Target, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -65,6 +65,7 @@ import {
   EMPTY_WORK_SEEN_AT,
   floatReturnedLanes,
   summarizeLaneFocus,
+  workFocusQueue,
   type WorkLaneFocus,
   type WorkLaneFocusStatus,
 } from "./workLaneFocus";
@@ -79,6 +80,9 @@ import {
 } from "./workSessionFilters";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
 import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
+import { WorkFocusToolbarPager, type WorkFocusPagerModel } from "./WorkFocusGrid";
+import type { WorkFocusCardMark } from "./SessionCard";
+import { nextTurnStallDeadlineMs } from "../../../shared/sessionStatusPresentation";
 import {
   appendForeignMachinesToBoard,
   lanePrWaitingReason,
@@ -124,6 +128,13 @@ import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 const EMPTY_LANE_IDS: string[] = [];
+const EMPTY_FOLDED_LANE_IDS: ReadonlySet<string> = new Set();
+
+/** One Focus-grid chat: the row, and the binding of the machine it lives on (null = this one). */
+export type WorkFocusQueueItem = {
+  session: TerminalSessionSummary;
+  binding: OpenProjectBinding | null;
+};
 const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   activity: "Recent",
   name: "Name",
@@ -988,6 +999,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   setWorkLaneSortMode,
   workFoldBusyLanes = false,
   setWorkFoldBusyLanes,
+  workFocusGrid = false,
+  setWorkFocusGrid,
+  onFocusQueueChange,
+  focusMarks,
+  focusPager,
   workSeenAtBySessionId = EMPTY_WORK_SEEN_AT,
   workLaneOrder = EMPTY_LANE_IDS,
   reorderWorkLanes,
@@ -1105,6 +1121,19 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** By-lane only: fold lanes with nothing waiting on the user into a Working shelf. */
   workFoldBusyLanes?: boolean;
   setWorkFoldBusyLanes?: (enabled: boolean) => void;
+  /** Focus grid: the work area shows every chat that waits for the user. */
+  workFocusGrid?: boolean;
+  setWorkFocusGrid?: (enabled: boolean) => void;
+  /**
+   * The chats that wait for the user while Focus is on, in list order
+   * (`workFocusQueue`). Reported up so the Focus grid shows exactly what the
+   * sidebar left unfolded.
+   */
+  onFocusQueueChange?: (items: readonly WorkFocusQueueItem[]) => void;
+  /** Focus grid with the sidebar open: each waiting chat's page mark. */
+  focusMarks?: ReadonlyMap<string, WorkFocusCardMark> | null;
+  /** Focus grid with the sidebar open and several pages: the toolbar's pager. */
+  focusPager?: WorkFocusPagerModel | null;
   /** When each session was last looked at; see `summarizeLaneFocus`. */
   workSeenAtBySessionId?: Readonly<Record<string, string>>;
   workLaneOrder?: string[];
@@ -1276,6 +1305,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
+  const activeFilterCount = activeWorkSessionFilterLabels(workSessionFilters).length + (laneFilterActive ? 1 : 0);
   const [filterOpen, setFilterOpen] = useState(false);
   // The tab's own machine owns the local roster; every other machine that
   // reports this repo contributes union rows. Those are the machine choices.
@@ -1581,6 +1611,24 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
 
   /**
+   * The stall rule depends on time passing, not on new data: a silent turn
+   * becomes stalled five minutes after its last output. Re-run the fold exactly
+   * at the next such deadline instead of polling.
+   */
+  const [stallEpoch, setStallEpoch] = useState(0);
+  const stallNowMs = useMemo(() => {
+    void stallEpoch;
+    void allSessionsUnfiltered;
+    return Date.now();
+  }, [allSessionsUnfiltered, stallEpoch]);
+  useEffect(() => {
+    const deadline = nextTurnStallDeadlineMs(allSessionsUnfiltered, stallNowMs);
+    if (deadline == null) return undefined;
+    const timer = window.setTimeout(() => setStallEpoch((value) => value + 1), Math.max(250, deadline - Date.now() + 50));
+    return () => window.clearTimeout(timer);
+  }, [allSessionsUnfiltered, stallNowMs]);
+
+  /**
    * Each local lane's rolled-up focus status and whether it folds into the
    * Working shelf (`summarizeLaneFocus`). Read from the unfiltered roster for
    * the same reason `isLaneQuiet` is: a lane must not change shelves as the
@@ -1597,6 +1645,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         seenAtBySessionId: workSeenAtBySessionId,
         nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
         launching: unfilteredHandoffCountByLaneId.get(laneId) ?? 0,
+        nowMs: stallNowMs,
       }));
     }
     return map;
@@ -1604,23 +1653,53 @@ export const SessionListPane = React.memo(function SessionListPane({
     allSessionsUnfiltered,
     effectiveFilingBucketsProp,
     prsByLaneId,
+    stallNowMs,
     unfilteredHandoffCountByLaneId,
     unfilteredNesting.excludedTopLevelIds,
     unfilteredSessionsByLane,
     workSeenAtBySessionId,
   ]);
   const foldBusyLanesActive = workFoldBusyLanes && isByLane;
-  /** Local lanes in the Working shelf. Pins and the primary lane never fold. */
+  const focusPagerShown = Boolean(focusPager && foldBusyLanesActive && workFocusGrid);
+  /**
+   * Local lanes in the Working shelf. Pins never fold: a pin is the user's
+   * "keep this on screen". The primary lane folds like any other lane.
+   */
   const foldedLaneIds = useMemo(() => {
     const set = new Set<string>();
     if (!foldBusyLanesActive) return set;
     for (const [laneId, focus] of laneFocusByLaneId) {
       if (!focus.folds || workPinnedLaneIdSet.has(laneId)) continue;
-      if (laneById.get(laneId)?.laneType === "primary") continue;
       set.add(laneId);
     }
     return set;
-  }, [foldBusyLanesActive, laneById, laneFocusByLaneId, workPinnedLaneIdSet]);
+  }, [foldBusyLanesActive, laneFocusByLaneId, workPinnedLaneIdSet]);
+
+  /**
+   * The Focus grid's chats: what Focus left unfolded and that waits for the
+   * user, after the user's own filters. Empty while Focus is off.
+   */
+  const focusQueueIds = useMemo(() => {
+    if (!foldBusyLanesActive) return EMPTY_LANE_IDS;
+    const filingBuckets = effectiveFilingBucketsProp ?? effectiveSessionFilingBuckets(allSessionsUnfiltered);
+    return workFocusQueue({
+      sessions: allSessions,
+      filingBuckets,
+      foldedLaneIds,
+      laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
+      nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+      nowMs: stallNowMs,
+    });
+  }, [
+    stallNowMs,
+    allSessions,
+    allSessionsUnfiltered,
+    effectiveFilingBucketsProp,
+    foldBusyLanesActive,
+    foldedLaneIds,
+    prsByLaneId,
+    unfilteredNesting.excludedTopLevelIds,
+  ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
   // chip filters the local list applies. Lanes elsewhere with nothing running
@@ -1801,14 +1880,16 @@ export const SessionListPane = React.memo(function SessionListPane({
       laneWaiting: false,
       seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: excluded,
+      nowMs: stallNowMs,
     });
     const shelf = ((): WorkLaneShelf | null => {
       if (workPinnedLaneIdSet.has(compositeLaneId) || workPinnedLaneIdSet.has(row.lane.id)) return null;
-      if (row.lane.laneType === "primary") return null;
       if (row.sessions.length === 0) return null;
       if (countUnexcluded(fullQuiet.active, excluded) > 0) {
         return foldBusyLanesActive && focus.folds ? "working" : null;
       }
+      // The primary lane folds like any lane, but never moves to a quiet shelf.
+      if (row.lane.laneType === "primary") return null;
       const snoozedRows = countUnexcluded(fullQuiet.snoozed, excluded);
       const settledRows = countUnexcluded(fullQuiet.settled, excluded);
       if (snoozedRows + settledRows === 0) return null;
@@ -1820,11 +1901,79 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Foreign composite ids fold and return exactly like local lane ids: a
   // cross-machine lane parked on the Working shelf must come back to the front
   // of the inbox when it needs the user, not stay buried below unrelated work.
+
+
   const foldedForeignLaneSignature = foreignLaneShelving
     .filter((entry) => entry.shelf === "working")
     .map((entry) => entry.compositeLaneId)
     .sort()
     .join("\n");
+  /**
+   * Every chat the Focus grid shows: this machine's (`focusQueueIds`), then
+   * each other machine's unfolded lanes by the same rule. A row from another
+   * machine carries its binding so the tile talks to that machine; one with no
+   * open binding cannot render a chat and is left out. Memoized on its inputs:
+   * the sidebar re-renders on every streamed status tick.
+   */
+  const foldedForeignLaneIds = useMemo(
+    () => new Set(foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []),
+    [foldedForeignLaneSignature],
+  );
+  const focusQueueItems = useMemo<WorkFocusQueueItem[]>(() => {
+    if (!foldBusyLanesActive) return [];
+    const items: WorkFocusQueueItem[] = [];
+    const localById = new Map(allSessions.map((session) => [session.id, session] as const));
+    for (const id of focusQueueIds) {
+      const session = localById.get(id);
+      if (session) items.push({ session, binding: null });
+    }
+    for (const row of visibleForeignRows) {
+      const compositeLaneId = `${row.machineId}:${row.lane.id}`;
+      if (foldedForeignLaneIds.has(compositeLaneId) || !row.binding) continue;
+      const ids = workFocusQueue({
+        sessions: row.sessions,
+        filingBuckets: filingBucketsForForeignSessions(row.sessions),
+        foldedLaneIds: EMPTY_FOLDED_LANE_IDS,
+        laneWaiting: () => false,
+        nestedSessionIds: unfilteredForeignNestingByCompositeId.get(compositeLaneId)?.excludedTopLevelIds
+          ?? EMPTY_FOLDED_LANE_IDS,
+        nowMs: stallNowMs,
+      });
+      const byId = new Map(row.sessions.map((session) => [session.id, session] as const));
+      for (const id of ids) {
+        const session = byId.get(id);
+        if (session) items.push({ session, binding: row.binding });
+      }
+    }
+    return items;
+  }, [
+    allSessions,
+    filingBucketsForForeignSessions,
+    foldBusyLanesActive,
+    foldedForeignLaneIds,
+    focusQueueIds,
+    stallNowMs,
+    unfilteredForeignNestingByCompositeId,
+    visibleForeignRows,
+  ]);
+  // Reported only when what a tile shows can change, not on every render.
+  const focusQueueKey = focusQueueItems
+    .map(({ session }) => [
+      session.id,
+      session.status,
+      session.runtimeState ?? "",
+      session.lastActivityAt ?? "",
+      session.pendingInputItemId ?? "",
+      session.title ?? "",
+    ].join("|"))
+    .join("\n");
+  const focusQueueItemsRef = useRef(focusQueueItems);
+  focusQueueItemsRef.current = focusQueueItems;
+  const onFocusQueueChangeRef = useRef(onFocusQueueChange);
+  onFocusQueueChangeRef.current = onFocusQueueChange;
+  useEffect(() => {
+    onFocusQueueChangeRef.current?.(focusQueueItemsRef.current);
+  }, [focusQueueKey]);
   const allFoldedLaneIds = useMemo(() => {
     const set = new Set(foldedLaneIds);
     for (const id of foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []) {
@@ -1921,7 +2070,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // session tick, and the shelf split is read once per lane per section.
   const laneShelfByLaneId = useMemo(() => {
     const map = new Map<string, WorkLaneShelf>();
-    // Folding is decided (pins and primary exempt) in `foldedLaneIds`; a
+    // Folding is decided (pins exempt) in `foldedLaneIds`; a
     // folded lane is never also quiet, because folding needs live work.
     for (const laneId of foldedLaneIds) map.set(laneId, "working");
     for (const [laneId, roster] of unfilteredSessionsByLane) {
@@ -2476,6 +2625,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         onOpenLanePrInChat={foreignRow ? undefined : (pr) => openLanePrInSession(session, pr)}
         lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
+        focusMark={focusMarks?.get(session.id) ?? null}
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? null}
@@ -3805,21 +3955,82 @@ export const SessionListPane = React.memo(function SessionListPane({
               data-testid="work-sidebar-search"
             >
               <MagnifyingGlass size={12} aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-left">Search</span>
-              {commandPaletteShortcut ? (
+              <span className="ade-session-list-toolbar-search-label min-w-0 flex-1 truncate text-left">Search</span>
+              <span className="flex-1" aria-hidden />
+              {commandPaletteShortcut && !focusPagerShown ? (
                 <kbd className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px text-[9px] font-medium text-muted-fg/60">
                   {commandPaletteShortcut}
                 </kbd>
               ) : null}
             </button>
           </SmartTooltip>
-          {/* List ↔ board, immediately left of the funnel. It uses the Work
-              tab's own segmented-control idiom (`.ade-work-segmented` in
-              index.css), which already carries the light-theme active fill —
-              so there is no new control shape and no new colour here. Icon-only
-              because the strip is 8 units tall and already holds four controls;
-              each half keeps a real accessible name and tooltip. */}
-          {boardAvailable && setWorkViewMode ? (
+          {/* Focus, then List ↔ board, then the funnel. Focus folds busy
+              lanes; its right half (shown only while Focus is on) swaps the
+              work area for the Focus grid, so the bar itself says the grid
+              belongs to Focus. Board has its own Working column, so Focus has
+              nothing to fold there and dims. */}
+          {setWorkFoldBusyLanes ? (
+            <div
+              className="ade-work-focus-pill shrink-0"
+              data-on={foldBusyLanesActive ? "true" : undefined}
+              data-grid={foldBusyLanesActive && workFocusGrid ? "true" : undefined}
+              data-disabled={isBoard ? "true" : undefined}
+              data-testid="work-focus-pill"
+            >
+              <SmartTooltip
+                content={{
+                  label: foldBusyLanesActive ? "Turn Focus off" : "Focus",
+                  description: isBoard
+                    ? "Focus works in the list. The board already has a Working column."
+                    : "Fold lanes where agents are busy into a Working section. They come back when something needs you.",
+                }}
+              >
+                <button
+                  type="button"
+                  className="ade-work-focus-pill-main"
+                  aria-pressed={foldBusyLanesActive}
+                  aria-label={foldBusyLanesActive ? `Focus on, ${focusQueueItems.length} waiting for you` : "Focus"}
+                  disabled={isBoard}
+                  onClick={() => setWorkFoldBusyLanes(!foldBusyLanesActive)}
+                  data-testid="work-focus-toggle"
+                >
+                  <Target size={12} weight={foldBusyLanesActive ? "bold" : "regular"} aria-hidden />
+                  <span>Focus</span>
+                  {foldBusyLanesActive && focusQueueItems.length > 0 ? (
+                    <span className="ade-work-focus-pill-count tabular-nums">{focusQueueItems.length}</span>
+                  ) : null}
+                </button>
+              </SmartTooltip>
+              {setWorkFocusGrid ? (
+                <SmartTooltip
+                  content={{
+                    label: workFocusGrid ? "Show one chat" : "Focus grid",
+                    description: workFocusGrid
+                      ? "Go back to one open chat with the tools pane."
+                      : "Show every chat that waits for you side by side.",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="ade-work-focus-pill-grid"
+                    aria-pressed={workFocusGrid}
+                    aria-label="Focus grid"
+                    tabIndex={foldBusyLanesActive && !isBoard ? 0 : -1}
+                    aria-hidden={foldBusyLanesActive && !isBoard ? undefined : true}
+                    disabled={!foldBusyLanesActive || isBoard}
+                    onClick={() => setWorkFocusGrid(!workFocusGrid)}
+                    data-testid="work-focus-grid-toggle"
+                  >
+                    <SquaresFour size={12} weight={workFocusGrid ? "fill" : "regular"} aria-hidden />
+                  </button>
+                </SmartTooltip>
+              ) : null}
+            </div>
+          ) : null}
+          {focusPager && focusPagerShown ? <WorkFocusToolbarPager model={focusPager} /> : null}
+          {/* The Focus grid has no board, so its pager takes this slot. Leave
+              the grid with the pill's grid half. */}
+          {boardAvailable && setWorkViewMode && !(workFocusGrid && foldBusyLanesActive) ? (
             <div
               className="ade-work-segmented shrink-0"
               role="group"
@@ -3838,7 +4049,10 @@ export const SessionListPane = React.memo(function SessionListPane({
                     aria-pressed={workViewMode === mode}
                     aria-label={`${label} view`}
                     data-testid={`work-view-mode-${mode}`}
-                    onClick={() => setWorkViewMode(mode)}
+                    onClick={() => {
+                      if (mode === "board" && workFocusGrid) setWorkFocusGrid?.(false);
+                      setWorkViewMode(mode);
+                    }}
                   >
                     <Icon size={12} weight={workViewMode === mode ? "fill" : "regular"} aria-hidden />
                   </button>
@@ -3846,25 +4060,36 @@ export const SessionListPane = React.memo(function SessionListPane({
               ))}
             </div>
           ) : null}
-          <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane or time." }}>
+          <SmartTooltip
+            content={{
+              label: "Filters",
+              description: activeFilterCount > 0
+                ? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} on. Some chats are hidden.`
+                : "Group, sort and filter the list.",
+            }}
+          >
             <button
               type="button"
               className={cn(
                 SIDEBAR_BARE_BUTTON_CLASS,
-                "ade-session-list-toolbar-filter relative h-6 w-6 shrink-0 justify-center",
+                "ade-session-list-toolbar-filter relative h-6 shrink-0 justify-center",
+                activeFilterCount > 0 ? "gap-1 px-1.5" : "w-6",
                 WORK_FILTER_FOCUS_CLASS,
-                (filterOpen || laneFilterActive) && "bg-fg/[0.04] text-fg",
+                (filterOpen || activeFilterCount > 0) && "bg-fg/[0.04] text-fg",
               )}
               onClick={() => setFilterOpen(!filterOpen)}
-              aria-label={laneFilterActive ? "Filters, lane filter active" : "Filters"}
+              aria-expanded={filterOpen}
+              aria-label={activeFilterCount > 0 ? `Filters, ${activeFilterCount} on` : "Filters"}
               data-tour="work.laneFilter"
             >
-              <Funnel size={13} weight={filterOpen ? "fill" : "regular"} />
-              {laneFilterActive || chipFiltersActive ? (
+              <Funnel size={13} weight={filterOpen || activeFilterCount > 0 ? "fill" : "regular"} />
+              {activeFilterCount > 0 ? (
                 <span
                   data-testid="work-lane-filter-active-indicator"
-                  className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]"
-                />
+                  className="text-[10px] font-semibold tabular-nums text-[var(--color-accent)]"
+                >
+                  {activeFilterCount}
+                </span>
               ) : null}
             </button>
           </SmartTooltip>
@@ -3876,9 +4101,10 @@ export const SessionListPane = React.memo(function SessionListPane({
                 "ade-session-list-toolbar-new-chat h-6 w-6 shrink-0 justify-center",
               )}
               onClick={() => {
-                // The board owns the main area, so a draft opened in place has
-                // nowhere to draw. Leave the board first, then open new chat.
+                // The board and the Focus grid own the main area, so a draft
+                // opened in place has nowhere to draw. Leave them first.
                 if (isBoard) setWorkViewMode?.("list");
+                if (workFocusGrid) setWorkFocusGrid?.(false);
                 onShowDraftKind("chat");
               }}
               aria-label="Start a new chat"
@@ -3897,8 +4123,6 @@ export const SessionListPane = React.memo(function SessionListPane({
             sortModes={WORK_LANE_SORT_MODES}
             sortLabels={WORK_LANE_SORT_LABELS}
             onSortModeChange={setWorkLaneSortMode}
-            foldBusyLanes={setWorkFoldBusyLanes && isByLane ? workFoldBusyLanes : undefined}
-            onFoldBusyLanesChange={setWorkFoldBusyLanes}
             filters={workSessionFilters}
             onFiltersChange={setWorkSessionFilters}
             machines={machineFilterOptions}

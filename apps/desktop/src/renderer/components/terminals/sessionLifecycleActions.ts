@@ -183,6 +183,20 @@ export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>
   });
 }
 
+/**
+ * Pin or unpin a selection. Written to each row's synced `pinned` column on the
+ * machine that owns it, so the pin follows the user to every machine and the
+ * phone. No undo toast: pinning again is the undo.
+ */
+export async function setSessionsPinned(
+  targets: ReadonlyArray<BulkLifecycleTarget>,
+  pinned: boolean,
+): Promise<void> {
+  await runBulkLifecycle(pinned ? "Pin" : "Unpin", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.updateMeta({ sessionId: session.id, pinned }, pin)
+    : window.ade.sessions.updateMeta({ sessionId: session.id, pinned })));
+}
+
 /** Lift the settle on every settled row in a selection. */
 export async function unsettleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
   await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => (pin

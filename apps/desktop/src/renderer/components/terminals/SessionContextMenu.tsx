@@ -606,7 +606,7 @@ function SessionContextMenuPanel({
             onClick={() => { onTogglePinned(session); onClose(); }}
           >
             <MenuRowIcon icon={(pinnedSessionIds ?? []).includes(session.id) ? PushPinSlash : PushPin} />
-            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
+            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin" : "Pin"}
           </button>
         ) : null}
         {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (

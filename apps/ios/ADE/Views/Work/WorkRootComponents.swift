@@ -74,11 +74,12 @@ struct WorkFiltersSection: View {
 
           if organization == .byLane, let foldBusyLanes {
             filterRow("Focus") {
+              // Same name as the desktop Work sidebar's Focus pill.
               WorkFilterChip(
-                title: "Fold busy lanes",
+                title: "Focus",
                 selected: foldBusyLanes.wrappedValue,
                 tint: ADEColor.info,
-                systemImage: "rectangle.compress.vertical"
+                systemImage: "scope"
               ) {
                 withAnimation(.snappy(duration: 0.18)) {
                   foldBusyLanes.wrappedValue.toggle()

@@ -51,6 +51,11 @@ type ChatGitToolbarProps = {
    * omit it, preserving the original menu behaviour.
    */
   onTogglePrPane?: () => void;
+  /**
+   * Focus grid: there is no Tools pane, so the PR badge goes to the PRs tab
+   * (or GitHub for another machine's lane) instead of a PR pane or menu.
+   */
+  prOpensPrsTab?: boolean;
   prPaneOpen?: boolean;
   /**
    * The machine this lane lives on, when it is not the machine the project tab
@@ -141,6 +146,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
   sessionId = null,
   onTogglePrPane,
+  prOpensPrsTab = false,
   prPaneOpen,
   runtimePin = null,
   linkedPrOnly = false,
@@ -374,6 +380,23 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     });
   }, [laneId, navigate, runtimePin]);
 
+  /**
+   * Focus grid: always the PRs tab, never GitHub. A lane on another machine has
+   * no PR row here, so its PR is routed by number and repo, which the PRs tab
+   * resolves on its own (a coordinate route needs no local row).
+   */
+  const openPrInPrsTab = useCallback((pr: PrSummary) => {
+    navigate(`/prs${buildPrsRouteSearch({
+      activeTab: "normal",
+      selectedPrId: runtimePin ? null : pr.id,
+      selectedPrNumber: pr.githubPrNumber,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
+      selectedLaneId: runtimePin ? null : laneId,
+      selectedRebaseItemId: null,
+    })}`);
+  }, [laneId, navigate, runtimePin]);
+
   const handlePr = useCallback(async () => {
     // A PR operation is about to run against this worktree — arm the drift
     // warning strip so a wrong-branch PR is caught before it is opened.
@@ -514,7 +537,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           type="button"
           data-testid="chat-header-pr-badge"
           className="inline-flex h-6 shrink-0 items-center gap-1.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
-          onClick={() => openLinkedPrInPane()}
+          onClick={() => {
+            if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
+            openLinkedPrInPane();
+          }}
           title={`${label}: ${linkedPr.title}`}
           aria-label={label}
         >
@@ -529,6 +555,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           type="button"
           className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
           onClick={() => {
+            if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
             if (onTogglePrPane) { openLinkedPrInPane(); return; }
             setPrMenuOpen((open) => !open);
           }}
@@ -597,7 +624,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         ) : null}
       </div>
     );
-  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, prPillActive, runtimePin]);
+  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, openPrInPrsTab, prOpensPrsTab, prPillActive, runtimePin]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {

@@ -5,12 +5,13 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
-import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
+import { nextTurnStallDeadlineMs, sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
   sessionCanonicalUiState,
   sessionIsMidFlight,
+  sessionStalledPresentation,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
@@ -95,7 +96,19 @@ export function SessionStatusSlot({
   const canonicalInput = canonicalInputFromSummary(session);
   const canonicalState = sessionCanonicalUiState(canonicalInput);
   const canonicalPhase = canonicalState.phase;
-  const elapsedSince = sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
+  // A live turn can go quiet with no new data at all, so the slot re-renders
+  // itself exactly when this session crosses the stall bar.
+  const [stallClockMs, setStallClockMs] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const deadline = nextTurnStallDeadlineMs([session], Date.now());
+    if (deadline == null) return undefined;
+    const timer = window.setTimeout(() => setStallClockMs(Date.now()), Math.max(250, deadline - Date.now() + 50));
+    return () => window.clearTimeout(timer);
+  }, [session, stallClockMs]);
+  const stalled = presentation ? sessionStalledPresentation(canonicalInput, Math.max(stallClockMs, Date.now())) : null;
+  const shownPresentation = stalled ?? presentation;
+  const elapsedSince = stalled?.activityUpdatedAt
+    ?? sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
   const isActivelyRunning = sessionIsMidFlight(canonicalInput);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
@@ -126,7 +139,7 @@ export function SessionStatusSlot({
         )}
       >
         <SessionStatusLabel
-          presentation={presentation}
+          presentation={shownPresentation}
           elapsedSince={elapsedSince}
           futureAt={session.nextWakeAt}
           timestampLabel={timestampLabel}

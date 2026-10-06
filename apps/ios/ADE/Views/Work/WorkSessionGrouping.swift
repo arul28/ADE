@@ -757,7 +757,6 @@ func workSessionGroups(
       let counted = (focus?.status == .done && nestedChildIds.contains(session.id)) ? nil : focus
       focusRowsByLaneId[session.laneId, default: []].append(counted)
     }
-    let primaryLaneIds = Set(orderedLanes.filter { $0.laneType == "primary" }.map(\.id))
     let laneGroups = workSessionGroupsByLane(
       sessions: awake,
       orderedLanes: orderedLanes,
@@ -778,7 +777,6 @@ func workSessionGroups(
         group.inWorkingShelf = foldBusyLanes
           && !group.isQuiet
           && !pinnedLaneIds.contains(laneId)
-          && !primaryLaneIds.contains(laneId)
           && workLaneFoldsIntoWorking(rows)
       }
       return group

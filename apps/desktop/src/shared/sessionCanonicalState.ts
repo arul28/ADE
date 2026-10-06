@@ -244,7 +244,8 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  *      tier entirely. Cleared at the write site on any new activity,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death,
- *   5. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
+ *   5. stale — a live run (or a resting session's background-work claim)
+ *      silent ≥ SESSION_STALE_AFTER_MS; a resting session is never stale,
  *   6. running,
  *   7. resting states — ready (idle chat, quiet "your move"), idle, ended,
  *      EXCEPT when the session still owns live background work, which promotes
@@ -374,20 +375,32 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
   }
 
-  // 6. Stale: running but silent past the threshold.
-  if (isSilentPast(args.lastActivityAt, nowMs, SESSION_STALE_AFTER_MS)) {
-    return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
-  }
+  const silentPastStale = isSilentPast(args.lastActivityAt, nowMs, SESSION_STALE_AFTER_MS);
 
   // Idle chats between turns are ready (calm); idle agent CLIs at an
   // undetected prompt stay actionable via the caller's existing idle rules —
   // canonical keeps them "idle" (calm) because there is no deterministic ask.
+  //
+  // A resting session is never stale. A chat row keeps status "running"
+  // between turns, so checking silence first turned every reply older than
+  // three hours into "Stale": the reply still waited on the user, but every
+  // surface filed it as busy, and a finished subagent held its lane out of the
+  // Working fold for good. Age is not activity. Only a resting session that
+  // claims live background work can still be stale, because then the claim
+  // is what has gone quiet.
   if (args.runtimeState === "idle") {
-    return restingPhaseWithBackgroundWork(
-      chat
-        ? { phase: "ready", badge: null, liveness: null }
-        : { phase: "idle", badge: null, liveness: null },
-    );
+    const resting: CanonicalSessionState = chat
+      ? { phase: "ready", badge: null, liveness: null }
+      : { phase: "idle", badge: null, liveness: null };
+    if (totalBackgroundWork(args.backgroundWork) > 0 && silentPastStale) {
+      return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
+    }
+    return restingPhaseWithBackgroundWork(resting);
+  }
+
+  // 6. Stale: running but silent past the threshold.
+  if (silentPastStale) {
+    return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
   }
 
   return { phase: "running", badge: null, liveness: "turn" };

@@ -166,6 +166,14 @@ import {
    18% alpha, so it reads as floating over the row. When the list is short
    enough that no scrollbar is reserved, the surplus is clipped by the scroll
    container's own `overflow-x: hidden`, so the row is flush either way. */
+
+/** See `SessionCard.focusMark`. */
+export type WorkFocusCardMark = {
+  page: number;
+  onScreen: boolean;
+  unseen: boolean;
+};
+
 /** Wrapper: declare the two bleeds, then spend them as margin + width. */
 export const SESSION_ROW_BLEED_CLASS = cn(
   "[--session-row-scrollbar:6px]",
@@ -465,6 +473,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   onContextMenu,
   compact = false,
   gridBadge = null,
+  focusMark = null,
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
@@ -497,6 +506,12 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   compact?: boolean;
   /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
   gridBadge?: "active" | "inactive" | null;
+  /**
+   * Focus grid with the sidebar open: the sidebar is the grid's roster. A chat
+   * on screen is lit like the selected row; one on another page names that
+   * page; one that arrived while the user was elsewhere carries a dot.
+   */
+  focusMark?: WorkFocusCardMark | null;
   /** Count of this session's still-running spawned children (surfaced in the tooltip). */
   liveChildrenCount?: number;
   /** Title of the parent chat that spawned this session (drives the lineage glyph tooltip). */
@@ -869,6 +884,21 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   ) : null;
 
   const whereParts: React.ReactNode[] = [];
+  if (focusMark && !focusMark.onScreen) {
+    whereParts.push(
+      <span
+        key="focus-page"
+        className="relative inline-flex shrink-0 items-center rounded px-1 text-[9.5px] font-semibold leading-[14px] text-muted-fg/80 ring-1 ring-inset ring-fg/[0.12]"
+        title={`On page ${focusMark.page + 1} of the Focus grid`}
+        data-testid="session-card-focus-page"
+      >
+        Page {focusMark.page + 1}
+        {focusMark.unseen ? (
+          <span aria-hidden className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
+        ) : null}
+      </span>,
+    );
+  }
   if (session.pinned) {
     whereParts.push(
       <PushPin

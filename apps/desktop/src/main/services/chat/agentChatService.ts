@@ -4531,6 +4531,13 @@ type ManagedChatSession = {
   /** See `PersistedChatState.historyGeneration`. Absent means 1. */
   historyGeneration?: number;
   lastActivityTimestamp: number;
+  /**
+   * Work the current turn still has open (a running command, tool call,
+   * foreground subagent, or approval), folded from every emitted event with the
+   * shared `trackTurnInFlight` contract and reset at each turn start. A silent
+   * turn holding open work is waiting, not stalled. Created on first use.
+   */
+  turnOpenWork?: Set<string>;
   turnBeforeSha: string | null;
   /** The dirty tree at turn start; scopes an uncommitted turn's diff summary. */
   turnBeforeTree: Promise<WorkingTreeFingerprint | null> | null;
@@ -4810,6 +4817,21 @@ const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
+/** Codex turn items that are work a turn waits on in silence while in progress. */
+const CODEX_OPEN_WORK_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "commandExecution",
+  "fileChange",
+  "toolCall",
+  "dynamicToolCall",
+  "mcpToolCall",
+  "webSearch",
+  "imageGeneration",
+  "delegation",
+  "collabAgentToolCall",
+  "collabToolCall",
+  "subAgentActivity",
+  "sleep",
+]);
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
@@ -20215,6 +20237,15 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    if (
+      (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
+      || normalizedEvent.type === "done"
+    ) {
+      managed.turnOpenWork?.clear();
+    } else {
+      managed.turnOpenWork ??= new Set<string>();
+      trackTurnInFlight(managed.turnOpenWork, normalizedEvent);
+    }
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
@@ -36469,6 +36500,34 @@ export function createAgentChatService(args: {
       }
 
       if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+
+      // A silent turn that still owns a running command or tool is waiting on
+      // it, not stalled: a test suite with buffered output can print nothing
+      // for longer than the watchdog. ADE's own fold answers even when the
+      // app-server probe failed; the turn's items cover work ADE never saw
+      // start. Keep watching, so a turn that stays silent after the work
+      // finishes is still caught.
+      const openWorkItem = currentTurn
+        ? codexTurnItems(currentTurn).find((item) =>
+            CODEX_OPEN_WORK_ITEM_TYPES.has(stringOrNull(item.type) ?? "")
+            && isCodexReconciledItemInProgress(item.status))
+        : undefined;
+      if (stallReason === "no_progress" && ((managed.turnOpenWork?.size ?? 0) > 0 || openWorkItem)) {
+        logger.info("agent_chat.codex_watchdog_suspended", {
+          sessionId: managed.session.id,
+          turnId,
+          reason: "open_work",
+          openWorkCount: managed.turnOpenWork?.size ?? 0,
+          openItemType: openWorkItem ? stringOrNull(openWorkItem.type) : null,
+        });
+        armCodexTurnProgressWatchdog(managed, runtime, {
+          turnId,
+          startedAt: turnStartedAt,
+          lastProgressAt,
+          firstUsefulProgressSeen: true,
+        }, CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS);
         return;
       }
 
@@ -55472,6 +55531,9 @@ export function createAgentChatService(args: {
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
+      ...(liveSession?.status === "active" && liveManaged?.turnOpenWork?.size
+        ? { turnOpenWorkCount: liveManaged.turnOpenWork.size }
+        : {}),
       // Omitted when nothing is live, like every other optional field here: a
       // zero record carries no information and would ride along on every
       // summary read for every session.
@@ -55536,6 +55598,29 @@ export function createAgentChatService(args: {
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
+  };
+
+  /**
+   * Sessions spawned by `parentSessionId` (subagents and peers), chat and
+   * tracked CLI alike. Children live in their parent's lane, so only that lane
+   * is read.
+   */
+  const listSpawnedChildSessionIds = async (parentSessionId: string): Promise<string[]> => {
+    const parent = sessionService.get(parentSessionId);
+    if (!parent?.laneId) return [];
+    const rows = sessionService.list({ laneId: parent.laneId, limit: 500 });
+    const childIds: string[] = [];
+    for (const row of rows) {
+      if (row.id === parentSessionId) continue;
+      if (row.orchestrationParentSessionId === parentSessionId) {
+        childIds.push(row.id);
+        continue;
+      }
+      if (!isChatToolType(row.toolType)) continue;
+      const summary = await summarizeSessionRow(row).catch(() => null);
+      if (summary?.orchestrationParentSessionId === parentSessionId) childIds.push(row.id);
+    }
+    return childIds;
   };
 
   // --- Event-driven waits ---------------------------------------------------
@@ -63127,6 +63212,7 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listSpawnedChildSessionIds,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,

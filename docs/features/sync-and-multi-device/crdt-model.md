@@ -457,6 +457,26 @@ replicating the table until it updates, so the skip — not the rollout
 order — is what makes the two builds interoperable. Do not remove it,
 and do not reintroduce a throw for an unrecognized-but-local table.
 
+The same wedge exists for a **column** a newer peer added to a replicated
+table: cr-sqlite rejects the `crsql_changes` insert for a column it has
+no record of with *"SQL logic error"*, and the batch rolls back exactly as
+above. Every release that adds a synced column reaches it whenever an
+older desktop peer is paired. `applyChanges` therefore skips a change
+whose `cid` is not a column of the local table (the `-1` row sentinel is
+never skipped), logs `sync.unknown_column_skipped` once per column per
+process, and applies the rest. The cost is bounded: the older device
+misses that column's value until the row changes again after it
+updates. iOS has the same behaviour by construction (it writes only the
+columns it knows).
+
+**Invariant: the column skip only protects devices that run it.** A
+peer on a build without the skip still wedges on a new column, so the
+first release that carries the skip must not also add a synced column.
+A table this device does not have at all still throws
+`unknown_sync_table`: skipping it would drop every row of that table for
+good on the older peer, so a new replicated table still needs its
+peers updated first.
+
 iOS also ignores its hydration-owned snapshot
 tables, which are intentionally not part of the desktop CRDT schema,
 and **skips rows for any table its bundled schema does not know**

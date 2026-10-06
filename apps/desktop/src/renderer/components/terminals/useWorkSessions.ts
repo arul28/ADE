@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
@@ -297,17 +298,30 @@ export function partitionRosterForBoard(
     else ended.push(session);
   }
   return {
-    runningFiltered: running,
+    runningFiltered: pinnedFirst(running),
     // The list's "Your move" section keeps both tiers: it is a container, and
     // each card states its own phase. The board splits them, because its
     // first column is a claim rather than a container.
-    awaitingInputFiltered: [...loud, ...quiet],
-    needsYouFiltered: loud,
-    restingFiltered: quiet,
-    endedFiltered: ended,
+    awaitingInputFiltered: [...pinnedFirst(loud), ...pinnedFirst(quiet)],
+    needsYouFiltered: pinnedFirst(loud),
+    restingFiltered: pinnedFirst(quiet),
+    endedFiltered: pinnedFirst(ended),
     settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
     snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
   };
+}
+
+/**
+ * Pinned rows lead their section; both halves keep the order they came in.
+ * The pin is the synced `terminal_sessions.pinned` column, so a pin made on
+ * one machine or on the phone orders the list everywhere.
+ */
+function pinnedFirst(sessions: TerminalSessionSummary[]): TerminalSessionSummary[] {
+  if (!sessions.some((session) => session.pinned)) return sessions;
+  return [
+    ...sessions.filter((session) => session.pinned),
+    ...sessions.filter((session) => !session.pinned),
+  ];
 }
 
 /**
@@ -926,12 +940,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
-  const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
+  // Local pins from before pins synced. Read only to migrate them once.
+  const legacyPinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
   const workPinnedLaneIds = projectViewState.workPinnedLaneIds ?? EMPTY_STRING_ARRAY;
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
   const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workFocusGrid = projectViewState.workFocusGrid === true;
   const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_WORK_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,
   // refresh cadence, and optimistic writes must never target a foreign slice.
@@ -1003,6 +1019,17 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       selectLane(session.laneId);
     },
     [localSessionsById, selectLane],
+  );
+
+  /** Ids of pinned rows across the whole roster, read from the synced column. */
+  const pinnedSessionIdsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const session of sessionsById.values()) if (session.pinned) ids.push(session.id);
+    return ids.sort().join("\n");
+  }, [sessionsById]);
+  const pinnedSessionIds = useMemo(
+    () => (pinnedSessionIdsKey ? pinnedSessionIdsKey.split("\n") : EMPTY_STRING_ARRAY),
+    [pinnedSessionIdsKey],
   );
 
   const openSessions = useMemo(() => {
@@ -1130,10 +1157,26 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [clearDeeplinkViewOverride, setProjectViewState],
   );
 
+  /**
+   * Focus folds busy lanes, and folding needs the by-lane list, so turning
+   * Focus on also groups by lane. Turning Focus off also leaves the grid,
+   * because the grid shows what Focus left unfolded.
+   */
   const setWorkFoldBusyLanes = useCallback(
     (enabled: boolean) => {
       clearDeeplinkViewOverride();
-      setProjectViewState({ workFoldBusyLanes: enabled });
+      setProjectViewState(enabled
+        ? { workFoldBusyLanes: true, sessionListOrganization: "by-lane" }
+        : { workFoldBusyLanes: false, workFocusGrid: false });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+  const setWorkFocusGrid = useCallback(
+    (enabled: boolean) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState(enabled
+        ? { workFocusGrid: true, workFoldBusyLanes: true, sessionListOrganization: "by-lane", workViewMode: "list" }
+        : { workFocusGrid: false });
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
@@ -1275,7 +1318,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
         const next = reorderLaneSessionIdsForDisplay({
           baseOrder,
-          pinnedSessionIds: prev.pinnedSessionIds ?? [],
+          pinnedSessionIds,
           movedSessionId,
           targetSessionId,
           edge,
@@ -1291,23 +1334,52 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         };
       });
     },
-    [sessionsById, setProjectViewState],
+    [pinnedSessionIds, sessionsById, setProjectViewState],
   );
 
+  /**
+   * Pin or unpin rows. The pin is the synced `terminal_sessions.pinned`
+   * column, written on the machine that owns each row, so the phone and every
+   * other machine see the same pins.
+   */
+  const setSessionsPinned = useCallback(
+    async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean) => {
+      const changing = targetSessions.filter((session) => Boolean(session.pinned) !== pinned);
+      if (!changing.length) return;
+      // The write emits a session change on the owning machine, which
+      // refreshes the roster; no local refresh is needed.
+      await setSessionsPinnedAction(
+        changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) })),
+        pinned,
+      );
+    },
+    [machineRouter],
+  );
   const togglePinnedSession = useCallback(
     (sessionId: string) => {
-      if (!sessionId) return;
-      setProjectViewState((prev) => {
-        const cur = prev.pinnedSessionIds ?? [];
-        const has = cur.includes(sessionId);
-        return {
-          ...prev,
-          pinnedSessionIds: has ? cur.filter((id) => id !== sessionId) : [...cur, sessionId],
-        };
-      });
+      const session = sessionsById.get(sessionId);
+      if (!session) return;
+      void setSessionsPinned([session], !session.pinned);
     },
-    [setProjectViewState],
+    [sessionsById, setSessionsPinned],
   );
+
+  // One-time move of pins made before pins synced. Each legacy pin that names
+  // a row in the roster is written to that row; then the local list is
+  // cleared, so a later unpin elsewhere is not undone from here.
+  const legacyPinMigrationRef = useRef(false);
+  useEffect(() => {
+    if (legacyPinMigrationRef.current || legacyPinnedSessionIds.length === 0) return;
+    const known = legacyPinnedSessionIds
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is TerminalSessionSummary => session != null);
+    if (known.length === 0 && sessionsById.size === 0) return;
+    legacyPinMigrationRef.current = true;
+    void setSessionsPinned(known, true)
+      .catch((error) => console.warn("[work] legacy pin migration failed", error))
+      .finally(() => setProjectViewState({ pinnedSessionIds: [] }));
+  }, [legacyPinnedSessionIds, sessionsById, setProjectViewState, setSessionsPinned]);
+
 
   const setWorkSidebarOpen = useCallback(
     (open: boolean) => {
@@ -2612,6 +2684,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setWorkLaneSortMode,
     workFoldBusyLanes,
     setWorkFoldBusyLanes,
+    workFocusGrid,
+    setWorkFocusGrid,
     workSeenAtBySessionId,
     workLaneOrder,
     reorderWorkLanes,
@@ -2637,6 +2711,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     pinnedSessionIds,
     reorderLaneSessions,
     togglePinnedSession,
+    setSessionsPinned,
 
     workSidebarOpen,
     setWorkSidebarOpen,

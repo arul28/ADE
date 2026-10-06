@@ -326,6 +326,8 @@ type LaneComboboxProps = {
    */
   variant?: "default" | "pill";
   fullWidth?: boolean;
+  /** 24px tall, to sit in a form of 24px menu buttons (the Work filter panel). */
+  dense?: boolean;
   "aria-label"?: string;
 };
 
@@ -342,6 +344,7 @@ export function LaneCombobox({
   onCreateLane = null,
   variant = "default",
   fullWidth = false,
+  dense = false,
   "aria-label": ariaLabel = "Select lane",
 }: LaneComboboxProps) {
   const portalContainer = usePortalContainer();
@@ -532,7 +535,7 @@ export function LaneCombobox({
     "transition-colors duration-100 hover:border-fg/[0.13] hover:bg-fg/[0.06]",
     "data-[open=true]:border-fg/[0.16] data-[open=true]:bg-fg/[0.07]",
     variant === "pill" ? "rounded-full" : "rounded-md",
-    compact ? "h-7 px-2" : "h-[30px] px-2.5",
+    dense ? "h-6 px-2" : compact ? "h-7 px-2" : "h-[30px] px-2.5",
     fullWidth
       ? "w-full"
       // fullWidth means "fill the container" — only the free-standing form caps.

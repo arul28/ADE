@@ -19,6 +19,34 @@ type UseCursorCloudDraftStateInput = {
 };
 
 /**
+ * Cursor's repositories endpoint allows five requests a minute per account, and
+ * every draft composer asks. One request is shared while in flight, and a
+ * success is kept for a few minutes; a failure is not kept, so Retry works.
+ */
+const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
+let cursorReposCache: { at: number; urls: string[] } | null = null;
+let cursorReposInFlight: Promise<string[]> | null = null;
+
+function loadCursorCloudRepoUrls(force: boolean): Promise<string[]> {
+  if (!force && cursorReposCache && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
+    return Promise.resolve(cursorReposCache.urls);
+  }
+  if (cursorReposInFlight) return cursorReposInFlight;
+  const request = window.ade.ai
+    .cursorCloudListRepositories()
+    .then((repos) => {
+      const urls = repos.map((repo) => repo.url);
+      cursorReposCache = { at: Date.now(), urls };
+      return urls;
+    })
+    .finally(() => {
+      if (cursorReposInFlight === request) cursorReposInFlight = null;
+    });
+  cursorReposInFlight = request;
+  return request;
+}
+
+/**
  * Owns the draft-only Cursor Cloud composer state: cloud mode, Auto-PR, and the
  * account repo list used to decide whether this lane can launch there.
  *
@@ -54,11 +82,11 @@ export function useCursorCloudDraftState({
     if (repoStateRef.current.status === "ready") return;
     let cancelled = false;
     setRepoState({ status: "loading" });
-    void window.ade.ai
-      .cursorCloudListRepositories()
-      .then((repos) => {
+    // A Retry (generation > 0) skips the cache; the first read may reuse it.
+    void loadCursorCloudRepoUrls(repoFetchGeneration > 0)
+      .then((urls) => {
         if (cancelled) return;
-        setRepoState({ status: "ready", urls: repos.map((repo) => repo.url) });
+        setRepoState({ status: "ready", urls });
       })
       .catch((error: unknown) => {
         if (cancelled) return;
