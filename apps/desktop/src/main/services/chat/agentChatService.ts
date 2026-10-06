@@ -696,7 +696,6 @@ import {
   findInstanceHoldingNewestClaudeThread,
   findInstanceHoldingThread,
   moveProviderThread,
-  providerThreadIsInHome,
 } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
@@ -10425,23 +10424,29 @@ export function createAgentChatService(args: {
    * another account's home (an import or move that never copied it) fails
    * with "No conversation found", and the turn then starts a blank thread
    * while the chat looks continued. Copy it in from the account holding it.
+   * A move leaves its source copy behind, so the home's own copy can also be
+   * the older one; the newest copy wins either way.
    */
   const ensureClaudeThreadInSessionHome = async (
     managed: ManagedChatSession,
     threadId: string,
   ): Promise<void> => {
     const targetHome = sessionConfigHome(managed);
-    if (!targetHome || providerThreadIsInHome("claude", threadId, targetHome)) return;
-    let holder: ProviderInstance | null = null;
+    if (!targetHome) return;
+    let holder: { id: string; configHome: string } | null = null;
     try {
       const others = getMachineProviderInstanceStore()
         .list("claude")
         .filter((instance) => !pathsEqual(instance.configHome, targetHome));
-      holder = await findInstanceHoldingNewestClaudeThread(threadId, others);
+      if (!others.length) return;
+      holder = await findInstanceHoldingNewestClaudeThread(threadId, [
+        { id: "", configHome: targetHome },
+        ...others,
+      ]);
     } catch {
       holder = null;
     }
-    if (!holder) return;
+    if (!holder || pathsEqual(holder.configHome, targetHome)) return;
     const moved = await moveProviderThread({
       provider: "claude",
       threadId,
@@ -39732,10 +39737,15 @@ export function createAgentChatService(args: {
     const waitForCancel = new Promise<void>((resolve) => {
       settleWarmupWaiters = resolve;
     });
+    // Per warmup: a later warmup resets `runtime.warmupCancelled`, so an older
+    // one still awaiting its thread lookup must not read that as "go ahead".
+    let thisWarmupCancelled = false;
     const cancelWarmup = () => {
+      thisWarmupCancelled = true;
       settleWarmupWaiters?.();
       settleWarmupWaiters = null;
     };
+    const warmupStopped = () => thisWarmupCancelled || runtime.warmupCancelled;
     runtime.warmupCancel = cancelWarmup;
 
     const warmupTask = (async () => {
@@ -39791,12 +39801,12 @@ export function createAgentChatService(args: {
           await repairClaudeEnvelopeSplicesBeforeResume(managed, options.resume);
         }
 
-        if (runtime.warmupCancelled) {
+        if (warmupStopped()) {
           clearAssignedSessionId();
           return;
         }
         const warm = await startup({ options });
-        if (runtime.warmupCancelled) {
+        if (warmupStopped()) {
           clearAssignedSessionId();
           try { warm.close(); } catch { /* ignore */ }
           return;
@@ -39816,7 +39826,7 @@ export function createAgentChatService(args: {
         });
       } catch (error) {
         clearAssignedSessionId();
-        if (runtime.warmupCancelled) return; // expected — teardown killed the warm query
+        if (warmupStopped()) return; // expected — teardown killed the warm query
         if (isClaudeRuntimeAuthError(error)) {
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
           emitChatEvent(managed, {
