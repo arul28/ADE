@@ -384,6 +384,14 @@ honour it, so project B can never adopt project A's worktree as a lane — and
 therefore can never delete it, since every delete rail keys off a lane row. An
 indeterminate probe scopes down rather than up and is not cached.
 
+The CLI also resolves a checkout outside `.ade/worktrees` back to its parent
+ADE project when Git identifies it as a linked worktree and the parent database
+records it as a lane. This keeps commands started from a sibling worktree on
+the parent project's lane state instead of creating a second project database
+inside the checkout. A linked checkout with its own ADE database and no matching
+lane record remains a separate project. Project details include linked
+worktrees outside `.ade/worktrees` alongside ADE-managed worktrees.
+
 **One path, two spellings.** Git answers in realpath space —
 `git worktree list`, `rev-parse --show-toplevel`, and `--git-common-dir` all
 resolve symlinks — while ADE's own paths carry whatever spelling the user

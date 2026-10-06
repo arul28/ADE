@@ -184,6 +184,51 @@ describe("externalSessionsService", () => {
     });
   });
 
+  it("counts a lane outside the project folder as in the project, and nothing else beside it", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    // A sibling checkout, the way `repo-worktrees/feature` lanes are laid out,
+    // with a space in the name; and an unrelated sibling that is not a lane.
+    const externalLane = path.join(root, "repo-worktrees", "android app");
+    const notALane = path.join(root, "repo-scratch");
+    const sessions = [
+      { id: "77777777-7777-4777-8777-777777777777", cwd: externalLane, text: "from the external lane" },
+      { id: "88888888-8888-4888-8888-888888888888", cwd: notALane, text: "from a folder that is not a lane" },
+    ];
+    for (const session of sessions) {
+      fs.mkdirSync(session.cwd, { recursive: true });
+      writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(session.cwd), `${session.id}.jsonl`), [
+        {
+          type: "user",
+          sessionId: session.id,
+          cwd: session.cwd,
+          timestamp: "2026-07-06T10:00:00.000Z",
+          message: { role: "user", content: session.text },
+        },
+      ]);
+    }
+    fs.mkdirSync(projectRoot, { recursive: true });
+
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: {
+        list: () => [
+          { id: "lane-primary", name: "Primary", branchRef: "main", color: null, laneType: "primary", worktreePath: projectRoot },
+          { id: "lane-android", name: "android app", branchRef: "android-app", color: null, laneType: "worktree", worktreePath: externalLane },
+        ],
+      },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const listed = await service.list({ providers: ["claude"], scope: "project", limit: 10 });
+    expect(listed.map((session) => session.id)).toEqual(["77777777-7777-4777-8777-777777777777"]);
+    expect(listed[0]).toMatchObject({ cwd: externalLane, preview: "from the external lane" });
+    expect(listed[0]?.home).toMatchObject({ kind: "lane", laneId: "lane-android", laneName: "android app" });
+  });
+
   it("reads a session's detail from the service's own home", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");

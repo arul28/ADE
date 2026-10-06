@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import { nonAsarFs } from "../shared/nonAsarFs";
 import type {
   DbBreakdownEntry,
   MaintenanceAction,
@@ -1090,7 +1091,8 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const removeWorktree = async (targetPath: string): Promise<void> => {
     const removeResult = await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 });
     if (removeResult.exitCode !== 0) {
-      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      // Under Electron a plain `fs` rm fails on every `.asar` file in the tree.
+      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
     }
     await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
   };

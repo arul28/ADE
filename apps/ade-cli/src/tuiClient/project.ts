@@ -5,6 +5,7 @@ import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { ProjectLaunchContext } from "./types";
 import { gitOwnershipMessage, parseGitOwnershipError } from "../services/projects/gitOwnership";
+import { findLinkedLaneWorktreeRoot } from "../services/projects/projectRoots";
 
 function normalizeRoot(value: string): string {
   return path.resolve(value);
@@ -66,7 +67,11 @@ export function detectProjectLaunchContext(args: {
   const explicitProjectRootArg = args.projectRoot?.trim() || null;
   const explicitWorkspaceRoot = args.workspaceRoot?.trim() || null;
   const remote = args.remote === true;
-  const worktree = findAdeWorktreeContext(launchCwd);
+  // A lane outside `.ade/worktrees/` resolves to its project the same way;
+  // the lane itself is then picked by path in `chooseInitialLane`.
+  const linkedLane = remote ? null : findLinkedLaneWorktreeRoot(launchCwd);
+  const worktree = findAdeWorktreeContext(launchCwd)
+    ?? (linkedLane ? { ...linkedLane, laneHint: null } : null);
   const gitRoot = findGitRoot(launchCwd);
 
   const projectRoot = remote
