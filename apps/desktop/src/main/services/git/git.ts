@@ -268,6 +268,7 @@ type GitChild = {
   pid?: number;
   exitCode: number | null;
   signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
   stdout: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
   stderr: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
   stdin: { on(event: "error", listener: () => void): unknown; end(text: string): unknown };
