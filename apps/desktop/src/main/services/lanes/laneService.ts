@@ -10,6 +10,7 @@ import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
+import { nonAsarFs } from "../shared/nonAsarFs";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -275,7 +276,7 @@ function isPermissionError(error: unknown): boolean {
 async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   let stat: fs.Stats;
   try {
-    stat = await fs.promises.lstat(targetPath);
+    stat = await nonAsarFs.promises.lstat(targetPath);
   } catch {
     return;
   }
@@ -283,7 +284,7 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   if (stat.isSymbolicLink()) return;
 
   try {
-    await fs.promises.chmod(targetPath, stat.mode | 0o700);
+    await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
   } catch {
     // Best effort. The following rm will surface any remaining failure.
   }
@@ -292,12 +293,12 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
 
   let entries: string[];
   try {
-    entries = await fs.promises.readdir(targetPath);
+    entries = await nonAsarFs.promises.readdir(targetPath);
   } catch (error) {
     if (!isPermissionError(error)) return;
     try {
-      await fs.promises.chmod(targetPath, stat.mode | 0o700);
-      entries = await fs.promises.readdir(targetPath);
+      await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
+      entries = await nonAsarFs.promises.readdir(targetPath);
     } catch {
       return;
     }
@@ -319,12 +320,13 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
  * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
- * only for the Windows lock-retry regression test.
+ * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
+ * Electron a plain `fs` rm fails on every `.asar` file in the tree.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
       return;
     } catch (error) {
       if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
@@ -6004,7 +6006,7 @@ export function createLaneService({
             );
           } catch (cleanupError) {
             try {
-              fs.rmSync(worktreePath, { recursive: true, force: true });
+              nonAsarFs.rmSync(worktreePath, { recursive: true, force: true });
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
                 await runGitWorktreeMutation(() =>
@@ -7962,7 +7964,7 @@ export function createLaneService({
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 120_000 });
-            await fs.promises.rm(targetPath, { recursive: true, force: true });
+            await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
           throw error;
@@ -8753,7 +8755,25 @@ export function createLaneService({
       }
       // Same Windows lock retries as a lane delete: the files left behind are
       // often the ones an AV scan or indexer was holding a moment ago.
-      await removeWorktreeDirectoryWithRecovery(targetPath);
+      try {
+        await removeWorktreeDirectoryWithRecovery(targetPath);
+      } catch (error) {
+        // A removal that stops partway has usually taken the token with it,
+        // and without the token every retry reads as "folder was replaced"
+        // and is refused for good. The folder is still the one verified above
+        // (same device and inode), so put the token back for the retry.
+        if (leftover.tokenName && leftover.token && leftover.dev !== null && leftover.ino !== null) {
+          try {
+            const stat = await fs.promises.lstat(targetPath);
+            if (stat.isDirectory() && stat.dev === leftover.dev && stat.ino === leftover.ino) {
+              await fs.promises.writeFile(path.join(targetPath, leftover.tokenName), leftover.token);
+            }
+          } catch {
+            // The folder is gone or unreadable; the retry reports which.
+          }
+        }
+        throw error;
+      }
       leftoverWorktreeByLaneId.delete(laneId);
       persistLeftoverWorktrees();
       return { removed: true };

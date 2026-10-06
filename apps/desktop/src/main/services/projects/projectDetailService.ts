@@ -12,7 +12,8 @@ import type {
 import { runGit } from "../git/git";
 import { readGlobalState } from "../state/globalState";
 import { toRecentProjectSummary } from "./recentProjectSummary";
-import { resolveWorktreeParentRef } from "./worktreeParent";
+import { pathKey } from "../shared/pathCompare";
+import { listLinkedWorktreeRoots, resolveWorktreeParentRef } from "./worktreeParent";
 
 const README_CANDIDATES = ["README.md", "readme.md", "Readme.md", "README", "readme"];
 const README_EXCERPT_CHARS = 1600;
@@ -266,17 +267,23 @@ async function readWorktreeSummary(args: {
 
 async function listAdeWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
   const worktreesPath = path.join(rootPath, ".ade", "worktrees");
+  const byKey = new Map<string, { rootPath: string; name: string }>();
   try {
     const dirents = await fs.readdir(worktreesPath, { withFileTypes: true });
-    return dirents
-      .filter((dirent) => dirent.isDirectory())
-      .map((dirent) => ({
-        rootPath: path.join(worktreesPath, dirent.name),
-        name: dirent.name,
-      }));
+    for (const dirent of dirents) {
+      if (!dirent.isDirectory()) continue;
+      const worktreeRoot = path.join(worktreesPath, dirent.name);
+      byKey.set(pathKey(worktreeRoot), { rootPath: worktreeRoot, name: dirent.name });
+    }
   } catch {
-    return [];
+    // no managed worktrees folder
   }
+  // Lanes outside `.ade/worktrees/` are still git-linked worktrees.
+  for (const worktreeRoot of listLinkedWorktreeRoots(rootPath)) {
+    const key = pathKey(worktreeRoot);
+    if (!byKey.has(key)) byKey.set(key, { rootPath: worktreeRoot, name: path.basename(worktreeRoot) });
+  }
+  return Array.from(byKey.values());
 }
 
 export type GetProjectDetailOptions = {

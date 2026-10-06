@@ -6827,6 +6827,18 @@ async function runTool(args: {
     }
     const authorized = await resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
     validateComputerUseOwnerClaims(runtime, session, toolArgs);
+    // Lanes outside `.ade/worktrees/` (a sibling `repo-worktrees/feature`
+    // checkout) need the same boundary. Lanes whose folder holds the caller's
+    // — its own, and the primary — are not "another lane". Loaded on first need.
+    let otherLaneRoots: Promise<string[]> | null = null;
+    const loadOtherLaneRoots = () => {
+      otherLaneRoots ??= runtime.laneService.list({ includeArchived: false, includeStatus: false })
+        .then((lanes) => lanes
+          .map((lane) => lane.worktreePath?.trim() ?? "")
+          .filter((root) => root && !isPathWithinAuthorizedRoot(root, authorized.root)))
+        .catch(() => []);
+      return otherLaneRoots;
+    };
     for (const input of inputs) {
       const localPath = asOptionalTrimmedString(input.path)
         ?? (() => {
@@ -6839,7 +6851,10 @@ async function runTool(args: {
       // roots such as the OS temp directory or ~/.agent-browser. Preserve the
       // lane boundary here, then let the broker enforce its full jailed
       // allow-list and extension policy.
-      if (isPathWithinAuthorizedRoot(runtime.paths.worktreesDir, localPath)) {
+      if (
+        isPathWithinAuthorizedRoot(runtime.paths.worktreesDir, localPath)
+        || (await loadOtherLaneRoots()).some((root) => isPathWithinAuthorizedRoot(root, localPath))
+      ) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
           "Artifact paths from another lane worktree are not authorized for this caller",

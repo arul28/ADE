@@ -100,6 +100,7 @@ import {
   readCodexCredentials,
   type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
+import { listLinkedWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
@@ -2414,20 +2415,41 @@ function collapsedProjectKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").toLowerCase();
 }
 
-function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
-  if (!projectRoot) return false;
+type ProjectMatchRoot = {
+  root: string;
+  rootKey: string;
+  collapsedRoot: string;
+  /** The project root itself, whose `.ade/worktrees/` lanes match by key prefix. */
+  isProjectRoot: boolean;
+};
+
+/**
+ * The project root plus every git-linked worktree of it. A lane outside
+ * `.ade/worktrees/` (a sibling `repo-worktrees/feature` checkout) is part of
+ * the project, but neither its path nor its key sits under the project root.
+ */
+function projectMatchRoots(projectRoot: string | null | undefined): ProjectMatchRoot[] {
+  if (!projectRoot) return [];
   const root = canonicalProjectRoot(projectRoot);
-  // `root` is already resolved by canonicalProjectRoot; resolve the candidate
-  // to match, since pathCompare normalizes but deliberately does not resolve.
-  if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
-  if (entry.projectKey) {
-    const rootKey = pathComparisonKey(sanitizeClaudeProjectPath(root));
+  return [root, ...listLinkedWorktreeRoots(root).map((worktree) => path.resolve(worktree))].map((candidate, index) => ({
+    root: candidate,
+    rootKey: pathComparisonKey(sanitizeClaudeProjectPath(candidate)),
+    collapsedRoot: collapsedProjectKey(candidate),
+    isProjectRoot: index === 0,
+  }));
+}
+
+function tokenEntryMatchesProject(entry: TokenEntry, roots: readonly ProjectMatchRoot[]): boolean {
+  for (const { root, rootKey, collapsedRoot, isProjectRoot } of roots) {
+    // `root` is already resolved; resolve the candidate to match, since
+    // pathCompare normalizes but deliberately does not resolve.
+    if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
+    if (!entry.projectKey) continue;
     const entryKey = pathComparisonKey(entry.projectKey);
-    if (entryKey === rootKey || entryKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
-    const collapsedRoot = collapsedProjectKey(root);
+    if (entryKey === rootKey || (isProjectRoot && entryKey.startsWith(`${rootKey}--ade-worktrees-`))) return true;
     const collapsedEntry = collapsedProjectKey(entry.projectKey);
     if (collapsedEntry === collapsedRoot) return true;
-    if (collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
+    if (isProjectRoot && collapsedRoot && collapsedEntry.startsWith(`${collapsedRoot}-ade-worktrees-`)) return true;
   }
   return false;
 }
@@ -2438,10 +2460,11 @@ export function buildCostSnapshots(
   projectRoot: string | null | undefined,
 ): CostSnapshot[] {
   const costs: CostSnapshot[] = [];
+  const matchRoots = scope === "project" ? projectMatchRoots(projectRoot) : [];
   for (const [provider, machineEntries] of entriesByProvider) {
     const scopeSupported = PROVIDER_SCOPE_SUPPORT[provider] === true;
     const entries = scope === "project"
-      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, projectRoot)) : []
+      ? scopeSupported ? machineEntries.filter((entry) => tokenEntryMatchesProject(entry, matchRoots)) : []
       : machineEntries;
     if (entries.length === 0) {
       if (scope === "project" && !scopeSupported && machineEntries.length > 0) {

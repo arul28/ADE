@@ -235,6 +235,7 @@ import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolve
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
+  findLinkedLaneWorktreeRoot,
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
@@ -18047,6 +18048,10 @@ function findProjectRoots(startDir: string): {
   const canonicalStart = realpathIfExists(startDir);
   const managedWorktree = findAdeManagedWorktreeRoot(canonicalStart);
   if (managedWorktree) return managedWorktree;
+  // Checked before the walk up for `.ade`: a lane outside `.ade/worktrees/` has
+  // its own `.ade` folder whenever the repository commits `.ade/ade.yaml`.
+  const linkedLane = findLinkedLaneWorktreeRoot(canonicalStart);
+  if (linkedLane) return linkedLane;
 
   let cursor = canonicalStart;
   while (true) {

@@ -30,6 +30,37 @@ export function resolveGitMetadataDirectory(projectRoot: string): string | null 
   }
 }
 
+/**
+ * Every linked worktree Git records for the repository at `projectRoot`, read
+ * from `<gitdir>/worktrees/<name>/gitdir` (the path of that checkout's `.git`
+ * file) without spawning git. Lanes are not only under `.ade/worktrees/`: a
+ * sibling `repo-worktrees/feature` checkout is a lane too. Missing folders are
+ * left out.
+ */
+export function listLinkedWorktreeRoots(projectRoot: string): string[] {
+  const gitDir = resolveGitMetadataDirectory(projectRoot);
+  if (!gitDir) return [];
+  const adminRoot = path.join(gitDir, "worktrees");
+  let names: string[];
+  try {
+    names = fs.readdirSync(adminRoot);
+  } catch {
+    return [];
+  }
+  const roots: string[] = [];
+  for (const name of names) {
+    try {
+      const pointer = fs.readFileSync(path.join(adminRoot, name, "gitdir"), "utf8").trim();
+      if (!pointer) continue;
+      const worktreeRoot = path.dirname(path.resolve(adminRoot, name, pointer));
+      if (fs.statSync(worktreeRoot).isDirectory()) roots.push(worktreeRoot);
+    } catch {
+      // pruned or unreadable entry
+    }
+  }
+  return roots;
+}
+
 export function resolveWorktreeParentRef(worktreeRoot: string): WorktreeParentRef | null {
   const managedWorktree = findAdeManagedWorktreeRoot(worktreeRoot);
   if (managedWorktree) {
