@@ -245,6 +245,25 @@ export function createGitOperationsService({
   }) => void;
 }) {
   const laneReadCache = new Map<string, CachedReadEntry<unknown>>();
+  const pullTails = new Map<string, Promise<void>>();
+
+  async function serializePull<T>(laneId: string, pull: () => Promise<T>): Promise<T> {
+    const previous = pullTails.get(laneId) ?? Promise.resolve();
+    let release = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => {}).then(() => current);
+    pullTails.set(laneId, tail);
+
+    await previous.catch(() => {});
+    try {
+      return await pull();
+    } finally {
+      release();
+      if (pullTails.get(laneId) === tail) pullTails.delete(laneId);
+    }
+  }
 
   function invalidateLaneReadCache(laneId: string): void {
     const needle = `:${laneId}:`;
@@ -1541,16 +1560,18 @@ export function createGitOperationsService({
         rebase: ["pull", "--rebase"],
         merge: ["pull", "--no-rebase", "--no-edit"],
       };
-      const { action } = await runLaneOperation({
-        laneId: args.laneId,
-        kind: "git_pull",
-        reason: `pull_${mode.replace("-", "_")}`,
-        metadata: { mode },
-        fn: async (lane) => {
-          await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-        }
+      return serializePull(args.laneId, async () => {
+        const { action } = await runLaneOperation({
+          laneId: args.laneId,
+          kind: "git_pull",
+          reason: `pull_${mode.replace("-", "_")}`,
+          metadata: { mode },
+          fn: async (lane) => {
+            await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          }
+        });
+        return action;
       });
-      return action;
     },
 
     async undoLastHeadChange(args: GitHeadChangeActionArgs): Promise<GitActionResult> {
