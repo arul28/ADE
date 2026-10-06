@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
+import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
 import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
@@ -3550,7 +3551,7 @@ function orderAvailableModelIds(ids: Iterable<string>): string[] {
   extra.sort((left, right) => {
     const leftLabel = getModelById(left)?.displayName ?? left;
     const rightLabel = getModelById(right)?.displayName ?? right;
-    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+    return compareTextInsensitive(leftLabel, rightLabel);
   });
   return [...ordered, ...extra];
 }
@@ -6867,7 +6868,7 @@ export function AgentChatPane({
     extras.sort((left, right) => {
       const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left, modelCatalogScopeKey)?.displayName ?? left;
       const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right, modelCatalogScopeKey)?.displayName ?? right;
-      return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+      return compareTextInsensitive(leftLabel, rightLabel);
     });
     return [...ordered, ...extras];
   }, [availableModelIds, modelCatalogScopeKey, runtimeCatalogVersion, selectedSessionModelId]);

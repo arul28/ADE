@@ -82,6 +82,7 @@ of these paths starts Windows-aware rather than discovering it in `/quality`.
 | `services/computerUse/**`, `services/appControl/**`, `services/macDesktop/**`, `renderer/lib/platform.ts`, any platform capability gate | `WINDOWS_PORT.md` |
 | `.github/workflows/**` (Windows jobs), `scripts/package-channel.mjs`, packaging/native artifacts | `docs/development/windows-release-proof.md` |
 | Release, signing, installer, updater feed (`latest.yml`) | `docs/playbooks/windows-signed-release.md` + `docs/development/windows-release-proof.md` |
+| `services/updates/**`, `build/installer.nsh`, `scripts/windows-install-setup.ps1`, the NSIS `build.nsis` block, auto-update install/relaunch | `docs/development/windows-update-timeline.md` + `docs/development/windows-support.md` |
 
 Companion reference for the failure classes themselves (read alongside the docs,
 not instead of them): `.agents/skills/quality/references/windows-quirks.md`.

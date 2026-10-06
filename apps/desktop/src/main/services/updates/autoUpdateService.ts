@@ -1863,7 +1863,31 @@ export function createAutoUpdateService({
         // silently ignores later ones. A parked retry or stale-handoff recovery
         // must clear that latch or Windows never launches the installer again.
         updater.quitAndInstallCalled = false;
-        updater.quitAndInstall(false, true);
+        // `isSilent` MUST be true on Windows, and it is what makes the relaunch
+        // happen at all. ADE's NSIS target is `oneClick: false`, so the
+        // installer is the assisted one, and app-builder-lib's
+        // `installSection.nsh` starts the app from exactly one place:
+        //
+        //   !else  # assisted
+        //     ${if} ${isForceRun}
+        //     ${andIf} ${Silent}
+        //       !insertmacro doStartApp
+        //
+        // `--force-run` was never the missing piece: `isForceRunAfter` only
+        // reaches the installer when `isSilent` is true
+        // (`BaseUpdater.quitAndInstall` substitutes `autoRunAppAfterInstall`
+        // otherwise), and that defaults to true, so the flag was passed either
+        // way. `${Silent}` is the half that was false, and without it
+        // `doStartApp` cannot run. The other route, the finish page's run
+        // checkbox, is not even compiled in: `runAfterFinish: false` defines
+        // `HIDE_RUN_AFTER_FINISH`. So no path could relaunch ADE — the "it never
+        // comes back" half of the Windows update complaint — and the installer's
+        // pages sat on screen waiting for a click (~146 s of the last update,
+        // between the last file written and the app starting).
+        //
+        // macOS ignores both flags for this purpose; its updater relaunches on
+        // its own.
+        updater.quitAndInstall(true, true);
         return true;
       } catch (error) {
         const message = formatErrorMessage(error);
