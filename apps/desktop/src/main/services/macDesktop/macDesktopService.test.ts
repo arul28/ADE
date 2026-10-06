@@ -441,10 +441,16 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       // A caller with no chat is nobody's consent.
       await expect(real("shared-1", null)).rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
 
+      // A point with no mode stays real input on a Windows seat: its driver
+      // has no background path, and the private seat has its own pointer.
+      await expect(service.click({ laneId: "private", x: 20, y: 20, chatSessionId: "chat-p" }))
+        .resolves.toMatchObject({ ok: true, mode: "real" });
+      expect(inputOps(driver, "private").at(-1)?.payload.mode).toBe("real");
+
       // A person who took control keeps it, on either seat.
       await service.takeControl({ laneId: "private", controllerId: "ade-window:user" });
       await expect(real("private", "chat-p")).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
-      expect(inputOps(driver, "private")).toHaveLength(1);
+      expect(inputOps(driver, "private")).toHaveLength(2);
     } finally { service.dispose(); }
 
     // A Mac still needs the chat's own lease.
@@ -1184,6 +1190,89 @@ describe("macDesktopService real input and the lease", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("delivers a Mac point click, scroll and drag as background input, with no lease and no card", async () => {
+    const driver = createFakeDriver({
+      // The driver answers with the path it took; a handle click it had to
+      // deliver at the element's centre says so.
+      [MAC_DESKTOP_DRIVER_OPS.input]: (payload) => (
+        payload.mode === "accessibility" && payload.command === "click"
+          ? { resolvedIndex: null, deliveredMode: "background" }
+          : { resolvedIndex: null }
+      ),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const modeOf = () => {
+      const input = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).at(-1);
+      return { mode: input?.payload.mode, lease: input?.payload.lease };
+    };
+
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, button: "right", chatSessionId: "chat-1" }))
+      .resolves.toMatchObject({ ok: true, mode: "background" });
+    expect(modeOf()).toEqual({ mode: "background", lease: undefined });
+    await service.scroll({ laneId: "lane-1", x: 10, y: 10, direction: "down", chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("background");
+    await service.drag({ laneId: "lane-1", from: { x: 10, y: 10 }, to: { x: 60, y: 10 }, chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("background");
+    // `background` means nothing to a key: it is the accessibility path.
+    await service.press({ laneId: "lane-1", key: "return", mode: "background", chatSessionId: "chat-1" });
+    expect(modeOf().mode).toBe("accessibility");
+    // The reported mode is the path the driver actually took.
+    await expect(service.click({ laneId: "lane-1", text: "Canvas", chatSessionId: "chat-1" }))
+      .resolves.toMatchObject({ mode: "background" });
+
+    // `--real` still means the user's pointer, and still needs the lease.
+    await expect(service.drag({ laneId: "lane-1", from: { x: 10, y: 10 }, to: { x: 60, y: 10 }, mode: "real", chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+    service.dispose();
+  });
+
+  it("refuses an agent's background and accessibility input while a person has control", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.takeControl({ laneId: "lane-1", controllerId: "ade-window:abc" });
+    const inputs = () => driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input).length;
+
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    await expect(service.click({ laneId: "lane-1", text: "OK", chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    // A controller id that does not hold the lease is nobody in particular.
+    await expect(service.click({ laneId: "lane-1", x: 10, y: 10, controllerId: "ade-window:other" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    expect(inputs()).toBe(0);
+    // The person holding control still drives.
+    await expect(service.click({ laneId: "lane-1", text: "OK", controllerId: "ade-window:abc" }))
+      .resolves.toMatchObject({ ok: true });
+    expect(inputs()).toBe(1);
+    service.dispose();
+  });
+
+  it("follows a display the helper moved, including a move reported before its start stored the display", async () => {
+    const driver = createFakeDriver();
+    // The helper reports a move of lane-1's display while lane-1's start is
+    // still waiting for its create reply (another lane's display pushed it).
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.createDisplay] = (payload) => {
+      for (const listener of driver.listeners) {
+        listener({ event: "display-moved", laneId: payload.laneId, origin: { x: -5120, y: 0 } });
+      }
+      return { displayId: 7, name: payload.name, mode: "virtual", width: 2560, height: 1440, scale: 2, origin: { x: -2560, y: 0 }, createdAt: new Date(0).toISOString() };
+    };
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.origin).toEqual({ x: -5120, y: 0 });
+
+    // A later move updates the stored display and tells every client.
+    for (const listener of driver.listeners) {
+      listener({ event: "display-moved", laneId: "lane-1", origin: { x: -7680, y: 0 } });
+    }
+    expect((await service.getStatus({ laneId: "lane-1" })).display?.origin).toEqual({ x: -7680, y: 0 });
+    const published = events.filter((event) => event.type === "display-created").at(-1);
+    expect(published?.type === "display-created" ? published.display.origin : null).toEqual({ x: -7680, y: 0 });
+    service.dispose();
   });
 
   it("sends no lease on an accessibility action", async () => {

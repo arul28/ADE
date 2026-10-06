@@ -297,6 +297,33 @@ describe("appControlService", () => {
     }
   });
 
+  it.each([
+    ["bare", "/Applications/Slack.app/Contents/MacOS/Slack $ADE_APP_CONTROL_DEBUG_FLAGS", "/Applications/Slack.app/Contents/MacOS/Slack FLAGS"],
+    ["braced and quoted", 'Slack "${ADE_APP_CONTROL_DEBUG_FLAGS}" --verbose', "Slack FLAGS --verbose"],
+    ["inside bash -c", 'bash -c "cd app && electron . $ADE_APP_CONTROL_DEBUG_FLAGS"', 'bash -c "cd app && electron . FLAGS"'],
+  ])("inlines a %s $ADE_APP_CONTROL_DEBUG_FLAGS outside Windows, so zsh cannot hand it over as one argument", async (_shape, command, expected) => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({ sessionId: "terminal-flags", ptyId: "pty-flags", pid: 42 }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: { create, onExit: vi.fn(() => () => {}), signalTerminal: vi.fn() } as any,
+    });
+    try {
+      await service.launch({ command, cwd: projectRoot, debugPort: 9333 });
+      const flags = "--remote-debugging-port=9333 --remote-debugging-address=127.0.0.1 --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
+      const startupCommand = (create.mock.calls[0]?.[0] as { startupCommand?: string } | undefined)?.startupCommand;
+      expect(startupCommand).toBe(expected.replace("FLAGS", flags));
+      expect(startupCommand).not.toContain("ADE_APP_CONTROL_DEBUG_FLAGS");
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   it("preserves shell environment expansion for Electron launches outside Windows", async () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
