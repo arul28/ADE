@@ -17026,12 +17026,6 @@ export function createAgentChatService(args: {
       ? selfChatRuntimeOwner()
       : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
-    // The fallback below is what survives a teardown. Seeded at hydrate, it
-    // would otherwise outlive every newer thread the runtime opens, and the
-    // first persist after a teardown (an account switch) resumes the old one.
-    if (liveClaudeSdkSessionId && !managed.claudeBackgroundJobShort) {
-      managed.claudeBackgroundResumeSessionId = liveClaudeSdkSessionId;
-    }
     const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
       ? managed.runtime.resultCostBaseline
       : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
@@ -17041,8 +17035,14 @@ export function createAgentChatService(args: {
         ?? prevPersisted?.sdkSessionId
         ?? null
       : null;
+    // After a teardown the thread is the one last persisted while the runtime
+    // was live. The background pointer is seeded at hydrate and never follows
+    // a newer thread, so only a background job resumes from it; otherwise the
+    // first persist after an account switch would resume the old thread.
     const claudePersistedSdkSessionId = managed.session.provider === "claude"
-      ? liveClaudeSdkSessionId ?? claudeBackgroundResumeSessionId
+      ? liveClaudeSdkSessionId
+        ?? (managed.claudeBackgroundJobShort ? claudeBackgroundResumeSessionId : prevPersisted?.sdkSessionId)
+        ?? claudeBackgroundResumeSessionId
       : null;
     // Never let a persist walk the counter backwards: this file is the only
     // record of the numbering once the transcript stops growing at
@@ -29622,9 +29622,7 @@ export function createAgentChatService(args: {
             null,
           );
           if (runtime.sdkSessionId === staleSdkSessionId) runtime.sdkSessionId = null;
-          if (managed.claudeBackgroundResumeSessionId === staleSdkSessionId) {
-            managed.claudeBackgroundResumeSessionId = null;
-          }
+          if (!managed.claudeBackgroundJobShort) managed.claudeBackgroundResumeSessionId = null;
           managed.runtimeInvalidated = true;
           clearDeliveredDirectiveEpoch(managed);
           void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
@@ -38997,9 +38995,8 @@ export function createAgentChatService(args: {
       });
       runtime.sdkSessionId = null;
       runtime.forkFromSdkSessionId = null;
-      if (managed.claudeBackgroundResumeSessionId === providerSessionIdToClear) {
-        managed.claudeBackgroundResumeSessionId = null;
-      }
+      // The hydrate-time fallback must not resurrect an older thread either.
+      if (!managed.claudeBackgroundJobShort) managed.claudeBackgroundResumeSessionId = null;
       managed.runtimeInvalidated = true;
       // The id is gone, so the next query opens a session that has heard none
       // of this chat — including the doctrine that makes a CTO thread the CTO.
