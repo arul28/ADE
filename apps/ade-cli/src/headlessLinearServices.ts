@@ -9,6 +9,9 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
+import type { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
+import type { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
@@ -96,6 +99,9 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
+import { knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
+import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/src/main/services/git/gitRepoCache";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
@@ -184,12 +190,16 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   getDeviceId?: () => string | null;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
 };
 
 type HeadlessLinearServices = {
@@ -451,6 +461,19 @@ function runCommandAsync(
   args: string[],
   options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (offThreadSpawnEnabled()) {
+    // `gh auth token` runs here every ~15 s; on Windows a spawn on the event
+    // loop blocked it ~120 ms each time. See offThreadSpawn.ts.
+    return execFileOffThread(executable, args, {
+      cwd: options.cwd,
+      timeoutMs: options.timeoutMs,
+      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+    }).then(({ exitCode, stdout, stderr, error }) => ({
+      exitCode: error ? 1 : exitCode ?? 1,
+      stdout,
+      stderr: stderr || (error ? error.message : ""),
+    }));
+  }
   return new Promise((resolve) => {
     execFile(
       executable,
@@ -537,25 +560,35 @@ async function ghAuthTokenAsync(): Promise<Pick<
   };
 }
 
+/**
+ * The origin URL from the repo-scoped git cache. It uses the short freshness
+ * window because users and other processes can edit remotes outside ADE.
+ */
 async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
-  const result = await runCommandAsync("git", ["remote", "get-url", "origin"], {
-    cwd: projectRoot,
-    timeoutMs: 2_000,
-    maxBuffer: 64 * 1024,
-  });
+  const result = await runGitRepoCached(
+    ["remote", "get-url", "origin"],
+    { cwd: projectRoot, timeoutMs: 2_000, maxOutputBytes: 64 * 1024 },
+    { key: "remote-url:origin", cacheClass: "volatile" },
+  );
   const remote = result.exitCode === 0 ? result.stdout.trim() : "";
   return remote || null;
 }
 
-function runGitHeadlessAsync(
+async function runGitHeadlessAsync(
   projectRoot: string,
   args: string[],
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return runCommandAsync("git", args, {
+  const result = await runCommandAsync("git", args, {
     cwd: projectRoot,
     timeoutMs,
   });
+  if (isRefAffectingGitCommand(args)) {
+    // Headless Git bypasses runGit, so it must perform the same invalidation.
+    // Invalidate on failures too: Git may have partially changed config/remotes.
+    invalidateGitRepoCache(knownGitCommonDir(projectRoot));
+  }
+  return result;
 }
 
 function parseGitHubRepoFromRemoteUrl(
@@ -3011,10 +3044,18 @@ export function createHeadlessLinearServices(
     githubService,
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
+    // The same lane services desktop main passed: PR-driven lane mutations
+    // take the worktree lease (which auto-pull and other mutators honor), and
+    // post-merge cleanup refreshes rebase suggestions and child auto-rebase
+    // attention state.
+    laneWorktreeLockService: args.laneWorktreeLockService ?? null,
+    autoRebaseService: args.autoRebaseService ?? null,
+    rebaseSuggestionService: args.rebaseSuggestionService ?? null,
     openExternal: args.openExternal ?? (async () => {}),
     // Posts the "PR opened" card (and, through the published hook, proof) onto
     // the lane's Linear issues. Without it the brain skipped Linear entirely.
     getLinearIssueTracker: () => issueTracker,
+    refreshDefaultBranchAfterMerge: args.refreshDefaultBranchAfterMerge,
   });
   const agentChatService = createHeadlessAgentChatService(
     args.projectRoot,

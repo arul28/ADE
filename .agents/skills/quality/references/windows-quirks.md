@@ -197,9 +197,11 @@ a no-op, so POSIX-shaped provider discovery and test fixtures find nothing.
 
 **Do instead.** Split `env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD"` on `;` and try each
 case variant — see `apps/desktop/src/main/services/cli/adeCliService.ts`.
-Discovery uses `where.exe` on Windows where POSIX uses `command -v`. Test
-fixtures must create real `.cmd`/`.exe` names rather than `chmod +x` a bare
-file.
+Provider discovery on Windows lists each PATH and known-install directory once
+(`resolveFromDirs` in `services/ai/cliExecutableResolver.ts`) instead of
+probing every PATHEXT name with `stat` or spawning `where.exe`; see quirk 11
+for why the spawn matters. Test fixtures must create real `.cmd`/`.exe` names
+rather than `chmod +x` a bare file.
 
 ## 10. Capability gates name the capability, never the product
 
@@ -223,6 +225,28 @@ it is the parity decision described in `/quality`'s Windows parity rules: state
 the capability and the OS-level reason, say whether macOS/Linux keep it, and
 have the human choose hide / disable-with-reason / remove.
 
+## 11. An "async" spawn blocks the event loop
+
+**Failure.** `child_process.spawn` returns at once, but on Windows libuv runs
+`CreateProcess` on the calling thread before it does — image load, Defender's
+on-access scan, console setup. That is ~5 ms on a quiet PC and 100-1,000 ms on
+a busy one. A brain that runs `git`, `gh`, `where.exe` or `tailscale` on a poll
+freezes its whole event loop for each one: a CPU profile of the installed brain
+put 24 s of every 10 minutes inside `spawn`, in blocks up to 1.3 s, and every
+chat's live status stalls with it. macOS (`posix_spawn`) does not show this.
+
+**Do instead.** For short capture-style commands in the brain or main process,
+use `spawnOffThread` / `execFileOffThread` from
+`apps/desktop/src/main/services/shared/offThreadSpawn.ts`, gated by
+`offThreadSpawnEnabled()`. `runGit` already does. They move `CreateProcess` to
+a worker thread and keep `ChildProcess`-shaped streams, timeouts and tree kills;
+`ADE_DISABLE_OFF_THREAD_SPAWN=1` falls back to a direct spawn. Before adding a
+poll that spawns at all, cache the answer: an origin URL, a CLI path or a
+token rarely changes between two polls (`runGitRepoCached`, the stable class).
+The same goes for synchronous file churn in a hot path — creating and deleting
+a lock file per read cost the brain another 13 s per 10 minutes — and for
+`os.networkInterfaces()`, a synchronous adapter enumeration.
+
 ---
 
 ## Smaller traps worth knowing
@@ -237,6 +261,14 @@ have the human choose hide / disable-with-reason / remove.
   Windows (`services/pty/resourceUsageSampling.ts`) rather than spawning.
 - **Release gates are fail-closed:** `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` and
   `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED`.
+- **144-240 Hz displays are common on Windows PCs**, often with a fractional
+  scale factor (110%, 125%). Anything that changes every display frame costs
+  2-4x what it does at 60 Hz. Electron does not composite CSS rotations, so a
+  `linear` spinner re-ran paint and layerize for the whole window 240 times a
+  second (~58% of a core with the GPU process). Quantize continuous animations
+  with `steps()` — spinners use duration x 30 steps (`--animate-spin` in
+  `renderer/index.css`) — and cap rAF-driven work by elapsed time, as the
+  streaming text reveal does (`TEXT_REVEAL_MIN_COMMIT_INTERVAL_MS`).
 - **The full local suite is not clean on a Windows host.** POSIX-only fixtures,
   Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races
   fail there by design; only the focused Windows suites are signal-bearing

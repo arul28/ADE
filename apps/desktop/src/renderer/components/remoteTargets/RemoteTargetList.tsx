@@ -42,7 +42,11 @@ import {
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
+  describeMachineUpdateAttempt,
   isMachineVersionOutdated,
+  machineUpdateAttemptFromResult,
+  machineUpdateGraceMs,
+  type MachineUpdateAttempt,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
@@ -215,8 +219,26 @@ export function RemoteTargetList({
   const [saving, setSaving] = useState(false);
   const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null);
   const [updateResultByTargetId, setUpdateResultByTargetId] = useState<
-    Record<string, { ok: boolean; message: string }>
+    Record<string, MachineUpdateAttempt>
   >({});
+  // Re-read once an in-flight update's grace runs out, so a machine that never
+  // came back on the new version gets told so instead of "reconnecting…".
+  const [updateClockMs, setUpdateClockMs] = useState(() => Date.now());
+  useEffect(() => {
+    let nextDeadlineMs: number | null = null;
+    for (const attempt of Object.values(updateResultByTargetId)) {
+      if (!attempt.pendingVersion) continue;
+      const deadlineMs = attempt.startedAtMs + machineUpdateGraceMs(attempt);
+      if (deadlineMs <= updateClockMs) continue;
+      nextDeadlineMs = nextDeadlineMs == null ? deadlineMs : Math.min(nextDeadlineMs, deadlineMs);
+    }
+    if (nextDeadlineMs == null) return;
+    const timer = window.setTimeout(
+      () => setUpdateClockMs(Date.now()),
+      Math.max(0, nextDeadlineMs - Date.now()) + 250,
+    );
+    return () => window.clearTimeout(timer);
+  }, [updateResultByTargetId, updateClockMs]);
   const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
@@ -1114,19 +1136,26 @@ export function RemoteTargetList({
           targetId,
           targetVersion,
         );
+        const nowMs = Date.now();
+        setUpdateClockMs(nowMs);
         setUpdateResultByTargetId((current) => ({
           ...current,
-          [targetId]: {
-            ok: result.ok,
-            message:
-              result.message?.trim() ||
-              `${machineName} updated — reconnecting…`,
-          },
+          [targetId]: machineUpdateAttemptFromResult(
+            result,
+            `${machineName} updated — reconnecting…`,
+            nowMs,
+          ),
         }));
       } catch (err) {
         setUpdateResultByTargetId((current) => ({
           ...current,
-          [targetId]: { ok: false, message: extractError(err) },
+          [targetId]: {
+            ok: false,
+            message: extractError(err),
+            pendingVersion: null,
+            downloading: false,
+            startedAtMs: Date.now(),
+          },
         }));
       } finally {
         setUpdatingTargetId(null);
@@ -1156,6 +1185,10 @@ export function RemoteTargetList({
             const pairingStopping =
               pairedMachineKey != null &&
               busyById[accountRowKey(pairedMachineKey)] === "stopping";
+            const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
+            const updateStatus = updateAttempt
+              ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
+              : null;
             return (
               <SavedMachineRow
                 key={row.id}
@@ -1192,8 +1225,8 @@ export function RemoteTargetList({
                     ? newestKnownVersion
                     : null
                 }
-                updating={updatingTargetId === row.target.id}
-                updateStatus={updateResultByTargetId[row.target.id] ?? null}
+                updating={updatingTargetId === row.target.id || updateStatus?.inFlight === true}
+                updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 localAdeVersion={updateSnapshot.currentVersion}
                 onUpdateAndRestart={(targetVersion) =>
                   void updateAndRestartTarget(

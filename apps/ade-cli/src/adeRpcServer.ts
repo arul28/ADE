@@ -6827,13 +6827,50 @@ async function runTool(args: {
     }
     const authorized = await resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
     validateComputerUseOwnerClaims(runtime, session, toolArgs);
+    // Lanes outside `.ade/worktrees/` (a sibling `repo-worktrees/feature`
+    // checkout) need the same boundary. Lanes whose folder holds the caller's
+    // — its own, and the primary — are not "another lane". Loaded on first need.
+    //
+    // A lane nested INSIDE the caller's folder is another lane too when the
+    // caller is bound to an ordinary lane. A project-wide caller and the
+    // primary lane are both rooted at the project folder, which holds every
+    // lane, so for them a nested lane is part of what they may file.
+    let otherLaneRoots: Promise<string[]> | null = null;
+    const loadOtherLaneRoots = () => {
+      otherLaneRoots ??= runtime.laneService.list({ includeArchived: false, includeStatus: false })
+        .then((lanes) => {
+          const callerLane = authorized.laneId ? lanes.find((lane) => lane.id === authorized.laneId) : null;
+          const callerHoldsLanes = !callerLane || callerLane.laneType === "primary";
+          return lanes
+            // An attached lane may be known only by its attached root.
+            .flatMap((lane) => [lane.worktreePath, lane.attachedRootPath])
+            .map((root) => root?.trim() ?? "")
+            .filter((root) => root
+              && !isPathWithinAuthorizedRoot(root, authorized.root)
+              && !(callerHoldsLanes && isPathWithinAuthorizedRoot(authorized.root, root)));
+        });
+      // No `.catch`: a lane list that fails must refuse the ingest, not read as
+      // "no other lanes" and let another lane's files through.
+      return otherLaneRoots;
+    };
     for (const input of inputs) {
-      const localPath = asOptionalTrimmedString(input.path)
+      const rawPath = asOptionalTrimmedString(input.path)
         ?? (() => {
           const uri = asOptionalTrimmedString(input.uri);
           return uri && !/^https?:\/\//i.test(uri) ? uri : null;
         })();
-      if (!localPath || !path.isAbsolute(localPath)) continue;
+      if (!rawPath) continue;
+      // The broker resolves a relative path against the caller's root, so the
+      // boundary is checked on that same resolved path.
+      const localPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(authorized.callerRoot, rawPath);
+      // Checked before the own-root allowance: a lane nested inside an
+      // ordinary lane's folder would otherwise pass as the caller's own file.
+      if ((await loadOtherLaneRoots()).some((root) => isPathWithinAuthorizedRoot(root, localPath))) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Artifact paths from another lane worktree are not authorized for this caller",
+        );
+      }
       if (isPathWithinAuthorizedRoot(authorized.root, localPath)) continue;
       // Absolute proof paths may also come from broker-approved external
       // roots such as the OS temp directory or ~/.agent-browser. Preserve the

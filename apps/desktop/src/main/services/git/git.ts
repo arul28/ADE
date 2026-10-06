@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { terminateProcessTree } from "../shared/processExecution";
+import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
 import {
   resolveExecutableCandidatesFromKnownLocations,
@@ -262,6 +263,20 @@ function appendChunkWithCap(args: {
   };
 }
 
+/** What runGitOnce needs from a child; ChildProcess and OffThreadChild both fit. */
+type GitChild = {
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  stdout: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stderr: { on(event: "data", listener: (data: Buffer | string) => void): unknown };
+  stdin: { on(event: "error", listener: () => void): unknown; end(text: string): unknown };
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "close", listener: (code: number | null) => void): unknown;
+  once(event: "spawn", listener: () => void): unknown;
+};
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -275,15 +290,30 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn(executable, args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (typeof child.pid === "number" && child.pid > 0) {
-      activeGitPids.add(child.pid);
-    }
+    const hasEnvOverrides = opts.env !== undefined && Object.keys(opts.env).length > 0;
+    // On Windows, CreateProcess runs on the calling thread, so a git spawned
+    // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
+    const child: GitChild = offThreadSpawnEnabled()
+      ? spawnOffThread(executable, args, {
+        cwd: opts.cwd,
+        env: hasEnvOverrides ? { ...process.env, ...opts.env } : undefined,
+      })
+      : spawn(executable, args, {
+        cwd: opts.cwd,
+        env: { ...process.env, ...(opts.env ?? {}) },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    const terminateChildTree = () => {
+      if (child instanceof OffThreadChild) terminateOffThreadChildTree(child, "SIGKILL");
+      else terminateProcessTree(child, "SIGKILL");
+    };
+    // An off-thread child learns its pid with the "spawn" event; a direct one
+    // has it already. Adding it twice is harmless.
+    const trackPid = () => {
+      if (!settled && typeof child.pid === "number" && child.pid > 0) activeGitPids.add(child.pid);
+    };
+    child.once("spawn", trackPid);
     // Closed at once: git sees EOF on stdin exactly as it did with "ignore",
     // unless the caller has input for it (`check-ignore --stdin`). EPIPE when
     // git exits before reading it all is reported by the exit code instead.
@@ -291,6 +321,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     child.stdin.end(opts.stdin ?? "");
 
     let settled = false;
+    trackPid();
     let stdout = "";
     let stderr = "";
     let stdoutBytes = 0;
@@ -298,10 +329,13 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
+    let terminationReason: "timeout" | "abort" | null = null;
+    let terminationFallback: NodeJS.Timeout | null = null;
     const finish = (result: GitRunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(onTimeout);
+      if (terminationFallback) clearTimeout(terminationFallback);
       opts.signal?.removeEventListener("abort", onAbort);
       if (typeof child.pid === "number" && child.pid > 0) {
         activeGitPids.delete(child.pid);
@@ -309,17 +343,31 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       resolve(result);
     };
 
-    const onTimeout = setTimeout(() => {
-      terminateProcessTree(child, "SIGKILL");
-      finish({
-        exitCode: 124,
-        stdout,
-        stderr: stderr.length ? stderr : "git timed out",
-        timedOut: true,
-        stdoutTruncated,
-        stderrTruncated
-      });
-    }, timeoutMs);
+    const finishTermination = () => finish({
+      exitCode: terminationReason === "timeout" ? 124 : 130,
+      stdout,
+      stderr: stderr.length ? stderr : terminationReason === "timeout" ? "git timed out" : "git was cancelled",
+      ...(terminationReason === "timeout" ? { timedOut: true } : {}),
+      stdoutTruncated,
+      stderrTruncated,
+    });
+
+    const terminateAndWait = (reason: "timeout" | "abort") => {
+      if (terminationReason) return;
+      terminationReason = reason;
+      clearTimeout(onTimeout);
+      // The off-thread worker does the Windows taskkill synchronously, then
+      // reports close. Do not let callers clean up a worktree while Git may
+      // still be writing to it. The fallback covers a stuck worker/taskkill.
+      terminateChildTree();
+      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
+        finishTermination();
+        return;
+      }
+      terminationFallback = setTimeout(finishTermination, 5_000);
+    };
+
+    const onTimeout = setTimeout(() => terminateAndWait("timeout"), timeoutMs);
 
     child.stdout.on("data", (d: Buffer | string) => {
       if (stdoutTruncated) return;
@@ -364,26 +412,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       stderrTruncated = next.truncated;
     });
 
-    // Resolve only once the killed git has actually exited (or after a short
-    // safety window): a caller that cleans up after a cancelled `worktree add`
-    // must not race a git that is still writing files into the worktree.
-    let aborted = false;
-    const finishAborted = () => finish({
-      exitCode: 130,
-      stdout,
-      stderr: stderr.length ? stderr : "git was cancelled",
-      stdoutTruncated,
-      stderrTruncated
-    });
     const onAbort = () => {
-      if (aborted) return;
-      aborted = true;
-      terminateProcessTree(child, "SIGKILL");
-      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
-        finishAborted();
-        return;
-      }
-      setTimeout(finishAborted, 2_000).unref?.();
+      terminateAndWait("abort");
     };
     if (opts.signal) {
       if (opts.signal.aborted) onAbort();
@@ -391,6 +421,10 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     }
 
     child.on("error", (error) => {
+      if (terminationReason) {
+        finishTermination();
+        return;
+      }
       const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
       finish({
         exitCode: 1,
@@ -402,8 +436,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("close", (code) => {
-      if (aborted) {
-        finishAborted();
+      if (terminationReason) {
+        finishTermination();
         return;
       }
       finish({

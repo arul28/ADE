@@ -279,6 +279,13 @@ describe("cliExecutableResolver", () => {
       err.code = "ENOENT";
       throw err;
     }) as typeof fs.statSync);
+    const realReaddirSync = fs.readdirSync.bind(fs);
+    vi.spyOn(fs, "readdirSync").mockImplementation(((directory: fs.PathLike, options?: any) => {
+      if (path.normalize(String(directory)).toLowerCase() === path.normalize(scoopShims).toLowerCase()) {
+        return ["codex.CMD"] as any;
+      }
+      return realReaddirSync(directory, options);
+    }) as typeof fs.readdirSync);
 
     const nextPath = augmentPathWithKnownCliDirs("C:\\Windows\\System32", {
       HOME: gitBashHome,
@@ -298,9 +305,9 @@ describe("cliExecutableResolver", () => {
       USERPROFILE: userProfile,
       PATH: "C:\\Windows\\System32",
     })).toEqual({
-      // statSync is stubbed and the directory does not exist, so the resolver
-      // cannot read the real on-disk spelling and reports the probed name.
-      path: path.join(scoopShims, "codex.cmd"),
+      // The listing and stat mocks model the case-insensitive Windows lookup
+      // while preserving the executable's spelling on disk.
+      path: path.join(scoopShims, "codex.CMD"),
       source: "known-dir",
     });
   });

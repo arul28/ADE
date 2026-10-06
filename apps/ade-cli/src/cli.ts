@@ -235,6 +235,7 @@ import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolve
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
+  findLinkedLaneWorktreeRoot,
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
@@ -1112,7 +1113,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
   Global options:
-    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
     --headless              Skip the machine brain and run an in-process ADE runtime.
     --socket                Require a live ADE endpoint; fail instead of falling back to headless.
@@ -18047,6 +18048,10 @@ function findProjectRoots(startDir: string): {
   const canonicalStart = realpathIfExists(startDir);
   const managedWorktree = findAdeManagedWorktreeRoot(canonicalStart);
   if (managedWorktree) return managedWorktree;
+  // Checked before the walk up for `.ade`: a lane outside `.ade/worktrees/` has
+  // its own `.ade` folder whenever the repository commits `.ade/ade.yaml`.
+  const linkedLane = findLinkedLaneWorktreeRoot(canonicalStart);
+  if (linkedLane) return linkedLane;
 
   let cursor = canonicalStart;
   while (true) {
@@ -23134,6 +23139,23 @@ async function runServe(
     });
   };
 
+  // The bridge token this machine's desktop app announced when it connected.
+  // "Update & restart" uses it to ask that app to install its own update: an
+  // app that owns the brain puts its own runtime back over a standalone one.
+  let machineDesktopBridgeAuthToken: string | null = null;
+  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+    const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
+    const routing = await requestDesktopAppUpdate({
+      socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
+      authToken: machineDesktopBridgeAuthToken,
+      targetVersion,
+    });
+    headlessProjectLogger.info("brain.remote_update_route", routing.attached
+      ? { route: "desktop_app", outcome: routing.result.outcome, version: routing.result.version }
+      : { route: "standalone", detail: routing.detail });
+    return routing;
+  };
+
   // This brain's agents reaching the account's other machines. One per brain
   // (it owns the agents' paired connections), built on first use; an embedded
   // guest has no machine authority and gets none.
@@ -23222,7 +23244,11 @@ async function runServe(
             version: VERSION,
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
+            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
+          onDesktopBridgeAuthToken: (authToken: string) => {
+            machineDesktopBridgeAuthToken = authToken;
+          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
       getRuntimeStatus: () => {

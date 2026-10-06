@@ -53,14 +53,23 @@ closed instead of falling back to the tab's current machine.
 ## Default-branch auto-pull
 
 The primary checkout's default branch stays current without a manual pull.
-`defaultBranchAutoPull.ts` (desktop main, local-runtime only) runs a
-decision-and-maybe-pull pass on project open and then on a bounded
-five-minute background timer — the same "startup plus background refresh"
-trigger t3code uses. The pass is a **fast-forward only**:
+`defaultBranchAutoPull.ts` runs in the **brain** (wired in
+`apps/ade-cli/src/bootstrap.ts`), because the brain owns the project's
+checkout whether or not a desktop, phone, or web client is attached. It runs a
+decision-and-maybe-pull pass 20 s after the project opens and then on a
+bounded five-minute background timer — the same "startup plus background
+refresh" trigger t3code uses. A PR that ADE merges into the default branch
+triggers one extra pass right after post-merge cleanup fetches the base
+branch (`refreshDefaultBranchAfterMerge` on `createPrService`), so a lane
+created right after a merge starts from the merged branch. Passes never
+overlap; a request that arrives mid-pass queues one follow-up pass. The pass
+is a **fast-forward only**:
 
 1. It gates locally first. The target must be the primary lane, HEAD must be
-   attached and on the lane's recorded branch (`lanes.branch_ref`, i.e. the
-   project's default branch), there must be no staged or unstaged **tracked**
+   attached and on the project's default branch (the brain's detected
+   `baseRef`, not `lanes.branch_ref` — that follows whatever branch the
+   primary checkout has out, so comparing against it would pull any branch),
+   there must be no staged or unstaged **tracked**
    change, no in-progress rebase/merge/cherry-pick/revert, no held
    `lane_worktree_locks` lease, and a configured upstream. Untracked files do
    not block: a fast-forward can never lose one, and git itself refuses if the
@@ -383,6 +392,14 @@ which owns only what lives under its own `.ade/worktrees`. Both adopt and reap
 honour it, so project B can never adopt project A's worktree as a lane — and
 therefore can never delete it, since every delete rail keys off a lane row. An
 indeterminate probe scopes down rather than up and is not cached.
+
+The CLI also resolves a checkout outside `.ade/worktrees` back to its parent
+ADE project when Git identifies it as a linked worktree and the parent database
+records it as a lane. This keeps commands started from a sibling worktree on
+the parent project's lane state instead of creating a second project database
+inside the checkout. A linked checkout with its own ADE database and no matching
+lane record remains a separate project. Project details include linked
+worktrees outside `.ade/worktrees` alongside ADE-managed worktrees.
 
 **One path, two spellings.** Git answers in realpath space —
 `git worktree list`, `rev-parse --show-toplevel`, and `--git-common-dir` all

@@ -44,6 +44,8 @@ describe("runMachineUpdateAndRestart", () => {
       ["restart", "pending"],
     ]);
     expect(result.message).toContain("1.2.55");
+    expect(result.route).toBe("standalone");
+    expect(result.pendingVersion).toBe("1.2.55");
   });
 
   it("leaves the restart to the updater when the helper owns it", async () => {
@@ -150,6 +152,70 @@ describe("runMachineUpdateAndRestart", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.message).toContain("disk full");
+  });
+});
+
+describe("runMachineUpdateAndRestart with a desktop app open on the machine", () => {
+  const appAnswer = (outcome: string, version: string | null = "1.2.55") => ({
+    attached: true as const,
+    result: { outcome, currentVersion: "1.2.50", version, message: "" } as never,
+  });
+
+  function standaloneDeps() {
+    return {
+      checkForUpdate: vi.fn(async () => available),
+      applyUpdate: vi.fn(async () => ({ ok: true, version: "1.2.55", detail: "Installed 1.2.55." })),
+      requestRestart: vi.fn(() => ({ ok: true, detail: "Restarting the background service." })),
+    };
+  }
+
+  it.each([
+    // The app installs its own update; the standalone runtime is never touched,
+    // because the open app would put its own runtime straight back over it.
+    ["installing", true, "1.2.55", false],
+    ["downloading", true, "1.2.55", false],
+    ["no_update", false, null, false],
+    ["failed", false, null, false],
+  ])("an app that answers %s decides the result (ok %s, pending %s)", async (outcome, ok, pending, restarted) => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, requestDesktopAppUpdate: async () => appAnswer(outcome) },
+      "1.2.55",
+    );
+    expect(result.route).toBe("desktop_app");
+    expect(result.ok).toBe(ok);
+    expect(result.pendingVersion).toBe(pending);
+    expect(deps.checkForUpdate).not.toHaveBeenCalled();
+    expect(deps.applyUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).toHaveBeenCalledTimes(restarted ? 1 : 0);
+  });
+
+  it("only restarts the service when the app is already on the target", async () => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, requestDesktopAppUpdate: async () => appAnswer("already_current", "1.2.55") },
+      "1.2.55",
+    );
+    expect(result.ok).toBe(true);
+    expect(result.route).toBe("desktop_app");
+    expect(deps.applyUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["no app is attached", async () => ({ attached: false as const, detail: "No ADE desktop app is attached." })],
+    ["the app cannot update itself", async () => appAnswer("unsupported", null)],
+    ["asking the app throws", async () => { throw new Error("bridge exploded"); }],
+  ])("falls back to the standalone runtime when %s", async (_label, requestDesktopAppUpdate) => {
+    const deps = standaloneDeps();
+    const result = await runMachineUpdateAndRestart(
+      { ...deps, requestDesktopAppUpdate },
+      "1.2.55",
+    );
+    expect(result.route).toBe("standalone");
+    expect(result.ok).toBe(true);
+    expect(deps.applyUpdate).toHaveBeenCalledWith("1.2.55");
+    expect(result.pendingVersion).toBe("1.2.55");
   });
 });
 

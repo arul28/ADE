@@ -61,7 +61,7 @@ import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/s
 import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
-import { resolveGitCommit } from "../../desktop/src/main/services/git/git";
+import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
@@ -255,7 +255,13 @@ import {
   createAutomationAdeActionLookup,
   getAdeActionDomainServices,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import { createLaneWorktreeLockService, LaneWorktreeLockedError, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import {
+  createDefaultBranchAutoPullService,
+  detectInProgressGitOperation,
+  isDefaultBranchMerge,
+} from "../../desktop/src/main/services/lanes/defaultBranchAutoPull";
+import { parseWorktreeStatusPorcelainV2 } from "../../desktop/src/main/services/lanes/laneBranchDrift";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
@@ -1464,6 +1470,65 @@ export async function createAdeRuntime(args: {
     teardown.push(() => testService.disposeAll());
     const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
 
+    // Keeps the primary checkout's default branch current: fast-forward only,
+    // on startup and a background timer, and only when every safety gate in
+    // `evaluateDefaultBranchAutoPull` passes. It lives in the brain because the
+    // brain owns the project's checkout whether or not a desktop is attached.
+    // The gate compares HEAD with the project's default branch (`baseRef`),
+    // not the primary lane's `branch_ref` — that one follows whatever branch
+    // the primary checkout has out, which would pull any branch.
+    const defaultBranchAutoPullService = createDefaultBranchAutoPullService({
+      logger,
+      getPrimaryLane: () => {
+        const primary = laneService.getPrimaryLane();
+        return primary ? { ...primary, branchRef: baseRef } : null;
+      },
+      readWorktreeStatus: async (worktreePath) => {
+        const res = await runGit(
+          ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
+          { cwd: worktreePath, timeoutMs: 10_000 },
+        );
+        if (res.exitCode !== 0) return null;
+        const parsed = parseWorktreeStatusPorcelainV2(res.stdout);
+        return { staged: parsed.staged, unstaged: parsed.unstaged, headBranchRef: parsed.headBranchRef };
+      },
+      detectInProgressOperation: async (worktreePath) => {
+        const res = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: worktreePath, timeoutMs: 5_000 });
+        if (res.exitCode !== 0) return null;
+        const gitDir = res.stdout.trim();
+        return gitDir ? detectInProgressGitOperation(gitDir) : null;
+      },
+      isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
+      acquireWorktreeLock: (lane) => {
+        try {
+          const acquired = laneWorktreeLockService.acquire({
+            laneId: lane.laneId,
+            worktreePath: lane.worktreePath,
+            ownerKind: "git_mutation",
+            ownerLabel: "Auto-pull default branch",
+          });
+          return { release: () => laneWorktreeLockService.release({ token: acquired.token }) };
+        } catch (error) {
+          if (error instanceof LaneWorktreeLockedError) return null;
+          throw error;
+        }
+      },
+      readSyncStatus: async (laneId) => {
+        const status = await gitService.getSyncStatus({ laneId });
+        return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };
+      },
+      fetch: async (laneId) => {
+        await gitService.fetch({ laneId });
+      },
+      pullFastForward: async (laneId) => {
+        await gitService.pull({ laneId, mode: "ff-only" });
+      },
+    });
+    // Embedded runtimes are guests inside an external process and must not
+    // take machine-brain authority over the project's checkout.
+    if (!embeddedRuntime) defaultBranchAutoPullService.start();
+    teardown.push(() => defaultBranchAutoPullService.stop());
+
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
@@ -1964,6 +2029,9 @@ export async function createAdeRuntime(args: {
       laneService,
       operationService,
       conflictService,
+      laneWorktreeLockService,
+      autoRebaseService,
+      rebaseSuggestionService,
       openExternal: async () => {},
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
@@ -1971,6 +2039,13 @@ export async function createAdeRuntime(args: {
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       getDeviceId: readSyncDeviceId,
+      refreshDefaultBranchAfterMerge: embeddedRuntime
+        ? undefined
+        : async (baseBranch) => {
+            // A merge into a stacked parent branch leaves the default branch alone.
+            if (!isDefaultBranchMerge(baseBranch, baseRef)) return;
+            await defaultBranchAutoPullService.runOnce();
+          },
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());

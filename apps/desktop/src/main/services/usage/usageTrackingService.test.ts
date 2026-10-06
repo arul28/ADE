@@ -6753,6 +6753,55 @@ describe("usage ledger end-to-end accuracy", () => {
     }
   });
 
+  it("counts a lane outside .ade/worktrees in project usage, but not a worktree opened as its own project", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-linked-"));
+    try {
+      const projectRoot = path.join(tmp, "repo");
+      // Git's own layout for linked worktrees: `<checkout>/.git` names the admin
+      // directory, and the admin directory's `gitdir` names the checkout back.
+      const linkWorktree = (name: string): string => {
+        const checkout = path.join(tmp, "repo-worktrees", name);
+        const adminDir = path.join(projectRoot, ".git", "worktrees", name);
+        fs.mkdirSync(checkout, { recursive: true });
+        fs.mkdirSync(adminDir, { recursive: true });
+        fs.writeFileSync(path.join(checkout, ".git"), `gitdir: ${adminDir}\n`);
+        fs.writeFileSync(path.join(adminDir, "gitdir"), `${path.join(checkout, ".git")}\n`);
+        return checkout;
+      };
+      const lane = linkWorktree("feature lane");
+      const standalone = linkWorktree("standalone");
+      const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string) => any };
+      for (const root of [projectRoot, standalone]) {
+        fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+        const db = new DatabaseSync(path.join(root, ".ade", "ade.db"));
+        db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+        if (root === projectRoot) {
+          db.prepare("insert into lanes(worktree_path, attached_root_path, archived_at) values (?, null, null)").run(lane);
+        }
+        db.close();
+      }
+      const base = Date.now();
+      const entry = (messageId: string, inputTokens: number, where: { projectPath?: string; projectKey?: string }): TokenEntry => ({
+        messageId, model: "claude-opus-5", inputTokens, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, timestamp: base, ...where,
+      });
+      const costs = buildCostSnapshots(new Map([["claude", [
+        entry("in-root", 1, { projectPath: projectRoot }),
+        entry("in-lane-by-path", 10, { projectPath: path.join(lane, "src") }),
+        entry("in-lane-by-key", 100, { projectKey: lane.replace(/[^A-Za-z0-9]/g, "-") }),
+        entry("in-standalone", 1_000, { projectPath: standalone }),
+        entry("elsewhere", 10_000, { projectPath: path.join(tmp, "unrelated") }),
+      ]]]), "project", projectRoot);
+
+      const claude = costs.find((cost) => cost.provider === "claude");
+      expect(claude, "claude project snapshot").toBeDefined();
+      const allTime = claude!.tokenBreakdownByPreset?.all ?? claude!.tokenBreakdown;
+      const inputTokens = Object.values(allTime).reduce((sum, row) => sum + (row?.input ?? 0), 0);
+      expect(inputTokens).toBe(111);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("gives every day's tokens a provider so the chart series sum to the day total", () => {
     const base = Date.now();
     const costs = buildCostSnapshots(new Map([

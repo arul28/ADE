@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
@@ -10308,6 +10309,44 @@ describe("ADE CLI", () => {
       projectRoot: root,
       workspaceRoot: worktree,
     });
+  });
+
+  it("uses the parent ADE project for a registered sibling Git worktree", () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-linked-roots-")));
+    const parent = path.join(root, "repository");
+    const worktree = path.join(root, "repo-worktrees", "feature-lane");
+    const nested = path.join(worktree, "apps", "ade-cli");
+    const admin = path.join(parent, ".git", "worktrees", "feature-lane");
+    const parentAde = path.join(parent, ".ade");
+    const DatabaseSync = createRequire(import.meta.url)("node:sqlite").DatabaseSync as new (file: string) => {
+      exec(sql: string): void;
+      prepare(sql: string): { run(...values: unknown[]): void };
+      close(): void;
+    };
+
+    try {
+      fs.mkdirSync(path.join(parent, ".git"), { recursive: true });
+      fs.mkdirSync(parentAde, { recursive: true });
+      fs.mkdirSync(admin, { recursive: true });
+      fs.mkdirSync(nested, { recursive: true });
+      fs.mkdirSync(path.join(worktree, ".ade"), { recursive: true });
+      fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${path.relative(worktree, admin)}\n`);
+      fs.writeFileSync(path.join(admin, "gitdir"), `${path.relative(admin, path.join(worktree, ".git"))}\n`);
+      fs.writeFileSync(path.join(worktree, ".ade", "ade.yaml"), "project: true\n");
+
+      const db = new DatabaseSync(path.join(parentAde, "ade.db"));
+      db.exec("create table lanes (worktree_path text, attached_root_path text, archived_at text)");
+      db.prepare("insert into lanes (worktree_path, attached_root_path, archived_at) values (?, null, null)")
+        .run(worktree);
+      db.close();
+
+      expect(findProjectRoots(nested)).toEqual({
+        projectRoot: parent,
+        workspaceRoot: worktree,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10 });
+    }
   });
 
   it("defaults workspaceRoot to projectRoot when ADE_PROJECT_ROOT overrides discovery", () => {

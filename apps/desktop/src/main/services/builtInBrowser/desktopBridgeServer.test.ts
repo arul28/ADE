@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { startBuiltInBrowserDesktopBridgeServer } from "./desktopBridgeServer";
+import { requestDesktopAppUpdate } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
+import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
 
 const tempDirs: string[] = [];
 
@@ -124,4 +126,84 @@ describe("built-in browser desktop bridge socket ownership", () => {
       }
     },
   );
+});
+
+describe("app update over the desktop bridge", () => {
+  let pipeCounter = 0;
+  function bridgePath(label: string): string {
+    pipeCounter += 1;
+    return process.platform === "win32"
+      ? `\\\\.\\pipe\\ade-bridge-test-${label}-${process.pid}-${pipeCounter}`
+      : shortSocketPath(label);
+  }
+
+  async function startBridge(installer: RemoteUpdateInstaller | null) {
+    const socketPath = bridgePath("update");
+    const { logger, waitForEvent } = createLoggerHarness();
+    const bridge = startBuiltInBrowserDesktopBridgeServer({
+      socketPath,
+      service: {} as unknown as BuiltInBrowserService,
+      logger,
+      getAppUpdateInstaller: () => installer,
+    });
+    await waitForEvent("built_in_browser_bridge.listening");
+    return { bridge, socketPath };
+  }
+
+  const installingInstaller = (): RemoteUpdateInstaller => ({
+    install: async ({ targetVersion }) => ({
+      outcome: "installing",
+      currentVersion: "1.2.90",
+      version: targetVersion,
+      message: "Installing.",
+    }),
+    dispose: () => {},
+  });
+
+  it("asks this app to install its update and hands back its answer", async () => {
+    const { bridge, socketPath } = await startBridge(installingInstaller());
+    try {
+      const routing = await requestDesktopAppUpdate({
+        socketPath,
+        authToken: bridge.authToken,
+        targetVersion: "1.2.91",
+      });
+      expect(routing).toEqual({
+        attached: true,
+        result: { outcome: "installing", currentVersion: "1.2.90", version: "1.2.91", message: "Installing." },
+      });
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it.each([
+    // Each is "no capable app": the brain must fall back to its standalone
+    // update rather than report a failure the user cannot act on.
+    ["a stale token", "wrong-token", true],
+    ["an app with no updater to offer", null, false],
+    ["no token at all", "", true],
+  ])("treats %s as no app attached", async (_label, token, withInstaller) => {
+    const { bridge, socketPath } = await startBridge(withInstaller ? installingInstaller() : null);
+    try {
+      const routing = await requestDesktopAppUpdate({
+        socketPath,
+        authToken: token === null ? bridge.authToken : token,
+        targetVersion: "1.2.91",
+      });
+      expect(routing.attached).toBe(false);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it("treats a bridge nobody listens on as no app attached", async () => {
+    const routing = await requestDesktopAppUpdate({
+      socketPath: bridgePath("absent"),
+      authToken: "token",
+      targetVersion: "1.2.91",
+      connectTimeoutMs: 1_000,
+    });
+    expect(routing.attached).toBe(false);
+  });
 });

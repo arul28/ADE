@@ -2119,6 +2119,12 @@ describe("RemoteTargetList", () => {
     expect(
       await screen.findByText("Studio Mac updated to 1.3.0 — restarting."),
     ).toBeTruthy();
+    // Still on 1.1.9: the update is in flight, not done, so a second press
+    // cannot start another one over it.
+    const busyButton = screen.getAllByRole("button").find((button) =>
+      button.textContent?.includes("Updating"),
+    );
+    expect(busyButton?.hasAttribute("disabled")).toBe(true);
   });
 
   it("shows the machine's own failure line when the update does not land", async () => {

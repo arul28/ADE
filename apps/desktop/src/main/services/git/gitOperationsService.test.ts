@@ -341,6 +341,29 @@ describe("gitOperationsService.pull", () => {
     );
   });
 
+  it("serializes pulls for the same lane until the active pull completes", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    let finishFirstPull = () => {};
+    mockGit.runGitOrThrow
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        finishFirstPull = resolve;
+      }))
+      .mockResolvedValue(undefined);
+    const { service } = createTestGitOperationsService();
+
+    const firstPull = service.pull({ laneId: "lane-1" });
+    await vi.waitFor(() => expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1));
+
+    const secondPull = service.pull({ laneId: "lane-1", mode: "ff-only" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+
+    finishFirstPull();
+    await Promise.all([firstPull, secondPull]);
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects unknown pull modes before running git", async () => {
     const { service } = createTestGitOperationsService();
 

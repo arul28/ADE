@@ -5,6 +5,7 @@ import {
   createDefaultBranchAutoPullService,
   detectInProgressGitOperation,
   evaluateDefaultBranchAutoPull,
+  isDefaultBranchMerge,
   type AutoPullEligibilityInput,
   type AutoPullSkipReason,
   type BranchSyncState,
@@ -43,6 +44,12 @@ describe("evaluateDefaultBranchAutoPull", () => {
       pull: true,
       reason: "eligible",
     });
+  });
+
+  it("requests refresh only for the project's default merge base", () => {
+    expect(isDefaultBranchMerge("main", "main")).toBe(true);
+    expect(isDefaultBranchMerge("stack-parent", "main")).toBe(false);
+    expect(isDefaultBranchMerge("refs/heads/main", "main")).toBe(true);
   });
 
   const skipCases: Array<[string, Partial<AutoPullEligibilityInput>, AutoPullSkipReason]> = [
@@ -100,6 +107,7 @@ function harness(overrides: Partial<DefaultBranchAutoPullDeps> = {}): Harness {
     readWorktreeStatus: async () => ({ staged: 0, unstaged: 0, headBranchRef: "main" }),
     detectInProgressOperation: async () => null,
     isWorktreeLocked: () => false,
+    acquireWorktreeLock: () => ({ release: () => {} }),
     readSyncStatus: async () => sync({ behind: 4 }),
     fetch,
     pullFastForward,
@@ -164,6 +172,18 @@ describe("createDefaultBranchAutoPullService", () => {
     expect(pullFastForward).not.toHaveBeenCalled();
   });
 
+  it("skips a non-default HEAD even when it has an upstream and the primary lane is recorded on that branch", async () => {
+    const { deps, fetch, pullFastForward } = harness({
+      getPrimaryLane: () => ({ laneId: "lane-primary", worktreePath: "/repo", branchRef: "main" }),
+      readWorktreeStatus: async () => ({ staged: 0, unstaged: 0, headBranchRef: "feature" }),
+    });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    expect(await service.runOnce()).toEqual({ pulled: false, reason: "not-on-default-branch" });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(pullFastForward).not.toHaveBeenCalled();
+  });
+
   it("treats an offline/failed fetch as a silent skip", async () => {
     const { deps, pullFastForward } = harness({
       fetch: async () => {
@@ -186,6 +206,102 @@ describe("createDefaultBranchAutoPullService", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("skips when another operation acquires the worktree lease during fetch", async () => {
+    const acquireWorktreeLock = vi.fn(() => null);
+    const { deps, fetch, pullFastForward } = harness({ acquireWorktreeLock });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    expect(await service.runOnce()).toEqual({ pulled: false, reason: "worktree-locked" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(acquireWorktreeLock).toHaveBeenCalledWith({ laneId: "lane-primary", worktreePath: "/repo", branchRef: "main" });
+    expect(pullFastForward).not.toHaveBeenCalled();
+  });
+
+  it("holds the worktree lease through the pull and releases it afterward", async () => {
+    let leaseHeld = false;
+    const release = vi.fn(() => { leaseHeld = false; });
+    const pullFastForward = vi.fn(async () => {
+      expect(leaseHeld).toBe(true);
+    });
+    const { deps } = harness({
+      acquireWorktreeLock: () => {
+        leaseHeld = true;
+        return { release };
+      },
+      pullFastForward,
+    });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    expect(await service.runOnce()).toMatchObject({ pulled: true });
+    expect(leaseHeld).toBe(false);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(pullFastForward).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces calls during a pass into one serialized follow-up", async () => {
+    const finishFetch: Array<() => void> = [];
+    const finishPull: Array<() => void> = [];
+    let activeFetches = 0;
+    let maximumActiveFetches = 0;
+    let activePulls = 0;
+    let maximumActivePulls = 0;
+    const fetch = vi.fn(async () => {
+      activeFetches += 1;
+      maximumActiveFetches = Math.max(maximumActiveFetches, activeFetches);
+      const fetchNumber = fetch.mock.calls.length;
+      if (fetchNumber <= 2) {
+        await new Promise<void>((resolve) => { finishFetch[fetchNumber - 1] = resolve; });
+      }
+      activeFetches -= 1;
+    });
+    const pullFastForward = vi.fn(async () => {
+      activePulls += 1;
+      maximumActivePulls = Math.max(maximumActivePulls, activePulls);
+      const pullNumber = pullFastForward.mock.calls.length;
+      if (pullNumber <= 2) {
+        await new Promise<void>((resolve) => { finishPull[pullNumber - 1] = resolve; });
+      }
+      activePulls -= 1;
+    });
+    const { deps } = harness({ fetch, pullFastForward });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    const first = service.runOnce();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const firstFollowUp = service.runOnce();
+    const firstFollowUpCoalesced = service.runOnce();
+    expect(firstFollowUpCoalesced).toBe(firstFollowUp);
+
+    finishFetch[0]!();
+    await vi.waitFor(() => expect(pullFastForward).toHaveBeenCalledTimes(1));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    finishPull[0]!();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const secondFollowUp = service.runOnce();
+    const secondFollowUpCoalesced = service.runOnce();
+    expect(secondFollowUpCoalesced).toBe(secondFollowUp);
+    expect(secondFollowUp).not.toBe(firstFollowUp);
+
+    finishFetch[1]!();
+    await vi.waitFor(() => expect(pullFastForward).toHaveBeenCalledTimes(2));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    finishPull[1]!();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    const results = await Promise.all([
+      first,
+      firstFollowUp,
+      firstFollowUpCoalesced,
+      secondFollowUp,
+      secondFollowUpCoalesced,
+    ]);
+
+    expect(results.every((result) => result.pulled)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(pullFastForward).toHaveBeenCalledTimes(3);
+    expect(maximumActiveFetches).toBe(1);
+    expect(maximumActivePulls).toBe(1);
+  });
+
   it("is a no-op when the project has no primary lane", async () => {
     const { deps, fetch } = harness({ getPrimaryLane: () => null });
     const service = createDefaultBranchAutoPullService(deps);
@@ -195,24 +311,27 @@ describe("createDefaultBranchAutoPullService", () => {
   });
 
   it("polls on the injected timer while started and stops cleanly", async () => {
-    let fire: (() => void) | null = null;
+    const scheduled: Array<{ fire: () => void; handle: object }> = [];
+    const clearTimer = vi.fn();
     const { deps, fetch } = harness({
       setTimer: ((fn: () => void) => {
-        fire = fn;
-        return { unref: () => {} } as unknown as ReturnType<typeof setTimeout>;
+        const handle = { unref: () => {} };
+        scheduled.push({ fire: fn, handle });
+        return handle as unknown as ReturnType<typeof setTimeout>;
       }) as typeof setTimeout,
-      clearTimer: (() => {}) as typeof clearTimeout,
+      clearTimer: clearTimer as unknown as typeof clearTimeout,
     });
     const service = createDefaultBranchAutoPullService(deps);
 
     service.start();
     expect(service.isStarted()).toBe(true);
-    expect(fire).not.toBeNull();
+    expect(scheduled).toHaveLength(1);
 
-    fire!();
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    scheduled[0]!.fire();
+    await vi.waitFor(() => expect(scheduled).toHaveLength(2));
 
     service.stop();
     expect(service.isStarted()).toBe(false);
+    expect(clearTimer).toHaveBeenCalledWith(scheduled[1]!.handle);
   });
 });

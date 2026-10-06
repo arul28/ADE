@@ -114,11 +114,6 @@ import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
-import {
-  createDefaultBranchAutoPullService,
-  detectInProgressGitOperation,
-} from "./services/lanes/defaultBranchAutoPull";
-import { parseWorktreeStatusPorcelainV2 } from "./services/lanes/laneBranchDrift";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
@@ -422,6 +417,7 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
@@ -642,7 +638,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
   "ADE_ENABLE_HEAD_WATCHER",
-  "ADE_ENABLE_AUTO_PULL_DEFAULT",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_PR_POLLING",
   // reconcile-on-focus is the default catch-up safety net (the brain has no PR
@@ -1922,6 +1917,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  // "Update & restart" pressed on another machine, forwarded by this machine's
+  // brain. Built once the update service exists, further down.
+  let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
   ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
@@ -1932,6 +1930,7 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      getAppUpdateInstaller: () => remoteUpdateInstaller,
       // Windows: an elevated desktop's pipe refuses the background service.
       // A lasting state, so the renderer docks a banner for it.
       onElevatedDesktop: () => {
@@ -3001,6 +3000,13 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  remoteUpdateInstaller = createRemoteUpdateInstaller({
+    getService: () => autoUpdateService,
+    // The same gate as the update checks themselves: a development or channel
+    // build has no feed of its own, so the brain updates its standalone runtime.
+    supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    logger: updateLogger,
   });
   // Opt-in, default off: ADE holds no power assertion until the user picks a
   // level, and even then only while an agent turn is actually running. Turns
@@ -4563,52 +4569,6 @@ app.whenReady().then(async () => {
     testServiceRef = testService;
     gitServiceRef = gitService;
 
-    /*
-     * Default-branch auto-pull.
-     *
-     * Keeps the primary checkout's default branch current without a manual
-     * pull. Fast-forward only, and only when every local safety gate passes:
-     * the primary lane, an attached HEAD on the lane's branch, no tracked
-     * change in the index or worktree, no rebase/merge/cherry-pick in flight,
-     * no held worktree lease, and a configured upstream. A failed fetch
-     * (offline, no auth, no remote) is a silent skip. Started on project open
-     * and repeated on a bounded background timer — the same "startup plus
-     * background refresh" trigger t3code uses (#9277).
-     */
-    const defaultBranchAutoPullService = createDefaultBranchAutoPullService({
-      logger,
-      getPrimaryLane: () => laneService.getPrimaryLane(),
-      readWorktreeStatus: async (worktreePath) => {
-        const res = await runGit(
-          ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
-          { cwd: worktreePath, timeoutMs: 10_000 },
-        );
-        if (res.exitCode !== 0) return null;
-        const parsed = parseWorktreeStatusPorcelainV2(res.stdout);
-        return { staged: parsed.staged, unstaged: parsed.unstaged, headBranchRef: parsed.headBranchRef };
-      },
-      detectInProgressOperation: async (worktreePath) => {
-        const res = await runGit(["rev-parse", "--absolute-git-dir"], {
-          cwd: worktreePath,
-          timeoutMs: 5_000,
-        });
-        if (res.exitCode !== 0) return null;
-        const gitDir = res.stdout.trim();
-        return gitDir ? detectInProgressGitOperation(gitDir) : null;
-      },
-      isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
-      readSyncStatus: async (laneId) => {
-        const status = await gitService.getSyncStatus({ laneId });
-        return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };
-      },
-      fetch: async (laneId) => {
-        await gitService.fetch({ laneId });
-      },
-      pullFastForward: async (laneId) => {
-        await gitService.pull({ laneId, mode: "ff-only" });
-      },
-    });
-
     if (automationsEnabled) {
       automationService = createAutomationService({
         db,
@@ -5616,7 +5576,6 @@ app.whenReady().then(async () => {
 
     const disposeHeadWatcher = () => {
       headWatcherActive = false;
-      defaultBranchAutoPullService.stop();
       for (const cancel of deferredProjectStartCancels) {
         cancel();
       }
@@ -5637,23 +5596,6 @@ app.whenReady().then(async () => {
       15_000,
       "ADE_ENABLE_HEAD_WATCHER",
     );
-
-    // Local-runtime only: a remote-bound desktop must never mutate a checkout
-    // that lives on another machine. The service's own gates make it a no-op
-    // when the project has no primary lane yet.
-    if (shouldUseInProcessProjectRuntime()) {
-      scheduleBackgroundProjectTask(
-        "git.auto_pull_default.start",
-        () => defaultBranchAutoPullService.start(),
-        (error) => {
-          logger.warn("git.auto_pull_start_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-        20_000,
-        "ADE_ENABLE_AUTO_PULL_DEFAULT",
-      );
-    }
 
     const state = upsertRecentProject(
       readGlobalState(globalStatePath),
@@ -7705,6 +7647,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
+        remoteUpdateInstaller?.dispose();
         builtInBrowserBridgeServer?.dispose();
       } catch {
         // ignore

@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  invalidateExecutableLookupCache,
   resolveExecutableFromKnownLocations,
   setPathEnvValue,
 } from "./cliExecutableResolver";
@@ -296,31 +297,18 @@ function findExplicitCommandPath(command: string): string | null {
  * with `'claude' is not recognized as an internal or external command`, not as
  * the ENOENT spawn error (`status === null`) that means "missing" on
  * macOS/Linux. An exit-code probe therefore reports *every* CLI as installed
- * on Windows. `where.exe` + the known-install-dir scan (which honours PATHEXT)
- * answer the question honestly.
+ * on Windows. The known-location scan answers it honestly instead: it walks
+ * every PATH entry, then the known install dirs, matching PATHEXT names (plus
+ * `.ps1`). That is everything `where.exe` searches except the current
+ * directory, which ADE must not resolve a CLI from — so a miss there is final,
+ * and no `where.exe` is spawned. Each one blocked the brain's event loop for up
+ * to ~100 ms, once per missing CLI per detection pass.
  */
 async function resolveCommandLocation(command: string): Promise<string | null> {
   const explicitPath = findExplicitCommandPath(command);
   if (explicitPath) return explicitPath;
 
-  if (process.platform === "win32") {
-    try {
-      // Spell the lookup `where.exe`, not `where`. `spawnAsync` routes an
-      // *extensionless* command through `cmd.exe /d /s /c "…"`; the extension
-      // here keeps the probe a direct spawn with no wrapper. Measured: direct
-      // `where.exe` 57.7ms vs `cmd + where` 73.7ms per lookup, and because the
-      // wrapper is what blocks the main thread, the worst *unrelated* IPC
-      // observed during a probe drops from 1364.5ms to 18.2ms.
-      const result = await spawnAsync("where.exe", [command], { timeout: 5_000 });
-      if (result.status === 0) {
-        const first = (result.stdout ?? "").trim().split(/\r?\n/)[0]?.trim();
-        if (first) return first;
-      }
-    } catch {
-      // Treat a failed lookup as "not installed" rather than guessing.
-    }
-    return null;
-  }
+  if (process.platform === "win32") return null;
 
   // POSIX: a direct spawn bypasses shell init (.zshrc errors, slow profiles),
   // and here ENOENT really does surface as `status === null`.
@@ -1253,6 +1241,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   if (options?.force) {
     cachedCliAuth = null;
     cachedLocalProviders = null;
+    invalidateExecutableLookupCache();
     await refreshProcessPathFromShell();
   }
 

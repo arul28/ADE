@@ -615,15 +615,18 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   // `knownLane` is the lane an import targets. It is added when the lane list
   // does not have it, so the import guard never mistakes the target lane's
   // own sessions for sessions from another folder.
-  const loadHomeResolver = async (knownLane?: SessionHomeLane | null): Promise<SessionHomeResolver> => {
-    let lanes: SessionHomeLane[] = [];
+  const loadLanes = async (): Promise<SessionHomeLane[]> => {
     try {
-      lanes = [...(await args.laneService.list?.({ includeArchived: false, includeStatus: false }) ?? [])];
+      return [...(await args.laneService.list?.({ includeArchived: false, includeStatus: false }) ?? [])];
     } catch (error) {
       args.logger.warn("external_sessions.lane_list_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
+      return [];
     }
+  };
+  const loadHomeResolver = async (knownLane?: SessionHomeLane | null): Promise<SessionHomeResolver> => {
+    const lanes = await loadLanes();
     if (knownLane && !lanes.some((lane) => lane.id === knownLane.id)) lanes.push(knownLane);
     return createSessionHomeResolver(lanes);
   };
@@ -637,7 +640,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   // per-provider scan) share one load, and the next call after it settles
   // reads fresh state — a chat deleted a moment ago must list again.
   let listInputs: Promise<ListInputs> | null = null;
-  let homeResolverSnapshot: Promise<SessionHomeResolver> | null = null;
+  let laneSnapshot: Promise<SessionHomeLane[]> | null = null;
   const loadListInputs = async (): Promise<ListInputs> => {
     const imported = await importedSessionRefs(
       args.sessionService,
@@ -673,16 +676,33 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     }
     return listInputs;
   };
-  const sharedHomeResolver = (): Promise<SessionHomeResolver> => {
-    if (!homeResolverSnapshot) {
-      const value = loadHomeResolver();
-      homeResolverSnapshot = value;
+  const sharedLanes = (): Promise<SessionHomeLane[]> => {
+    if (!laneSnapshot) {
+      const value = loadLanes();
+      laneSnapshot = value;
       const clear = () => {
-        if (homeResolverSnapshot === value) homeResolverSnapshot = null;
+        if (laneSnapshot === value) laneSnapshot = null;
       };
       value.then(clear, clear);
     }
-    return homeResolverSnapshot;
+    return laneSnapshot;
+  };
+  const sharedHomeResolver = async (): Promise<SessionHomeResolver> => createSessionHomeResolver(await sharedLanes());
+  /**
+   * The project's folders plus every live lane's worktree. A lane can live
+   * anywhere — a sibling `repo-worktrees/feature` checkout is as much a lane as
+   * one under `.ade/worktrees/` — and a session recorded there belongs to this
+   * project.
+   */
+  const projectScopeRoots = async (): Promise<string[]> => {
+    const roots = new Set(deriveProjectScopeRoots(args.projectRoot));
+    for (const lane of await sharedLanes()) {
+      for (const root of [lane.worktreePath, lane.attachedRootPath]) {
+        const trimmed = root?.trim();
+        if (trimmed) roots.add(trimmed);
+      }
+    }
+    return Array.from(roots);
   };
   const dropListSnapshot = () => {
     listInputs = null;
@@ -713,7 +733,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     if (providers.length === 0) return [];
     const requestedLaneCwd = rawArgs.laneId ? resolveLaneCwd(args.laneService, rawArgs.laneId) : null;
     const requestedCwd = rawArgs.cwd?.trim() ? realishPath(rawArgs.cwd) : requestedLaneCwd;
-    const scopeRoots = projectScoped ? deriveProjectScopeRoots(args.projectRoot) : [];
+    const scopeRoots = projectScoped ? await projectScopeRoots() : [];
     const discoveryArgs: ExternalSessionDiscoveryArgs = {
       homeDir: args.homeDir,
       env: args.env,
@@ -864,7 +884,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // and unscoped browse discovery conservative: their cwd must come from the
     // provider's own session metadata.
     const openCodeScopeRoots = provider === "opencode"
-      ? deriveProjectScopeRoots(args.projectRoot)
+      ? await projectScopeRoots()
       : null;
     const [session] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
       homeDir: args.homeDir,

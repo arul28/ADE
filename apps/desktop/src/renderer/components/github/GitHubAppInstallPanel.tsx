@@ -29,7 +29,7 @@ const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
-const SPIN_STYLE: CSSProperties = { animation: "ade-icon-spin 1s linear infinite" };
+const SPIN_STYLE: CSSProperties = { animation: "ade-icon-spin 1s steps(30) infinite" };
 
 type GitHubAppInstallPanelProps = {
   variant?: "settings" | "onboarding";
