@@ -552,6 +552,8 @@ apps/ios/
 │   │   │                            #   on the no-machine home), HubComposerDrawer
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
+│   │   │                            # HubComposerFleetDestination (composer
+│   │   │                            #   destinations on other live machines),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
 │   │   │                            #   cross-project quick look). HubComponents
 │   │   │                            #   gives the projectless Chats button a
@@ -2502,7 +2504,19 @@ machines stay available through lightweight roster connections, for a maximum
 of four live machines including the focused one. The fleet prioritizes pinned
 machines and then recently used machines, closes background connections, and
 does not connect hidden or signed-out machines. Settings > Machines lists the
-paired computers and lets the user hide one. Work includes remote chats for
+paired computers and lets the user hide one. Only machines in the user's
+connected set get a roster connection, and only their projects merge into the
+Hub and Work. Disconnecting a machine — the primary included — takes it out of
+that set until the user connects it again. With no primary attached, the next
+machine the user connects becomes primary. Pairing a new account machine makes
+it primary and keeps the previous primary connected when it was live. The Hub
+chip reads "N machines" when more than one is live. The Hub composer lists the
+projects of every live machine; sending to another machine's project makes that
+machine primary first (`switchFocusKeepingPrevious`), then creates the chat
+there, and the draft stays in the box until the switch succeeds. Saved profiles
+never merge across two different device identities, and a `brain_status` from a
+machine other than the active profile's is ignored, so a late status from the
+previous machine's socket cannot drop a pairing. Work includes remote chats for
 the same repository across machines. Chat commands route to the machine that
 owns the chat and fail while that machine is offline; they are never queued or
 sent to the focused machine as a fallback.

@@ -745,6 +745,44 @@ describe("RemoteConnectionService", () => {
     expect(pool.disconnect).not.toHaveBeenCalled();
   });
 
+  it("stops a connect whose cancel lands during the account ownership check", async () => {
+    const accountOwned = {
+      ...target("account-owned-cancel", 1_700_000_000),
+      accountOwnerUserId: "account-1",
+    };
+    const registry = {
+      list: vi.fn(() => [accountOwned]),
+      get: vi.fn((id: string) => (id === accountOwned.id ? accountOwned : null)),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({
+        ...accountOwned,
+        ...patch,
+      })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    let answerOwnerCheck!: (owner: string) => void;
+    const service = new RemoteConnectionService(registry, pool, {
+      getAuthorizedAccountOwnerId: vi.fn(
+        () => new Promise<string>((resolve) => { answerOwnerCheck = resolve; }),
+      ),
+    });
+
+    const pendingConnect = service.connect(accountOwned.id, { explicit: true });
+    // Cancel (a manual disconnect) while the ownership check is still out.
+    service.disconnect(accountOwned.id, { manual: true });
+    answerOwnerCheck("account-1");
+
+    await expect(pendingConnect).rejects.toThrow(
+      /disconnected before ADE finished connecting/i,
+    );
+    expect(pool.connect).not.toHaveBeenCalled();
+    expect(service.snapshot().connections[0]?.state).not.toBe("connecting");
+    expect(service.snapshot().connectedCount).toBe(0);
+  });
+
   it("never opens the pool for an unauthorized account-owned target but preserves local autoconnect", async () => {
     const accountOwned = {
       ...target("account-owned", 1_700_000_000),

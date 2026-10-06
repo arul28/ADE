@@ -467,6 +467,123 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText(/Not connected · Last connected/)).toBeTruthy();
   });
 
+  it("locks only the connecting row, and Cancel ends that attempt without an error", async () => {
+    const savedTarget = (id: string, name: string) => ({
+      id,
+      name,
+      hostname: `${id}.local`,
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    });
+    remoteRuntimeMock.listTargets.mockResolvedValue([
+      savedTarget("alpha", "Alpha"),
+      savedTarget("beta", "Beta"),
+    ]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    let failAlphaLate: (error: Error) => void = () => {};
+    remoteRuntimeMock.connect.mockImplementation(
+      (targetId: string) =>
+        new Promise((_resolve, reject) => {
+          if (targetId === "alpha") failAlphaLate = reject;
+        }),
+    );
+    remoteRuntimeMock.disconnect.mockResolvedValue(undefined);
+    lanesMock.list.mockResolvedValue([]);
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+    await screen.findByText("Alpha");
+    const enabledConnects = () =>
+      screen
+        .getAllByRole("button", { name: "Connect" })
+        .filter((button) => !button.hasAttribute("disabled"));
+    expect(enabledConnects()).toHaveLength(2);
+    fireEvent.click(enabledConnects()[0]!);
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("alpha"),
+    );
+
+    // Alpha is connecting; Beta keeps every action.
+    const cancel = screen.getByRole("button", {
+      name: "Cancel connecting to Alpha",
+    });
+    expect(enabledConnects()).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Remove Beta" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Remove Alpha" }).hasAttribute("disabled"),
+    ).toBe(false);
+
+    fireEvent.click(cancel);
+    await waitFor(() =>
+      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("alpha", {
+        manual: true,
+      }),
+    );
+    await waitFor(() => expect(enabledConnects()).toHaveLength(2));
+    expect(
+      screen.queryByRole("button", { name: "Cancel connecting to Alpha" }),
+    ).toBeNull();
+
+    // Main's answer to the cancelled attempt arrives late and is ignored.
+    await act(async () => {
+      failAlphaLate(new Error("late connect failure"));
+    });
+    expect(screen.queryByText(/late connect failure/)).toBeNull();
+    expect(enabledConnects()).toHaveLength(2);
+  });
+
+  it("keeps an account row locked until a cancelled pairing finishes in main", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    let finishPairing: (error: Error) => void = () => {};
+    accountMock.pairMachine.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        finishPairing = reject;
+      }),
+    );
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[accountMachine({ machineKey: "mk-stop", name: "Stop Studio" })]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+    await screen.findByText("Stop Studio");
+    const row = getAccountRow("Stop Studio");
+    fireEvent.click(within(row).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(accountMock.pairMachine).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Cancel connecting to Stop Studio" }),
+    );
+    // Main cannot interrupt a pairing: a second one must not start meanwhile.
+    const stopping = await within(row).findByRole("button", { name: "Stopping…" });
+    expect(stopping.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(stopping);
+    expect(accountMock.pairMachine).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishPairing(new Error("cancelled pairing ended"));
+    });
+    const connect = await within(row).findByRole("button", { name: "Connect" });
+    expect(connect.hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByText(/cancelled pairing ended/)).toBeNull();
+  });
+
   it("does not let an older event overwrite a local connection-setting snapshot", async () => {
     const target = {
       id: "target-1",
