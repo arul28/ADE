@@ -36,6 +36,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "../../../shared/chips";
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
 import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
+import { chatMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
 import { modelPermissionPresentation, permissionToneTextClass } from "../../lib/modelPermissionOptions";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
@@ -43,25 +44,8 @@ import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./
 import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
 import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatWorkspacePathOpener, type ChatWorkspacePathOpener } from "./chatWorkspacePaths";
-import { rootAppStoreApi } from "../../state/appStore";
-import { machineEntryForBinding } from "../../state/crossMachineLanes";
-import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-
-/**
- * The machine that holds the chat's lane, or null when the chat runs on the
- * tab's own machine. Read on click, so a transcript of pills holds no extra
- * store subscription. Before the union has read that machine, the pin still
- * names it: a remote pin by its target id, a local pin as This computer (a
- * local pin only exists while the tab is bound to a remote machine).
- */
-function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | null {
-  const pin = scope.pin;
-  if (!pin) return null;
-  return machineEntryForBinding(rootAppStoreApi.getState(), pin)?.machineId
-    ?? (pin.kind === "remote" ? pin.targetId : THIS_MACHINE_ID);
-}
 
 /** Where a click on this chip should land, or null when it is not actionable. */
 function openChip(
@@ -71,26 +55,7 @@ function openChip(
 ): void {
   const source = chip.source;
   if (source.origin === "deeplink") {
-    // A bare SHA in a reply names no lane. It is a commit of the lane this chat
-    // works in, on the machine this chat runs on. Without that, the click has
-    // nothing to open and shows the "lives on another machine" modal.
-    if (source.target.kind === "commit" && !source.target.laneId && scope.laneId) {
-      navigateToAppTarget({
-        kind: "commit",
-        sha: source.target.sha,
-        laneId: scope.laneId,
-        machineId: chatMachineId(scope),
-      });
-      return;
-    }
-    // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
-    // the repo to parse, so that one opens through the in-app PR route, which
-    // resolves the number against this project's PRs.
-    if (source.target.kind === "pr" && !source.target.repoOwner) {
-      navigateToAppTarget({ kind: "pr", prNumber: source.target.prNumber });
-      return;
-    }
-    openAdeDeeplink(source.url);
+    openChatDeeplinkTarget(source.url, source.target, scope);
     return;
   }
   if (source.origin === "url") {

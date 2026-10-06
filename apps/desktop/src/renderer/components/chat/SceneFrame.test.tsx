@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { MarkdownBlock } from "./chatMarkdownBlock";
 import { SceneFrame } from "./SceneFrame";
-import { SCENE_SETTLE_MAX_MS, SCENE_SETTLE_QUIET_MS } from "../../../shared/chatScene";
 import { SCENE_STILL_INDEX_WAIT_MS } from "./useSceneStillLatch";
 import { rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 import {
@@ -62,14 +61,16 @@ describe("SceneFrame", () => {
     expect(frame.getAttribute("referrerPolicy") ?? frame.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
-  it("shows the title and marks the view as agent-drawn", async () => {
+  /**
+   * What the view is — a scene a model drew — is said in the hover toolbar,
+   * beside the buttons that expand it and file it as proof. There is no
+   * always-visible status caption any more; the toolbar carries the title.
+   */
+  it("shows the scene's title in the hover toolbar", async () => {
     render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live scopeKey={null} />);
     await screen.findByTestId("chat-scene-frame");
-    const scene = screen.getByTestId("chat-scene");
-    expect(scene.textContent).toContain("Merged pull requests");
-    // The caption always states which of the three states the view is in, so a
-    // frozen snapshot can never be mistaken for something still updating.
-    expect(scene.textContent).toMatch(/drawing|live|frozen/);
+    expect(screen.getByTestId("chat-scene").textContent).toContain("Merged pull requests");
+    expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("Merged pull requests");
   });
 
   it("falls back to a readable code block when the scene cannot be parsed", () => {
@@ -129,153 +130,6 @@ describe("SceneFrame", () => {
   it("mounts an unterminated fence once the turn is no longer live", async () => {
     render(<MarkdownBlock markdown={"```scene\n<p>truncated"} />);
     await screen.findByTestId("chat-scene-frame");
-  });
-
-  /* ───────────────────────── freeze / snapshot ───────────────────────── */
-
-  /**
-   * The freeze swap had no test at all, and it is the step that decides what a
-   * scene looks like forever: once the turn ends the live frame is replaced by
-   * a still, and that same still is what the Proof button files.
-   */
-  describe("freezing a finished scene", () => {
-    afterEach(() => {
-      vi.useRealTimers();
-      vi.restoreAllMocks();
-      delete (window as unknown as { ade?: unknown }).ade;
-    });
-
-    async function renderRunningScene(snapshot: (rect: unknown) => Promise<string | null>) {
-      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
-      const frame = await screen.findByTestId("chat-scene-frame");
-      // The frame reports ready, which is the draw gate: a capture before the
-      // first paint snapshots a blank rect.
-      postSceneMessage(frame, "ready");
-      await waitFor(() =>
-        expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
-      );
-      const settle = () => act(() => { postSceneMessage(frame, "settled"); });
-      return { rerender, settle };
-    }
-
-    /**
-     * `ready` only means first paint; an author may call it before a single
-     * animation has played. A turn that ended right after used to freeze a
-     * half-drawn view. The freeze waits for the settle and shows ITS still.
-     */
-    it("waits for the scene to settle, then swaps the frame for that still", async () => {
-      stubShellRect({});
-      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const { rerender, settle } = await renderRunningScene(snapshot);
-
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
-      expect(snapshot).not.toHaveBeenCalled();
-      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
-
-      settle();
-      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
-      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
-      expect(snapshot).toHaveBeenCalledTimes(1);
-      expect(snapshot).toHaveBeenCalledWith({ x: 0, y: 0, width: 400, height: 200 });
-    });
-
-    /**
-     * Main INTERSECTS the capture rect with the content box, so a scene that is
-     * half scrolled off freezes to the visible sliver — permanently, and that
-     * crop is what Proof files. Never accept a partial capture.
-     */
-    it("refuses to snapshot a scene that is only partly on screen", async () => {
-      stubShellRect({ top: -120, y: -120, bottom: 80 });
-      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const { rerender, settle } = await renderRunningScene(snapshot);
-
-      settle();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() =>
-        expect(screen.getByTestId("chat-scene-frame")).toBeTruthy(),
-      );
-      expect(snapshot).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
-    });
-
-    /**
-     * The retry has to RE-CHECK, not just fire. The transcript auto-scrolls on
-     * its own, constantly, and usually leaves the scene no more visible than it
-     * was; a retry that froze on the next scroll whatever the rect said either
-     * captured a cropped sliver or gave up while the scene was still partly on
-     * screen and could still have come back.
-     */
-    it("keeps waiting when a scroll leaves the scene still partly off screen", async () => {
-      stubShellRect({ top: -120, y: -120, bottom: 80 });
-      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const { rerender, settle } = await renderRunningScene(snapshot);
-
-      settle();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
-
-      // Still partial — a different partial, but partial.
-      stubShellRect({ top: -40, y: -40, bottom: 160 });
-      window.dispatchEvent(new Event("scroll"));
-      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
-      expect(snapshot).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
-      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
-    });
-
-    /**
-     * ...and waiting cannot be forever. A scene taller than the window can
-     * never be fully visible, so without a deadline it stays `running` and the
-     * iframe keeps executing in scrollback — the exact thing freezing is for.
-     */
-    it("gives up after the deadline on a scene that can never be fully visible", async () => {
-      stubShellRect({ top: -120, y: -120, bottom: 80 });
-      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const { rerender, settle } = await renderRunningScene(snapshot);
-
-      settle();
-      vi.useFakeTimers();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      // No scroll, no new intersection: the deadline timer is the only thing
-      // that can wake this up.
-      await act(async () => { await vi.advanceTimersByTimeAsync(4_100); });
-
-      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
-      // Frozen WITHOUT a capture: a cropped still is worse than the live view.
-      expect(snapshot).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
-      expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
-    });
-
-    /** ...and it tries again when the scroll that hid it scrolls it back. */
-    it("captures on the retry once the whole scene is back on screen", async () => {
-      stubShellRect({ top: -120, y: -120, bottom: 80 });
-      const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const { rerender, settle } = await renderRunningScene(snapshot);
-
-      settle();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
-      expect(snapshot).not.toHaveBeenCalled();
-
-      stubShellRect({});
-      window.dispatchEvent(new Event("scroll"));
-      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
-      expect(snapshot).toHaveBeenCalledTimes(1);
-    });
-
-    /** No capture route at all: keep the working view rather than nothing. */
-    it("leaves the frame mounted when the host cannot snapshot", async () => {
-      stubShellRect({});
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
-      await screen.findByTestId("chat-scene-frame");
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
-      expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
-    });
   });
 
   /* ─────────────────────── settle-time still ─────────────────────── */
@@ -350,26 +204,6 @@ describe("SceneFrame", () => {
       expect(storeStill.mock.calls[0]?.[0]).toMatchObject({ dataUrl: SCENE_STILL_DATA_URL });
     });
 
-    /**
-     * The case the owner asked for: a scene that had scrolled away by the end
-     * of its turn used to freeze with NO picture and a live frame left running.
-     * With a settle-time still it freezes to the picture it already has.
-     */
-    it("shows the still on a scene the freeze could never capture", async () => {
-      stubShellRect({});
-      const { rerender, settle, props, snapshot } = await renderSettlingScene();
-      settle();
-      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
-
-      // Now scroll it half off and end the turn — the freeze capture refuses a
-      // partial rect, and before the still existed that meant nothing at all.
-      stubShellRect({ top: -120, y: -120, bottom: 80 });
-      rerender(<SceneFrame {...props} live={false} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
-      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-      expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src")).toBe(SCENE_STILL_DATA_URL);
-    });
-
     it("waits for a partly visible scene to come fully on screen before capturing", async () => {
       stubShellRect({ top: -120, y: -120, bottom: 80 });
       const { snapshot, settle } = await renderSettlingScene();
@@ -403,20 +237,24 @@ describe("SceneFrame", () => {
     });
 
     /**
-     * A reopened chat: the code must NOT run again. A scene is code an agent
-     * wrote and the still exists precisely so scrollback never re-executes it.
+     * A reopened chat: the still stands in for the scene while the restored
+     * frame comes up beneath it. The reader sees the picture, the code runs
+     * without replaying its entrance, and the frame stays hidden until it has
+     * painted so no blank frame flashes where the picture was.
      */
-    it("shows a stored still instead of re-running the scene on a later mount", async () => {
+    it("shows a stored still over the restored frame on a later mount", async () => {
       rememberSceneStill("row-9", {
         record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a9", title: "Merged PRs" },
       });
       render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" />);
 
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
-      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
         .toBe("ade-artifact://project/.ade/artifacts/computer-use/old.png");
-      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
+      // The frame is mounted under the still, not revealed until it paints.
+      const frame = screen.getByTestId("chat-scene-frame") as HTMLIFrameElement;
+      expect(frame.style.opacity).toBe("0");
+      expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy();
     });
 
     /** A scene that IS live on this mount plays out; the still never pre-empts it. */
@@ -428,23 +266,27 @@ describe("SceneFrame", () => {
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
     });
 
-    it("files the settle still as proof when the freeze never captured one", async () => {
+    /**
+     * Proof prefers a fresh grab of what is on screen now, but a scene the
+     * reader has scrolled partly out can no longer be grabbed. The settle still
+     * already taken stands in, so the Proof button never files nothing at all.
+     */
+    it("files the settle still as proof when the live view cannot be grabbed", async () => {
       stubShellRect({});
+      const bridge = stubSceneCaptureBridge({ snapshot: async () => "data:image/png;base64,STILL" });
       const attachProof = vi.fn(async (_args: { dataUrl?: string | null }) => true);
-      const snapshot = vi.fn(async () => "data:image/png;base64,STILL");
-      (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, attachProof } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
+      (window as unknown as { ade: { scene: Record<string, unknown> } }).ade.scene.attachProof = attachProof;
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-proof" />);
       const frame = await screen.findByTestId("chat-scene-frame");
       act(() => {
         for (const type of ["ready", "settled"]) postSceneMessage(frame, type);
       });
-      await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(bridge.snapshot).toHaveBeenCalledTimes(1));
+      // The settle still is taken and stored before the reader files it.
+      await waitFor(() => expect(bridge.storeStill).toHaveBeenCalledTimes(1));
 
-      // Out of view at the end of the turn, so `snapshot` state is null — the
-      // Proof button used to file nothing at all here.
+      // Scrolled half out of view: a fresh grab is refused.
       stubShellRect({ top: -120, y: -120, bottom: 80 });
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
-      await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       act(() => { screen.getByTestId("chat-scene-proof").click(); });
       await waitFor(() => expect(attachProof).toHaveBeenCalledTimes(1));
       expect(attachProof.mock.calls[0]?.[0]).toMatchObject({ dataUrl: "data:image/png;base64,STILL" });
@@ -531,49 +373,6 @@ describe("SceneFrame", () => {
     });
 
     /**
-     * The host's own settle deadline belongs to ONE document.
-     *
-     * Its timer read the current src at fire time but was armed on `status`
-     * alone, and `status` stays `running` across a source swap — so a deadline
-     * left over from a view that never settled outlived it and stamped the NEW
-     * document settled a few hundred ms after it mounted, capturing a
-     * barely-painted view and burning the one-still latch on that picture.
-     */
-    it("re-arms the settle deadline for each document a frame is handed", async () => {
-      stubShellRect({});
-      vi.useFakeTimers();
-      try {
-        const bridge = stubSceneCaptureBridge();
-        const props = {
-          source: '<div id="n">3</div>',
-          live: true,
-          scopeKey: "view-deadline-a",
-        };
-        const { rerender } = render(<SceneFrame {...props} />);
-        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-        act(() => { postSceneMessage(screen.getByTestId("chat-scene-frame"), "ready"); });
-
-        // Almost the whole wait, with this view never reporting a settle.
-        const deadline = SCENE_SETTLE_MAX_MS + SCENE_SETTLE_QUIET_MS;
-        await act(async () => { await vi.advanceTimersByTimeAsync(deadline - 300); });
-        expect(bridge.snapshot).not.toHaveBeenCalled();
-
-        // The same frame, a new document — a caller that reuses one frame.
-        rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="view-deadline-b" />);
-        await act(async () => { await vi.advanceTimersByTimeAsync(400); });
-        // The first view's deadline has passed; it must not speak for this one.
-        expect(bridge.snapshot).not.toHaveBeenCalled();
-
-        await act(async () => { await vi.advanceTimersByTimeAsync(deadline); });
-        expect(bridge.snapshot).toHaveBeenCalledTimes(1);
-        expect((bridge.storeStill.mock.calls[0]?.[0] as { scopeKey: string }).scopeKey)
-          .toBe("view-deadline-b");
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    /**
      * Two scene fences in one message used to share the transcript row key, so
      * whichever settled last overwrote the other's picture and a reopened chat
      * showed the same view twice.
@@ -634,9 +433,12 @@ describe("SceneFrame", () => {
       );
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
         .toBe("data:image/png;base64,REMOTE"));
-      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(bridge.readArtifactPreview.mock.calls[0]?.[0])
         .toMatchObject({ uri: ".ade/artifacts/computer-use/remote.png" });
+      // The frame comes up restored beneath the cross-machine picture, hidden
+      // until it has painted.
+      const frame = screen.getByTestId("chat-scene-frame") as HTMLIFrameElement;
+      expect(frame.style.opacity).toBe("0");
     });
   });
 
@@ -715,70 +517,6 @@ describe("SceneFrame", () => {
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });
 
-    /**
-     * The index read is an IPC round trip whose only bound is the 30 s call
-     * budget on a remote chat, and every settled scene in the transcript sat on
-     * a placeholder for all of it. Past the local deadline the mount runs the
-     * scene; a picture that arrives afterwards still replaces the frozen frame.
-     */
-    /**
-     * The other half of the same trade, and the one the deadline got wrong.
-     *
-     * On a remote chat every still needs its OWN cross-machine preview read, so
-     * a transcript of settled scenes raced a single 1.5 s deadline against a
-     * queue of round trips and lost: each row decided "no picture", re-ran the
-     * agent's generated code, and re-filed its still — on every reopen. A
-     * RECORD is proof the code already ran, so a mount that has one waits for
-     * the bytes however long they take. The deadline bounds the index listing
-     * and nothing else.
-     */
-    it("holds a placeholder for a slow picture rather than re-running the scene", async () => {
-      vi.useFakeTimers();
-      try {
-        let deliver: ((value: string | null) => void) | null = null;
-        const bridge = stubSceneCaptureBridge({
-          artifacts: [{
-            id: "a20",
-            uri: ".ade/artifacts/computer-use/slow.png",
-            title: "Generated view",
-            metadata: { kind: "scene_still", sceneScopeKey: "row-slow-bytes" },
-          }],
-          readArtifactPreview: () => new Promise((resolve) => { deliver = resolve; }),
-        });
-        render(
-          <ChatRuntimeScopeProvider
-            pin={REMOTE_BINDING}
-            binding={REMOTE_BINDING}
-            laneId={null}
-            sessionId="chat-slow-bytes"
-          >
-            <SceneFrame
-              source={'<div id="n">3</div>'}
-              live={false}
-              scopeKey="row-slow-bytes"
-            />
-          </ChatRuntimeScopeProvider>,
-        );
-
-        // Well past the index deadline, with the bytes still in flight: a
-        // placeholder, and above all NO frame — the code must not run again.
-        await act(async () => { await vi.advanceTimersByTimeAsync(SCENE_STILL_INDEX_WAIT_MS * 4); });
-        expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-        expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
-        expect(bridge.storeStill).not.toHaveBeenCalled();
-
-        await act(async () => {
-          deliver?.("data:image/png;base64,SLOW");
-          await vi.advanceTimersByTimeAsync(0);
-        });
-        expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
-          .toBe("data:image/png;base64,SLOW");
-        expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
     it("stops waiting for a slow index and runs the scene", async () => {
       vi.useFakeTimers();
       try {
@@ -803,6 +541,211 @@ describe("SceneFrame", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  /**
+   * A scene that throws before it is up collapses to one inline banner instead
+   * of holding a tall empty box. A POLICY block is not that: a remote font or
+   * image the scene asked for was refused, which is reported, not fatal.
+   */
+  describe("when a scene fails to draw", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      delete (window as unknown as { ade?: unknown }).ade;
+    });
+
+    function throwError(frame: Element, payload: Record<string, unknown>): void {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: (frame as HTMLIFrameElement).contentWindow,
+        data: {
+          __adeScene: 1,
+          type: "error",
+          nonce: frame.getAttribute("data-scene-nonce") ?? undefined,
+          payload,
+        },
+      }));
+    }
+
+    it("reports a policy block without collapsing the scene", async () => {
+      stubShellRect({});
+      stubSceneCaptureBridge();
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="policy-1" />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+
+      act(() => { throwError(frame, { message: "Blocked by the scene policy (font-src): https://x/f.woff2", policy: true }); });
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("Blocked by the scene policy"),
+      );
+      expect(screen.getByTestId("chat-scene-frame")).toBeTruthy();
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).not.toBe("failed");
+    });
+
+    it("collapses to a banner on a throw, and Show anyway brings the scene back", async () => {
+      stubShellRect({});
+      stubSceneCaptureBridge();
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="fail-1" />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+
+      act(() => { throwError(frame, { message: "boom" }); });
+      await waitFor(() => expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("failed"));
+      expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
+      expect(screen.getByText(/did not draw/)).toBeTruthy();
+
+      act(() => { screen.getByText("Show anyway").click(); });
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+    });
+
+    it("Retry hands the scene a fresh document, not the cached one that failed", async () => {
+      stubShellRect({});
+      stubSceneCaptureBridge();
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="fail-2" />);
+      const first = await screen.findByTestId("chat-scene-frame");
+      const firstSrc = first.getAttribute("src");
+
+      act(() => { throwError(first, { message: "boom" }); });
+      await waitFor(() => expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("failed"));
+
+      act(() => { screen.getByText("Retry").click(); });
+      const next = await screen.findByTestId("chat-scene-frame");
+      await waitFor(() => expect(next.getAttribute("src")).not.toBe(firstSrc));
+    });
+  });
+
+  /**
+   * Links are the one way agent-authored scene code reaches outside the frame.
+   * The host allows a link only from a focused scene, only at a human click
+   * cadence, and — once a scene shows live ADE data — only to destinations the
+   * scene was actually written with.
+   */
+  describe("opening links from a scene", () => {
+    // A data scene with one whole URL written into it.
+    const DATA_SCENE = '<!-- @scene data="prs" -->\n<p><a href="https://github.com/arul28/ADE">repo</a></p>';
+    const WRITTEN_URL = "https://github.com/arul28/ADE";
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      delete (window as unknown as { ade?: unknown }).ade;
+    });
+
+    function installAde(openExternal: (url: string) => Promise<void>): void {
+      // A data scene mounts `SceneDataFeed`, which subscribes to the PR list.
+      (window as unknown as { ade?: unknown }).ade = {
+        app: { openExternal },
+        prs: { onEvent: vi.fn(() => () => {}), listAll: vi.fn(async () => []) },
+      };
+    }
+
+    function sendOpen(frame: Element, url: string): void {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: (frame as HTMLIFrameElement).contentWindow,
+        data: {
+          __adeScene: 1,
+          type: "open",
+          nonce: frame.getAttribute("data-scene-nonce") ?? undefined,
+          payload: { url },
+        },
+      }));
+    }
+
+    async function focusedFrame(source: string): Promise<Element> {
+      render(<SceneFrame source={source} live scopeKey={null} />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      (frame as HTMLElement).focus();
+      expect(document.activeElement, "the scene frame must be focused for a link to open").toBe(frame);
+      return frame;
+    }
+
+    it("opens an http link from a focused scene in ADE's browser", async () => {
+      const openExternal = vi.fn(async () => {});
+      installAde(openExternal);
+      const frame = await focusedFrame(DATA_SCENE);
+
+      sendOpen(frame, WRITTEN_URL);
+      await waitFor(() => expect(openExternal).toHaveBeenCalledWith(WRITTEN_URL));
+    });
+
+    /**
+     * A scene in a chat pinned to another machine must open its web links on
+     * that machine, or a `localhost` link reaches this computer's port instead.
+     * The pin rides the built-in-browser navigation.
+     */
+    it("opens a web link on the chat's machine", async () => {
+      const navigate = vi.fn(async (_args: unknown, _pin: unknown) => ({}));
+      (window as unknown as { ade?: unknown }).ade = {
+        builtInBrowser: { navigate },
+        prs: { onEvent: vi.fn(() => () => {}), listAll: vi.fn(async () => []) },
+      };
+      render(
+        <ChatRuntimeScopeProvider
+          pin={REMOTE_BINDING}
+          binding={REMOTE_BINDING}
+          laneId={null}
+          sessionId="chat-pin"
+        >
+          <SceneFrame source={DATA_SCENE} live scopeKey={null} />
+        </ChatRuntimeScopeProvider>,
+      );
+      const frame = await screen.findByTestId("chat-scene-frame");
+      (frame as HTMLElement).focus();
+
+      sendOpen(frame, WRITTEN_URL);
+      await waitFor(() => expect(navigate).toHaveBeenCalled());
+      expect(navigate.mock.calls[0]?.[1]).toEqual(REMOTE_BINDING);
+    });
+
+    it("ignores a link from a scene that does not have focus", async () => {
+      const openExternal = vi.fn(async () => {});
+      installAde(openExternal);
+      render(<SceneFrame source={DATA_SCENE} live scopeKey={null} />);
+      const frame = await screen.findByTestId("chat-scene-frame");
+      (document.activeElement as HTMLElement | null)?.blur?.();
+
+      sendOpen(frame, WRITTEN_URL);
+      await act(async () => { await Promise.resolve(); });
+      expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it("refuses a second open inside the click-rate limit", async () => {
+      const openExternal = vi.fn(async () => {});
+      installAde(openExternal);
+      const frame = await focusedFrame(DATA_SCENE);
+
+      sendOpen(frame, WRITTEN_URL);
+      sendOpen(frame, WRITTEN_URL);
+      await waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
+    });
+
+    it("refuses a scheme that is neither ade: nor http(s), and says why", async () => {
+      const openExternal = vi.fn(async () => {});
+      installAde(openExternal);
+      const frame = await focusedFrame(DATA_SCENE);
+
+      sendOpen(frame, "javascript:alert(1)");
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("ADE links"),
+      );
+      expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it("lets a data scene open only the web links written in it", async () => {
+      const openExternal = vi.fn(async () => {});
+      installAde(openExternal);
+      const frame = await focusedFrame(DATA_SCENE);
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValue(1_000_000);
+
+      // Assembled at run time around the live data: refused, and said so.
+      sendOpen(frame, "https://evil.example/leak");
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("only open the web links"),
+      );
+      expect(openExternal).not.toHaveBeenCalled();
+
+      // A whole URL the scene was written with: allowed.
+      now.mockReturnValue(1_000_000 + 1_000);
+      sendOpen(frame, WRITTEN_URL);
+      await waitFor(() => expect(openExternal).toHaveBeenCalledWith(WRITTEN_URL));
     });
   });
 

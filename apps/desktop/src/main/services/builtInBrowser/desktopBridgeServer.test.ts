@@ -3,6 +3,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JsonRpcClient } from "../../../../../ade-cli/src/tuiClient/jsonRpcClient";
+import { SCENE_PREVIEW_MAX_SOURCE_BYTES, type ScenePreviewResult } from "../../../shared/scenePreview";
 import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { startBuiltInBrowserDesktopBridgeServer } from "./desktopBridgeServer";
@@ -205,5 +207,91 @@ describe("app update over the desktop bridge", () => {
       connectTimeoutMs: 1_000,
     });
     expect(routing.attached).toBe(false);
+  });
+});
+
+/**
+ * `ade scene preview` reaches the desktop over this socket: the runtime daemon
+ * sends the agent's scene source and gets back the screenshot and the problems.
+ * The source is the only input, the bridge token is the only gate, and a scene
+ * over the preview cap is refused before it reaches Chromium.
+ */
+describe("scene preview over the desktop bridge", () => {
+  const bridges: Array<{ dispose: () => void }> = [];
+
+  afterEach(() => {
+    for (const bridge of bridges.splice(0)) bridge.dispose();
+  });
+
+  async function startSceneBridge(scenePreview: ((request: unknown) => Promise<ScenePreviewResult>) | null) {
+    const { logger, waitForEvent } = createLoggerHarness();
+    const bridge = startBuiltInBrowserDesktopBridgeServer({
+      socketPath: shortSocketPath("scene"),
+      service: {} as unknown as BuiltInBrowserService,
+      logger,
+      scenePreview,
+    });
+    bridges.push(bridge);
+    await waitForEvent("built_in_browser_bridge.listening");
+    return bridge;
+  }
+
+  async function callRender(
+    bridge: { socketPath: string; authToken: string },
+    params: Record<string, unknown>,
+    token: string | null = bridge.authToken,
+  ): Promise<unknown> {
+    const client = await JsonRpcClient.connect(bridge.socketPath);
+    try {
+      return await client.request("scene_preview.render", {
+        ...params,
+        ...(token === null ? {} : { __adeDesktopBridgeAuth: token }),
+      }, { timeoutMs: 5_000 });
+    } finally {
+      client.close();
+    }
+  }
+
+  const RESULT: ScenePreviewResult = {
+    title: "Chart",
+    width: 720,
+    height: 240,
+    readyMs: 12,
+    settledMs: 300,
+    screenshotBase64: "AAAA",
+    problems: [],
+  };
+
+  it("renders a scene handed to it and answers with the result", async () => {
+    const seen: unknown[] = [];
+    const bridge = await startSceneBridge(async (request) => {
+      seen.push(request);
+      return RESULT;
+    });
+
+    const result = await callRender(bridge, { request: { source: '<p>x</p>', theme: "light" } });
+    expect(result).toEqual(RESULT);
+    expect(seen).toEqual([{ source: '<p>x</p>', theme: "light" }]);
+  });
+
+  it("refuses a render without the bridge token", async () => {
+    const bridge = await startSceneBridge(async () => RESULT);
+    await expect(callRender(bridge, { request: { source: "<p>x</p>" } }, null))
+      .rejects.toThrow(/authentication failed/i);
+  });
+
+  it("refuses a source over the preview size cap before rendering", async () => {
+    const preview = vi.fn(async () => RESULT);
+    const bridge = await startSceneBridge(preview);
+    await expect(callRender(bridge, {
+      request: { source: "x".repeat(SCENE_PREVIEW_MAX_SOURCE_BYTES + 1) },
+    })).rejects.toThrow(/too large/i);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it("reports the method as not exposed when no previewer is attached", async () => {
+    const bridge = await startSceneBridge(null);
+    await expect(callRender(bridge, { request: { source: "<p>x</p>" } }))
+      .rejects.toThrow(/not exposed/i);
   });
 });

@@ -16034,6 +16034,49 @@ describe("ADE CLI", () => {
   });
 });
 
+describe("ade scene preview plan", () => {
+  it("rejects an unknown scene command", () => {
+    expect(() => buildCliPlan(["scene", "frobnicate"])).toThrow(/Unknown scene command/);
+  });
+
+  it("needs a file, or - for stdin", () => {
+    expect(() => buildCliPlan(["scene", "preview"])).toThrow(/needs a file/);
+  });
+
+  it("validates --theme and --width before it reads anything", () => {
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--theme", "purple"]))
+      .toThrow(/--theme is dark or light/);
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--width", "10"]))
+      .toThrow(/--width is a number/);
+    expect(() => buildCliPlan(["scene", "preview", "/tmp/x.html", "--width", "nope"]))
+      .toThrow(/--width is a number/);
+  });
+
+  /**
+   * `ade scene --theme light preview f` is a natural way to type the flags, so
+   * the value flags are consumed before the verb is read.
+   */
+  it("reads flags that come before the verb", () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-scene-")), "scene.html");
+    fs.writeFileSync(file, "<div>3</div>");
+    const plan = expectExecutePlan(
+      buildCliPlan(["scene", "--theme", "light", "--width", "980", "preview", file]),
+    );
+
+    expect(plan.label).toBe("scene preview");
+    expect(plan.formatter).toBe("scene-preview");
+    expect(plan.minTimeoutMs).toBe(60_000);
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]).toMatchObject({
+      method: "ade/actions/call",
+      params: {
+        name: "preview_scene",
+        arguments: { source: "<div>3</div>", theme: "light", width: 980 },
+      },
+    });
+  });
+});
+
 describe("describeLastFailureForStartupLog", () => {
   it("names the real cause instead of the 'unknown' bucket", () => {
     // The credential-store decrypt failure that took a user's machine down for

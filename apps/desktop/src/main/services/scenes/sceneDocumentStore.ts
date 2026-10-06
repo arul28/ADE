@@ -21,9 +21,9 @@ export const SCENE_PROTOCOL_SCHEME = "ade-scene";
 
 /**
  * A long chat can prepare a scene per streamed revision, so the map has to be
- * bounded. 64 documents at the 96 KB source cap is a few megabytes worst case,
- * and the only cost of evicting one is that a frame which reloads an ancient
- * scene gets a 404 instead of a re-render.
+ * bounded, least recently PREPARED OR LOADED first. 64 documents with their
+ * inlined fonts is ~16 MB worst case, and the only cost of evicting one is that
+ * a frame which reloads an ancient scene gets a 404 instead of a re-render.
  */
 export const SCENE_STORE_CAPACITY = 64;
 
@@ -117,6 +117,11 @@ export function createSceneDocumentStore(options: {
     if (!id) return NOT_FOUND;
     const html = documents.get(id);
     if (html === undefined) return NOT_FOUND;
+    // A read refreshes the document's place: the renderer reuses a prepared
+    // URL for every remount of a scene, so eviction must take the documents
+    // nobody has loaded lately, not the ones still on screen.
+    documents.delete(id);
+    documents.set(id, html);
     return {
       status: 200,
       body: html,
