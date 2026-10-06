@@ -296,6 +296,37 @@ Claude Code ships no `control.sock` there. Both halves needed correcting.
 
 ### Closed by measurement, not by code
 
+- **The 190-346 ms SQLite writes are a second brain, not ADE's writes.** The
+  backlog asked for a single-brain measurement first. On this machine, with one
+  brain running and a copy of the live 7.2 MB project database opened through
+  ADE's own `openKvDb` (same pragmas, cr-sqlite loaded):
+
+  | | cost |
+  |---|---|
+  | `writeOwnRow`'s `runtime_processes` upsert (a plain table), 200x | mean 0.02 ms, p95 0.04, max 0.12 |
+  | the `ensureLocalDevice` shape -- select, update, select back, on CRR `devices`, 200x | mean 0.08 ms, p95 0.10, max 1.98 |
+  | the same with the write skipped | mean 0.01 ms |
+  | `wal_checkpoint(TRUNCATE)` after the run | 3.9 ms |
+
+  So neither write is expensive and a checkpoint is not the cause. A second
+  *process* holding a write transaction is, and it reproduces the recorded range
+  on the nose: a single write behind another process's transaction took 164.8 ms
+  behind a 120 ms hold, 326.6 ms behind 250 ms, and 1,076.7 ms behind 1,000 ms --
+  the holder's time plus ~50-80 ms. 190-346 ms is a peer holding a write for
+  ~130-280 ms. Nothing to fix in ADE; the fix is one brain per project database,
+  which `/context` already tells every agent to check.
+- **Skipping the `ensureLocalDevice` write is not worth its risk.** It saves
+  0.06-0.07 ms a call. At "several times a second" that is ~0.2 ms a second, and
+  the price is changing what `last_seen_at` freshness peers can assume. Dropped.
+- **A contended write blocks the whole event loop, then throws.** `node:sqlite`
+  is synchronous, so a write waiting on another writer is not an async wait: the
+  brain's event loop stops for the full contention. Worse, if releasing the lock
+  depends on the blocked process's own event loop, nothing can release it -- an
+  in-process version of the test above waited the entire `busy_timeout` of 5,000
+  ms and then threw `database is locked`. This is the mechanism behind the
+  `brain.event_loop_near_miss` warnings seen during two-brain sessions, and the
+  reason "one brain per project database" is a performance rule and not only a
+  correctness one.
 - **A shared 30 Hz spinner clock is the wrong trade.** The backlog above asked
   for a timer-driven spinner to replace the `steps(30)` CSS animation, on the
   estimate that the per-vsync tick cost ~0.25 ms. It does not. Traced over 8 s

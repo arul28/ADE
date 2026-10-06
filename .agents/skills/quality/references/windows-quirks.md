@@ -294,6 +294,15 @@ options argument in a sort comparator is a finding.
   Re-measure with `scripts/perf-animation-lab` before trusting any of this on a
   new Electron, and read its README first: process CPU is too noisy on a
   many-core Windows box to measure an animation at all.
+- **A contended SQLite write stops the event loop.** `node:sqlite` is
+  synchronous, so a write waiting on another process's write transaction is not
+  an async wait -- the brain's whole event loop stops for it, for the holder's
+  time plus ~50-80 ms (measured: 164.8 ms behind a 120 ms hold, 326.6 ms behind
+  250 ms, 1,076.7 ms behind 1,000 ms). If releasing the lock depends on the
+  blocked process's own event loop, nothing can: it waits the full
+  `busy_timeout` of 5,000 ms and throws `database is locked`. Uncontended, the
+  same writes cost 0.02-0.08 ms. Never run two brains on one project database,
+  and never add a write that another ADE process can hold a lock against.
 - **The full local suite is not clean on a Windows host.** POSIX-only fixtures,
   Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races
   fail there by design; only the focused Windows suites are signal-bearing
