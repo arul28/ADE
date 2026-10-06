@@ -4,7 +4,7 @@ import { ArrowSquareOut, FileImage, Image as ImageIcon, XCircle } from "@phospho
 import type { AgentChatEvent } from "../../../../shared/types";
 import { ChatStatusGlyph } from "../chatStatusVisuals";
 import { cn } from "../../ui/cn";
-import { useChatRuntimeScope } from "../ChatRuntimeScope";
+import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
 
 type ImageGenerationEvent = Extract<AgentChatEvent, { type: "codex_image_generation" }>;
 
@@ -52,8 +52,7 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
   const titleText = prompt || revised || (savedPath ? basename(savedPath) : "Generated image");
 
   // A chat on another machine saved the file there; this computer cannot open it.
-  const { pin, isRemote } = useChatRuntimeScope();
-  const savedPathOpensHere = !isRemote && pin == null;
+  const savedPathOpensHere = chatRunsOnThisComputer(useChatRuntimeScope());
 
   const openSaved = () => {
     if (!savedPath) return;

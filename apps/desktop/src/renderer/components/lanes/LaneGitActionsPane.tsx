@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
@@ -700,11 +701,9 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const pin = runtimePin ?? null;
-  // Event subscriptions key on the pin's key: a local pin object is rebuilt on
-  // every cross-machine merge, and re-subscribing a pinned pump drops events.
-  const pinRef = useRef<OpenProjectBinding | null>(pin);
-  pinRef.current = pin;
-  const pinKey = pin?.key ?? null;
+  // The auto-rebase subscription holds the pin by key: re-subscribing a pinned
+  // pump for every rebuilt pin object would drop the events in between.
+  const stablePin = useStableBinding(pin);
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned
@@ -1239,9 +1238,9 @@ export function LaneGitActionsPane({
       const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
       patchLaneGitActionsCachedState(projectStateKey, laneId, { autoRebaseStatus: nextStatus });
       setAutoRebaseStatus(nextStatus);
-    }, pinRef.current);
+    }, stablePin);
     return unsubscribe;
-  }, [active, laneId, pinKey, projectStateKey]);
+  }, [active, laneId, stablePin, projectStateKey]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();

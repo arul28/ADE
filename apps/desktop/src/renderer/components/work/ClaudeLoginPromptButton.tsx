@@ -16,13 +16,16 @@ type ClaudeLoginTerminalCreated = RevealTerminalRequest & {
 
 type WorkNavigate = (path: string) => void;
 
-async function resolveClaudeLoginLaneId(laneId?: string | null): Promise<string> {
+async function resolveClaudeLoginLaneId(
+  laneId: string | null | undefined,
+  runtimePin: OpenProjectBinding | null,
+): Promise<string> {
   if (laneId) return laneId;
   const listLanes = window.ade?.lanes?.list;
   const availableLanes = typeof listLanes === "function" ? await listLanes({
     includeArchived: false,
     includeStatus: false,
-  }) : [];
+  }, runtimePin) : [];
   const primaryLane = availableLanes.find((lane) => lane.laneType === "primary") ?? null;
   const resolvedLaneId = primaryLane?.id ?? availableLanes[0]?.id ?? null;
   if (!resolvedLaneId) {
@@ -44,7 +47,7 @@ export async function createClaudeLoginTerminal({
   if (!window.ade?.pty?.create) {
     throw new Error("Terminal sessions are not available in this ADE runtime.");
   }
-  const resolvedLaneId = await resolveClaudeLoginLaneId(laneId);
+  const resolvedLaneId = await resolveClaudeLoginLaneId(laneId, runtimePin);
   const created = await window.ade.pty.create({
     laneId: resolvedLaneId,
     ...(chatSessionId ? { chatSessionId } : {}),

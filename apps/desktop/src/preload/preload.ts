@@ -7419,6 +7419,7 @@ const adeBridge = {
         toTerminalSessionChangedEvent,
         cb,
         "session",
+        () => sessionDeltaCache.clear(),
       );
       if (removePinned) return removePinned;
       const removeLocal = subscribeLocalSessionChangedEvents(cb);
@@ -10856,13 +10857,26 @@ const adeBridge = {
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<FileChangeEvent>(payload, "file_change"),
-        (event) => {
-          clearGitReadCaches();
-          cb(event);
-        },
+        cb,
         "file change",
+        clearGitReadCaches,
       );
-      if (removePinned) return removePinned;
+      if (removePinned) {
+        // Loose folders (`external-local:*`) are watched by this process
+        // whatever the pin says (`callFilesWorkspaceActionOr`), so their
+        // changes still arrive on local IPC.
+        const looseFolderListener = (
+          _event: Electron.IpcRendererEvent,
+          payload: FileChangeEvent,
+        ) => {
+          if (isExternalFilesWorkspaceId(payload.workspaceId)) cb(payload);
+        };
+        ipcRenderer.on(IPC.filesChange, looseFolderListener);
+        return () => {
+          removePinned();
+          ipcRenderer.removeListener(IPC.filesChange, looseFolderListener);
+        };
+      }
       const unsubscribeRuntime = subscribeRemoteFileChangeEvents(cb);
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -11956,10 +11970,8 @@ const adeBridge = {
       callPrReadRuntimeActionOr(null, "reconcileOnFocus", { args: { force: true } }, () =>
         ipcRenderer.invoke(IPC.prsReconcileNow),
       ),
-    // The throttled catch-up a window focus runs, sent to the machine that
-    // owns the lane. Main schedules it on focus only for a project open on
-    // this computer, so a lane on another machine asks for it here. Locally
-    // that focus hook already covers it, hence the no-op fallback.
+    // Throttled focus catch-up on the lane's machine; see
+    // `requestMachinePrReconcile`. Main already runs it for local projects.
     reconcileOnFocus: async (pin?: OpenProjectBinding | null): Promise<void> => {
       await callPrReadRuntimeActionOr(pin, "reconcileOnFocus", { args: {} }, async () => undefined);
     },

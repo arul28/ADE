@@ -88,10 +88,7 @@ export function LaneDiffPane({
   // A foreign lane's diff stays read-only. Live sync watches the lane's own
   // machine through the pinned Files API, so it follows edits made there.
   const isForeign = pin != null;
-  // Keyed on the pin's key: a local pin object is rebuilt on every cross-machine
-  // merge, and the api is cached per key anyway.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const files = useMemo(() => createPinnedFilesApi(pin), [pin?.key]);
+  const files = createPinnedFilesApi(pin);
   const diffRef = useRef<AdeDiffViewerHandle | null>(null);
   const workingDiffRequestSeq = useRef(0);
   const commitFilesRequestSeq = useRef(0);

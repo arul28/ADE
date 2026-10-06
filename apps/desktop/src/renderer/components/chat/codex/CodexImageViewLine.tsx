@@ -5,7 +5,7 @@ import { isDataUri } from "../../../../shared/chatImageUrls";
 import { basenameCrossPlatform } from "../../../../shared/pathDisplay";
 import { readAttachmentImageDataUrl } from "../../../lib/attachmentImage";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../../lib/openExternal";
-import { useChatRuntimeScope } from "../ChatRuntimeScope";
+import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
 
 type ImageViewEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 
@@ -38,12 +38,14 @@ function stripFileUrlPrefix(value: string | null): string | null {
   if (!value) return value;
   if (!/^file:\/\//i.test(value)) return value;
   const raw = value.replace(/^file:\/\//i, "");
-  // `file:///C:/x.png` names a Windows path; drop the slash before the drive.
+  let decoded = raw;
   try {
-    return decodeURIComponent(raw).replace(/^\/([a-z]:[\\/])/i, "$1");
+    decoded = decodeURIComponent(raw);
   } catch {
-    return raw.replace(/^\/([a-z]:[\\/])/i, "$1");
+    // keep the raw path
   }
+  // `file:///C:/x.png` names a Windows path; drop the slash before the drive.
+  return decoded.replace(/^\/([a-z]:[\\/])/i, "$1");
 }
 
 type ImageViewTarget = {
@@ -101,11 +103,6 @@ function imageViewTarget(event: ImageViewEvent, pathOpensHere: boolean): ImageVi
  * reader sees the image the agent saw instead of a bare file name. A refused
  * or missing read leaves null; there is no error state for a thumbnail.
  */
-function useImagePathOpensHere(): boolean {
-  const { pin, isRemote } = useChatRuntimeScope();
-  return !isRemote && pin == null;
-}
-
 function useImageViewSrc(target: ImageViewTarget): string | null {
   const { pin } = useChatRuntimeScope();
   const [localSrc, setLocalSrc] = useState<string | null>(null);
@@ -142,7 +139,7 @@ function OpenButton({ target }: { target: ImageViewTarget }) {
 
 /** One tile in a strip: the picture when it loads, else a quiet placeholder. */
 function ImageViewTile({ event }: { event: ImageViewEvent }) {
-  const target = imageViewTarget(event, useImagePathOpensHere());
+  const target = imageViewTarget(event, chatRunsOnThisComputer(useChatRuntimeScope()));
   const src = useImageViewSrc(target);
   const tileClass = "relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-fg/[0.07] bg-black/25";
   const body = src ? (
@@ -173,7 +170,7 @@ function PreviewImage({ src, name }: { src: string; name: string }) {
 }
 
 export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps) {
-  const target = imageViewTarget(event, useImagePathOpensHere());
+  const target = imageViewTarget(event, chatRunsOnThisComputer(useChatRuntimeScope()));
   const previewSrc = useImageViewSrc(target);
 
   // A run of image views: one line that counts them, then one strip.

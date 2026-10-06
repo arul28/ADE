@@ -19,7 +19,7 @@ import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { chatRunsOnThisComputer, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
@@ -310,12 +310,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     };
   }, [refreshPr, runtimePinKey]);
 
-  // A lane on another machine gets no focus reconcile from this computer, so a
-  // PR an agent opened there with `gh pr create` never reached its database
-  // and the pill stayed empty until a manual sync. Ask that machine for the
-  // catch-up on open and on refocus; the subscription above re-reads the PR
-  // when it finishes.
-  const laneOnOtherMachine = isRemote || runtimePinKey != null;
+  // See `requestMachinePrReconcile`; the subscription above re-reads the PR
+  // when the reconcile finishes.
+  const laneOnOtherMachine = !chatRunsOnThisComputer(scope);
   useEffect(() => {
     if (!laneOnOtherMachine) return;
     const request = () => requestMachinePrReconcile(projectRoot, runtimePinRef.current);
