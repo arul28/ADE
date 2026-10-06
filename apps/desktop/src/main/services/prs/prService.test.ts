@@ -49,6 +49,7 @@ vi.mock("../shared/remoteTrackingBranch", () => ({
 import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { githubReadFailureBackoffMs } from "./githubReadBackoff";
+import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import {
   createPrService,
   GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
@@ -310,8 +311,12 @@ function makeProjectConfigService() {
 interface BuildServiceOpts {
   githubService?: any;
   laneService?: any;
+  laneWorktreeLockService?: any;
   db?: any;
   conflictService?: any;
+  rebaseSuggestionService?: any;
+  autoRebaseService?: any;
+  refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   projectConfigService?: any;
   aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
@@ -373,6 +378,10 @@ function buildService(opts: BuildServiceOpts = {}) {
     githubService,
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
+    laneWorktreeLockService: opts.laneWorktreeLockService,
+    rebaseSuggestionService: opts.rebaseSuggestionService,
+    autoRebaseService: opts.autoRebaseService,
+    refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
     ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
     onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
@@ -6187,13 +6196,78 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
+  it("refreshes rebase suggestions through the post-merge cleanup service", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-refresh-suggestions" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const scanRebaseNeeds = vi.fn(async () => []);
+    const refresh = vi.fn(async () => {});
+    const conflictService = { scanRebaseNeeds } as any;
+    const rebaseSuggestionService = { refresh } as any;
+    const laneService = makeLaneService([]);
+    const { service } = buildService({ db, conflictService, rebaseSuggestionService, laneService });
+
+    await service.runPostMergeCleanup({ prId: row.id });
+
+    expect(scanRebaseNeeds).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues post-merge cleanup when the default-branch refresh rejects", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-refresh-rejects" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => { throw new Error("refresh failed"); });
+    const archive = vi.fn(async () => {});
+    const laneService = { ...makeLaneService([]), archive } as any;
+    const { service } = buildService({ db, laneService, refreshDefaultBranchAfterMerge });
+
+    await expect(service.runPostMergeCleanup({ prId: row.id, archiveLane: true })).resolves.toMatchObject({
+      laneArchived: true,
+    });
+
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+    expect(archive).toHaveBeenCalledWith({ laneId: row.lane_id });
+  });
+
+  it("uses the live GitHub base when refreshing after a mapped PR lands", async () => {
+    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
+    const row = makePrRow({ id: "pr-retargeted-base", base_branch: "stack-parent" });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (request: { method: string; path: string }) => {
+        if (request.method === "GET" && request.path.endsWith("/pulls/90")) {
+          return { data: makeGitHubPull({ number: 90, base: { ref: "main" }, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (request.method === "PUT" && request.path.endsWith("/pulls/90/merge")) {
+          return { data: { sha: "merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService, refreshDefaultBranchAfterMerge });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({ success: true });
+
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+  });
+
   /**
    * A stacked PR (#91, position 2 over open #90 in Stack #19) merges through
    * the async merge API. `replies` scripts the PUT, then each poll in order.
    */
   const buildStackLand = (
     replies: Array<{ status?: number; body: unknown }>,
-    opts: { headSha?: string; compare?: unknown } = {},
+    opts: {
+      headSha?: string;
+      compare?: unknown;
+      baseBranches?: Record<number, string>;
+      refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
+    } = {},
   ) => {
     const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
     const db = makeMockDb();
@@ -6229,14 +6303,27 @@ describe("prService.land", () => {
           return { data: reply.body };
         }
         if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) {
-          return { data: { state: "open", merged_at: null, ...(opts.headSha ? { head: { sha: opts.headSha } } : {}) } };
+          const pullNumber = Number(args.path.split("/").pop());
+          return {
+            data: {
+              state: "open",
+              merged_at: null,
+              base: { ref: opts.baseBranches?.[pullNumber] ?? "main" },
+              ...(opts.headSha ? { head: { sha: opts.headSha } } : {}),
+            },
+          };
         }
         if (args.method === "GET" && args.path.includes("/compare/") && opts.compare) return { data: opts.compare };
         return { data: {} };
       }),
     });
     const operationService = makeOperationService();
-    const { service } = buildService({ db, githubService, operationService });
+    const { service } = buildService({
+      db,
+      githubService,
+      operationService,
+      refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
+    });
     return { service, asyncCalls, operationService };
   };
 
@@ -6346,6 +6433,25 @@ describe("prService.land", () => {
     // GitHub can still finish the merge after ADE stops polling, so the
     // operation must stay open rather than record a failure the merge never had.
     expect(operationService.finish).not.toHaveBeenCalled();
+  });
+
+  it("routes each live stack base through the brain's default-branch gate after the stack lands", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service } = buildStackLand(
+      [{ status: 202, body: pending() }, { body: merged }],
+      {
+        baseBranches: { 90: "main", 91: "stack-parent" },
+        refreshDefaultBranchAfterMerge,
+      },
+    );
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toMatchObject({ success: true, mergeStatus: "merged" });
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledTimes(2);
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("stack-parent");
   });
 
   it("refuses auto-merge for a stacked PR", async () => {
@@ -7593,7 +7699,7 @@ describe("prService.createIntegrationLane", () => {
     } as any;
   }
 
-  function buildIntegrationService(opts: { laneService?: any; db?: any } = {}) {
+  function buildIntegrationService(opts: { laneService?: any; db?: any; laneWorktreeLockService?: any } = {}) {
     const db = opts.db ?? makeMockDb();
     const laneService = opts.laneService ?? makeIntegrationLaneService();
 
@@ -7609,6 +7715,7 @@ describe("prService.createIntegrationLane", () => {
       operationService: makeOperationService(),
       githubService: makeGithubService(),
       projectConfigService: makeProjectConfigService(),
+      laneWorktreeLockService: opts.laneWorktreeLockService,
       openExternal: vi.fn(async () => {}),
     });
 
@@ -7757,6 +7864,44 @@ describe("prService.createIntegrationLane", () => {
       (call: unknown[]) => Array.isArray(call[0]) && (call[0] as string[])[0] === "merge",
     );
     expect(mergeCalls.length).toBe(2);
+  });
+
+  it("holds a worktree lease while merging source branches into the integration lane", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+    let leaseActive = false;
+    let mergeRanWithLease = false;
+    const laneWorktreeLockService = {
+      acquire: vi.fn(() => {
+        leaseActive = true;
+        return { token: "lease-1", lock: {} };
+      }),
+      release: vi.fn(() => { leaseActive = false; }),
+    };
+    const { service } = buildIntegrationService({ laneWorktreeLockService });
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "merge") mergeRanWithLease = leaseActive;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    await service.createIntegrationLane({
+      sourceLaneIds: [SOURCE_LANE_A_ID],
+      integrationLaneName: "integration/test",
+      baseBranch: "main",
+      allowDirtyWorktree: true,
+    });
+
+    expect(laneWorktreeLockService.acquire).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: integrationLane.id,
+      worktreePath: integrationLane.worktreePath,
+      ownerKind: "integration_resolution",
+    }));
+    expect(laneWorktreeLockService.release).toHaveBeenCalledWith({ token: "lease-1" });
+    expect(mergeRanWithLease).toBe(true);
   });
 
   it("records merge failure and aborts when a source branch fails to merge", async () => {
@@ -9241,7 +9386,8 @@ describe("prService destructive paths on a PR with no local row", () => {
       head: { ref: "feature/unmapped", repo: { owner: { login: REPO.owner }, name: REPO.name } },
     });
     const githubService = githubWithPull(pull);
-    const { service } = buildService({ db, githubService });
+    const refreshDefaultBranchAfterMerge = vi.fn(async () => {});
+    const { service } = buildService({ db, githubService, refreshDefaultBranchAfterMerge });
 
     const result = await service.land({
       prId: SYNTHETIC,
@@ -9255,6 +9401,7 @@ describe("prService destructive paths on a PR with no local row", () => {
       method: "DELETE",
       path: `/repos/${REPO.owner}/${REPO.name}/git/refs/heads/feature/unmapped`,
     }));
+    expect(refreshDefaultBranchAfterMerge).toHaveBeenCalledWith("main");
   });
 
   it("keeps the branch, and says so, when the merge did not ask for a delete", async () => {

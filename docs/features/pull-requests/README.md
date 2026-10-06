@@ -1908,16 +1908,19 @@ try-catch so a cleanup failure does not mask the successful merge:
 - base branch fetch
 - cache invalidation
 - rebase-needs scan
+- rebase-suggestion refresh
+- an immediate default-branch auto-pull request when the live PR base is the project's default branch (including unmapped and GitHub-stack merges)
 
 Individual failures log as warnings; the operation is marked
 succeeded with a `cleanupError` metadata field when anything went
 wrong.
 
-Everything on that list except the branch delete is lane-scoped, so a merged PR
-with no local row skips straight to dropping its activity memos and invalidating
-the GitHub snapshot cache (`finishSuccessfulMerge`) — plus the branch delete, if
-it was requested. Reporting `branchDeleted: false` unconditionally for those PRs
-made the opt-in a silent no-op for exactly the PRs it exists to serve.
+The lane cleanup steps are lane-scoped, so a merged PR with no local row skips
+straight to dropping its activity memos and invalidating the GitHub snapshot
+cache (`finishSuccessfulMerge`) — plus the branch delete, if it was requested.
+The default-branch refresh still runs when that PR's live base is the project's
+default branch. Stack merges check the live base of each merged PR, so a stacked
+parent does not trigger a default-branch pull.
 
 ### Standalone PR branch cleanup
 

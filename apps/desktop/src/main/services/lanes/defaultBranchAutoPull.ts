@@ -54,6 +54,10 @@ export type AutoPullDecision =
   | { pull: true; reason: "eligible" }
   | { pull: false; reason: AutoPullSkipReason | "not-evaluated" };
 
+export function isDefaultBranchMerge(baseBranch: string, defaultBranch: string): boolean {
+  return normalizeBranchName(baseBranch).trim() === normalizeBranchName(defaultBranch).trim();
+}
+
 export type AutoPullEligibilityInput = {
   /** The lane is the project's primary checkout. Only it is auto-pulled. */
   isPrimary: boolean;

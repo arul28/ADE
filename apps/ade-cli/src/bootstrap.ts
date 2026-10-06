@@ -259,9 +259,9 @@ import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../
 import {
   createDefaultBranchAutoPullService,
   detectInProgressGitOperation,
+  isDefaultBranchMerge,
 } from "../../desktop/src/main/services/lanes/defaultBranchAutoPull";
 import { parseWorktreeStatusPorcelainV2 } from "../../desktop/src/main/services/lanes/laneBranchDrift";
-import { normalizeBranchName } from "../../desktop/src/main/services/shared/utils";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
@@ -2029,7 +2029,7 @@ export async function createAdeRuntime(args: {
         ? undefined
         : async (baseBranch) => {
             // A merge into a stacked parent branch leaves the default branch alone.
-            if (normalizeBranchName(baseBranch).trim() !== normalizeBranchName(baseRef).trim()) return;
+            if (!isDefaultBranchMerge(baseBranch, baseRef)) return;
             await defaultBranchAutoPullService.runOnce();
           },
     });
