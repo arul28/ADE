@@ -8,7 +8,14 @@ param(
   [string]$CliBinDir = "",
   [switch]$SkipServiceRemoval,
   [switch]$SkipUserPathUpdate,
-  [switch]$SkipProtocolRemoval
+  [switch]$SkipProtocolRemoval,
+  # A newer ADE is replacing this install in place (the NSIS uninstaller runs
+  # with --updated). Only the background service is stopped, so nothing respawns
+  # a brain from the folder being replaced. The terminal shim, the user PATH
+  # entry, the ade:// protocol and file associations all stay: the new version
+  # rewrites them seconds later, and tearing them down here cost a PATH
+  # broadcast plus a walk of HKCU\Software\Classes on every update.
+  [switch]$Updating
 )
 
 $ErrorActionPreference = "Stop"
@@ -258,13 +265,35 @@ function Remove-ChannelStartupWithoutPackagedCli(
   Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue
 }
 
+# Same line format as windows-install-setup.ps1 writes to the same file, so an
+# update's uninstall and install halves read as one timeline. Best effort only.
+function Write-AdeUninstallStep([string]$Step, [double]$Seconds, [string]$Detail) {
+  try {
+    $logDir = Join-Path $timingAdeHome "runtime"
+    if (-not (Test-Path -LiteralPath $logDir -PathType Container)) { return }
+    $line = "{0} uninstall-cleanup {1} {2:N2}s {3}" -f `
+      ([DateTime]::UtcNow.ToString("o")), $Step, $Seconds, $Detail
+    Add-Content -LiteralPath (Join-Path $logDir "install-steps.log") -Value $line -Encoding UTF8
+  } catch {
+    # Best effort only.
+  }
+}
+
 $resolvedInstallDir = Resolve-NormalizedPath $InstallDir
 $normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
 if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
   throw "Unsupported ADE package channel: $PackageChannel"
 }
+$timingHomeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
+$timingAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
+  Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $timingHomeName
+} else {
+  $AdeHome
+}
+$cleanupMode = if ($Updating) { "updating" } else { "uninstall" }
 
 if (-not $SkipServiceRemoval) {
+  $serviceRemovalTimer = [Diagnostics.Stopwatch]::StartNew()
   $normalizedAppExecutableName = [System.IO.Path]::GetFileName($AppExecutableName)
   if (
     [string]::IsNullOrWhiteSpace($normalizedAppExecutableName) -or
@@ -282,7 +311,14 @@ if (-not $SkipServiceRemoval) {
   }
   $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
   $cliPath = Join-Path $resolvedInstallDir "resources\ade-cli\cli.cjs"
-  if ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
+  if ($Updating) {
+    # The app already took its startup entry down before quitting
+    # (`autoUpdate.runtime_service_uninstalled_before_install`); what is left is
+    # to stop a supervisor that could respawn the brain from this folder. The
+    # validated PowerShell path does exactly that, without starting ADE.exe as
+    # Node to run the CLI, which measured 10.2s of every update.
+    Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
+  } elseif ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
     $electronRunAsNodePresent = Test-Path Env:ELECTRON_RUN_AS_NODE
     $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
     $disableCliInstallPresent = Test-Path Env:ADE_DISABLE_CLI_AUTO_INSTALL
@@ -325,6 +361,11 @@ if (-not $SkipServiceRemoval) {
     Write-Warning "The packaged ADE executable or CLI is missing; removing only validated per-user startup state."
     Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
   }
+  Write-AdeUninstallStep "service_removal" $serviceRemovalTimer.Elapsed.TotalSeconds "ok mode=$cleanupMode"
+}
+
+if ($Updating) {
+  exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($CliBinDir)) {

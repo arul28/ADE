@@ -378,6 +378,10 @@
           "to": "ade-cli/windows-firewall-rules.ps1"
         },
         {
+          "from": "scripts/windows-update-progress.ps1",
+          "to": "ade-cli/windows-update-progress.ps1"
+        },
+        {
           "from": "resources/runtime",
           "to": "runtime",
           "filter": [
