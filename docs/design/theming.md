@@ -119,7 +119,8 @@ previous theme owned, write the new ones on `<html>`, set `data-theme` and
 `data-theme-id` on `<html>` and remove any stale copy from `<body>`, and set
 `color-scheme`. It does no
 layout reads, so it never forces reflow, and it is called from exactly one
-effect in `App.tsx` keyed on `themeId` + `customThemes`.
+effect, in `ThemeDocumentSync` (`components/app/App.tsx`), keyed on `themeId`,
+`customThemes` and the scene's palette when App colours follow the picture.
 
 Flair reaches the page two ways. Corners, shadows and the interface face are
 custom properties the engine writes (`--radius-*`, `--pane-radius`,
@@ -144,9 +145,13 @@ blob in this machine's localStorage and are **not** in
 `ACCOUNT_SYNCED_SETTINGS`. A laptop, a desktop and a browser each keep their own
 look; signing in on a new machine does not carry a theme over. The page is under
 Settings → Machines → This computer → Appearance, and has no copy under a remote
-machine. (The Apple device options that used to share the page stay on the
-account, on their own Account page, because the host reads the remote streaming
-cap from the account store.)
+machine. The Apple device options sit beside it, under This computer → Apple
+devices. They are per computer too, but they still go through the account
+store, because the brain on this computer reads the remote streaming cap and
+recording overlays from it: each computer files its own copy under the
+account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`,
+`accountDeviceSettingKey` in `shared/accountSettingsScope.ts`). The brain reads
+that key first and falls back to the old account-wide key.
 
 Rows an older build already wrote to the account are ignored, not deleted. Move
 a theme between machines with Export and Import.
@@ -155,6 +160,25 @@ a theme between machines with Export and Import.
 current custom list, so `data-theme`, `color-scheme` and the title-bar overlay
 never disagree with the painted palette. The legacy `theme` key is still
 written (the base mode) so older clients keep working.
+
+## Scenes and picture colours
+
+The backdrop behind the top bar, the home page and the new chat page is a
+**scene**: the theme's animated mesh, one picture, or a shuffled picture. Scene
+preferences live in `interfacePreferences.scene` in `ade.userPreferences.v1`
+(per computer, like the theme). `ThemeDocumentSync` in
+`components/app/App.tsx` applies theme and scene together, and
+`useSceneDocumentSync` sets `html[data-scene="image"]` while a picture shows.
+
+A picture feeds the theme rather than replacing it. `scene/scenePalette.ts`
+extracts a palette from the picture; the mesh paints from it. When **App
+colours** is set to **From picture** (`matchTheme`), `scene/sceneTheme.ts`
+(`themeTintedByScene`) derives a tinted copy of the active theme (the accent
+from the picture, a hint of its hue in the surfaces) and the engine applies
+that copy through the normal `applyTheme.ts` path. No second colour path exists;
+switching back to **From theme** reapplies the theme as shipped.
+
+How scenes look and behave is in `visual-language.md`.
 
 ## Adding a theme
 

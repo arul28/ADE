@@ -135,7 +135,10 @@ If the lane touches renderer UI (`apps/desktop/src/renderer/**/*.tsx`) or the
 keywords mention UI, banners, toasts, dialogs, modals, popovers, or z-index,
 also load `docs/design/notices.md`. That doc is the one source for
 which banner, toast, dialog, or sheet primitive to use, the tones, and
-`Z_LAYERS`. Never invent a new notice or overlay style. Its `ade-ui/*` lint
+`Z_LAYERS`. Never invent a new notice or overlay style. Also load
+`docs/design/visual-language.md`, the house look (surface kit, settings
+primitives, scenes, colour rules, the performance budget for always-visible
+chrome); new UI follows it rather than inventing a panel style. Its `ade-ui/*` lint
 rules are ratcheted in CI (`npm run lint:ci` in `apps/desktop`). Name the
 doc in the summary's **Docs** line.
 

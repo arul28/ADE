@@ -1687,6 +1687,33 @@ describe("appStore", () => {
     });
   });
 
+  describe("background (scene) preferences", () => {
+    // The release that ships pictures puts every user on the shipped default
+    // once — shuffle, a new picture on each wake, every picture in — whatever
+    // they had before. After that, their own choice survives a relaunch.
+    it("resets older preferences to the shipped default once, then keeps the user's choice", async () => {
+      mockStorage.set("ade.userPreferences.v1", JSON.stringify({
+        interfacePreferences: {
+          scene: { mode: "gradient", shuffleEvery: "day", shuffleExclude: ["ade:storm-field"], matchTheme: false },
+        },
+      }));
+      vi.resetModules();
+      const firstLoad = await import("./appStore");
+      const reset = firstLoad.useAppStore.getState().interfacePreferences.scene;
+      expect(reset).toMatchObject({ mode: "shuffle", shuffleEvery: "wake", shuffleExclude: [], matchTheme: true });
+
+      firstLoad.useAppStore.getState().setInterfacePreferences({
+        scene: { ...reset, mode: "gradient", shuffleExclude: ["ade:storm-field"] },
+      });
+      vi.resetModules();
+      const relaunch = await import("./appStore");
+      expect(relaunch.useAppStore.getState().interfacePreferences.scene).toMatchObject({
+        mode: "gradient",
+        shuffleExclude: ["ade:storm-field"],
+      });
+    });
+  });
+
   describe("project transitions", () => {
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
