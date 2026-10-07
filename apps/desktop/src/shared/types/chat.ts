@@ -2913,6 +2913,15 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    * `personalChats.list` / `setPinned`; Work pins live on the terminal session.
    */
   pinned?: boolean;
+  /**
+   * The agent's Chats-row reports, read from the session row. Set only on rows
+   * returned by `personalChats.list`; a Work row reads them from its terminal
+   * session summary instead.
+   */
+  activityStatus?: SessionActivityReport | null;
+  statusNote?: string | null;
+  attentionRequestedAt?: string | null;
+  attentionMessage?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;

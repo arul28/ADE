@@ -78,7 +78,13 @@ export function buildAdeRuntimeSocketEnv(runtimeSocketPath: string | null | unde
 export type AdeSessionActivityTarget =
   | { type: "environment" }
   /** OpenCode's shared server cannot receive this session's environment. */
-  | { type: "inline"; runtimeSocketPath: string };
+  | { type: "inline"; runtimeSocketPath: string }
+  /**
+   * A personal (project-less) chat. Its runtime has no socket of its own, so
+   * the command names the personal scope and reaches it through the brain the
+   * CLI shim already targets. Works from any shell, OpenCode's included.
+   */
+  | { type: "personal" };
 
 /**
  * Agent-set activity is emitted only by provider call sites that have verified
@@ -128,13 +134,14 @@ export function buildAdeSessionActivityGuidance(args: {
     }
   }
   let cliCommand: string;
-  if (target.type === "inline") {
+  if (target.type === "inline" || target.type === "personal") {
     cliCommand = args.shell === "powershell" ? `& ${safeCliPath}` : safeCliPath;
   } else {
     cliCommand = args.shell === "powershell" ? '& "$env:ADE_CLI_PATH"' : '"$ADE_CLI_PATH"';
   }
   const command = (activity: "debugging" | "clear"): string => {
-    const invoke = `${cliCommand} chat activity ${activity} --session ${safeSessionId}`;
+    const scopeFlag = target.type === "personal" ? " --personal" : "";
+    const invoke = `${cliCommand} chat activity ${activity}${scopeFlag} --session ${safeSessionId}`;
     if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
     return `${runtimeTargetAssignments}${invoke}`;
   };

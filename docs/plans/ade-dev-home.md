@@ -139,8 +139,10 @@ store) and classify each one as hide, route or n/a.
 - A personal-scope pane call goes to the active project's runtime and creates
   a chat in the wrong place.
 - A legacy personal session with no `personalProfile` must default to
-  `embedded` semantics on the SDK path and `assistant` in ADE's UI. Decide one
-  rule and document it.
+  `embedded` semantics on the SDK path and `assistant` in ADE's UI. Decided:
+  ADE's Chats surfaces send an assistant claim when they use a chat, and a
+  claimed row with no profile is upgraded and persisted; see "Legacy rows are
+  upgraded by use" in `docs/features/personal-chats/README.md`.
 - Move to project half-completes and leaves the chat in both lists, or in neither.
 - Cross-machine: a personal chat on machine B opened from machine A.
 

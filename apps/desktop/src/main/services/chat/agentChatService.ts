@@ -9041,7 +9041,13 @@ function buildCodexDeveloperInstructions(args: {
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
-  if (args.session.surface === "personal") return resolvePersonalPromptFor(args.session, args.laneWorktreePath);
+  if (args.session.surface === "personal") {
+    return resolvePersonalPromptFor(
+      args.session,
+      args.laneWorktreePath,
+      args.collaborationMode === "default" ? args.sessionActivityGuidance : null,
+    );
+  }
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -9076,7 +9082,9 @@ function buildOpenCodeSystemPrompt(args: {
   spawnGuidance?: SpawnSelfReportGuidanceOpts;
   sessionActivityGuidance?: string | null;
 }): string {
-  if (args.session.surface === "personal") return resolvePersonalPromptFor(args.session, args.laneWorktreePath);
+  if (args.session.surface === "personal") {
+    return resolvePersonalPromptFor(args.session, args.laneWorktreePath, args.sessionActivityGuidance);
+  }
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -9696,10 +9704,15 @@ function resolveClaudeStrictMcpConfig(
 function resolvePersonalPromptFor(
   session: Pick<AgentChatSession, "surface" | "personalProfile" | "instructions">,
   cwd: string,
+  /** The Chats-row reporting lines, when this chat can report (assistant only). */
+  activityGuidance?: string | null,
 ): string {
   if (!isAssistantPersonalSession(session)) return resolvePersonalSystemPrompt(session);
   const skillRoots = withoutAgentSkills(adePromptAgentSkillRoots({ cwd }), PERSONAL_LANE_ONLY_AGENT_SKILLS);
-  return resolvePersonalSystemPrompt(session, buildPersonalAssistantSystemPrompt({ cwd, skillRoots }));
+  return resolvePersonalSystemPrompt(
+    session,
+    buildPersonalAssistantSystemPrompt({ cwd, skillRoots, activityGuidance }),
+  );
 }
 
 function personalChatUserPromptFallback(
@@ -10716,11 +10729,20 @@ export function createAgentChatService(args: {
       : agentSkillRootEnv()
   );
 
+  /**
+   * Where this chat's `ade chat activity|note|ask` reports go, or null when it
+   * cannot report. A project chat reports to this runtime's socket. An
+   * `assistant` personal chat reports through the brain with `--personal`
+   * (`runtimeSocketPath: null`): the personal runtime has no socket of its own,
+   * and pinning the CLI to its path would break every other `ade` command the
+   * agent runs. An `embedded` personal chat (an SDK host's) does not report.
+   */
   const resolveSessionActivityRuntime = (
-    session: Pick<AgentChatSession, "id" | "surface">,
+    session: Pick<AgentChatSession, "id" | "surface" | "personalProfile">,
     enabled: boolean,
-  ): { cliPath: string; runtimeSocketPath: string } | null => {
-    if (!sessionActivityReportingEnabled || !enabled || isPersonalSession(session)) return null;
+  ): { cliPath: string; runtimeSocketPath: string | null; personal: boolean } | null => {
+    if (!sessionActivityReportingEnabled || !enabled || isEmbeddedPersonalSession(session)) return null;
+    const personal = isPersonalSession(session);
     // Only trust ADE_CLI_PATH when the launch-time ADE CLI resolver supplied
     // it. A PATH entry or an inherited user-provided value is not proof that
     // this agent can reach this ADE runtime.
@@ -10739,18 +10761,20 @@ export function createAgentChatService(args: {
     // launch-time resolver value. Without an explicit socket, the CLI can
     // silently fall back to the stable ADE home on Windows and report to a
     // different channel's runtime, so do not advertise activity reporting.
+    if (personal) return { cliPath, runtimeSocketPath: null, personal: true };
     const exactRuntimeSocketPath = runtimeSocketPath
       ?? (agentEnv?.ADE_RUNTIME_SOCKET_PATH?.trim() || null);
     if (!exactRuntimeSocketPath) return null;
     return {
       cliPath,
       runtimeSocketPath: exactRuntimeSocketPath,
+      personal: false,
     };
   };
 
   const sessionActivityGuidanceForRuntime = (
     session: Pick<AgentChatSession, "id">,
-    runtime: { cliPath: string; runtimeSocketPath: string } | null,
+    runtime: { cliPath: string; runtimeSocketPath: string | null; personal: boolean } | null,
     target: AdeSessionActivityTarget = { type: "environment" },
   ): string | null => {
     if (!runtime) return null;
@@ -10758,12 +10782,15 @@ export function createAgentChatService(args: {
       sessionId: session.id,
       cliPath: runtime.cliPath,
       shell: process.platform === "win32" ? "powershell" : "posix",
-      target,
+      // A personal chat names its scope on the command itself, so it reaches
+      // the brain's personal runtime from any shell, OpenCode's shared server
+      // included.
+      target: runtime.personal ? { type: "personal" } : target,
     });
   };
 
   const buildSessionActivityGuidance = (
-    session: Pick<AgentChatSession, "id" | "surface">,
+    session: Pick<AgentChatSession, "id" | "surface" | "personalProfile">,
     enabled: boolean,
   ): string | null => sessionActivityGuidanceForRuntime(
     session,
@@ -10771,11 +10798,11 @@ export function createAgentChatService(args: {
   );
 
   const buildOpenCodeSessionActivityGuidance = (
-    session: Pick<AgentChatSession, "id" | "surface">,
+    session: Pick<AgentChatSession, "id" | "surface" | "personalProfile">,
     enabled: boolean,
   ): string | null => {
     const runtime = resolveSessionActivityRuntime(session, enabled);
-    const target: AdeSessionActivityTarget = runtime
+    const target: AdeSessionActivityTarget = runtime?.runtimeSocketPath
       ? { type: "inline", runtimeSocketPath: runtime.runtimeSocketPath }
       : { type: "environment" };
     return sessionActivityGuidanceForRuntime(session, runtime, target);
@@ -10882,7 +10909,7 @@ export function createAgentChatService(args: {
     // selection must match this service even when the launcher environment or
     // a provider preset still carries another ADE channel's socket.
     const activityRuntime = resolveSessionActivityRuntime(managed.session, true);
-    if (activityRuntime) {
+    if (activityRuntime?.runtimeSocketPath) {
       // Different ADE CLI entry points prefer different socket environment
       // variables. Pin every selector so child commands cannot follow a stale
       // channel URL or RPC socket from the provider preset.
@@ -15823,7 +15850,7 @@ export function createAgentChatService(args: {
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
     const systemPrompt = isPersonalSession(managed.session)
-      ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
+      ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, piActivityGuidance)
       : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
           mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
@@ -38946,6 +38973,10 @@ export function createAgentChatService(args: {
         ]
         : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
+      const claudeActivityGuidance = buildSessionActivityGuidance(
+        managed.session,
+        !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
+      );
       const claudeHarnessPrompt = assistantSession
         ? null
         : buildCodingAgentSystemPrompt({
@@ -38955,10 +38986,7 @@ export function createAgentChatService(args: {
           interactive: true,
           runtime: "claude-agent-sdk-query",
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-          sessionActivityGuidance: buildSessionActivityGuidance(
-            managed.session,
-            !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
-          ),
+          sessionActivityGuidance: claudeActivityGuidance,
         });
       opts.systemPrompt = claudeHarnessPrompt == null
         ? {
@@ -38967,7 +38995,7 @@ export function createAgentChatService(args: {
           // Claude Code's own prompt stays underneath, so the agent keeps its
           // tool habits; the assistant framing replaces the lane workspace.
           append: [
-            resolvePersonalPromptFor(managed.session, managed.laneWorktreePath),
+            resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, claudeActivityGuidance),
             ...slashCommandsSection,
             "",
             buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
@@ -48334,7 +48362,11 @@ export function createAgentChatService(args: {
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
       if (personalSession || isFirstSendForLane) {
         const injected = personalSession
-          ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
+          ? resolvePersonalPromptFor(
+            managed.session,
+            managed.laneWorktreePath,
+            buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
+          )
           : await buildCursorSdkInjectedSystemPrompt({
               runtime: "local",
               laneWorktreePath: managed.laneWorktreePath,
@@ -50695,8 +50727,15 @@ export function createAgentChatService(args: {
       runtime.eventMapperState = createDroidSdkEventMapperState();
       const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
       const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
+      const droidActivityGuidance = buildSessionActivityGuidance(
+        managed.session,
+        droidPermissionMode !== null
+          && droidPermissionMode !== "read-only"
+          && droidPermissionMode !== "agi"
+          && droidInteractionMode !== "spec",
+      );
       const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
+        ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
             mode: droidInteractionMode === "spec" ? "planning" : "coding",
@@ -50704,13 +50743,7 @@ export function createAgentChatService(args: {
             interactive: true,
             runtime: "droid-sdk",
             adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-            sessionActivityGuidance: buildSessionActivityGuidance(
-              managed.session,
-              droidPermissionMode !== null
-                && droidPermissionMode !== "read-only"
-                && droidPermissionMode !== "agi"
-                && droidInteractionMode !== "spec",
-            ),
+            sessionActivityGuidance: droidActivityGuidance,
           });
       const sdkInput = [
         droidHarnessPrompt,
@@ -55835,6 +55868,33 @@ export function createAgentChatService(args: {
       managed.session.surface = surface;
       persistChatState(managed);
     }
+  };
+
+  /**
+   * Makes a personal chat written before profiles existed an `assistant` chat.
+   *
+   * Only a row with NO profile moves: an explicit `embedded` chat (an SDK
+   * host's) is left alone, and so is everything that is not personal. The
+   * caller decides when a chat is being used from ADE's own UI; the personal
+   * scope calls this only for that (see `PersonalChatAssistantClaim`). An idle
+   * provider process started under the old profile is stopped so the next turn
+   * starts with the assistant prompt, skills and settings; a running turn keeps
+   * its process and the change applies from the next one.
+   *
+   * Returns whether the row changed.
+   */
+  const adoptLegacyPersonalSessionAsAssistant = (sessionId: string): boolean => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.deleted || !isPersonalSession(managed.session) || managed.session.personalProfile) return false;
+    managed.session.personalProfile = "assistant";
+    // Same session profile a new assistant chat is created with.
+    if (managed.session.sessionProfile === "light") managed.session.sessionProfile = "workflow";
+    if (managed.runtime && !runtimeMidTurn(managed) && managed.session.status !== "active") {
+      teardownRuntime(managed, "restart");
+    }
+    persistChatState(managed);
+    logger.info("agent_chat.personal_profile_adopted", { sessionId, personalProfile: "assistant" });
+    return true;
   };
 
   const toScheduledWorkItem = (schedule: ChatScheduledWorkRecord): AgentChatScheduledWorkItem => ({
@@ -63365,6 +63425,7 @@ export function createAgentChatService(args: {
     getTurnId: (sessionId: string): string | null => lastTurnIdBySession.get(sessionId) ?? null,
     getTurnStatus,
     ensureSessionSurface,
+    adoptLegacyPersonalSessionAsAssistant,
     hasActiveWorkloads,
     hasRetainableSessions,
     residentChatEventHistorySessionCount: () => eventHistoryBySession.size,

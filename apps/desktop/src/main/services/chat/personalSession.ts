@@ -133,6 +133,11 @@ export function buildPersonalAssistantSystemPrompt(args: {
   cwd: string;
   /** Skill roots as the agent will see them (lane-only skills already withheld). */
   skillRoots: readonly string[];
+  /**
+   * How to report this chat's activity on its Chats row
+   * (`buildAdeSessionActivityGuidance`), when the provider can run the command.
+   */
+  activityGuidance?: string | null;
 }): string {
   const withheld = new Set<string>(PERSONAL_LANE_ONLY_AGENT_SKILLS);
   const skills = adeBundledAgentSkills.filter((name) => !withheld.has(name));
@@ -152,5 +157,13 @@ export function buildPersonalAssistantSystemPrompt(args: {
     "For computer use, read `ade-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
     "Visuals: when a comparison, a trend or status across many items would read faster as a picture, add one ```scene block (read `ade-scene` first). To ask the user for structured choices, use a ```mosaic block (read `ade-mosaic`).",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up processes you start.",
+    ...(args.activityGuidance?.trim()
+      ? [
+        "",
+        "## Status on the Chats row",
+        "For long work, keep a one-line status with `ade chat note \"<what you are doing>\"`; when you are blocked on the user, `ade chat ask \"<the question>\"`. Both reach this chat's row from your shell, which carries `ADE_CHAT_SCOPE=personal`.",
+        args.activityGuidance.trim().replace("on its Work row", "on its Chats row"),
+      ]
+      : []),
   ].join("\n");
 }

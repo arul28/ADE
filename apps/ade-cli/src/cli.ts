@@ -9051,9 +9051,23 @@ export function formatChatLaunches(value: unknown): string {
   );
 }
 
+/**
+ * The row reports an agent makes about its own chat. From inside a personal
+ * (project-less) chat they belong to the personal scope, not to whatever
+ * project the CLI would otherwise resolve from the cwd.
+ */
+const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
+    return buildPersonalChatPlan(sub, args);
+  }
+  // ADE sets ADE_CHAT_SCOPE=personal in a personal chat's agent environment.
+  // Its own `ade chat note|ask|activity` then reaches its row through the
+  // brain; without this they would register the scratch folder as a project
+  // and report to a chat that does not exist there.
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub) && process.env.ADE_CHAT_SCOPE?.trim() === "personal") {
     return buildPersonalChatPlan(sub, args);
   }
   if (sub === "settle" || sub === "unsettle") {
@@ -10362,6 +10376,61 @@ function personalChatStep(action: string, args: JsonObject = {}): InvocationStep
   };
 }
 
+/**
+ * `ade chat ask|note|activity` for a personal chat: `--personal`, or run from
+ * inside one (ADE_CHAT_SCOPE=personal). The session defaults to the caller's
+ * own chat, ADE_CHAT_SESSION_ID, like the project commands.
+ */
+function buildPersonalSelfReportPlan(
+  sub: string,
+  args: string[],
+  base: { kind: "execute"; machineOnly: boolean },
+): CliPlan {
+  const sessionId = requireValue(
+    readValue(args, ["--session", "--session-id"]) ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null),
+    "sessionId",
+  );
+  if (sub === "ask") {
+    const message = requireValue(
+      readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
+      "question",
+    );
+    return {
+      ...base,
+      label: "personal chat ask",
+      steps: [personalChatStep("requestSessionAttention", { sessionId, message })],
+    };
+  }
+  if (sub === "note") {
+    const note = readValue(args, ["--note", "--text"]) ?? args.join(" ");
+    return {
+      ...base,
+      label: "personal chat note",
+      steps: [personalChatStep("setSessionStatusNote", { sessionId, note })],
+    };
+  }
+  const rawValue = firstStandalonePositional(args);
+  const normalizedValue = rawValue?.trim().toLowerCase();
+  if (!normalizedValue) {
+    throw new CliUsageError(
+      `chat activity requires one value: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  if (normalizedValue !== "clear" && !isSessionActivityValue(normalizedValue)) {
+    throw new CliUsageError(
+      `Unsupported chat activity '${rawValue}'. Use: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+    );
+  }
+  return {
+    ...base,
+    label: "personal chat activity",
+    steps: [personalChatStep("setSessionActivity", {
+      sessionId,
+      value: normalizedValue === "clear" ? null : normalizedValue,
+    })],
+  };
+}
+
 function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   const laneId = readLaneId(args);
   if (laneId) {
@@ -10479,6 +10548,10 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
 
+  if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub)) {
+    return buildPersonalSelfReportPlan(sub, args, base);
+  }
+
   const sessionSubcommands = new Set([
     "read",
     "messages",
@@ -10506,7 +10579,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, ask, note, activity, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -10534,6 +10607,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat send",
       steps: [personalChatStep("send", collectGenericObjectArgs(args, {
+        // ADE's own CLI is one of the user's Chats surfaces: a chat written
+        // before profiles existed becomes an assistant chat when used here.
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
@@ -10550,6 +10626,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat steer",
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
+        personalProfile: "assistant",
         sessionId,
         text,
         ...(dispatchMode ? { dispatchMode } : {}),
