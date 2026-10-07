@@ -61,6 +61,14 @@ type AutomationIngressServiceArgs = {
    * targeted reconciliation so freshness rides the webhook, not the next tick.
    */
   onPrStateIngested?: (prIds: string[]) => void;
+  /**
+   * Also hand each relay delivery to automations as its typed event
+   * (`github.pr_opened`, `github.issue_labeled`, ...), so `github.*` rules run.
+   * Set it only where no GitHub poller runs beside this ingress (the brain):
+   * the poller emits the same typed events, and ingress dedupes per source, so
+   * both together would start a rule twice for one PR.
+   */
+  relayDispatchesTypedGithubEvents?: boolean;
   secretService: AutomationSecretService;
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
@@ -1291,9 +1299,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               rawPayload,
             })));
             // `github.pr_*` / `github.issue_*` rules match the typed event, not
-            // the raw one. The brain runs no GitHub poller, so without this the
-            // relay never starts them. Same mapping as the local-webhook path.
-            const mapped = isRecord(rawPayload) ? mapGithubWebhookToTrigger(githubEvent, rawPayload) : null;
+            // the raw one. Where no poller emits them, the relay must, or those
+            // rules never run. Same mapping as the local-webhook path.
+            const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
+              ? mapGithubWebhookToTrigger(githubEvent, rawPayload)
+              : null;
             if (mapped) {
               await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
                 source: "github-relay",

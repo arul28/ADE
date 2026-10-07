@@ -32,15 +32,13 @@ import type {
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
-  CreateLaneFromPrBranchArgs,
-  CreateLaneFromPrBranchPreflightResult,
-  CreateLaneFromPrBranchResult,
   ModelId,
   NormalizedLinearIssue,
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
@@ -1068,11 +1066,6 @@ function normalizeAutomationLaneMode(mode: unknown): AutomationExecution["laneMo
   return mode === "create" || mode === "reuse" || mode === "require-on-trigger" || mode === "pr-branch" ? mode : undefined;
 }
 
-/** The two PR-service calls a `pr-branch` run needs. */
-export type AutomationPrLaneService = {
-  preflightCreateLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult>;
-  createLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult>;
-};
 
 /**
  * Attempt budget for a one-shot rule that did not configure one. A one-shot
@@ -3746,64 +3739,27 @@ export function createAutomationService({
     return { laneId: lane.id, laneName: lane.name };
   };
 
-  const setTriggerLane = (trigger: TriggerContext, lane: { id: string; name: string; branchRef?: string | null }) => {
-    trigger.laneId = lane.id;
-    trigger.laneName = lane.name;
-    if (lane.branchRef) trigger.branch = lane.branchRef;
-  };
-
-  /**
-   * The lane on the trigger PR's own head branch, for `laneMode: "pr-branch"`.
-   * Reuses the lane already linked to the PR, so a second event for the same
-   * PR runs where the first one did; otherwise imports the branch as a new
-   * lane the same way the PRs tab does. Never falls back to another lane.
-   */
+  /** The `pr-branch` lane for this run; see `automationPrBranchLane.ts`. */
   const resolvePrBranchLaneForRun = async (
     rule: AutomationRule,
     trigger: TriggerContext,
   ): Promise<{ laneId: string; laneName: string }> => {
-    const pr = trigger.pr;
-    if (!pr?.number) {
-      const triggerLaneId = trimToNull(trigger.laneId);
-      if (triggerLaneId) return { laneId: triggerLaneId, laneName: trigger.laneName ?? triggerLaneId };
-      throw new Error("This automation runs in the PR's branch, but the trigger has no pull request.");
-    }
-    if (!prServiceRef) throw new Error("The pull request service is unavailable, so ADE cannot open the PR's branch.");
-    const [repoOwner, repoName] = (pr.repo ?? "").split("/");
     const template = rule.execution?.laneNamePreset && rule.execution.laneNamePreset !== "custom"
       ? presetToTemplate(rule.execution.laneNamePreset)
       : rule.execution?.laneNameTemplate ?? "";
-    const renderedName = resolveLaneNameTemplate(template, trigger, rule.name);
-    const laneName = renderedName && !/\{\{[^}]+\}\}/.test(renderedName) ? renderedName.trim() : "";
-    const args = {
-      ...(pr.url ? { prUrlOrNumber: pr.url } : repoOwner && repoName ? { repoOwner, repoName, githubPrNumber: pr.number } : { prUrlOrNumber: String(pr.number) }),
-      ...(laneName ? { laneName } : {}),
-    };
-    const reuseMappedLane = async (): Promise<{ laneId: string; laneName: string } | null> => {
-      const { preflight } = await prServiceRef!.preflightCreateLaneFromPrBranch(args);
-      const block = preflight.blockingConflict;
-      if (block?.code !== "already_mapped" || !block.laneId) {
-        if (!preflight.canCreate) throw new Error(block?.message || `PR #${pr.number} cannot be opened as a lane.`);
-        return null;
-      }
-      const lanes = await laneService.list({ includeArchived: false });
-      const lane = lanes.find((entry) => entry.id === block.laneId);
-      if (!lane) throw new Error(`${block.message} That lane is archived, so ADE will not run in it.`);
-      setTriggerLane(trigger, lane);
-      return { laneId: lane.id, laneName: lane.name };
-    };
-    const mapped = await reuseMappedLane();
-    if (mapped) return mapped;
-    try {
-      const { lane } = await prServiceRef.createLaneFromPrBranch(args);
-      setTriggerLane(trigger, lane);
-      return { laneId: lane.id, laneName: lane.name };
-    } catch (error) {
-      // Another event for the same PR may have imported it a moment ago.
-      const raced = await reuseMappedLane().catch(() => null);
-      if (raced) return raced;
-      throw error;
-    }
+    const rendered = resolveLaneNameTemplate(template, trigger, rule.name);
+    const triggerLaneId = trimToNull(trigger.laneId);
+    const lane = await resolvePrBranchLane({
+      pr: trigger.pr,
+      triggerLane: triggerLaneId ? { id: triggerLaneId, name: trigger.laneName ?? triggerLaneId } : null,
+      laneName: rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered.trim() : "",
+      prService: prServiceRef,
+      listActiveLanes: () => laneService.list({ includeArchived: false }),
+    });
+    trigger.laneId = lane.id;
+    trigger.laneName = lane.name;
+    if (lane.branchRef) trigger.branch = lane.branchRef;
+    return { laneId: lane.id, laneName: lane.name };
   };
 
   /**

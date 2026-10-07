@@ -155,11 +155,13 @@ export async function collectAcpProviderDiagnostics(
 /**
  * The version standing of the CLI a chat is about to use, read once per binary.
  *
- * A chat start pays one `--version` spawn the first time a binary is seen; every
- * later chat reuses the answer until an update through ADE clears it. Never
- * rejects: an unreadable version is `null`, which raises no warning.
+ * A chat start pays one `--version` spawn the first time a binary is seen; later
+ * chats reuse the answer for 30 minutes, so an update made outside ADE is seen
+ * without a restart. An update through ADE clears it at once. Never rejects: an
+ * unreadable version is `null`, which raises no warning.
  */
-const launchStandingCache = new Map<string, Promise<AcpProviderUpdateInfo | null>>();
+const LAUNCH_STANDING_TTL_MS = 30 * 60_000;
+const launchStandingCache = new Map<string, { readAt: number; pending: Promise<AcpProviderUpdateInfo | null> }>();
 
 export function readAcpProviderLaunchStanding(args: {
   provider: AcpChatProvider;
@@ -172,7 +174,7 @@ export function readAcpProviderLaunchStanding(args: {
   if (executable.source === "fallback-command") return Promise.resolve(null);
   const key = `${args.provider}\0${executable.path}`;
   const cached = launchStandingCache.get(key);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.readAt < LAUNCH_STANDING_TTL_MS) return cached.pending;
   const run = args.run ?? spawnAsync;
   const pending = run(executable.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, cwd: args.cwd })
     .then((version) => {
@@ -185,7 +187,7 @@ export function readAcpProviderLaunchStanding(args: {
       });
     })
     .catch(() => null);
-  launchStandingCache.set(key, pending);
+  launchStandingCache.set(key, { readAt: Date.now(), pending });
   return pending;
 }
 

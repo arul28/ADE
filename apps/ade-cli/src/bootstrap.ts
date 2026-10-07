@@ -2547,6 +2547,8 @@ export async function createAdeRuntime(args: {
       automationService,
       prService: headlessLinearServices.prService,
       onPrStateIngested: (prIds) => prPollingServiceForIngress?.reconcilePrs(prIds),
+      // The brain runs no GitHub poller, so the relay is what starts `github.*` rules.
+      relayDispatchesTypedGithubEvents: true,
       secretService: automationSecretService,
       githubService: headlessLinearServices.githubService,
       getAccountAccessToken,
