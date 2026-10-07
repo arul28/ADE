@@ -1810,6 +1810,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       nowMs: foreignFilingNowMs,
       machines: [...sessionsByMachine.entries()].map(([machineId, sessions]) => ({
         sessions,
+        rosterSessions: fullSessionsByMachine.get(machineId) ?? sessions,
         filingBuckets: filingBucketsForForeignSessions(fullSessionsByMachine.get(machineId) ?? sessions),
         laneWaitingReason: (laneId) => lanePrWaitingReason(
           lanePrsForMachine(prsByLaneId, machineId, laneId),

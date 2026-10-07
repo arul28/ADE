@@ -164,6 +164,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import {
+  appendForeignMachinesToBoard,
   buildWorkBoardModel,
   buildWorkTabGroupModel,
   lanePrWaitingReason,
@@ -4213,6 +4214,34 @@ describe("buildWorkBoardModel", () => {
     expect(waitingReasonBySessionId.get("s-parent")).toBe("subagent");
     expect(buckets.done.map((s) => s.id)).toEqual(["s-missed", "s-finished", "s-settled-parent"]);
     expect(waitingReasonBySessionId.has("s-missed")).toBe(false);
+  });
+
+  it("reads a foreign parent's busy subagent from that machine's whole roster, not the search hits", () => {
+    const parent = makeSession("f-parent", "lane-f", { toolType: "codex-chat", runtimeState: "idle" });
+    const subagent = makeSession("f-sub", "lane-f", {
+      toolType: "codex-chat",
+      runtimeState: "running",
+      spawnKind: "subagent",
+      orchestrationParentSessionId: "f-parent",
+    });
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const empty = { needs_you: [], working: [], waiting: [], done: [] };
+    const { buckets, waitingReasons } = appendForeignMachinesToBoard({
+      buckets: empty,
+      waitingReasons: new Map(),
+      nowMs,
+      machines: [{
+        // A search for the parent's title hides its subagent from the visible rows.
+        sessions: [parent],
+        rosterSessions: [parent, subagent],
+        filingBuckets: new Map(),
+        laneWaitingReason: () => null,
+      }],
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["f-parent"]);
+    expect(waitingReasons.get("f-parent")).toBe("subagent");
+    expect(buckets.done).toEqual([]);
   });
 
   it("keeps the columns a partition when resting rows are present", () => {

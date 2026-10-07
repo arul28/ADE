@@ -150,7 +150,10 @@ extension WorkRootListScreen {
         // Re-arm unconditionally, even when the presentation was unchanged: the
         // deadline this rebuild just crossed is gone, and the next one has to be
         // scheduled off the rows that are actually on screen.
-        armSnoozeRegroupRefresh(sessions: nextPresentation.mergedSessions)
+        armSnoozeRegroupRefresh(
+          sessions: nextPresentation.mergedSessions,
+          chatSummaries: chatSummariesSnapshot
+        )
       }
     }
   }
@@ -190,10 +193,13 @@ extension WorkRootListScreen {
   /// fired at the NEAREST deadline, clamped so the ~100-year "Until I'm asked"
   /// preset can't be scheduled literally. Not a fixed-interval poll.
   @MainActor
-  func armSnoozeRegroupRefresh(sessions: [TerminalSessionSummary]) {
+  func armSnoozeRegroupRefresh(
+    sessions: [TerminalSessionSummary],
+    chatSummaries: [String: AgentChatSessionSummary]
+  ) {
     snoozeRegroupTask?.cancel()
     snoozeRegroupTask = nil
-    guard let delay = workSnoozeRegroupDelay(sessions: sessions) else { return }
+    guard let delay = workSnoozeRegroupDelay(sessions: sessions, chatSummaries: chatSummaries) else { return }
     snoozeRegroupTask = Task { @MainActor in
       try? await Task.sleep(for: .seconds(delay))
       guard !Task.isCancelled else { return }

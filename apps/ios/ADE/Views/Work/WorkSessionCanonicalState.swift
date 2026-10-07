@@ -830,14 +830,26 @@ func nextSessionSnoozeDeadline(
   return soonest
 }
 
-/// How long the Work list should wait before re-deriving its Snoozed section,
-/// or nil when no row is snoozed — in which case nothing is scheduled at all.
-/// Exactly one wait, at the nearest deadline, clamped at both ends.
+/// How long the Work list should wait before re-deriving snooze filing or
+/// scheduled-wake filing. It targets the nearest future snooze deadline or
+/// wake-grace deadline, clamped at both ends.
 func workSnoozeRegroupDelay(
   sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary] = [:],
   now: Date = Date()
 ) -> TimeInterval? {
-  guard let deadline = nextSessionSnoozeDeadline(sessions, now: now) else { return nil }
+  var deadline = nextSessionSnoozeDeadline(sessions, now: now)
+  for session in sessions {
+    guard let wakeAt = workParsedDate(chatSummaries[session.id]?.nextWakeAt) else { continue }
+    let graceDeadline = wakeAt.addingTimeInterval(120)
+    guard graceDeadline > now else { continue }
+    if let currentDeadline = deadline {
+      if graceDeadline < currentDeadline { deadline = graceDeadline }
+    } else {
+      deadline = graceDeadline
+    }
+  }
+  guard let deadline else { return nil }
   let remaining = deadline.timeIntervalSince(now)
   return min(max(remaining, workSnoozeTickMinDelay), workSnoozeTickMaxDelay)
 }

@@ -342,6 +342,11 @@ export function appendForeignMachinesToBoard(args: {
   waitingReasons: ReadonlyMap<string, WorkBoardWaitingReason>;
   machines: readonly {
     sessions: readonly TerminalSessionSummary[];
+    /**
+     * That machine's whole roster, unfiltered. Busy parents are read from it so
+     * a search that hides a subagent cannot file its parent as Done.
+     */
+    rosterSessions: readonly TerminalSessionSummary[];
     filingBuckets: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>;
     laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
   }[];
@@ -372,7 +377,7 @@ export function appendForeignMachinesToBoard(args: {
       settledFiltered: partitioned.settledFiltered,
       snoozedFiltered: partitioned.snoozedFiltered,
       laneWaitingReason: machine.laneWaitingReason,
-      busySubagentParentIds: parentsWithBusySubagents(machine.sessions, args.nowMs),
+      busySubagentParentIds: parentsWithBusySubagents(machine.rosterSessions, args.nowMs),
       nowMs: args.nowMs,
     });
     for (const column of Object.keys(buckets) as WorkBoardColumn[]) {

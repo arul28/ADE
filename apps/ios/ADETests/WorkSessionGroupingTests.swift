@@ -1299,6 +1299,20 @@ final class WorkSessionGroupingTests: XCTestCase {
       orchestrationParentSessionId: "parent"
     )
     archivedChild.archivedAt = iso(now.addingTimeInterval(-30))
+    let idleChild = makeSession(
+      id: "child-idle",
+      laneId: "lane-a",
+      status: "completed",
+      runtimeState: "idle",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "parent"
+    )
+    let runningGrandchild = makeSession(
+      id: "grandchild-running",
+      laneId: "lane-a",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: idleChild.id
+    )
 
     let cases = [
       Case(
@@ -1324,6 +1338,13 @@ final class WorkSessionGroupingTests: XCTestCase {
           spawnKind: .subagent,
           orchestrationParentSessionId: "parent"
         )],
+        nextWakeAt: nil,
+        expected: .subagent
+      ),
+      Case(
+        name: "running grandchild keeps root parent waiting through idle child",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [idleChild, runningGrandchild],
         nextWakeAt: nil,
         expected: .subagent
       ),
@@ -1448,9 +1469,11 @@ final class WorkSessionGroupingTests: XCTestCase {
       workSessionEmptyStateTitle(status: .waiting, searchText: "", hasFilters: true),
       "Nothing is waiting"
     )
-    XCTAssertEqual(
+    // Waiting is the one chip whose contents are not obvious from its name, so
+    // its empty state explains itself instead of repeating the filter hint.
+    XCTAssertNotEqual(
       workSessionEmptyStateMessage(status: .waiting, searchText: "", hasFilters: true, isLive: true),
-      "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
+      workSessionEmptyStateMessage(status: .working, searchText: "", hasFilters: true, isLive: true)
     )
     XCTAssertEqual(
       workSessionEmptyStateTitle(status: .working, searchText: "", hasFilters: true),

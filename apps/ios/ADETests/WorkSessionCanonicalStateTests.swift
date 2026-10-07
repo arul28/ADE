@@ -2228,6 +2228,24 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(workSnoozeRegroupDelay(sessions: [awake, lapsed], now: now))
   }
 
+  func testRegroupRefreshTargetsScheduledWakeGraceWithoutPendingSnooze() {
+    var awake = makeSession(status: "completed", runtimeState: "idle", toolType: "codex-chat")
+    awake.id = "scheduled-wake"
+    var summary = makeChatSummary(status: "completed", awaitingInput: false)
+    summary.nextWakeAt = iso(now.addingTimeInterval(30))
+
+    XCTAssertEqual(
+      workSnoozeRegroupDelay(
+        sessions: [awake],
+        chatSummaries: [awake.id: summary],
+        now: now
+      ) ?? -1,
+      150,
+      accuracy: 0.001,
+      "The regroup timer must wake when the scheduled wake exits its two-minute grace"
+    )
+  }
+
   func testRefreshIsArmedAtTheSoonestDeadlineOnly() {
     var far = snoozedSession(untilOffset: 900, atOffset: -60)
     far.id = "s-far"
