@@ -312,8 +312,6 @@ $timer.Add_Tick({
       $window.Activate() | Out-Null
     }
 
-    if ($state.phase -eq "failed") { return }
-
     # ADE unwound the install and is staying open: nothing to show. The cancel
     # names the attempt it is for, so one meant for another window is ignored.
     $cancelFor = Get-Content -LiteralPath "$HeartbeatPath.cancel" -Raw -ErrorAction SilentlyContinue
@@ -341,6 +339,11 @@ $timer.Add_Tick({
       $window.Close()
       return
     }
+
+    # A failure card stays up until it is answered, or until ADE is back on
+    # screen some other way (the shortcut, a retry): the checks above still run
+    # for it, only the progress below stops.
+    if ($state.phase -eq "failed") { return }
 
     $parentAlive = Test-ProcessAlive $ParentPid
     if (-not $parentAlive -and -not $state.parentGoneAt) {
