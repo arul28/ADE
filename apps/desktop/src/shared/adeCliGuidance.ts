@@ -26,6 +26,7 @@ export const adeBundledAgentSkills = [
   "ade-pr-workflows",
   "ade-lanes-git",
   "ade-linear",
+  "ade-webhooks",
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",

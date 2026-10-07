@@ -14,6 +14,7 @@ import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cronSentence } from "./cronDescribe";
 import { eventLabel } from "./triggerCatalog";
 import { DELETE_LANE_ACTION_TYPE, LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
+import { describeWebhookFilter, webhookPresetDef } from "../../../shared/automationWebhooks";
 
 type RuleLike = Pick<AutomationRule, "triggers" | "trigger" | "execution" | "outputs" | "prompt">;
 
@@ -46,6 +47,12 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "lane.archived") return "A lane is archived";
   if (type === LANE_MERGED_TRIGGER_TYPE) {
     return trigger.namePattern ? `A lane matching ${trigger.namePattern} is merged` : "A lane is merged";
+  }
+  if (type === "webhook" && trigger.webhook) {
+    const preset = trigger.webhook.preset && trigger.webhook.preset !== "generic" ? webhookPresetDef(trigger.webhook.preset).label : null;
+    const filters = trigger.webhook.filters ?? [];
+    const base = preset ? `${preset} calls this automation's URL` : "Something calls this automation's URL";
+    return filters.length ? `${base} and ${filters.map(describeWebhookFilter).join(" and ")}` : base;
   }
   if (type === "github-webhook" || type === "webhook") {
     return trigger.event ? `A webhook fires for ${trigger.event}` : "A webhook fires";

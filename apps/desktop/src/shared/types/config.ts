@@ -725,6 +725,49 @@ export type AutomationTrigger = {
    */
   providers?: string[];
   activeHours?: AutomationActiveHours;
+  /** For `webhook` triggers: the URL, signature check and filters. */
+  webhook?: AutomationWebhookTriggerConfig;
+};
+
+/**
+ * Signature schemes ADE can verify. `hmac` covers GitHub, Linear, Sentry,
+ * Shopify and most senders: HMAC-SHA256 of the raw body in a header. `stripe`
+ * is Stripe's `t=…,v1=…` header over `<t>.<body>`.
+ */
+export type AutomationWebhookSignatureScheme = "hmac" | "stripe";
+
+export type AutomationWebhookSignatureConfig = {
+  scheme: AutomationWebhookSignatureScheme;
+  /** Header that carries the signature, e.g. `x-hub-signature-256`. */
+  header: string;
+  /** Text before the digest, e.g. `sha256=`. `hmac` only. */
+  prefix?: string;
+  encoding?: "hex" | "base64";
+  /** Name of the project secret holding the signing secret. The value never lives in config. */
+  secretName: string;
+};
+
+export type AutomationWebhookFilterOp = "equals" | "not_equals" | "contains" | "exists" | "matches";
+
+/** "Only run when <path> <op> <value>": checked before any agent starts. */
+export type AutomationWebhookFilter = {
+  /** `body.action`, `headers.x-github-event`, `query.env`. */
+  path: string;
+  op: AutomationWebhookFilterOp;
+  value?: string;
+};
+
+export type AutomationWebhookPreset = "github" | "stripe" | "sentry" | "linear" | "generic";
+
+export type AutomationWebhookTriggerConfig = {
+  /** Stable id in the URL. The token that makes the URL secret lives only on the machine that made it. */
+  hookId: string;
+  preset?: AutomationWebhookPreset;
+  signature?: AutomationWebhookSignatureConfig | null;
+  /** Every filter must pass. */
+  filters?: AutomationWebhookFilter[];
+  /** Skip deliveries the relay held longer than this. */
+  maxAgeMinutes?: number;
 };
 
 /** Agent limits apply to `agent-session` actions only. */
@@ -858,6 +901,13 @@ export type AutomationExecution = {
    */
   session?: AutomationAgentLimits & {
     title?: string | null;
+    /**
+     * Run every trigger as a new turn in this existing chat instead of a new
+     * chat per run, so one conversation keeps the whole history (e.g. a triage
+     * thread that hears about every webhook delivery). Deliveries queue: one
+     * turn at a time, waiting while the chat is busy or waiting on the user.
+     */
+    chatSessionId?: string | null;
     reasoningEffort?: string | null;
     fastMode?: boolean;
     /** @deprecated Use fastMode. Accepted while reading older project configs. */

@@ -20,6 +20,7 @@ import type {
   AutomationTrigger,
   AutomationTriggerType,
   AutomationVerification,
+  AutomationWebhookPreset,
   AiPermissionSettings,
   RunAdeActionConfig,
 } from "./config";
@@ -155,8 +156,11 @@ export type AutomationsEventPayload = {
   type:
     | "runs-updated"
     | "webhook-status-updated"
-    | "ingress-updated";
+    | "ingress-updated"
+    | "webhook-deliveries-updated";
   automationId?: string;
+  /** Set on `webhook-deliveries-updated`: the webhook URL whose log changed. */
+  hookId?: string;
   runId?: string;
   /**
    * Set when the run's `handoff` action created a chat. `HandoffLaunchJob` is a
@@ -171,7 +175,8 @@ export type AutomationIngressSource =
   | "github-polling"
   | "linear-relay"
   | "cursor-relay"
-  | "local-webhook";
+  | "local-webhook"
+  | "webhook-relay";
 
 export type AutomationWebhookGatewayStatus = {
   enabled: boolean;
@@ -195,7 +200,8 @@ export type AutomationTriggerDeliveryVia =
   | "local-webhook"
   | "public-gateway"
   | "linear-relay"
-  | "cursor-relay";
+  | "cursor-relay"
+  | "webhook-relay";
 
 export type AutomationTriggerDeliveryStatus = {
   ready: boolean;
@@ -291,6 +297,119 @@ export type AutomationIngressEventRecord = {
   errorMessage: string | null;
   cursor: string | null;
   receivedAt: string;
+};
+
+// ---------------------------------------------------------------------------
+// Custom webhooks ("doorbells"). A webhook trigger owns a hook id; ADE hands
+// out a URL for it, the sender rings it, and every ring is logged here so the
+// user can see what arrived, why it ran or did not, and what the agent got.
+// ---------------------------------------------------------------------------
+
+/** How the URL reaches this machine. */
+export type AutomationWebhookRoute = "relay" | "gateway" | "local";
+
+export type AutomationWebhookEndpoint = {
+  hookId: string;
+  /** The URL to paste into the sender. Null when this machine has no token for the hook. */
+  url: string | null;
+  route: AutomationWebhookRoute | null;
+  /** Always-available loopback URL, for tests from this machine. */
+  localUrl: string | null;
+  /** True when the token for this hook lives on this machine. */
+  ownedHere: boolean;
+  /** Plain-language reason the public URL is not available, when it is not. */
+  setupError: string | null;
+  createdAt: string | null;
+  rotatedAt: string | null;
+  lastDeliveryAt: string | null;
+};
+
+export type AutomationWebhookDeliveryOutcome =
+  /** Passed every check; a run started. */
+  | "ran"
+  /** Arrived before the automation was saved or after it was deleted. */
+  | "no_rule"
+  | "disabled"
+  | "filtered"
+  | "bad_signature"
+  | "missing_signature"
+  | "duplicate"
+  | "expired"
+  | "rate_limited"
+  | "too_large"
+  | "error";
+
+export type AutomationWebhookDeliveryVia = "relay" | "local" | "replay" | "test";
+
+export type AutomationWebhookDeliverySummary = {
+  id: string;
+  hookId: string;
+  ruleId: string | null;
+  via: AutomationWebhookDeliveryVia;
+  method: string;
+  receivedAt: string;
+  outcome: AutomationWebhookDeliveryOutcome;
+  /** One plain sentence explaining the outcome. */
+  detail: string | null;
+  /**
+   * `unchecked`: the rule needs a signature but its secret was not saved yet, so
+   * nothing was proven either way (unlike `failed`, it may be replayed).
+   */
+  signature: "verified" | "not_required" | "failed" | "missing" | "unchecked";
+  /** e.g. `pull_request.opened`, read from common event headers/fields. */
+  eventLabel: string | null;
+  runId: string | null;
+  chatSessionId: string | null;
+  /** The run chat's lane, so the Work tab can open it in place. */
+  chatLaneId: string | null;
+};
+
+export type AutomationWebhookDelivery = AutomationWebhookDeliverySummary & {
+  headers: Record<string, string>;
+  query: Record<string, string>;
+  contentType: string | null;
+  /** Body as text (JSON pretty-printed when it parses). */
+  body: string;
+  bodyTruncated: boolean;
+  /** The exact prompt the agent received, when a run started. */
+  prompt: string | null;
+};
+
+/** One webhook automation as a list row: its URL, secret state and last delivery. */
+export type AutomationWebhookListEntry = {
+  ruleId: string;
+  ruleName: string;
+  enabled: boolean;
+  hookId: string;
+  preset: AutomationWebhookPreset;
+  url: string | null;
+  route: AutomationWebhookRoute | null;
+  /** True when this machine holds the URL's token. */
+  ownedHere: boolean;
+  signatureRequired: boolean;
+  secretName: string | null;
+  secretSaved: boolean;
+  /** Conditions in words, e.g. `body.action is "opened"`. */
+  filters: string[];
+  /** Set when every run goes to one chat. */
+  chatSessionId: string | null;
+  lastDelivery: Pick<AutomationWebhookDeliverySummary, "id" | "outcome" | "receivedAt" | "eventLabel" | "detail"> | null;
+};
+
+export type AutomationWebhookTestRequest = {
+  hookId: string;
+  /** JSON text to send. Defaults to the preset's sample. */
+  body?: string;
+  /** Extra headers, e.g. the event header the preset expects. */
+  headers?: Record<string, string>;
+};
+
+export type AutomationWebhookTestResult = {
+  status: number;
+  route: AutomationWebhookRoute;
+  ok: boolean;
+  /** What the URL answered, trimmed. */
+  response: string;
 };
 
 export type AutomationPlannerProvider = "codex" | "claude";

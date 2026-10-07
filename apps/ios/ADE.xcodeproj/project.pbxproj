@@ -315,6 +315,7 @@
 		F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000A01 /* ADEResetCreditRows.swift */; };
 		F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000B51 /* ADEGlassComposer.swift */; };
 		F10000000000000000000008 /* SettingsUsagePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* SettingsUsagePage.swift */; };
+		F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AB01 /* SettingsWebhooksPage.swift */; };
 		F10000000000000000000009 /* SettingsUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000009 /* SettingsUsageChart.swift */; };
 		F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsMachineRenameSheet.swift */; };
 		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
@@ -766,6 +767,7 @@
 		F20000000000000000000A01 /* ADEResetCreditRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEResetCreditRows.swift; path = ADE/Views/Components/ADEResetCreditRows.swift; sourceTree = "<group>"; };
 		F20000000000000000000B51 /* ADEGlassComposer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEGlassComposer.swift; path = ADE/Views/Components/ADEGlassComposer.swift; sourceTree = "<group>"; };
 		F20000000000000000000008 /* SettingsUsagePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsagePage.swift; path = ADE/Views/Settings/SettingsUsagePage.swift; sourceTree = "<group>"; };
+		F2000000000000000000AB01 /* SettingsWebhooksPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsWebhooksPage.swift; path = ADE/Views/Settings/SettingsWebhooksPage.swift; sourceTree = "<group>"; };
 		F20000000000000000000009 /* SettingsUsageChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsageChart.swift; path = ADE/Views/Settings/SettingsUsageChart.swift; sourceTree = "<group>"; };
 		F20000000000000000000007 /* SettingsMachineRenameSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachineRenameSheet.swift; path = ADE/Views/Settings/SettingsMachineRenameSheet.swift; sourceTree = "<group>"; };
 		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
@@ -1246,6 +1248,7 @@
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				F20000000000000000000007 /* SettingsMachineRenameSheet.swift */,
 				F20000000000000000000008 /* SettingsUsagePage.swift */,
+				F2000000000000000000AB01 /* SettingsWebhooksPage.swift */,
 				F20000000000000000000009 /* SettingsUsageChart.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -1979,6 +1982,7 @@
 				F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */,
 				F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */,
 				F10000000000000000000008 /* SettingsUsagePage.swift in Sources */,
+				F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */,
 				F10000000000000000000009 /* SettingsUsageChart.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,

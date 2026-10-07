@@ -946,6 +946,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Webhook URL tokens and the raw requests that rang them are this machine's:
+  // a token is a capability, and a delivery body can hold anything.
+  "automation_webhook_hooks",
+  "automation_webhook_deliveries",
   // Cross-process cron idempotency claims are machine-local. The primary key
   // must stay unique so sibling runtimes can atomically elect one executor.
   "automation_schedule_occurrences",
@@ -3857,6 +3861,50 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_created on cursor_cloud_ingress_events(project_id, created_at desc)");
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_event on cursor_cloud_ingress_events(project_id, event_id)");
+
+  // Custom webhook URLs. The token is what makes a URL secret, so it stays on
+  // the machine that made it (local-only; see LOCAL_ONLY_CRR_EXCLUDED_TABLES).
+  db.run(`
+    create table if not exists automation_webhook_hooks (
+      hook_id text primary key,
+      project_id text not null,
+      token text not null,
+      created_at text not null,
+      rotated_at text,
+      relay_registered_at text,
+      relay_error text
+    )
+  `);
+  db.run("create index if not exists idx_automation_webhook_hooks_project on automation_webhook_hooks(project_id, created_at)");
+
+  // The last 50 requests per webhook URL, with headers and body, so the user
+  // can see what arrived and why it ran or not. Local-only: bodies can hold
+  // anything the sender put in them.
+  db.run(`
+    create table if not exists automation_webhook_deliveries (
+      id text primary key,
+      project_id text not null,
+      hook_id text not null,
+      rule_id text,
+      via text not null,
+      method text not null,
+      received_at text not null,
+      outcome text not null,
+      detail text,
+      signature text not null,
+      event_label text,
+      dedupe_key text,
+      event_key text,
+      ingress_event_id text,
+      headers_json text,
+      query_json text,
+      content_type text,
+      body_text text,
+      body_truncated integer not null default 0,
+      prompt_text text
+    )
+  `);
+  db.run("create index if not exists idx_automation_webhook_deliveries_hook on automation_webhook_deliveries(project_id, hook_id, received_at desc)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`

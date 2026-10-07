@@ -29,6 +29,7 @@ import { sourceDef, sourceForTriggerType } from "../triggerCatalog";
 import { RuleSentence } from "../list/RuleSentence";
 import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
+import { ChatTargetField } from "./ChatTargetField";
 import { StepStack } from "./StepStack";
 import { applyStepsToDraft, draftToSteps, isRequireLaneMode, readLaneMode, type WorkflowStep } from "./draftBridge";
 
@@ -323,10 +324,35 @@ export function RuleBuilder({
               onIngressChanged={onIngressChanged}
               cursorCloudConnected={cursorCloudConnected}
               runtimePin={runtimePin}
+              agentPrompt={steps.find((step) => step.kind === "agent-session")?.prompt ?? null}
+              onUsePrompt={(prompt) => {
+                const index = steps.findIndex((step) => step.kind === "agent-session");
+                if (index < 0) return;
+                setSteps(steps.map((step, i) => (i === index ? { ...step, prompt } : step)));
+              }}
             />
           </Section>
 
-          <Section icon={GitBranch} title="Where it runs" hint="Which lane each run works in">
+          <Section icon={GitBranch} title="Where it runs" hint="Which chat and lane each run works in">
+            {(draft.execution?.kind ?? "agent-session") === "agent-session" ? (
+              <div className="mb-3">
+                <ChatTargetField
+                  chatSessionId={draft.execution?.session?.chatSessionId ?? null}
+                  suggestedChatId={draft.scope?.sessionId ?? null}
+                  runtimePin={runtimePin}
+                  onChange={(chatSessionId) => {
+                    const current = draft.execution ?? { kind: "agent-session" as const };
+                    const session = { ...(current.session ?? {}) };
+                    if (chatSessionId) session.chatSessionId = chatSessionId;
+                    else delete session.chatSessionId;
+                    setDraft({ ...draft, execution: { ...current, session } });
+                  }}
+                />
+              </div>
+            ) : null}
+            {draft.execution?.session?.chatSessionId ? (
+              <p className="text-[11px] text-muted-fg/65">Runs work in that chat's lane.</p>
+            ) : (
             <LaneTargeting
               value={{
                 laneMode,
@@ -341,6 +367,7 @@ export function RuleBuilder({
                 patchExecution(patch);
               }}
             />
+            )}
           </Section>
 
           <Section

@@ -153,6 +153,13 @@ import type {
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookListEntry,
+  AutomationWebhookTriggerConfig,
+  AutomationWebhookEndpoint,
+  AutomationWebhookDeliverySummary,
+  AutomationWebhookDelivery,
+  AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
@@ -1734,6 +1741,21 @@ declare global {
           setup: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
           teardown: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
           pollNow: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
+        };
+        /** Custom webhook URLs. `pin` targets the machine the rule runs on. */
+        webhooks: {
+          /** Every webhook automation with its URL, secret state and last delivery. */
+          list: (pin?: OpenProjectBinding | null) => Promise<AutomationWebhookListEntry[]>;
+          createEndpoint: (args?: { label?: string | null }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          getEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          rotateEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
+          listDeliveries: (args: { hookId: string; limit?: number }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary[]>;
+          getDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDelivery | null>;
+          replayDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary | null>;
+          sendTest: (
+            args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null },
+            pin?: OpenProjectBinding | null,
+          ) => Promise<AutomationWebhookTestResult>;
         };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };

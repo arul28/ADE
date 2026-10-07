@@ -688,6 +688,7 @@ import {
   ownQuestionValue,
   sanitizeAnswersForTranscript,
 } from "../../../shared/pendingInputAnswers";
+import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
@@ -4499,6 +4500,12 @@ type ManagedChatSession = {
       answers?: Record<string, string | string[]>;
       responseText?: string | null;
     }) => void;
+    /**
+     * Runs on an accepting answer BEFORE the card resolves. Throwing keeps the
+     * card open and fails the user's respond call, so a card whose work did
+     * not happen never reads as done.
+     */
+    beforeAccept?: (answers: Record<string, string[]>) => void;
   }>;
   /**
    * Codex async questions, keyed by item id. Deliberately NOT in
@@ -57117,6 +57124,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     itemId: string,
     decision: AgentChatApprovalDecision,
+    message = "That request is no longer active.",
   ): void => {
     emitPendingInputResolved(managed, {
       itemId,
@@ -57127,7 +57135,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: "That request is no longer active.",
+      message,
     });
     persistChatState(managed);
   };
@@ -57220,7 +57228,17 @@ export function createAgentChatService(args: {
         return;
       }
     }
-    settleDeadPendingInput(managed, itemId, decision);
+    // A secret card is never re-routed (its value must not reach the
+    // transcript), so say plainly that nothing was saved and where to add it.
+    const secretCard = readProjectSecretRequestCard(request);
+    settleDeadPendingInput(
+      managed,
+      itemId,
+      decision,
+      secretCard && accepted
+        ? `The agent that asked for ${secretCard.name} stopped waiting, so ADE did not save it. Add it with Add secret… in the composer, or ask the agent again.`
+        : undefined,
+    );
   };
 
   /**
@@ -57296,6 +57314,9 @@ export function createAgentChatService(args: {
 
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
+      if (localPending.beforeAccept && resolvedDecision !== "decline" && resolvedDecision !== "cancel") {
+        localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
+      }
       managed.localPendingInputs.delete(itemId);
       emitPendingInputResolved(managed, {
         itemId,
@@ -62380,6 +62401,8 @@ export function createAgentChatService(args: {
      * act for a caller that is gone. Resolves as `cancel`.
      */
     signal?: AbortSignal;
+    /** Do the answer's work before the card resolves; throw to keep it open. */
+    beforeAccept?: (answers: Record<string, string[]>) => void;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -62531,7 +62554,7 @@ export function createAgentChatService(args: {
         resolve({ decision: "cancel" });
         return;
       }
-      managed.localPendingInputs.set(itemId, { request, resolve });
+      managed.localPendingInputs.set(itemId, { request, resolve, ...(args.beforeAccept ? { beforeAccept: args.beforeAccept } : {}) });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: args.eventDescription ?? request.description ?? args.body,

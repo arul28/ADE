@@ -43,6 +43,32 @@ ade secrets delete STRIPE_API_KEY
 ade actions list --domain project_secret --text
 ```
 
+**Never ask the user to paste a secret into chat.** When you need a key,
+token, or webhook secret the project does not have yet, ask for it with the
+private secret card:
+
+```
+ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
+```
+
+The chat shows the user a password field (with a "Generate a strong one"
+button; `--generate` marks it as suggested). The command blocks until they
+answer and prints only the outcome — `{name, saved: true}`, `{name, saved:
+false, kept: true}` or `{name, saved: false, declined: true}` — never the
+value. Then use the secret by name without printing it, e.g.
+`gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
+declines, carry on without it or explain what is blocked.
+
+## Webhook automations
+
+To run an agent whenever another service does something (GitHub, Stripe,
+Linear, Sentry, a deploy hook), read the **ade-webhooks** skill. The short
+version: `ade automations webhook create --preset github --filter
+body.action=opened --in-this-chat --text` makes the URL and the rule;
+`ade secrets request <NAME> --reason "…"` collects the signing secret without
+it ever entering chat; `ade automations webhook deliveries <wh-id> --text`
+shows what arrived and why it ran or was skipped.
+
 ## Socket mode
 
 Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, Apple devices / Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-apple**, and **ade-browser** skills all assume it. `ade-ios-simulator` still resolves and points at **ade-apple**.

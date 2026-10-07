@@ -24,6 +24,15 @@ import {
 import { authenticateAccount, hasValidBearerAccountToken, readBearerToken } from "./auth";
 import { handleLinearAgentRequest } from "./linearAgent";
 import {
+  handleCustomHookDelivery,
+  handleCustomHookRegister,
+  handleCustomHookSubscription,
+  handleAckCustomHookEvents,
+  handleListCustomHookEvents,
+  removeCustomHooksForAccount,
+  routeCustomHookDelivery,
+} from "./customHooks";
+import {
   handleLinearOAuthCallback,
   handleLinearOrganizationRegister,
   handleLinearOrganizationSubscription,
@@ -2403,6 +2412,7 @@ async function handleAccountIntegrations(request: Request, env: RelayEnv): Promi
     await env.DB.prepare("update cursor_events set account_id = null where account_id = ?")
       .bind(accountId)
       .run();
+    await removeCustomHooksForAccount(env, accountId);
     return json({ ok: true });
   }
 
@@ -2439,6 +2449,12 @@ export async function handleRequest(request: Request, env: RelayEnv, ctx?: Execu
   }
 
   if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
+  if (url.pathname === "/hooks/register") return await handleCustomHookRegister(request, env);
+  if (url.pathname === "/hooks/events") return await handleListCustomHookEvents(request, env);
+  if (url.pathname === "/hooks/ack") return await handleAckCustomHookEvents(request, env);
+  if (url.pathname === "/hooks/subscribe") return await handleCustomHookSubscription(request, env);
+  const customHook = routeCustomHookDelivery(url.pathname);
+  if (customHook) return await handleCustomHookDelivery(request, env, customHook, ctx);
   if (url.pathname === "/cursor/register") return await handleCursorRegister(request, env);
   if (url.pathname === "/cursor/webhook") return await handleCursorWebhook(request, env);
   if (url.pathname === "/cursor/events") return await handleListCursorEvents(request, env);

@@ -1060,6 +1060,11 @@ Renderer — settings:
   Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.
+- Chats can also add project secrets without the value entering the
+  transcript: an agent's `ade secrets request NAME --reason "…"` raises the
+  private secret card, and the composer's "Add secret…" item opens the same
+  form. Both save through `projectSecretService`; see
+  [Private secret card](../chat/composer-and-ui.md#private-secret-card).
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
   — dotenv import review dialog. Displays extracted names and plaintext values,
   marks replacements, supports select all or individual selection, and saves

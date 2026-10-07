@@ -110,6 +110,7 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
+import type { WebhookRemoteSource } from "./webhookRemoteCommands";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -180,6 +181,8 @@ type SyncServiceArgs = {
   workToolsStateService?: WorkToolsStateService | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
+  /** Webhook automations for remote surfaces (read-only). */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
@@ -861,6 +864,7 @@ export function createSyncService(args: SyncServiceArgs) {
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    getWebhookAutomations: args.getWebhookAutomations,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -1021,6 +1025,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
+      getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,
       appControlSyncStream,
       appleDeviceService: args.appleDeviceService,

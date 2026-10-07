@@ -34,6 +34,7 @@ export const BUNDLED_AGENT_SKILLS = Object.freeze([
   "ade-ios-simulator",
   "ade-lanes-git",
   "ade-linear",
+  "ade-webhooks",
   "ade-mosaic",
   "ade-pr-workflows",
   "ade-proof-artifacts",

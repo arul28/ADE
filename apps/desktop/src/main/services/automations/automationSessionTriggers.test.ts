@@ -329,6 +329,39 @@ describe("{{trigger.session.*}} placeholders", () => {
   });
 });
 
+describe("webhook request placeholders", () => {
+  const trigger: TriggerContext = {
+    triggerType: "webhook",
+    summary: "issues.opened",
+    webhook: {
+      hookId: "wh-abc",
+      method: "POST",
+      headers: { "x-github-event": "issues" },
+      query: { env: "prod" },
+      body: { action: "opened", issue: { number: 112, title: "Export drops a row" } },
+    },
+  };
+
+  it.each([
+    ["{{trigger.body.issue.number}}", 112],
+    ["#{{trigger.body.issue.number}}: {{trigger.body.issue.title}}", "#112: Export drops a row"],
+    ["{{trigger.headers.x-github-event}}", "issues"],
+    ["{{trigger.query.env}}", "prod"],
+    ["{{trigger.method}}", "POST"],
+    ["{{trigger.summary}}", "issues.opened"],
+    ["[{{trigger.body.issue.missing}}]", "[]"],
+  ])("resolves %s", (template, expected) => {
+    expect(resolvePlaceholders(template, trigger)).toEqual(expected);
+  });
+
+  it("reads the whole body and leaves non-webhook triggers' fields alone", () => {
+    expect(resolvePlaceholders("{{trigger.body}}", trigger)).toEqual(trigger.webhook!.body);
+    const session: TriggerContext = { triggerType: "session.failed", session: { sessionId: "chat-1" } };
+    expect(resolvePlaceholders("[{{trigger.body.action}}]", session)).toBe("[]");
+    expect(resolvePlaceholders("{{trigger.session.sessionId}}", session)).toBe("chat-1");
+  });
+});
+
 describe("handoff action", () => {
   const handoffAction: AutomationAction = {
     type: "handoff",

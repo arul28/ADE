@@ -316,9 +316,17 @@ export function normalizePendingInputAnswers(
     return [];
   };
 
+  // A secret is taken exactly as typed: a pasted key's edges can matter, and
+  // trimming it would store a different value than the one the user gave.
+  const readSecretValues = (record: Readonly<Record<string, unknown>> | undefined, key: string): string[] => {
+    const raw = ownQuestionValue(record, key);
+    const values = Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : typeof raw === "string" ? [raw] : [];
+    return values.filter((value) => value.trim().length > 0);
+  };
+
   const questions = request?.questions ?? [];
   for (const question of questions) {
-    const nextValues = readValues(answers, question.id);
+    const nextValues = question.isSecret ? readSecretValues(answers, question.id) : readValues(answers, question.id);
     if (nextValues.length > 0) normalized[question.id] = nextValues;
   }
 

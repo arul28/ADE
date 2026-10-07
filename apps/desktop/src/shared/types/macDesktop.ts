@@ -21,6 +21,7 @@
  */
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
+import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -1736,17 +1737,23 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 
 /**
  * True for a pending-input card only the user may answer: the shared-seat
- * consent and the real-input lease. The answer IS the permission, so an agent
- * caller (session-bound, unbound, or the CTO's tools) is refused.
+ * consent, the real-input lease, and the private secret card. The answer IS
+ * the permission (or the secret), so an agent caller (session-bound, unbound,
+ * or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
   return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
-    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true;
+    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
+    || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
+}
+
+function isNonNullRecord(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /** What an agent is told when it tries to answer one of those cards. */
 export const USER_ONLY_CONSENT_CARD_REFUSAL =
-  "This card asks the user for permission, so only the user can answer it. Wait for the user to choose Allow or Don't allow in the chat.";
+  "This card asks the user directly (for a permission or a secret), so only the user can answer it. Wait for the user to answer it in the chat.";
 
 export function isMacDesktopHandle(value: unknown): value is string {
   return typeof value === "string" && /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);

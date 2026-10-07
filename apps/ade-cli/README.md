@@ -808,6 +808,7 @@ ade secrets set LOCAL_TOKEN --value local-value --storage device
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
+ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
@@ -1233,6 +1234,32 @@ ade --role cto automations linear-ingress disconnect
 # Scheduled lane cleanups (from delete-lane actions with afterMinutes).
 ade automations cleanups list --text
 ade automations cleanups cancel <cleanupId>
+```
+
+### Webhook automations
+
+A webhook automation gives a service (GitHub, Stripe, Linear, Sentry, anything that can call a URL) a private URL. Each request that reaches it is checked (signature, conditions, duplicates) and then starts the agent. One command makes the URL and the rule:
+
+```bash
+# GitHub issues opened → triage, every delivery as a new turn in this chat
+ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text
+
+# Anything else; no signature; a custom prompt with request fields
+ade automations webhook create --preset generic --no-signature \
+  --name "Deploy failures" --filter body.status=failed \
+  --prompt "The {{trigger.body.service}} deploy failed: {{trigger.body.url}}. Find out why." --text
+```
+
+`create` prints the URL, the steps for pasting it into the service, whether the signing secret is saved yet, and the conditions in words. Filters are `body.<path>=value`, `headers.<name>=value`, `query.<name>=value`, with `!=` (not equal), `~` (contains), `^=` (regex), or a bare path (present). Without `--filter`, the preset's suggested conditions apply; `--any-request` runs on every request. Save the signing secret without pasting it into a chat: `ade secrets request GITHUB_WEBHOOK_SECRET --reason "…" --generate` raises the private secret card.
+
+```bash
+ade automations webhook list --text                 # every webhook automation, URL, last delivery
+ade automations webhook test <wh-id> --text         # ring it like the real service (signed)
+ade automations webhook deliveries <wh-id> --text   # what arrived and why it ran or was skipped
+ade automations webhook delivery <whd-id> --text    # the prompt the agent got, headers, body
+ade automations webhook replay <whd-id>             # run a logged delivery again
+ade automations webhook rotate <wh-id>              # new URL; the old one stops at once
+ade automations webhook retire <wh-id>              # stop a URL no rule uses (deleting a rule does this)
 ```
 
 The standalone `create-lane` action is deprecated. By default the CLI auto-migrates a rule whose first action is `create-lane` into `execution.laneMode: "create"` and carries the template forward. Pass `--allow-legacy` on `create` / `update` to opt out of the migration.

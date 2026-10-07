@@ -223,6 +223,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "session_copy_chat",
   "session_continue_cli",
   "session_copy_cli",
+  // A private webhook URL was made, and how an agent's private secret card
+  // ended. Never the URL, the hook, the secret's name or value, or the chat.
+  "webhook_url_created",
+  "secret_requested",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -350,6 +354,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // product question is whether Repair recovers a session or only confirms it
     // is gone, and collapsing the two into `completed` answers neither.
     "sign_in_required",
+    // A private secret card answered by keeping the value already saved.
+    // Distinct from `completed` (a value was saved) and `cancelled` (declined).
+    "kept",
     // Which usage scope an installation actually looked at. Reuses `outcome`
     // rather than adding a parallel `scope` key, the same way the update
     // transaction reuses it for its failed step. These are the three values of

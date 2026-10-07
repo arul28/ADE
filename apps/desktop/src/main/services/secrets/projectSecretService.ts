@@ -4,6 +4,7 @@ import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { PROJECT_SECRET_NAME_PATTERN, PROJECT_SECRET_NAME_RULE } from "../../../shared/projectSecretRequest";
 import {
   deviceCredentialProvenance,
   normalizeCredentialProvenance,
@@ -54,7 +55,7 @@ const STORE_FILE = "project-secrets.v1.enc";
 const KEY_FILE = ".project-secrets-key";
 const INDEX_KEY = "__ade_project_secrets_index_v1";
 const VALUE_PREFIX = "secret:";
-const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+const NAME_PATTERN = PROJECT_SECRET_NAME_PATTERN;
 
 export type ProjectSecretServiceOptions = {
   downloadsDir?: string;
@@ -72,7 +73,7 @@ function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new Error("Secret name is required.");
   if (!NAME_PATTERN.test(normalized)) {
-    throw new Error("Secret names must start with a letter and contain only letters, numbers, '.', '_', or '-' (max 128 characters).");
+    throw new Error(PROJECT_SECRET_NAME_RULE);
   }
   return normalized;
 }

@@ -2865,6 +2865,9 @@ export type SyncRemoteCommandAction =
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
   | "apple.status"
+  | "automations.webhookList"
+  | "automations.webhookListDeliveries"
+  | "automations.webhookGetDelivery"
   | "apple.streamTicket"
   | "apple.input"
   | "apple.invoke"

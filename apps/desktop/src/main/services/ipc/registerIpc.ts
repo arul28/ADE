@@ -207,6 +207,8 @@ import type {
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookTriggerConfig,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
@@ -889,7 +891,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -1033,6 +1035,7 @@ import type {
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
+import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -2269,6 +2272,12 @@ export function registerIpc({
     ...(args.length > 2 ? { arg2: summarizeIpcArg(args[2]) } : {}),
   });
 
+  const WEBHOOK_URL_RESULT_CHANNELS: ReadonlySet<string> = new Set([
+    IPC.automationsWebhookCreateEndpoint,
+    IPC.automationsWebhookGetEndpoint,
+    IPC.automationsWebhookRotateEndpoint,
+    IPC.automationsWebhookList,
+  ]);
   const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
     if (channel === IPC.transcriptionTranscribe) {
       if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
@@ -2277,6 +2286,13 @@ export function registerIpc({
         raw: "[redacted]",
         cleaned: "[redacted]",
       };
+    }
+    // A webhook URL carries its secret token: whoever has it can ring it.
+    if (WEBHOOK_URL_RESULT_CHANNELS.has(channel)) {
+      const hideUrl = (entry: unknown) => entry && typeof entry === "object" && !Array.isArray(entry) && "url" in entry
+        ? { ...(entry as Record<string, unknown>), url: "[redacted]" }
+        : entry;
+      return Array.isArray(result) ? result.map(hideUrl) : hideUrl(result);
     }
     if (!result || typeof result !== "object" || Array.isArray(result)) return result;
     const record = result as Record<string, unknown>;
@@ -6626,6 +6642,39 @@ export function registerIpc({
     await ctx.linearIngressService.pollNow();
     return ctx.linearIngressService.getStatus();
   });
+
+  const requireWebhookIngress = () => {
+    const service = getCtx().automationIngressService;
+    if (!service) throw new Error("Automation ingress service is not available.");
+    return service.webhooks;
+  };
+  ipcMain.handle(IPC.automationsWebhookList, async () => {
+    const ctx = getCtx();
+    if (!ctx.automationService) return [];
+    const webhooks = requireWebhookIngress();
+    return await listWebhookAutomations({
+      rules: ctx.automationService.list(),
+      webhooks,
+      projectSecrets: ctx.projectSecretService,
+    });
+  });
+  ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) => {
+    const endpoint = await requireWebhookIngress().createEndpoint(arg ?? {});
+    captureWebhookUrlCreatedAnalytics({ analytics: productAnalyticsService, surface: "desktop" });
+    return endpoint;
+  });
+  ipcMain.handle(IPC.automationsWebhookGetEndpoint, async (_event, arg: { hookId: string }) =>
+    requireWebhookIngress().getEndpoint(arg));
+  ipcMain.handle(IPC.automationsWebhookRotateEndpoint, async (_event, arg: { hookId: string }) =>
+    requireWebhookIngress().rotateEndpoint(arg));
+  ipcMain.handle(IPC.automationsWebhookListDeliveries, async (_event, arg: { hookId: string; limit?: number }) =>
+    requireWebhookIngress().listDeliveries(arg));
+  ipcMain.handle(IPC.automationsWebhookGetDelivery, async (_event, arg: { id: string }) =>
+    requireWebhookIngress().getDelivery(arg));
+  ipcMain.handle(IPC.automationsWebhookReplayDelivery, async (_event, arg: { id: string }) =>
+    requireWebhookIngress().replayDelivery(arg));
+  ipcMain.handle(IPC.automationsWebhookSendTest, async (_event, arg: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }) =>
+    requireWebhookIngress().sendTest(arg));
 
   ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
     const ctx = getCtx();

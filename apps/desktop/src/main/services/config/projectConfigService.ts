@@ -83,6 +83,7 @@ import {
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
+import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -484,6 +485,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (providers?.length) out.providers = providers;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
+  const webhook = normalizeWebhookTriggerConfig(value.webhook);
+  if (webhook) out.webhook = webhook;
   return out;
 }
 
@@ -682,11 +685,13 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       ? firstNonEmptyString(value.session.title, legacyTitle)
       : legacyTitle;
     const sessionReasoningEffort = isRecord(value.session) ? asString(value.session.reasoningEffort)?.trim() : undefined;
+    const sessionChatId = isRecord(value.session) ? asString(value.session.chatSessionId)?.trim() : undefined;
     const sessionFastMode = isRecord(value.session) ? asBool(value.session.fastMode ?? value.session.codexFastMode) : undefined;
     const sessionLimits = normalizeAutomationAgentLimits(value.session);
-    const session = sessionTitle || sessionReasoningEffort || sessionFastMode != null || Object.keys(sessionLimits).length
+    const session = sessionTitle || sessionChatId || sessionReasoningEffort || sessionFastMode != null || Object.keys(sessionLimits).length
       ? {
           ...(sessionTitle ? { title: sessionTitle } : {}),
+          ...(sessionChatId ? { chatSessionId: sessionChatId } : {}),
           ...(sessionReasoningEffort ? { reasoningEffort: sessionReasoningEffort } : {}),
           ...(sessionFastMode != null ? { fastMode: sessionFastMode } : {}),
           ...sessionLimits,
@@ -2356,6 +2361,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.sessionId ? { sessionId: trigger.sessionId.trim() } : {}),
         ...(trigger.providers?.length ? { providers: trigger.providers.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
+        ...(trigger.webhook ? { webhook: trigger.webhook } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
       execution,
@@ -2833,8 +2839,13 @@ function validateEffectiveConfig(
           issues.push({ path: `${tp}.cron`, message: `Invalid cron expression '${expr}'` });
         }
       }
-      if ((trigger.type === "github-webhook" || trigger.type === "webhook") && !(trigger.secretRef ?? "").trim()) {
+      if (trigger.type === "github-webhook" && !(trigger.secretRef ?? "").trim()) {
         issues.push({ path: `${tp}.secretRef`, message: "Webhook triggers require secretRef" });
+      }
+      // A custom webhook is either the URL-based kind (webhook.hookId) or the
+      // legacy local-only kind that signs with an x-ade-signature secretRef.
+      if (trigger.type === "webhook" && !trigger.webhook?.hookId && !(trigger.secretRef ?? "").trim()) {
+        issues.push({ path: `${tp}.webhook`, message: "Webhook triggers need a webhook URL" });
       }
     }
 

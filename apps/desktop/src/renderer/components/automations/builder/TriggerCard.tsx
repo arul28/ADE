@@ -27,6 +27,7 @@ import {
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
+import { WebhookTriggerPanel } from "./WebhookTriggerPanel";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 
 function SmallField({
@@ -207,11 +208,16 @@ export function TriggerCard({
   onIngressChanged,
   cursorCloudConnected = false,
   runtimePin = null,
+  agentPrompt = null,
+  onUsePrompt,
 }: {
   trigger: AutomationTrigger;
   ingressStatus: AutomationIngressStatus | null;
   onChange: (next: AutomationTrigger) => void;
   onIngressChanged?: () => void;
+  /** The first agent step's prompt; webhook triggers offer a starter when it is empty. */
+  agentPrompt?: string | null;
+  onUsePrompt?: (prompt: string) => void;
   /** The machine the rule runs on; null = the tab's machine. */
   runtimePin?: OpenProjectBinding | null;
   /** The Cursor source is an integration surface, so hide it until auth is confirmed. */
@@ -276,14 +282,25 @@ export function TriggerCard({
         </div>
       )}
 
-      {deliveryKey && delivery && !delivery.ready ? (
+      {deliveryKey && delivery && !delivery.ready && trigger.type !== "webhook" ? (
         <TriggerDeliveryCallout deliveryKey={deliveryKey} status={delivery} onIngressChanged={onIngressChanged} runtimePin={runtimePin} />
       ) : null}
 
-      {/* Filters */}
-      <div className={cn(recessedCls, "p-3")}>
-        <TriggerFilters trigger={trigger} source={source} onPatch={patch} />
-      </div>
+      {trigger.type === "webhook" ? (
+        // A custom webhook is a short setup guide of its own (URL, secret,
+        // filters, test, log), so it replaces the generic filter box.
+        <WebhookTriggerPanel
+          trigger={trigger}
+          onChange={onChange}
+          runtimePin={runtimePin}
+          agentPrompt={agentPrompt}
+          onUsePrompt={onUsePrompt}
+        />
+      ) : (
+        <div className={cn(recessedCls, "p-3")}>
+          <TriggerFilters trigger={trigger} source={source} onPatch={patch} />
+        </div>
+      )}
     </div>
   );
 }
