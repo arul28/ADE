@@ -6,6 +6,7 @@
 import type {
   AutomationRule,
   AutomationRuleDraft,
+  AutomationWebhookDelivery,
   AutomationWebhookDeliverySummary,
   AutomationWebhookEndpoint,
   AutomationWebhookFilter,
@@ -132,7 +133,6 @@ export function webhookSetupGuide(args: {
   endpoint: AutomationWebhookEndpoint;
   trigger: AutomationWebhookTriggerConfig;
   secretSaved: boolean;
-  describeFilter: (filter: AutomationWebhookFilter) => string;
 }): WebhookSetupGuide {
   const preset = webhookPresetDef(args.trigger.preset);
   return {
@@ -147,14 +147,52 @@ export function webhookSetupGuide(args: {
       secretSource: preset.secretSource,
       secretSaved: args.secretSaved,
     },
-    filters: (args.trigger.filters ?? []).map(args.describeFilter),
+    filters: (args.trigger.filters ?? []).map(describeWebhookFilter),
   };
 }
 
-export type WebhookAutomationListEntry = AutomationWebhookListEntry;
-
 export function webhookTriggersOf(rule: AutomationRule): AutomationWebhookTriggerConfig[] {
   return (rule.triggers ?? []).flatMap((trigger) => (trigger.type === "webhook" && trigger.webhook ? [trigger.webhook] : []));
+}
+
+/** The webhook service's read side, as every surface that lists webhooks needs it. */
+export type WebhookReads = {
+  getEndpoint(args: { hookId: string }): Promise<AutomationWebhookEndpoint>;
+  listDeliveries(args: { hookId: string; limit?: number }): AutomationWebhookDeliverySummary[];
+  getDelivery(args: { id: string }): AutomationWebhookDelivery | null;
+};
+
+type ProjectSecretLister = { list(): { secrets: Array<{ name: string }> } };
+
+/**
+ * Names of the project's saved secrets, or none when they cannot be read (a
+ * locked or unavailable store reads as "not saved", never as an error).
+ */
+export function listProjectSecretNames(projectSecrets: ProjectSecretLister | null | undefined): Set<string> {
+  try {
+    return new Set((projectSecrets?.list().secrets ?? []).map((secret) => secret.name));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The read-only source behind the phone/web `automations.webhook*` remote
+ * commands. Built the same way by the desktop main process and the CLI brain.
+ * Null until the automation and webhook services exist.
+ */
+export function createWebhookRemoteSource(deps: {
+  automationService: { list(): AutomationRule[] } | null | undefined;
+  webhooks: WebhookReads | null | undefined;
+  projectSecrets: ProjectSecretLister | null | undefined;
+}) {
+  const { automationService, webhooks } = deps;
+  if (!webhooks || !automationService) return null;
+  return {
+    list: () => listWebhookAutomations({ rules: automationService.list(), webhooks, projectSecrets: deps.projectSecrets }),
+    listDeliveries: (input: { hookId: string; limit?: number }) => webhooks.listDeliveries(input),
+    getDelivery: (input: { id: string }) => webhooks.getDelivery(input),
+  };
 }
 
 export const WEBHOOK_PRESET_NAMES = WEBHOOK_PRESETS.map((preset) => preset.value);
@@ -166,15 +204,15 @@ export const WEBHOOK_PRESET_NAMES = WEBHOOK_PRESETS.map((preset) => preset.value
  */
 export async function listWebhookAutomations(deps: {
   rules: AutomationRule[];
-  getEndpoint: (args: { hookId: string }) => Promise<AutomationWebhookEndpoint>;
-  listDeliveries: (args: { hookId: string; limit?: number }) => AutomationWebhookDeliverySummary[];
-  secretNames: Set<string>;
-}): Promise<WebhookAutomationListEntry[]> {
-  const entries: WebhookAutomationListEntry[] = [];
+  webhooks: WebhookReads;
+  projectSecrets: ProjectSecretLister | null | undefined;
+}): Promise<AutomationWebhookListEntry[]> {
+  const secretNames = listProjectSecretNames(deps.projectSecrets);
+  const entries: AutomationWebhookListEntry[] = [];
   for (const rule of deps.rules) {
     for (const trigger of webhookTriggersOf(rule)) {
-      const endpoint = await deps.getEndpoint({ hookId: trigger.hookId });
-      const last = deps.listDeliveries({ hookId: trigger.hookId, limit: 1 })[0] ?? null;
+      const endpoint = await deps.webhooks.getEndpoint({ hookId: trigger.hookId });
+      const last = deps.webhooks.listDeliveries({ hookId: trigger.hookId, limit: 1 })[0] ?? null;
       const secretName = trigger.signature?.secretName ?? null;
       entries.push({
         ruleId: rule.id,
@@ -187,7 +225,7 @@ export async function listWebhookAutomations(deps: {
         ownedHere: endpoint.ownedHere,
         signatureRequired: Boolean(trigger.signature),
         secretName,
-        secretSaved: Boolean(secretName && deps.secretNames.has(secretName)),
+        secretSaved: Boolean(secretName && secretNames.has(secretName)),
         filters: (trigger.filters ?? []).map(describeWebhookFilter),
         chatSessionId: rule.execution?.session?.chatSessionId ?? null,
         lastDelivery: last

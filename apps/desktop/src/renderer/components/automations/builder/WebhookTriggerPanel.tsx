@@ -39,6 +39,8 @@ import {
   listWebhookLeafPaths,
   webhookPresetDef,
 } from "../../../../shared/automationWebhooks";
+import { generateProjectSecretValue } from "../../../../shared/projectSecretRequest";
+import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
@@ -73,18 +75,11 @@ function webhooksApi() {
 }
 
 async function copyText(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text);
+  if (await copyTextToClipboard(text)) {
     showToast({ tone: "success", title: `${what} copied` });
-  } catch {
+  } else {
     showToast({ tone: "error", title: `Couldn't copy the ${what.toLowerCase()}` });
   }
-}
-
-function randomSecret(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** A numbered row: the panel reads top to bottom like a short setup guide. */
@@ -403,7 +398,7 @@ export function WebhookTriggerPanel({
   };
 
   const generateSecret = async () => {
-    const value = randomSecret();
+    const value = generateProjectSecretValue();
     await saveSecret(value);
     setGeneratedSecret(value);
   };

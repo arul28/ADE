@@ -119,7 +119,11 @@ agent got, plus headers and body.
 | `error` | the run could not start; the reason says why |
 
 `ade automations webhook replay <whd-id>` runs a logged delivery again with
-the rule as it is now (useful after fixing a prompt or a condition).
+the rule as it is now (useful after fixing a prompt or a condition, or after
+saving a secret that was missing when it arrived). A delivery whose signature
+did not match cannot be replayed: it may be forged.
+Fix the secret and have the service send it again (GitHub: Recent Deliveries →
+Redeliver).
 
 ## Other commands
 

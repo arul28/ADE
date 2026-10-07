@@ -12,24 +12,7 @@ import { cn } from "../../ui/cn";
 import { Dialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
-import { eyebrowCls, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls, type SurfaceTone } from "../webhookSurface";
-
-type OutcomeStyle = { label: string; tone: SurfaceTone };
-
-/** Green: it ran. Neutral: skipped on purpose. Amber/red: something to fix. */
-const OUTCOME_STYLES: Record<AutomationWebhookDeliveryOutcome, OutcomeStyle> = {
-  ran: { label: "RAN", tone: "ok" },
-  no_rule: { label: "NOT SAVED YET", tone: "info" },
-  disabled: { label: "PAUSED", tone: "neutral" },
-  filtered: { label: "SKIPPED", tone: "neutral" },
-  duplicate: { label: "DUPLICATE", tone: "neutral" },
-  expired: { label: "TOO OLD", tone: "warn" },
-  bad_signature: { label: "BAD SIGNATURE", tone: "crit" },
-  missing_signature: { label: "NO SIGNATURE", tone: "crit" },
-  rate_limited: { label: "RATE LIMITED", tone: "warn" },
-  too_large: { label: "TOO LARGE", tone: "warn" },
-  error: { label: "RUN FAILED", tone: "crit" },
-};
+import { eyebrowCls, OUTCOME_STYLES, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls } from "../webhookSurface";
 
 const VIA_LABELS: Record<AutomationWebhookDeliverySummary["via"], string> = {
   relay: "via relay",
@@ -150,7 +133,13 @@ function DeliveryDetail({
       description={
         delivery
           ? `${relativeWhen(delivery.receivedAt)} · ${VIA_LABELS[delivery.via]}${
-              delivery.signature === "verified" ? " · signature verified" : delivery.signature === "not_required" ? " · no signature required" : ""
+              delivery.signature === "verified"
+                ? " · signature verified"
+                : delivery.signature === "not_required"
+                  ? " · no signature required"
+                  : delivery.signature === "unchecked"
+                    ? " · signature not checked (no secret saved)"
+                    : ""
             }`
           : undefined
       }
@@ -173,7 +162,7 @@ function DeliveryDetail({
         ) : undefined
       }
       actions={[
-        ...(delivery && !delivery.bodyTruncated && !readOnly
+        ...(delivery && !delivery.bodyTruncated && !readOnly && delivery.signature !== "failed" && delivery.signature !== "missing"
           ? [{ label: replaying ? "Replaying…" : "Run it again", onClick: () => void replay(), disabled: replaying, variant: "secondary" as const }]
           : []),
         { label: "Done", onClick: onClose, variant: "primary" as const },

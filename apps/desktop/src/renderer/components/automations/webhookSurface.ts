@@ -6,6 +6,7 @@
  * panels sit beside Settings and the usage panel as one system.
  */
 
+import type { AutomationWebhookDeliveryOutcome } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 export type SurfaceTone = "neutral" | "ok" | "warn" | "crit" | "info";
@@ -65,4 +66,21 @@ export const toneTextCls: Record<SurfaceTone, string> = {
   warn: "text-[var(--color-warning)]",
   crit: "text-[var(--color-error)]",
   info: "text-[var(--color-accent)]",
+};
+
+export type OutcomeStyle = { label: string; tone: SurfaceTone };
+
+/** Green: it ran. Neutral: skipped on purpose. Amber/red: something to fix. */
+export const OUTCOME_STYLES: Record<AutomationWebhookDeliveryOutcome, OutcomeStyle> = {
+  ran: { label: "RAN", tone: "ok" },
+  no_rule: { label: "NOT SAVED YET", tone: "info" },
+  disabled: { label: "PAUSED", tone: "neutral" },
+  filtered: { label: "SKIPPED", tone: "neutral" },
+  duplicate: { label: "DUPLICATE", tone: "neutral" },
+  expired: { label: "TOO OLD", tone: "warn" },
+  bad_signature: { label: "BAD SIGNATURE", tone: "crit" },
+  missing_signature: { label: "NO SIGNATURE", tone: "crit" },
+  rate_limited: { label: "RATE LIMITED", tone: "warn" },
+  too_large: { label: "TOO LARGE", tone: "warn" },
+  error: { label: "RUN FAILED", tone: "crit" },
 };

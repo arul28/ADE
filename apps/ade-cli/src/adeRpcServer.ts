@@ -5589,6 +5589,16 @@ async function runTool(args: {
       ensureAskUserAllowed(session);
       scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
     }
+    if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
+      // `config` is the builder's unsaved draft, and it names the secret the
+      // test is signed with. An agent tests the rule as saved, so it cannot
+      // pick a different project secret to sign with.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "automations.webhookSendTest requires object arguments.");
+      }
+      const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
+      scopedObjectArgs = testArgs;
+    }
     if (domain === "automations" && action === "webhookCreateAutomation") {
       // The calling chat is derived from the caller's identity, never taken
       // from its arguments. `chatSessionId: "this"` binds the automation to
@@ -5610,7 +5620,9 @@ async function runTool(args: {
         }
         chatSessionId = boundChatSessionId;
       }
-      if (chatSessionId && boundChatSessionId && chatSessionId !== boundChatSessionId && !callerIsCto && !isUserClient) {
+      // Only a user client or the CTO may name another chat; an agent binds its
+      // own chat or none, bound to a chat or not.
+      if (chatSessionId && chatSessionId !== boundChatSessionId && !callerIsCto && !isUserClient) {
         throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "An agent can send webhook runs only to its own chat.");
       }
       scopedObjectArgs = {

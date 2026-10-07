@@ -98,11 +98,11 @@ import {
   webhookSetupGuide,
   webhookTriggersOf,
   type WebhookAutomationCreateArgs,
-  type WebhookAutomationListEntry,
+  listProjectSecretNames,
   type WebhookSetupGuide,
 } from "../automations/webhookAutomationFactory";
-import { describeWebhookFilter } from "../../../shared/automationWebhooks";
-import { getAppDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { defaultAutomationChatModelId } from "../automations/automationService";
+import type { AutomationWebhookListEntry } from "../../../shared/types";
 import {
   buildPrAiResolutionContextKey,
   isTrackedAgentCliToolType,
@@ -331,7 +331,7 @@ type AutomationsDomainService = {
     hookId: string;
     setup: WebhookSetupGuide;
   }>;
-  webhookList(): Promise<WebhookAutomationListEntry[]>;
+  webhookList(): Promise<AutomationWebhookListEntry[]>;
   webhookRetire(args: { hookId: string }): Promise<{ hookId: string; retired: boolean; stillUsedBy: string[] }>;
 };
 
@@ -394,7 +394,7 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
         originChatSessionId: args.originChatSessionId ?? args.callerChatSessionId ?? null,
         hookId: endpoint.hookId,
         // The same default a new automation gets in the builder.
-        defaultModelId: getAppDefaultModelDescriptor()?.id ?? "anthropic/claude-sonnet-5",
+        defaultModelId: defaultAutomationChatModelId(),
       });
       let saved: AutomationSaveDraftResult;
       try {
@@ -413,8 +413,7 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
         setup: webhookSetupGuide({
           endpoint: await webhooks.getEndpoint({ hookId: endpoint.hookId }),
           trigger,
-          secretSaved: Boolean(secretName && projectSecretNames(runtime).has(secretName)),
-          describeFilter: describeWebhookFilter,
+          secretSaved: Boolean(secretName && listProjectSecretNames(runtime.projectSecretService).has(secretName)),
         }),
       };
     },
@@ -422,9 +421,8 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       const webhooks = requireWebhooks(runtime);
       return await listWebhookAutomations({
         rules: automationService.list(),
-        getEndpoint: (input) => webhooks.getEndpoint(input),
-        listDeliveries: (input) => webhooks.listDeliveries(input),
-        secretNames: projectSecretNames(runtime),
+        webhooks,
+        projectSecrets: runtime.projectSecretService,
       });
     },
     webhookRetire: async ({ hookId }) => {
@@ -439,14 +437,6 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       return { hookId: id, retired: await requireWebhooks(runtime).retireEndpoint(id), stillUsedBy };
     },
   };
-}
-
-function projectSecretNames(runtime: AdeRuntime): Set<string> {
-  try {
-    return new Set((runtime.projectSecretService?.list().secrets ?? []).map((secret) => secret.name));
-  } catch {
-    return new Set();
-  }
 }
 
 function requireLinearIngress(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {

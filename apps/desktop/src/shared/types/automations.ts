@@ -351,7 +351,11 @@ export type AutomationWebhookDeliverySummary = {
   outcome: AutomationWebhookDeliveryOutcome;
   /** One plain sentence explaining the outcome. */
   detail: string | null;
-  signature: "verified" | "not_required" | "failed" | "missing";
+  /**
+   * `unchecked`: the rule needs a signature but its secret was not saved yet, so
+   * nothing was proven either way (unlike `failed`, it may be replayed).
+   */
+  signature: "verified" | "not_required" | "failed" | "missing" | "unchecked";
   /** e.g. `pull_request.opened`, read from common event headers/fields. */
   eventLabel: string | null;
   runId: string | null;

@@ -11,6 +11,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import { ownQuestionValue } from "../../../shared/pendingInputAnswers";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { Dialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
@@ -42,17 +43,6 @@ const PRIMARY_BUTTON = cn(
   "bg-[color:color-mix(in_srgb,var(--chat-accent)_92%,black_8%)] text-black hover:bg-[color:var(--chat-accent)]",
   "disabled:bg-fg/[0.055] disabled:text-fg/26",
 );
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    const bridge = window.ade?.app?.writeClipboardText;
-    if (bridge) await bridge(text);
-    else await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The value field: password input, show/hide, generate, copy. Controlled, so
@@ -120,7 +110,7 @@ function SecretValueField({
             title={copied ? "Copied" : "Copy the value"}
             aria-label="Copy the value"
             data-testid="project-secret-copy"
-            onClick={() => { void copyText(value).then((ok) => setCopied(ok)); }}
+            onClick={() => { void copyTextToClipboard(value).then((ok) => setCopied(ok)); }}
             className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40 transition-colors hover:bg-fg/[0.05] hover:text-fg/72 disabled:opacity-40"
           >
             <Copy size={12} weight="regular" />

@@ -1025,6 +1025,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
+      getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,
       appControlSyncStream,
       appleDeviceService: args.appleDeviceService,

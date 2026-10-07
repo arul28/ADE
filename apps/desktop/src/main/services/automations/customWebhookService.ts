@@ -12,7 +12,7 @@
 // The signing secret is a project secret; it is read here, on the machine that
 // runs the automation, and never sent to the relay.
 
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
   AutomationIngressEventRecord,
   AutomationRule,
@@ -23,7 +23,6 @@ import type {
   AutomationWebhookDeliveryVia,
   AutomationWebhookEndpoint,
   AutomationWebhookRoute,
-  AutomationWebhookSignatureConfig,
   AutomationWebhookTestRequest,
   AutomationWebhookTestResult,
   AutomationWebhookTriggerConfig,
@@ -41,16 +40,19 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { ACCOUNT_RELAY_TOKEN_HEADER, DEFAULT_GITHUB_RELAY_API_BASE_URL } from "../github/githubRelayConfig";
 import { resolvePlaceholders, type TriggerContext } from "./automationService";
-import { createRelayWakeSocket, type RelayWakeSocket, type RelayWakeTarget } from "./relayWakeSocket";
+import { createWebhookRelayDrain } from "./webhookRelayDrain";
+import {
+  parseJsonRecord,
+  parseWebhookBody,
+  safeEqual,
+  signWebhookBody,
+  verifyWebhookSignature,
+} from "./webhookRequest";
 
 export const WEBHOOK_RELAY_API_BASE_ENV_KEY = "ADE_WEBHOOK_RELAY_API_BASE_URL";
 const DELIVERIES_KEPT_PER_HOOK = 50;
 const STORED_BODY_MAX_CHARS = 64 * 1024;
 const RATE_LIMIT_PER_MINUTE = 60;
-const RELAY_SAFETY_POLL_MS = 5 * 60_000;
-const RELAY_PAGE_LIMIT = 100;
-const RELAY_MAX_PAGES_PER_DRAIN = 20;
-const STRIPE_TOLERANCE_SECONDS = 5 * 60;
 /** Header values never kept in the delivery log. */
 const HIDDEN_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", ACCOUNT_RELAY_TOKEN_HEADER]);
 /** Sender-supplied ids, in preference order, that make a redelivery recognisable. */
@@ -64,6 +66,8 @@ export type WebhookIncomingRequest = {
   headers: Record<string, string>;
   query: Record<string, string>;
   rawBody: Buffer;
+  /** The body went past the size cap and was not buffered (`rawBody` is empty). */
+  tooLarge?: boolean;
   via: AutomationWebhookDeliveryVia;
   /** When the request first reached ADE (relay hold time counts toward max age). */
   receivedAt?: string;
@@ -109,6 +113,9 @@ type DeliveryRow = {
   prompt_text: string | null;
 };
 
+/** A row as written: `body_truncated` is a flag here and an integer once stored. */
+type DeliveryInsert = Omit<DeliveryRow, "body_truncated"> & { body_truncated: boolean };
+
 export type CustomWebhookServiceDeps = {
   db: Pick<AdeDb, "get" | "all" | "run" | "getJson" | "setJson">;
   projectId: string;
@@ -142,118 +149,13 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function safeEqual(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function parseJsonRecord(raw: string | null): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
-  } catch {
-    return {};
-  }
-}
-
-export function lowerCaseHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (value == null) continue;
-    out[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : String(value);
-  }
-  return out;
-}
-
-export function queryRecord(search: string | URLSearchParams): Record<string, string> {
-  const params = typeof search === "string" ? new URLSearchParams(search.replace(/^\?/, "")) : search;
-  const out: Record<string, string> = {};
-  for (const [key, value] of params) out[key] = value;
-  return out;
-}
-
-/**
- * JSON, form-encoded, or text. GitHub's form mode wraps the JSON in a
- * `payload` field; that is unwrapped so `{{trigger.body.*}}` reads the same
- * either way.
- */
-export function parseWebhookBody(rawBody: Buffer, contentType: string | null): unknown {
-  const text = rawBody.toString("utf8");
-  if (!text.trim()) return {};
-  const type = (contentType ?? "").toLowerCase();
-  if (type.includes("application/x-www-form-urlencoded")) {
-    const form = queryRecord(text);
-    if (typeof form.payload === "string") {
-      try {
-        return JSON.parse(form.payload) as unknown;
-      } catch {
-        // Not JSON after all; keep the form.
-      }
-    }
-    return form;
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
-}
-
-/** Returns null when valid, otherwise the outcome and one plain sentence. */
-export function verifyWebhookSignature(args: {
-  signature: AutomationWebhookSignatureConfig;
-  secret: string;
-  headers: Record<string, string>;
-  rawBody: Buffer;
-  /** Stripe timestamps are checked against when the request reached ADE. */
-  receivedAtMs: number;
-}): { outcome: "missing_signature" | "bad_signature"; detail: string } | null {
-  const presented = args.headers[args.signature.header.toLowerCase()]?.trim() ?? "";
-  if (!presented) {
-    return { outcome: "missing_signature", detail: `The request had no ${args.signature.header} header, so ADE could not prove who sent it.` };
-  }
-  if (args.signature.scheme === "stripe") {
-    const parts = presented.split(",").map((part) => part.trim());
-    const timestamp = Number(parts.find((part) => part.startsWith("t="))?.slice(2));
-    const candidates = parts.filter((part) => part.startsWith("v1=")).map((part) => part.slice(3));
-    if (!Number.isFinite(timestamp) || !candidates.length) {
-      return { outcome: "bad_signature", detail: "The Stripe-Signature header was not in Stripe's t=…,v1=… format." };
-    }
-    if (Math.abs(args.receivedAtMs / 1000 - timestamp) > STRIPE_TOLERANCE_SECONDS) {
-      return { outcome: "bad_signature", detail: "The Stripe signature is more than 5 minutes old." };
-    }
-    const expected = createHmac("sha256", args.secret).update(`${timestamp}.`).update(args.rawBody).digest("hex");
-    return candidates.some((candidate) => safeEqual(candidate, expected))
-      ? null
-      : { outcome: "bad_signature", detail: "The Stripe signature did not match. Check that the signing secret (whsec_…) is the one for this endpoint." };
-  }
-  const digest = createHmac("sha256", args.secret).update(args.rawBody).digest(args.signature.encoding === "base64" ? "base64" : "hex");
-  const expected = `${args.signature.prefix ?? ""}${digest}`;
-  return safeEqual(presented, expected)
-    ? null
-    : { outcome: "bad_signature", detail: `The ${args.signature.header} signature did not match. The secret saved in ADE is different from the one the sender uses.` };
-}
-
-/** Sign a body the way the configured sender would, for Send test. */
-export function signWebhookBody(signature: AutomationWebhookSignatureConfig, secret: string, body: Buffer, nowMs = Date.now()): string {
-  if (signature.scheme === "stripe") {
-    const timestamp = Math.floor(nowMs / 1000);
-    const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
-    return `t=${timestamp},v1=${digest}`;
-  }
-  const digest = createHmac("sha256", secret).update(body).digest(signature.encoding === "base64" ? "base64" : "hex");
-  return `${signature.prefix ?? ""}${digest}`;
-}
-
 export function resolveWebhookRelayBaseUrl(db: Pick<AdeDb, "getJson">): string {
   const stored = db.getJson<unknown>("automations.webhookRelay.apiBaseUrl");
   const configured = typeof stored === "string" && stored.trim() ? stored.trim() : null;
   return (configured || process.env[WEBHOOK_RELAY_API_BASE_ENV_KEY]?.trim() || DEFAULT_GITHUB_RELAY_API_BASE_URL).replace(/\/+$/, "");
 }
 
-const OUTCOME_DETAIL: Partial<Record<AutomationWebhookDeliveryOutcome, string>> = {
+const OUTCOME_DETAIL: Record<"no_rule" | "disabled" | "too_large" | "rate_limited", string> = {
   no_rule: "Arrived, but no saved automation uses this URL yet. Save the automation and it will run on the next one.",
   disabled: "Arrived while the automation was turned off.",
   too_large: "The body was over 1 MB, so ADE did not read it.",
@@ -263,11 +165,6 @@ const OUTCOME_DETAIL: Partial<Record<AutomationWebhookDeliveryOutcome, string>> 
 export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const rateWindows = new Map<string, { windowStart: number; count: number; loggedThisWindow: boolean }>();
-  let stopped = true;
-  let wakeSocket: RelayWakeSocket | null = null;
-  let safetyTimer: ReturnType<typeof setInterval> | null = null;
-  let drainInFlight: Promise<void> | null = null;
-  let drainAgain = false;
 
   const relayBaseUrl = () => resolveWebhookRelayBaseUrl(deps.db);
 
@@ -314,7 +211,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         "update automation_webhook_hooks set relay_registered_at = ?, relay_error = null where project_id = ? and hook_id = ?",
         [nowIso(), deps.projectId, hookId],
       );
-      ensureRelayConnection();
+      relayDrain.ensureConnected();
     } catch (error) {
       deps.logger.warn("automations.webhook_relay_register_failed", { hookId, error: errorMessage(error) });
       deps.db.run(
@@ -488,7 +385,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return null;
   };
 
-  const recordDelivery = (row: Omit<DeliveryRow, "body_truncated"> & { body_truncated: boolean }): void => {
+  const recordDelivery = (row: DeliveryInsert): void => {
     deps.db.run(
       `insert into automation_webhook_deliveries(
         id, project_id, hook_id, rule_id, via, method, received_at, outcome, detail, signature, event_label,
@@ -611,9 +508,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return null;
   };
 
-  const storedHeaders = (headers: Record<string, string>): Record<string, string> => {
+  const storedHeaders = (headers: Record<string, string>, alsoHide?: string | null): Record<string, string> => {
     const out: Record<string, string> = {};
-    for (const [name, value] of Object.entries(headers)) out[name] = HIDDEN_HEADERS.has(name) ? "‹hidden›" : value;
+    for (const [name, value] of Object.entries(headers)) out[name] = HIDDEN_HEADERS.has(name) || name === alsoHide ? "‹hidden›" : value;
     return out;
   };
 
@@ -633,23 +530,47 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       : { text, truncated: false };
   };
 
-  const buildPromptPreview = (rule: AutomationRule, view: WebhookRequestView & { method: string }): string | null => {
+  const buildPromptPreview = (rule: AutomationRule, view: WebhookRequestView & { hookId: string; method: string }): string | null => {
     const template = rule.prompt?.trim()
       || rule.actions?.find((action) => action.type === "agent-session" && action.prompt?.trim())?.prompt?.trim()
       || "";
     if (!template) return null;
     const context: TriggerContext = {
       triggerType: "webhook",
-      method: view.method,
-      headers: view.headers,
-      query: view.query,
-      body: view.body,
+      webhook: { hookId: view.hookId, method: view.method, headers: view.headers, query: view.query, body: view.body },
     };
     const rendered = resolvePlaceholders(template, context);
     return typeof rendered === "string" ? rendered : template;
   };
 
-  const receive = async (request: WebhookIncomingRequest, options: { skipSignature?: boolean; skipDedupe?: boolean } = {}): Promise<WebhookReceiveResult> => {
+  // Nonces of tests this computer sent, valid for 10 minutes (relay held
+  // tests can arrive after `sendTest` returns, or twice after a lost ack).
+  // Each remembers the signature header the test was signed into, which its
+  // log row hides: a test signs a body chosen by whoever ran it.
+  const testNonces = new Map<string, { expiresAt: number; signatureHeader: string | null }>();
+  const TEST_NONCE_TTL_MS = 10 * 60_000;
+  const issueTestNonce = (signatureHeader: string | null): string => {
+    const now = Date.now();
+    for (const [nonce, entry] of testNonces) if (entry.expiresAt <= now) testNonces.delete(nonce);
+    const nonce = randomBytes(12).toString("hex");
+    testNonces.set(nonce, { expiresAt: now + TEST_NONCE_TTL_MS, signatureHeader: signatureHeader?.toLowerCase() ?? null });
+    return nonce;
+  };
+  // Not consumed on first sight: a relay request whose acknowledgement was
+  // lost comes back, and must still read as the same test.
+  const readTestNonce = (nonce: string): { signatureHeader: string | null } | null => {
+    const entry = testNonces.get(nonce);
+    return entry && entry.expiresAt > Date.now() ? entry : null;
+  };
+
+  const receive = async (
+    request: WebhookIncomingRequest,
+    options: {
+      /** A replay: the signature was settled when the request first arrived, and this is its state then. */
+      replayedSignature?: AutomationWebhookDeliverySummary["signature"];
+      skipDedupe?: boolean;
+    } = {},
+  ): Promise<WebhookReceiveResult> => {
     const hookId = request.hookId.trim().toLowerCase();
     const notFound: WebhookReceiveResult = { status: 404, outcome: "not_found", deliveryId: null };
     if (!WEBHOOK_HOOK_ID_PATTERN.test(hookId)) return notFound;
@@ -662,16 +583,21 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
 
     const receivedAt = request.receivedAt ?? nowIso();
     const deliveryId = `whd_${randomBytes(9).toString("hex")}`;
+    // Only a nonce this computer just sent marks a test; the header alone is
+    // the sender's to set.
+    const testNonce = request.headers["x-ade-test"];
+    const test = testNonce ? readTestNonce(testNonce) : null;
+    const isTest = test !== null;
     const contentType = request.headers["content-type"] ?? null;
     const match = findRuleForHook(hookId);
     const base = {
       id: deliveryId,
       hook_id: hookId,
       rule_id: match?.rule.id ?? null,
-      via: request.via,
+      via: isTest ? "test" as const : request.via,
       method: request.method.toUpperCase(),
       received_at: receivedAt,
-      headers_json: JSON.stringify(storedHeaders(request.headers)),
+      headers_json: JSON.stringify(storedHeaders(request.headers, test?.signatureHeader)),
       query_json: JSON.stringify(request.query),
       content_type: contentType,
       event_key: null,
@@ -679,9 +605,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       prompt_text: null,
     };
 
-    if (request.rawBody.length > WEBHOOK_MAX_BODY_BYTES) {
+    if (request.tooLarge || request.rawBody.length > WEBHOOK_MAX_BODY_BYTES) {
       recordDelivery({
-        ...base, outcome: "too_large", detail: OUTCOME_DETAIL.too_large!, signature: "not_required",
+        ...base, outcome: "too_large", detail: OUTCOME_DETAIL.too_large, signature: "not_required",
         event_label: null, dedupe_key: null, body_text: "", body_truncated: true,
       });
       return { status: 413, outcome: "too_large", deliveryId };
@@ -691,7 +617,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     const view: WebhookRequestView = { body: parsedBody, headers: request.headers, query: request.query };
     const eventLabel = webhookEventLabel(view, match?.config.preset);
     const logged = bodyForLog(request.rawBody, parsedBody);
-    const record = (outcome: AutomationWebhookDeliveryOutcome, detail: string | null, extra: Partial<DeliveryRow> = {}) =>
+    const record = (outcome: AutomationWebhookDeliveryOutcome, detail: string | null, extra: Partial<DeliveryInsert> = {}) =>
       recordDelivery({
         ...base,
         outcome,
@@ -702,16 +628,16 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         body_text: logged.text,
         body_truncated: logged.truncated,
         ...extra,
-      } as Omit<DeliveryRow, "body_truncated"> & { body_truncated: boolean });
+      });
 
     const rate = takeRateSlot(hookId);
     if (!rate.allowed) {
-      if (rate.logRejection) record("rate_limited", OUTCOME_DETAIL.rate_limited!);
+      if (rate.logRejection) record("rate_limited", OUTCOME_DETAIL.rate_limited);
       return { status: 429, outcome: "rate_limited", deliveryId: rate.logRejection ? deliveryId : null };
     }
 
     if (!match) {
-      record("no_rule", OUTCOME_DETAIL.no_rule!);
+      record("no_rule", OUTCOME_DETAIL.no_rule);
       return { status: 202, outcome: "no_rule", deliveryId };
     }
     const { rule, config } = match;
@@ -725,10 +651,12 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     }
 
     let signatureState: AutomationWebhookDeliverySummary["signature"] = "not_required";
-    if (config.signature && !options.skipSignature) {
+    if (options.replayedSignature) {
+      signatureState = options.replayedSignature;
+    } else if (config.signature) {
       const secret = deps.readSecret(config.signature.secretName);
       if (!secret) {
-        record("bad_signature", `The signing secret ${config.signature.secretName} is not saved in this project, so ADE could not check the signature.`, { signature: "failed" });
+        record("bad_signature", `The signing secret ${config.signature.secretName} is not saved in this project, so ADE could not check the signature.`, { signature: "unchecked" });
         return { status: 401, outcome: "bad_signature", deliveryId };
       }
       const failure = verifyWebhookSignature({
@@ -743,12 +671,10 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         return { status: 401, outcome: failure.outcome, deliveryId };
       }
       signatureState = "verified";
-    } else if (config.signature && options.skipSignature) {
-      signatureState = "verified";
     }
 
     if (!rule.enabled) {
-      record("disabled", OUTCOME_DETAIL.disabled!, { signature: signatureState });
+      record("disabled", OUTCOME_DETAIL.disabled, { signature: signatureState });
       return { status: 202, outcome: "disabled", deliveryId };
     }
 
@@ -771,7 +697,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       }
     }
 
-    const prompt = buildPromptPreview(rule, { ...view, method: base.method });
+    const prompt = buildPromptPreview(rule, { ...view, hookId, method: base.method });
     const eventKey = `webhook:${hookId}:${dedupeKey && !options.skipDedupe ? dedupeKey : deliveryId}`;
     record("ran", null, {
       signature: signatureState,
@@ -818,6 +744,13 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     const row = loadDeliveryRow(args.id);
     if (!row) throw new Error("That delivery is no longer in the log.");
     if (row.body_truncated === 1) throw new Error("That delivery was too large to keep in full, so it cannot be replayed.");
+    // A request whose signature did not match (or was absent) may be forged;
+    // replaying it would run it without one. The sender has to send it again.
+    // One that arrived before the secret was saved proved nothing either way,
+    // and replaying it is how setup is finished.
+    if (row.signature === "failed" || row.signature === "missing") {
+      throw new Error("That request failed the signature check, so ADE will not run it. Fix the signing secret, then have the service send it again.");
+    }
     const body = row.body_text ?? "";
     // The stored body is pretty-printed JSON or the original text; either
     // re-parses to the same value, so placeholders and filters read the same.
@@ -829,10 +762,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       rawBody: Buffer.from(body, "utf8"),
       via: "replay",
     }, {
-      // It was checked when it first arrived (or it failed and the user is
-      // deliberately pushing it through); the stored body is re-serialized, so
-      // the original signature could not match it anyway.
-      skipSignature: true,
+      // Checked when it first arrived; the stored body is re-serialized, so
+      // the original signature could not match it again anyway.
+      replayedSignature: row.signature === "verified" || row.signature === "unchecked" ? row.signature : "not_required",
       skipDedupe: true,
     });
     if (!result.deliveryId) return null;
@@ -859,7 +791,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       ...(args.headers ?? {}),
       "content-type": "application/json",
       "user-agent": "ADE-Webhook-Test/1",
-      "x-ade-test": "1",
+      "x-ade-test": issueTestNonce(config?.signature?.header ?? null),
     };
     if (config?.signature) {
       const secret = deps.readSecret(config.signature.secretName);
@@ -885,113 +817,18 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
   // Relay drain. D1 is the durable stream; the socket only says "drain now".
   // -------------------------------------------------------------------------
 
-  const drainOnce = async (): Promise<void> => {
-    const hookIds = deps.db.all<{ hook_id: string }>(
+  const relayDrain = createWebhookRelayDrain({
+    listRelayHookIds: () => deps.db.all<{ hook_id: string }>(
       "select hook_id from automation_webhook_hooks where project_id = ? and relay_registered_at is not null",
       [deps.projectId],
-    ).map((row) => row.hook_id);
-    if (!hookIds.length) return;
-    const accountToken = await readAccountToken();
-    if (!accountToken) return;
-    const headers = { [ACCOUNT_RELAY_TOKEN_HEADER]: accountToken };
-    for (let page = 0; page < RELAY_MAX_PAGES_PER_DRAIN && !stopped; page += 1) {
-      const url = new URL(`${relayBaseUrl()}/hooks/events`);
-      url.searchParams.set("hooks", hookIds.join(","));
-      url.searchParams.set("limit", String(RELAY_PAGE_LIMIT));
-      const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(20_000) });
-      const payload = await response.json().catch(() => null) as {
-        events?: Array<{ eventId: string; hookId: string; method: string; query: string; headers: Record<string, string>; body: string; bodyEncoding: string; receivedAt: string }>;
-        hasMore?: boolean;
-        error?: string;
-      } | null;
-      if (!response.ok || !payload || !Array.isArray(payload.events)) {
-        throw new Error(payload?.error ?? `ADE relay answered HTTP ${response.status}.`);
-      }
-      if (!payload.events.length) return;
-      const processed: string[] = [];
-      for (const event of payload.events) {
-        try {
-          await receive({
-            hookId: event.hookId,
-            method: event.method,
-            headers: lowerCaseHeaders(event.headers ?? {}),
-            query: queryRecord(event.query ?? ""),
-            rawBody: Buffer.from(event.body ?? "", event.bodyEncoding === "base64" ? "base64" : "utf8"),
-            via: "relay",
-            receivedAt: event.receivedAt,
-            relayDeliveryId: event.eventId,
-          });
-        } catch (error) {
-          // A delivery that cannot be processed is still acknowledged: holding
-          // it would only fail again on every drain and block nothing useful.
-          deps.logger.warn("automations.webhook_relay_delivery_failed", { eventId: event.eventId, error: errorMessage(error) });
-        }
-        processed.push(event.eventId);
-      }
-      // Acknowledge after processing. If this call is lost, the same requests
-      // come back next drain and the duplicate check (keyed on the relay's
-      // delivery id) keeps them from running twice.
-      const ack = await fetchImpl(`${relayBaseUrl()}/hooks/ack`, {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ eventIds: processed }),
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!ack.ok) throw new Error(`ADE relay did not accept the acknowledgement (HTTP ${ack.status}).`);
-      if (!payload.hasMore) return;
-    }
-  };
-
-  const drainRelay = async (): Promise<void> => {
-    if (drainInFlight) {
-      drainAgain = true;
-      return await drainInFlight;
-    }
-    drainInFlight = (async () => {
-      do {
-        drainAgain = false;
-        try {
-          await drainOnce();
-        } catch (error) {
-          if (!stopped) deps.logger.warn("automations.webhook_relay_drain_failed", { error: errorMessage(error) });
-          return;
-        }
-      } while (drainAgain && !stopped);
-    })().finally(() => {
-      drainInFlight = null;
-    });
-    return await drainInFlight;
-  };
-
-  const resolveWakeTarget = async (): Promise<RelayWakeTarget | null> => {
-    const hasRelayHooks = deps.db.get<{ hook_id: string }>(
-      "select hook_id from automation_webhook_hooks where project_id = ? and relay_registered_at is not null limit 1",
-      [deps.projectId],
-    );
-    if (!hasRelayHooks) return null;
-    const accountToken = await readAccountToken();
-    if (!accountToken) return null;
-    return {
-      url: `${relayBaseUrl().replace(/^http/, "ws")}/hooks/subscribe`,
-      headers: { [ACCOUNT_RELAY_TOKEN_HEADER]: accountToken },
-    };
-  };
-
-  function ensureRelayConnection(): void {
-    if (stopped) return;
-    if (!wakeSocket) {
-      wakeSocket = createRelayWakeSocket({
-        resolveTarget: resolveWakeTarget,
-        frameType: "hook_delivery",
-        onWake: () => void drainRelay(),
-        // A (re)connect may have missed hints; drain to catch up.
-        onConnectedChange: (connected) => {
-          if (connected) void drainRelay();
-        },
-      });
-    }
-    void drainRelay();
-  }
+    ).map((row) => row.hook_id),
+    readAccountToken,
+    relayBaseUrl,
+    fetchImpl,
+    logger: deps.logger,
+    receive,
+  });
+  const drainRelay = relayDrain.drain;
 
   return {
     createEndpoint,
@@ -1007,8 +844,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     retireEndpoint,
     retireForDeletedRule,
     start() {
-      if (!stopped) return;
-      stopped = false;
+      if (!relayDrain.start()) return;
       void retireOrphans()
         // Registration is idempotent; refreshing it on start heals a relay
         // that forgot a URL (an account unlink, a relay reset) before the
@@ -1017,18 +853,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         .catch((error: unknown) => {
           deps.logger.warn("automations.webhook_start_maintenance_failed", { error: errorMessage(error) });
         });
-      ensureRelayConnection();
-      safetyTimer = setInterval(() => void drainRelay(), RELAY_SAFETY_POLL_MS);
-      safetyTimer.unref?.();
     },
     stop() {
-      stopped = true;
-      if (safetyTimer) {
-        clearInterval(safetyTimer);
-        safetyTimer = null;
-      }
-      wakeSocket?.stop();
-      wakeSocket = null;
+      relayDrain.stop();
     },
   };
 }

@@ -23,11 +23,10 @@ import {
 import { computeRelayReconnectBackoffMs, rawDataToText } from "./relayWakeSocket";
 import {
   createCustomWebhookService,
-  lowerCaseHeaders,
-  queryRecord,
   type CustomWebhookService,
   type CustomWebhookServiceDeps,
 } from "./customWebhookService";
+import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 
 export type AutomationIngressCursorStore = {
@@ -537,8 +536,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           method,
           headers: lowerCaseHeaders(request.headers),
           query: queryRecord(url.searchParams),
-          // An oversize body is passed as one byte past the cap so the log says why.
-          rawBody: tooLarge ? Buffer.alloc(WEBHOOK_MAX_BODY_BYTES + 1) : Buffer.concat(chunks),
+          rawBody: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks),
+          tooLarge,
           via: "local",
         });
         response

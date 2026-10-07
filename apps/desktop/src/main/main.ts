@@ -436,7 +436,7 @@ import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersion
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
-import { listWebhookAutomations } from "./services/automations/webhookAutomationFactory";
+import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -5231,26 +5231,11 @@ app.whenReady().then(async () => {
       autoRebaseService,
       computerUseArtifactBrokerService,
       appleDeviceService: iosSimulatorService,
-      getWebhookAutomations: () => {
-        const webhooks = automationIngressService?.webhooks;
-        if (!webhooks || !automationService) return null;
-        return {
-          list: () => listWebhookAutomations({
-            rules: automationService.list(),
-            getEndpoint: (input) => webhooks.getEndpoint(input),
-            listDeliveries: (input) => webhooks.listDeliveries(input),
-            secretNames: (() => {
-              try {
-                return new Set(projectSecretService.list().secrets.map((secret) => secret.name));
-              } catch {
-                return new Set<string>();
-              }
-            })(),
-          }),
-          listDeliveries: (input) => webhooks.listDeliveries(input),
-          getDelivery: (input) => webhooks.getDelivery(input),
-        };
-      },
+      getWebhookAutomations: () => createWebhookRemoteSource({
+        automationService,
+        webhooks: automationIngressService?.webhooks,
+        projectSecrets: projectSecretService,
+      }),
       appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,

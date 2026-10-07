@@ -6641,15 +6641,8 @@ export function registerIpc({
     if (!ctx.automationService) return [];
     return await listWebhookAutomations({
       rules: ctx.automationService.list(),
-      getEndpoint: (input) => webhooks.getEndpoint(input),
-      listDeliveries: (input) => webhooks.listDeliveries(input),
-      secretNames: (() => {
-        try {
-          return new Set((ctx.projectSecretService?.list().secrets ?? []).map((secret) => secret.name));
-        } catch {
-          return new Set<string>();
-        }
-      })(),
+      webhooks,
+      projectSecrets: ctx.projectSecretService,
     });
   });
   ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) =>

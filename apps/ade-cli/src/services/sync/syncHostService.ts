@@ -302,6 +302,7 @@ import {
 import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
+import type { WebhookRemoteSource } from "./webhookRemoteCommands";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
@@ -1144,6 +1145,14 @@ type SyncHostServiceArgs = {
    * action set production registers.
    */
   macDesktopService?: ReturnType<typeof createMacDesktopService> | null;
+  /**
+   * The runtime's webhook-automation source (read-only list + delivery log).
+   * Threaded for the same reason as `workToolsStateService` and
+   * `macDesktopService`: the fallback remote-command service built below must
+   * advertise the same `automations.webhook*` action set production registers,
+   * rather than a namespace whose every call throws.
+   */
+  getWebhookAutomations?: () => WebhookRemoteSource | null;
   /**
    * Subscription fan-out for the live Mac Desktop view. Production
    * (`syncService.ts`) creates it next to the remote-command service and
@@ -2344,6 +2353,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     macDesktopService,
     macDesktopSyncStream,
     appControlSyncStream: args.appControlSyncStream ?? null,
+    getWebhookAutomations: args.getWebhookAutomations,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,

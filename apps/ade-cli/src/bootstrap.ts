@@ -293,7 +293,7 @@ import { createPrEventFanout } from "./prEventFanout";
 import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
 import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
-import { listWebhookAutomations } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
+import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -3163,26 +3163,11 @@ export async function createAdeRuntime(args: {
             }
           : null,
         appleDeviceService: iosSimulatorService,
-        getWebhookAutomations: () => {
-          const webhooks = automationIngressService?.webhooks;
-          if (!webhooks || !automationService) return null;
-          return {
-            list: () => listWebhookAutomations({
-              rules: automationService.list(),
-              getEndpoint: (input) => webhooks.getEndpoint(input),
-              listDeliveries: (input) => webhooks.listDeliveries(input),
-              secretNames: (() => {
-                try {
-                  return new Set(projectSecretService.list().secrets.map((secret) => secret.name));
-                } catch {
-                  return new Set<string>();
-                }
-              })(),
-            }),
-            listDeliveries: (input) => webhooks.listDeliveries(input),
-            getDelivery: (input) => webhooks.getDelivery(input),
-          };
-        },
+        getWebhookAutomations: () => createWebhookRemoteSource({
+          automationService,
+          webhooks: automationIngressService?.webhooks,
+          projectSecrets: projectSecretService,
+        }),
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,

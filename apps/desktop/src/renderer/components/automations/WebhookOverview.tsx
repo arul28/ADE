@@ -1,22 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { CaretDown, CaretRight, CheckCircle, Copy, Key, WebhooksLogo, Warning } from "@phosphor-icons/react";
-
-const OUTCOME_TONE: Record<string, SurfaceTone> = {
-  ran: "ok",
-  bad_signature: "crit",
-  missing_signature: "crit",
-  error: "crit",
-  expired: "warn",
-  rate_limited: "warn",
-  too_large: "warn",
-};
 import type { AutomationWebhookDeliverySummary, AutomationWebhookListEntry } from "../../../shared/types";
 import { webhookPresetDef } from "../../../shared/automationWebhooks";
+import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { relativeWhen } from "../../lib/format";
-import { dotCls, eyebrowCls, panelCls, rowHoverCls, tagCls, toneTextCls, type SurfaceTone } from "./webhookSurface";
+import { OUTCOME_STYLES, dotCls, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
 import { WebhookDeliveries } from "./builder/WebhookDeliveries";
 
 /**
@@ -98,7 +89,7 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                   <span className="flex shrink-0 items-center gap-2 font-mono text-[10.5px] tabular-nums text-muted-fg">
                     {last ? (
                       <>
-                        <span className={dotCls(OUTCOME_TONE[last.outcome] ?? "neutral")} />
+                        <span className={dotCls(OUTCOME_STYLES[last.outcome]?.tone ?? "neutral")} />
                         {(last.outcome === "ran" ? "ran" : last.outcome.replace(/_/g, " ")).toUpperCase()} · {relativeWhen(last.receivedAt)}
                       </>
                     ) : (
@@ -115,9 +106,10 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                           type="button"
                           className={cn(panelCls, "inline-flex items-center gap-1 px-2 py-1.5 text-[11.5px] text-fg", rowHoverCls)}
                           onClick={() => {
-                            void navigator.clipboard.writeText(entry.url!).then(
-                              () => showToast({ tone: "success", title: "URL copied" }),
-                              () => showToast({ tone: "error", title: "Couldn't copy the URL" }),
+                            void copyTextToClipboard(entry.url!).then((ok) =>
+                              ok
+                                ? showToast({ tone: "success", title: "URL copied" })
+                                : showToast({ tone: "error", title: "Couldn't copy the URL" }),
                             );
                           }}
                         >
