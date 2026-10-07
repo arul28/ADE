@@ -634,11 +634,17 @@ describe("handoff git bundle", () => {
     expect(repoState(lanePath)).toEqual(before);
   });
 
-  it("lets arriving commits replace a tracked directory with a file", async () => {
+  // Git replaces a tracked directory the commits turn into a file; an ignored
+  // local file inside it would be deleted, so that case refuses.
+  it.each([
+    { label: "replaces a tracked directory with a file", localFile: false },
+    { label: "refuses when that directory holds an ignored local file", localFile: true },
+  ])("arriving commits: $label", async ({ localFile }) => {
     const { source, clone } = makeRepos();
     git(source, "checkout", "--quiet", "-b", "dir-to-file");
     fs.mkdirSync(path.join(source, "config"));
     fs.writeFileSync(path.join(source, "config", "settings.json"), "{}\n");
+    fs.writeFileSync(path.join(source, ".gitignore"), ".env\nconfig/local.json\n");
     git(source, "add", "-A");
     git(source, "commit", "--quiet", "-m", "config dir");
     git(source, "push", "--quiet", "-u", "origin", "dir-to-file");
@@ -653,13 +659,22 @@ describe("handoff git bundle", () => {
     const destination = clone("dir-destination");
     const lanePath = path.join(path.dirname(destination), "dir-lane");
     git(destination, "worktree", "add", "--quiet", "-b", "dir-to-file", lanePath, "origin/dir-to-file");
-    await applyHandoffGitBundle({
+    if (localFile) fs.writeFileSync(path.join(lanePath, "config", "local.json"), "LOCAL=1\n");
+    const before = repoState(lanePath);
+    const landing = applyHandoffGitBundle({
       projectRoot: destination,
       handoffId: "handoff:dir-1",
       branchRef: "dir-to-file",
       bundle,
       target: { kind: "existing_worktree", worktreePath: lanePath },
     });
+    if (localFile) {
+      await expect(landing).rejects.toThrow(/already has 'config'/);
+      expect(fs.readFileSync(path.join(lanePath, "config", "local.json"), "utf8")).toBe("LOCAL=1\n");
+      expect(repoState(lanePath)).toEqual(before);
+      return;
+    }
+    await landing;
     expect(fs.readFileSync(path.join(lanePath, "config"), "utf8")).toBe("now a file\n");
     expect(git(lanePath, "rev-parse", "HEAD")).toBe(git(source, "rev-parse", "HEAD"));
     expect(git(lanePath, "status", "--porcelain=v1")).toBe("");

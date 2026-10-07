@@ -462,7 +462,12 @@ export async function applyHandoffGitBundle(args: {
         for (const relPath of added) {
           if (!fs.existsSync(path.join(worktreePath, relPath))) continue;
           const tracked = await gitOut(worktreePath, ["ls-tree", "-r", "--name-only", current, "--", relPath]);
-          if (!tracked) {
+          // A tracked directory git replaces can still hold ignored or
+          // untracked local files, which the replacement would delete.
+          const local = tracked
+            ? await gitOut(worktreePath, ["ls-files", "--others", "-z", "--", relPath])
+            : "";
+          if (!tracked || local.replace(/\0/g, "")) {
             collision = relPath;
             break;
           }
