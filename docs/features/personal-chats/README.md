@@ -21,10 +21,11 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
 | `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes a local/no-project window to the local brain and a remotely bound project window to that remote machine's personal-chat scope. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface, persisted-surface reconstruction/repair support, and neutral provider guidance/environment. |
-| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: independently loaded conversation list and model catalog, conversation stream, the hero-vs-docked composer switch once a session is selected, transcript, personal-scoped link routing, and compact Browser/Terminal tool panels. |
-| `apps/desktop/src/renderer/components/personalChats/ProjectlessHero.tsx` | Empty-state hero shown before a session is picked — heading, verb-first suggestion chips that prefill the draft, and the docked composer slot. |
-| `apps/desktop/src/renderer/components/personalChats/ProjectlessComposer.tsx` | Shared composer rendered in `hero` or `docked` variant, with model/reasoning/permission controls, send/interrupt, and provider-accent send button (`chatAccentContrast`). |
-| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: recency-grouped, searchable session list with new-chat and per-session selection state. |
+| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: conversation rail, model catalog, personal-scoped link routing, compact Browser/Terminal tool panels, and the real `AgentChatPane` (full composer, transcript, approvals, steer and queue) routed to this machine's personal scope. |
+| `apps/desktop/src/renderer/components/personalChats/personalAgentChatApi.ts` | The one adapter that re-points `window.ade.agentChat` at `personalChats.*`: every pane call becomes a personal action, the event stream is one shared poller, and actions personal chats lack refuse clearly instead of reaching a project runtime. |
+| `apps/desktop/src/renderer/components/chat/agentChatApi.tsx` | `ChatPaneScope` and the context the pane, composer and panels read their chat API from (`useAgentChatApi`). Absent scope means the project chat domain, unchanged. |
+| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: pinned-then-recency-grouped, searchable session list with new-chat, per-session selection, inline rename, pin/unpin, archive and delete. |
+| `apps/desktop/src/main/services/chat/personalSession.ts` | Personal-surface rules: `isAssistantPersonalSession` / `isEmbeddedPersonalSession`, the lane-only skill list, and both system prompts (the neutral SDK one and the assistant one). |
 | `apps/desktop/src/renderer/components/personalChats/sessionHelpers.ts` | Pure helpers for session title/preview, relative timestamps, and provider→tool-logo mapping shared by the page and sidebar. |
 | `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider-accent theming for the surface, including `effectiveChatAccent` (accounts for the neutral chrome tint) and `chatAccentContrast` (readable glyph on the `--chat-accent` fill). |
 | `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, and `TopBar.tsx`. The Chats top tab is a machine-level tab backed by `personalChatsTabOpen` in `state/appStore.ts` and rendered through the reusable `ShellNavTab.tsx` (shared by the Chats and New Tab shell tabs). |
@@ -146,7 +147,8 @@ want prose or a choice, and the engine would take the decision while the request
 stayed unanswered. The SDK refuses them client-side with `invalid_option`.
 
 The action family covers list/create/read/send and interactive turn controls,
-session metadata/lifecycle, scheduled-work create/cancel/pause, model inventory,
+session metadata/lifecycle (including `setPinned`, whose state `list` rows
+carry as `pinned: true`), the composer's `slashCommands`, scheduled-work create/cancel/pause, model inventory,
 paged event history, bounded image attachment ingress/readback, and a chat-owned
 shell PTY. Scheduled-work mutations call the same chat service methods as
 project chat after rechecking that the supplied session belongs to
@@ -224,11 +226,48 @@ ade chat send <session-id> --personal --text "Make it a three-day itinerary"
 
 Project and personal flags are mutually exclusive.
 
+## Profiles: `assistant` and `embedded`
+
+Every personal chat carries a persisted `personalProfile`:
+
+- **`assistant`** — chats started from ADE's own UI (the Chats page sends it)
+  and from `ade chat create --personal` (the CLI defaults to it; pass
+  `--arg personalProfile=embedded` for the SDK surface). A normal ADE chat that
+  is not tied to a project.
+- **`embedded`** — the SDK-host surface. Exactly the pre-profile behavior.
+
+**The rule for a missing value: absent means `embedded`, everywhere.** That
+covers SDK hosts (which never send the field) and every row written before
+profiles existed, so nothing gains skills or user MCP servers by omission. An
+embedded runtime (`ade runtime run --profile embedded`) forces `embedded`
+whatever the caller sends. Legacy chats created from the Chats page before this
+change therefore keep the old agent behavior; they still render in the full pane.
+
+What `assistant` changes, provider by provider:
+
+| | `assistant` | `embedded` |
+|---|---|---|
+| Session profile | `workflow` (tool gate, approval and dialog cards, hooks) | `light` |
+| Prompt | the assistant prompt: shell, files wherever the user points, ADE browser, computer use, App Control, the `ade` CLI, scratch folder by default | the neutral general-assistant prompt |
+| ADE skills | the bundled catalog minus `ade-lanes-git` and `ade-pr-workflows`, through the same per-provider channels as Work chats (Claude plugin root and listing, Codex skill roots and slash commands, Cursor shim, Qwen, Pi, `ADE_AGENT_SKILLS_DIRS`). The withheld skills are removed by a private filtered mirror of the root (`withoutAgentSkills`), because no provider takes a per-skill deny list. | none (Pi reads the env roots, as before) |
+| Claude `settingSources` | the caller's value, else `user` (`all` when the chat runs in a folder the user named), so the user's CLAUDE.md, MCP servers and skills load | the caller's value, else `none` |
+| Pi extensions | load, like `pi` in a terminal | off |
+| ADE browser | the personal runtime gets the desktop bridge (the brain forwards the desktop's token), so chats get `ADE_BROWSER_ACTOR_TOKEN` | unchanged |
+
+Still off for both, on purpose: planning mode (ask mode or full permission
+only; the composer hides plan options), lane guidance and lane memory, the
+lane worktree directive, the computer-use proof directive (the skill covers it),
+and agent-set activity reporting (the personal runtime has no listening socket,
+so `ade chat activity` would reach the wrong runtime). OpenCode keeps sharing
+one personal server, so an assistant OpenCode chat learns its skills from the
+prompt's skill roots rather than OpenCode's own `skills.paths`.
+
 ## Agent behavior
 
 The public session summary carries `surface: "personal"`, while the synthetic
-lane remains hidden. Provider launches receive neutral general-assistant
-guidance rather than ADE's coding-agent prompt. The environment exposes the
+lane remains hidden. Provider launches of an `embedded` chat receive neutral
+general-assistant guidance rather than ADE's coding-agent prompt; an
+`assistant` chat receives the assistant prompt above. The environment exposes the
 chat session and personal scope, but omits project/lane/workspace identity
 variables.
 
@@ -262,7 +301,7 @@ themselves are not trimmed.
 
 | Surface | Entry and behavior |
 |---|---|
-| Desktop | **Chats** works with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface itself is a hero empty state — heading plus verb-first suggestion chips — whose composer docks to the bottom once a session is selected, alongside a stateful searchable recency-grouped conversation rail, shared model/reasoning/permission controls, provider-accent send button, transcript/approval handling, and compact Browser and Terminal buttons. |
+| Desktop | **Chats** works with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface is the real chat pane (`AgentChatPane` with a personal `ChatPaneScope`): the full composer (attachments, paste, slash commands, steer and queue, model/reasoning/permission controls without planning modes), transcript and approval cards, with lane, git, PR and worktree chrome hidden; beside it a searchable conversation rail (pinned first, inline rename, pin, archive, delete) and compact Browser and Terminal buttons. Fork, rewind, handoff, import, Codex goals and transcript recovery are hidden: personal chats have no backend action for them yet. |
 | ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). HTTP(S) links in the transcript are intercepted by the active personal-chat surface, open its Browser panel, and navigate with projectless scope so they cannot land invisibly in a retained project's collection. Navigation failures stay in ADE as a visible error instead of surprise-opening the system browser later. Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
 | iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. Personal summaries are cached per paired host for offline list display; create and schedule mutations require a live host, while sends may queue. |

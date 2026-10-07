@@ -10435,6 +10435,10 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
+      // A chat started from ADE's own CLI is the user's assistant, like one
+      // started from the Chats page. `--arg personalProfile=embedded` asks for
+      // the SDK-host surface instead.
+      personalProfile: "assistant",
       provider,
       model,
       modelId: model,
@@ -23526,6 +23530,9 @@ async function runServe(
           }),
           onDesktopBridgeAuthToken: (authToken: string) => {
             machineDesktopBridgeAuthToken = authToken;
+            // Personal chats run in their own runtime; it needs the same token
+            // to give its chats the ADE browser.
+            personalChatScope.setDesktopBridgeAuthToken(authToken);
           },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),

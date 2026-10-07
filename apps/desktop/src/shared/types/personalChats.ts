@@ -17,6 +17,8 @@ import type {
   AgentChatMoveSteerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
+  AgentChatProvider,
+  AgentChatSlashCommand,
   PendingInputRequest,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
@@ -63,12 +65,14 @@ export const PERSONAL_CHAT_ACTIONS = [
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
   "updateSession",
+  "setPinned",
   "rerunLastTurn",
   "archive",
   "unarchive",
   "delete",
   "models",
   "modelCatalog",
+  "slashCommands",
   "getEventHistory",
   "getEventHistoryPage",
   "terminalCreate",
@@ -150,9 +154,13 @@ export type PersonalChatCallArgs =
   | { action: "resumeUsageLimitNow"; args: AgentChatResumeUsageLimitNowArgs }
   | { action: "continueUsageLimitOnAlternate"; args: AgentChatContinueUsageLimitOnAlternateArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
+  /** Pin or unpin a chat in the rail. `list` rows carry `pinned: true` when pinned. */
+  | { action: "setPinned"; args: { sessionId: string; pinned: boolean } }
   | { action: "archive" | "unarchive" | "delete"; args: { sessionId: string } }
   | { action: "models"; args?: { provider?: string } }
   | { action: "modelCatalog"; args?: AgentChatModelCatalogArgs }
+  /** The composer's slash commands for one chat, or for a provider before a chat exists. */
+  | { action: "slashCommands"; args: { sessionId?: string; provider?: AgentChatProvider | null } }
   | { action: "getEventHistory"; args: { sessionId: string; maxEvents?: number; maxBytes?: number } }
   | { action: "getEventHistoryPage"; args: { sessionId: string; beforeOffset: number; maxBytes?: number } }
   | { action: "terminalCreate"; args?: { chatSessionId?: string | null; cols?: number; rows?: number } }
@@ -189,6 +197,7 @@ export type PersonalChatCallResult =
   | AgentChatRecoverTurnResult
   | AgentChatResolveUnprocessedMessageResult
   | AgentChatModelCatalog
+  | AgentChatSlashCommand[]
   | PersonalChatPendingInputsResult
   | PtyCreateResult
   | PtyDisposeResult

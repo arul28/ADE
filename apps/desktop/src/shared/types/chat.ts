@@ -2520,6 +2520,25 @@ export type SpawnLineageSessionFields = {
 };
 export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation" | "personal";
+/**
+ * What a personal (project-less) chat is for.
+ *
+ * - `assistant`: a chat started from ADE's own UI or CLI. A normal ADE chat
+ *   that is just not tied to a git project: ADE agent skills (minus the
+ *   lane-only ones), the user's own Claude settings and MCP servers, approval
+ *   cards, and a prompt that says it may use the shell, files, the ADE browser,
+ *   computer use and app control.
+ * - `embedded`: the SDK-host surface (`ade runtime run --profile embedded`,
+ *   packages/sdk). Neutral general-assistant prompt, no ADE skills, no user
+ *   settings unless the host asks. Exactly what personal chats did before
+ *   profiles existed.
+ *
+ * Absent means `embedded`, everywhere, legacy rows included. Only an explicit
+ * `assistant` turns the richer surface on, so an SDK host (which never sends
+ * the field) cannot gain skills or user MCP servers by omission. Meaningless
+ * on work and automation chats.
+ */
+export type AgentChatPersonalProfile = "assistant" | "embedded";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
@@ -2803,6 +2822,7 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
@@ -2888,6 +2908,11 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
+  /**
+   * Pinned to the top of the personal Chats rail. Set only on rows returned by
+   * `personalChats.list` / `setPinned`; Work pins live on the terminal session.
+   */
+  pinned?: boolean;
   goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
@@ -2957,6 +2982,7 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    */
   parentIdentityKey?: string | null;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
@@ -3761,6 +3787,7 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   openInUi?: boolean;

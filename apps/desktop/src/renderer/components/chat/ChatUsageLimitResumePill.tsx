@@ -11,6 +11,7 @@ import {
 } from "../../../shared/usageLimitResumePresentation";
 import { CLAUDE_SESSION_QUOTA_CARD_ACTION } from "../../../shared/claudeSessionQuota";
 import { cn } from "../ui/cn";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * The compact usage-limit pill that floats directly above the composer, and its
@@ -53,6 +54,7 @@ export function ChatUsageLimitResumePill({
   runtimePin?: OpenProjectBinding | null;
   className?: string;
 }) {
+  const agentChatApi = useAgentChatApi();
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -169,7 +171,7 @@ export function ChatUsageLimitResumePill({
     // served to remote and hosted-web clients whose brain may be an older
     // build, and a missing bridge should read as one sentence in the popover,
     // not a TypeError with the popover still claiming a resume is coming.
-    const send = window.ade.agentChat.resumeUsageLimitNow;
+    const send = agentChatApi.resumeUsageLimitNow;
     if (typeof send !== "function") {
       return "This ADE runtime can't resume yet. Update the app and try again.";
     }
@@ -183,7 +185,7 @@ export function ChatUsageLimitResumePill({
   });
 
   const setAutoContinue = (next: boolean) => run(async () => {
-    await window.ade.agentChat.updateSession(
+    await agentChatApi.updateSession(
       { sessionId, autoContinueAtUsageLimit: next },
       runtimePin,
     );
@@ -191,7 +193,7 @@ export function ChatUsageLimitResumePill({
   });
 
   const continueOnAccount = () => run(async () => {
-    const send = window.ade.agentChat.continueUsageLimitOnAlternate;
+    const send = agentChatApi.continueUsageLimitOnAlternate;
     if (typeof send !== "function") {
       return "This ADE runtime can't switch accounts yet. Update the app and try again.";
     }

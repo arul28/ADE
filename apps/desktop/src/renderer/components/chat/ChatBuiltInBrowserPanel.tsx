@@ -144,6 +144,7 @@ import {
   pointerToCapturePoint,
 } from "./browser/browserCapture";
 import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useAgentChatApi } from "./agentChatApi";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -311,6 +312,9 @@ export function ChatBuiltInBrowserPanel({
   runtimePin = null,
   groupLaneId = null,
 }: ChatBuiltInBrowserPanelProps) {
+  // Screenshots go to the surrounding chat's attachment store: a personal
+  // chat's own, not the active project's.
+  const agentChatApi = useAgentChatApi();
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -756,7 +760,7 @@ export function ChatBuiltInBrowserPanel({
     const screenshotDataUrl = item.screenshotDataUrl ?? null;
     if (screenshotDataUrl && !attachmentPath && onAddAttachment) {
       try {
-        const saved = await window.ade.agentChat.saveTempAttachment({
+        const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
         }, ...(runtimePin ? [runtimePin] as const : []));
@@ -1424,7 +1428,7 @@ export function ChatBuiltInBrowserPanel({
 
     let attachmentPath: string | null = null;
     if (onAddAttachment) {
-      const saved = await window.ade.agentChat.saveTempAttachment({
+      const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
       }, ...(runtimePin ? [runtimePin] as const : []));

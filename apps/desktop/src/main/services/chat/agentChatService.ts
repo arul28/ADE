@@ -539,6 +539,7 @@ import type {
   AgentChatUsageAccount,
   AgentChatTranscriptEntry,
   AgentChatSurface,
+  AgentChatPersonalProfile,
   AgentChatSteerArgs,
   AgentChatSteerResult,
   AgentChatSendArgs,
@@ -928,6 +929,8 @@ import {
   codexSkillsForCwd,
   codexSkillsListParams,
   existingAgentSkillRoots,
+  withoutAgentSkills,
+  withoutAgentSkillsEnv,
   type CodexSkillsListResponse,
 } from "../skills/agentSkillRuntimeService";
 import {
@@ -1336,7 +1339,12 @@ import {
 } from "./codexApprovalContainment";
 import {
   PERSONAL_CHAT_SYSTEM_PROMPT,
+  PERSONAL_LANE_ONLY_AGENT_SKILLS,
+  buildPersonalAssistantSystemPrompt,
+  isAssistantPersonalSession,
+  isEmbeddedPersonalSession,
   isPersonalSession,
+  normalizePersonalProfile,
   resolvePersonalHostCwd,
   resolvePersonalSystemPrompt,
 } from "./personalSession";
@@ -1775,6 +1783,7 @@ type PersistedChatState = {
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
+  personalProfile?: AgentChatPersonalProfile;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
@@ -9023,6 +9032,7 @@ function buildCodexDeveloperInstructions(args: {
     | "orchestrationParentSessionId"
     | "spawnKind"
     | "surface"
+    | "personalProfile"
     | "instructions"
   >;
   collaborationMode: AgentChatCodexCollaborationMode;
@@ -9031,7 +9041,7 @@ function buildCodexDeveloperInstructions(args: {
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
-  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
+  if (args.session.surface === "personal") return resolvePersonalPromptFor(args.session, args.laneWorktreePath);
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -9058,6 +9068,7 @@ function buildOpenCodeSystemPrompt(args: {
     | "permissionMode"
     | "interactionMode"
     | "surface"
+    | "personalProfile"
     | "orchestrationParentSessionId"
     | "spawnKind"
     | "instructions"
@@ -9065,7 +9076,7 @@ function buildOpenCodeSystemPrompt(args: {
   spawnGuidance?: SpawnSelfReportGuidanceOpts;
   sessionActivityGuidance?: string | null;
 }): string {
-  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
+  if (args.session.surface === "personal") return resolvePersonalPromptFor(args.session, args.laneWorktreePath);
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -9675,8 +9686,25 @@ function resolveClaudeStrictMcpConfig(
   return session.strictMcpConfig ?? lightweight;
 }
 
+/**
+ * The prompt one personal chat's provider is given.
+ *
+ * `embedded` → `resolvePersonalSystemPrompt`, unchanged. `assistant` → the
+ * assistant prompt, naming the skill roots the agent will actually see (the
+ * lane-only skills withheld), under the same host append/replace rule.
+ */
+function resolvePersonalPromptFor(
+  session: Pick<AgentChatSession, "surface" | "personalProfile" | "instructions">,
+  cwd: string,
+): string {
+  if (!isAssistantPersonalSession(session)) return resolvePersonalSystemPrompt(session);
+  const skillRoots = withoutAgentSkills(adePromptAgentSkillRoots({ cwd }), PERSONAL_LANE_ONLY_AGENT_SKILLS);
+  return resolvePersonalSystemPrompt(session, buildPersonalAssistantSystemPrompt({ cwd, skillRoots }));
+}
+
 function personalChatUserPromptFallback(
-  session: Pick<AgentChatSession, "surface" | "provider">,
+  session: Pick<AgentChatSession, "surface" | "personalProfile" | "provider" | "instructions">,
+  cwd: string,
 ): string | null {
   if (!isPersonalSession(session)) return null;
   // Every current provider has a dedicated instruction channel below:
@@ -9692,7 +9720,9 @@ function personalChatUserPromptFallback(
     case "pi":
       return null;
     default:
-      return PERSONAL_CHAT_SYSTEM_PROMPT;
+      return isAssistantPersonalSession(session)
+        ? resolvePersonalPromptFor(session, cwd)
+        : PERSONAL_CHAT_SYSTEM_PROMPT;
   }
 }
 
@@ -10675,6 +10705,17 @@ export function createAgentChatService(args: {
    */
   const agentSkillRootEnv = (): NodeJS.ProcessEnv => getAdeCliAgentEnv?.(process.env) ?? process.env;
 
+  /**
+   * The skill-root variables one chat's provider should read. An `assistant`
+   * personal chat sees the catalog without the lane-only skills; every other
+   * chat, `embedded` personal ones included, sees exactly what it always did.
+   */
+  const agentSkillRootEnvFor = (managed: ManagedChatSession): NodeJS.ProcessEnv => (
+    isAssistantPersonalSession(managed.session)
+      ? withoutAgentSkillsEnv(agentSkillRootEnv(), PERSONAL_LANE_ONLY_AGENT_SKILLS)
+      : agentSkillRootEnv()
+  );
+
   const resolveSessionActivityRuntime = (
     session: Pick<AgentChatSession, "id" | "surface">,
     enabled: boolean,
@@ -10807,6 +10848,12 @@ export function createAgentChatService(args: {
       // Keep shell-visible PWD aligned with the actual scratch cwd rather
       // than leaking whichever project happened to launch the ADE brain.
       env.PWD = managed.laneWorktreePath;
+    }
+    // Every provider that discovers skills from these variables (Claude's
+    // plugin root, Codex, Cursor, Qwen, Pi, `ade skill list`) then sees the
+    // assistant catalog: ADE's skills minus the lane-only ones.
+    if (isAssistantPersonalSession(managed.session)) {
+      Object.assign(env, withoutAgentSkillsEnv(env, PERSONAL_LANE_ONLY_AGENT_SKILLS));
     }
     const linearContext = writeSessionLinearIssueContext(managed.session.id);
     if (linearContext) {
@@ -15776,7 +15823,7 @@ export function createAgentChatService(args: {
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
     const systemPrompt = isPersonalSession(managed.session)
-      ? resolvePersonalSystemPrompt(managed.session)
+      ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
       : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
           mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
@@ -16237,9 +16284,11 @@ export function createAgentChatService(args: {
    * They are bound to ADE's limited UI bridge rather than Pi's TUI.
    */
   const piChatExtensionsEnabled = (managed: ManagedChatSession): boolean => {
-    // A personal chat is not attached to a project worktree, so project-scoped
-    // extensions have no business loading into it.
-    if (isPersonalSession(managed.session)) return false;
+    // An SDK-host personal chat loads none of the user's own configuration
+    // unless the host asks. An `assistant` chat is the user's own, so their
+    // Pi extensions load as they would in `pi` (its scratch cwd has no
+    // project-scoped ones).
+    if (isEmbeddedPersonalSession(managed.session)) return false;
     // Enabling extensions means giving up Pi's `tools` allowlist, because an
     // extension's tool names are not knowable until after the session exists —
     // and an extension tool cannot be wrapped in an approval card the way a
@@ -17161,6 +17210,9 @@ export function createAgentChatService(args: {
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.surface ? { surface: managed.session.surface } : {}),
+      ...(managed.session.surface === "personal" && managed.session.personalProfile
+        ? { personalProfile: managed.session.personalProfile }
+        : {}),
       ...(managed.session.automationId ? { automationId: managed.session.automationId } : {}),
       ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
@@ -17845,6 +17897,11 @@ export function createAgentChatService(args: {
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
+        // Read back only on a personal record, and only as a known value: an
+        // unknown or absent one means `embedded`, the pre-profile behavior.
+        ...(surface === "personal" && normalizePersonalProfile(record.personalProfile)
+          ? { personalProfile: normalizePersonalProfile(record.personalProfile)! }
+          : {}),
         ...(typeof record.automationId === "string" && record.automationId.trim().length
           ? { automationId: record.automationId.trim() }
           : {}),
@@ -24307,6 +24364,9 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         ...(persisted?.surface ? { surface: persisted.surface } : {}),
+        ...(persisted?.surface === "personal" && persisted.personalProfile
+          ? { personalProfile: persisted.personalProfile }
+          : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
         completion: persisted?.completion ?? null,
         codexGoal: persisted?.codexGoal ?? null,
@@ -29849,9 +29909,9 @@ export function createAgentChatService(args: {
     // CLI gets `--plugin-dir` at the PTY boundary. Without this the background
     // CLI was the one Claude surface that saw ADE's own skills only as file
     // paths in prose, so it could not invoke them as `ade:<name>`.
-    const bundledPluginPaths = isPersonalSession(managed.session)
+    const bundledPluginPaths = isEmbeddedPersonalSession(managed.session)
       ? []
-      : claudeAgentSkillPluginRoots(agentSkillRootEnv());
+      : claudeAgentSkillPluginRoots(agentSkillRootEnvFor(managed));
     const cliArgs = [
       "--bg",
       "--model",
@@ -30543,8 +30603,8 @@ export function createAgentChatService(args: {
       ? ensureQwenAdeSkillDefaultsFile({
         projectRoot,
         laneWorktreePath: managed.laneWorktreePath,
-        env: agentSkillRootEnv(),
-        personalSession: isPersonalSession(managed.session),
+        env: agentSkillRootEnvFor(managed),
+        personalSession: isEmbeddedPersonalSession(managed.session),
       })
       : null;
     if (qwenSkillDefaults) {
@@ -37674,7 +37734,7 @@ export function createAgentChatService(args: {
 
     const runtime: CodexRuntime = {
       kind: "codex",
-      agentSkillRoots: isPersonalSession(managed.session) ? [] : existingAgentSkillRoots(spawnEnv),
+      agentSkillRoots: isEmbeddedPersonalSession(managed.session) ? [] : existingAgentSkillRoots(spawnEnv),
       serverVersion: null,
       process: proc,
       reader,
@@ -38036,7 +38096,7 @@ export function createAgentChatService(args: {
       const commands = agentSkillSlashCommands(
         codexSkillsForCwd(response, managed.laneWorktreePath),
       );
-      runtime.slashCommands = isPersonalSession(managed.session)
+      runtime.slashCommands = isEmbeddedPersonalSession(managed.session)
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
         : commands;
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
@@ -38599,7 +38659,11 @@ export function createAgentChatService(args: {
     managed.session.claudePermissionMode = claudePermissionMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
-    const personalSession = isPersonalSession(managed.session);
+    // The SDK-host personal surface keeps its own branch below. An `assistant`
+    // personal chat takes the work-chat branch (tool gate, approval and dialog
+    // cards, hooks, the user's settings and MCP servers) with its own prompt.
+    const personalSession = isEmbeddedPersonalSession(managed.session);
+    const assistantSession = isAssistantPersonalSession(managed.session);
     // The preset decides the model id and the built-in agent pins. Its env is
     // already inside `buildAgentRuntimeEnv`; what is read here is the rest.
     const claudePresetPlan = resolveSessionLaunchPlan(managed);
@@ -38825,7 +38889,11 @@ export function createAgentChatService(args: {
             // model as autonomously usable. The user can still invoke it — ADE
             // expands `/<name>` before the message reaches the model, so that
             // path does not need this list.
-            .filter((cmd) => cmd.modelInvocable !== false);
+            .filter((cmd) => cmd.modelInvocable !== false)
+            // An assistant chat's catalog withholds the lane-only skills; the
+            // listing walks the same bundled roots and must withhold them too.
+            .filter((cmd) => !assistantSession
+              || !(PERSONAL_LANE_ONLY_AGENT_SKILLS as readonly string[]).includes(cmd.name.replace(/^\//, "")));
         } catch {
           return [];
         }
@@ -38878,19 +38946,34 @@ export function createAgentChatService(args: {
         ]
         : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
-      const claudeHarnessPrompt = buildCodingAgentSystemPrompt({
-        cwd: managed.laneWorktreePath,
-        mode: managed.session.interactionMode === "plan" ? "planning" : "coding",
-        permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-        interactive: true,
-        runtime: "claude-agent-sdk-query",
-        adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-        sessionActivityGuidance: buildSessionActivityGuidance(
-          managed.session,
-          !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
-        ),
-      });
-      opts.systemPrompt = {
+      const claudeHarnessPrompt = assistantSession
+        ? null
+        : buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: managed.session.interactionMode === "plan" ? "planning" : "coding",
+          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+          interactive: true,
+          runtime: "claude-agent-sdk-query",
+          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+          sessionActivityGuidance: buildSessionActivityGuidance(
+            managed.session,
+            !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
+          ),
+        });
+      opts.systemPrompt = claudeHarnessPrompt == null
+        ? {
+          type: "preset",
+          preset: "claude_code",
+          // Claude Code's own prompt stays underneath, so the agent keeps its
+          // tool habits; the assistant framing replaces the lane workspace.
+          append: [
+            resolvePersonalPromptFor(managed.session, managed.laneWorktreePath),
+            ...slashCommandsSection,
+            "",
+            buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
+          ].join("\n"),
+        }
+        : {
         type: "preset",
         preset: "claude_code",
         append: [
@@ -38906,7 +38989,16 @@ export function createAgentChatService(args: {
           buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
         ].join("\n"),
       };
-      opts.settingSources = ["user", "project", "local"];
+      // An assistant chat loads the user's own layer (their CLAUDE.md, MCP
+      // servers and skills) and, when it runs in a folder the user named, that
+      // folder's project layer too. Its scratch folder has no project layer.
+      opts.settingSources = assistantSession
+        ? [
+          ...CLAUDE_SETTING_SOURCE_MAP[
+            managed.session.settingSources ?? (resolvePersonalHostCwd(managed.session) ? "all" : "user")
+          ],
+        ] as ClaudeSDKOptions["settingSources"]
+        : ["user", "project", "local"];
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
       // Dialogs ride alongside the tool gate and are scoped to the same
       // sessions: a lightweight or embedder-owned personal chat renders no ADE
@@ -39622,7 +39714,7 @@ export function createAgentChatService(args: {
                 laneWorktreePath: executionContext.laneWorktreePath,
               })
             : null,
-          personalChatUserPromptFallback(managed.session),
+          personalChatUserPromptFallback(managed.session, managed.laneWorktreePath),
           personalSession ? null : buildExecutionModeDirective(nextSteer.executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
@@ -41438,6 +41530,7 @@ export function createAgentChatService(args: {
     permissionMode: requestedPermMode,
     identityKey,
     surface,
+    personalProfile: requestedPersonalProfile,
     automationId,
     automationRunId,
     requestedCwd,
@@ -42023,6 +42116,9 @@ export function createAgentChatService(args: {
           : {}),
         ...(identityKey ? { identityKey } : {}),
         surface: surface ?? "work",
+        ...(surface === "personal" && normalizePersonalProfile(requestedPersonalProfile)
+          ? { personalProfile: normalizePersonalProfile(requestedPersonalProfile)! }
+          : {}),
         automationId: automationId?.trim() ? automationId.trim() : null,
         automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
@@ -45563,7 +45659,7 @@ export function createAgentChatService(args: {
                 laneWorktreePath: executionContext.laneWorktreePath,
               })
             : null,
-          personalChatUserPromptFallback(managed.session),
+          personalChatUserPromptFallback(managed.session, managed.laneWorktreePath),
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance
@@ -47400,7 +47496,7 @@ export function createAgentChatService(args: {
     // every session this declines (personal chats, orchestration leads, and any
     // launch where the shim could not be written).
     const cursorAgentSkills = resolveCursorAgentSkillDirs({
-      personalSession: isPersonalSession(managed.session),
+      personalSession: isEmbeddedPersonalSession(managed.session),
       settingSources: cursorSdkSettingSources(policy),
       skillRoots: existingAgentSkillRoots(cursorRuntimeEnv),
       shimRoot: cursorAgentSkillShimRoot({ laneWorktreePath: managed.laneWorktreePath }),
@@ -48238,7 +48334,7 @@ export function createAgentChatService(args: {
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
       if (personalSession || isFirstSendForLane) {
         const injected = personalSession
-          ? resolvePersonalSystemPrompt(managed.session)
+          ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
           : await buildCursorSdkInjectedSystemPrompt({
               runtime: "local",
               laneWorktreePath: managed.laneWorktreePath,
@@ -50600,7 +50696,7 @@ export function createAgentChatService(args: {
       const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
       const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
       const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? resolvePersonalSystemPrompt(managed.session)
+        ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
             mode: droidInteractionMode === "spec" ? "planning" : "coding",
@@ -55509,6 +55605,10 @@ export function createAgentChatService(args: {
         ? { identityKey: liveSession?.identityKey ?? persisted?.identityKey }
         : {}),
       surface: liveSession?.surface ?? persisted?.surface ?? "work",
+      ...((liveSession?.surface ?? persisted?.surface) === "personal"
+        && (liveSession?.personalProfile ?? persisted?.personalProfile)
+        ? { personalProfile: liveSession?.personalProfile ?? persisted?.personalProfile }
+        : {}),
       automationId: liveSession?.automationId ?? persisted?.automationId ?? null,
       automationRunId: liveSession?.automationRunId ?? persisted?.automationRunId ?? null,
       capabilityMode: liveSession?.capabilityMode ?? persisted?.capabilityMode ?? inferCapabilityMode(provider),
@@ -60466,7 +60566,7 @@ export function createAgentChatService(args: {
         .filter(isVisibleCodexSlashCommand)
         .filter((command) =>
           !managed
-          || !isPersonalSession(managed.session)
+          || !isEmbeddedPersonalSession(managed.session)
           || !isAdeBundledSkillSlashCommand(command)
         )
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
@@ -60475,7 +60575,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const promptCommands = managed && isPersonalSession(managed.session)
+      const promptCommands = managed && isEmbeddedPersonalSession(managed.session)
         ? []
         : filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
       return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);

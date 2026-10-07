@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -2331,6 +2332,16 @@ export function AgentChatComposer({
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
 }) {
+  // The pane's chat API: the project chat domain, or the personal-chat adapter.
+  const agentChatApi = useAgentChatApi();
+  const agentChatApiRef = useRef(agentChatApi);
+  agentChatApiRef.current = agentChatApi;
+  // A chat with no project runs in ask mode or with full permission; planning
+  // modes are a project-work affordance and are not offered there.
+  const planningAllowed = useChatPaneScope() == null;
+  const withoutPlanning = <T extends { icon?: string }>(options: T[]): T[] => (
+    planningAllowed ? options : options.filter((option) => option.icon !== "plan")
+  );
   const cloudCanLaunch = cloudLaunch?.canLaunch ?? false;
   const cloudModelReady = cloudLaunch?.modelReady ?? false;
   const cloudHasEligibleModels = cloudLaunch?.hasEligibleModels ?? true;
@@ -3037,7 +3048,7 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void window.ade?.agentChat?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" })?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
@@ -3268,7 +3279,7 @@ export function AgentChatComposer({
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(composerMachineBinding);
+      const stagingMode = await readAttachmentStagingMode(composerMachineBinding, agentChatApiRef.current);
       for (const file of Array.from(files)) {
         if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
@@ -3305,13 +3316,14 @@ export function AgentChatComposer({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await window.ade.agentChat.stageFileAttachment(
+            const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
               { sourcePath: plan.sourcePath, filename: sourceAttachmentName },
               attachmentOwnerBinding,
             );
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
           } else {
             staged = await stageAttachmentBytesFromFile({
+              api: agentChatApiRef.current,
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
@@ -3376,7 +3388,7 @@ export function AgentChatComposer({
         dropPendingImageAttachment(pendingImage.id);
         return;
       }
-      const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+      const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
       }, attachmentOwnerBinding);
@@ -4936,7 +4948,7 @@ export function AgentChatComposer({
           <PermissionModePicker
             ariaLabel="Claude permission mode"
             selectedValue={selectedOption.value}
-            options={CLAUDE_MODE_OPTIONS}
+            options={withoutPlanning(CLAUDE_MODE_OPTIONS)}
             disabled={nativeControlsDisabled}
             onSelect={applyClaudeMode}
           />
@@ -4960,7 +4972,7 @@ export function AgentChatComposer({
         <PermissionModePicker
           ariaLabel="Codex permission mode"
           selectedValue={codexPreset}
-          options={pickerOptions}
+          options={withoutPlanning(pickerOptions)}
           disabled={nativeControlsDisabled}
           onSelect={(preset) => {
             if (preset === "custom") return;
@@ -4976,7 +4988,7 @@ export function AgentChatComposer({
         <PermissionModePicker
           ariaLabel="Droid autonomy mode"
           selectedValue={dpmUse}
-          options={DROID_PERMISSION_OPTIONS}
+          options={withoutPlanning(DROID_PERMISSION_OPTIONS)}
           disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
           onSelect={(value) => {
             if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(value);
@@ -5005,7 +5017,7 @@ export function AgentChatComposer({
         <PermissionModePicker
           ariaLabel="Cursor mode"
           selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
-          options={cursorModeOptions}
+          options={withoutPlanning(cursorModeOptions)}
           disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
           onSelect={(value) => {
             if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
@@ -5019,7 +5031,7 @@ export function AgentChatComposer({
       <PermissionModePicker
         ariaLabel="OpenCode permission mode"
         selectedValue={opmUse ?? "edit"}
-        options={OPENCODE_PERMISSION_OPTIONS}
+        options={withoutPlanning(OPENCODE_PERMISSION_OPTIONS)}
         disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
         onSelect={(value) => {
           if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(value);
@@ -5083,7 +5095,7 @@ export function AgentChatComposer({
   const stashDraftBeforeHistory = useCallback((currentText: string) => {
     if (!currentText.trim() && attachments.length === 0) return;
     promptHistoryDraftBeforeRef.current = currentText;
-    if (typeof window.ade?.agentChat?.promptStashes?.create === "function") {
+    if (typeof agentChatApiRef.current?.promptStashes?.create === "function") {
       const stashHandle = promptStashRef.current;
       if (stashHandle) {
         promptHistoryStashRef.current = {

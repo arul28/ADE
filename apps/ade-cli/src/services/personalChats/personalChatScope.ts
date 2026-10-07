@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   AgentChatCreateArgs,
+  AgentChatPersonalProfile,
   AgentChatSessionSummary,
   PersonalChatAction,
   PersonalChatCallResponse,
@@ -106,6 +107,12 @@ function refuseUserOnlyConsentCard(
   }
 }
 
+/** A chat row with its rail pin, read from the session row's synced `pinned` column. */
+function withPinned<T extends AgentChatSessionSummary>(runtime: AdeRuntime, summary: T): T {
+  const pinned = runtime.sessionService.get(summary.sessionId)?.pinned === true;
+  return pinned ? { ...summary, pinned: true } : summary;
+}
+
 function readSessionId(args: ObjectArgs): string {
   return requiredString(args.sessionId, "sessionId");
 }
@@ -134,6 +141,25 @@ function isPersonalChatAction(value: unknown): value is PersonalChatAction {
  */
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
+  /** The local desktop's bridge token, handed on by the brain. */
+  private desktopBridgeAuthToken: string | null = null;
+
+  /**
+   * The local desktop's bridge token, so this runtime can mint browser
+   * capabilities for its chats (`ADE_BROWSER_ACTOR_TOKEN`): without it an
+   * assistant chat's `ade browser` is refused. Applied to a live runtime now
+   * and to a runtime created later on creation. An embedded runtime never
+   * receives one (the brain only forwards it on the chat profile).
+   */
+  setDesktopBridgeAuthToken(authToken: string): void {
+    const token = authToken.trim();
+    if (!token || this.options.runtimeProfile === "embedded") return;
+    this.desktopBridgeAuthToken = token;
+    if (!this.runtimePromise) return;
+    void this.runtimePromise
+      .then((runtime) => runtime.configureBuiltInBrowserDesktopBridgeAuth?.(token))
+      .catch(() => undefined);
+  }
   private readonly personalTerminalSessions = new Map<string, string>();
 
   constructor(private readonly options: PersonalChatScopeOptions = {}) {}
@@ -204,10 +230,36 @@ export class PersonalChatScope {
             if (session.surface !== "personal") {
               service.ensureSessionSurface(session.sessionId, "personal");
             }
-            return session.surface === "personal"
+            const row = session.surface === "personal"
               ? session
               : { ...session, surface: "personal" as const };
+            return withPinned(runtime, row);
           });
+        break;
+      }
+      case "setPinned": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        // The same synced column a Work chat's pin lives in, so a pin made on
+        // one client shows on every client of this machine.
+        runtime.sessionService.updateMeta({ sessionId, pinned: requiredBoolean(args.pinned, "pinned") });
+        const summary = await service.getSessionSummary(sessionId);
+        result = summary ? withPinned(runtime, summary) : null;
+        break;
+      }
+      case "slashCommands": {
+        const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+        if (sessionId) await this.requirePersonalSession(service, sessionId);
+        const provider = typeof args.provider === "string" && args.provider.trim()
+          ? args.provider.trim() as AgentChatCreateArgs["provider"]
+          : null;
+        // The internal lane, never a caller's: a provider-only lookup reads the
+        // personal workspace, not whatever project the caller has open.
+        result = service.getSlashCommands({
+          ...(sessionId ? { sessionId } : {}),
+          ...(provider ? { provider } : {}),
+          laneId: await this.getInternalLaneId(runtime),
+        });
         break;
       }
       case "create": {
@@ -238,8 +290,18 @@ export class PersonalChatScope {
           orchestrationParentSessionId: _orchestrationParentSessionId,
           kickoffText: _kickoffText,
           attachmentRoots: _attachmentRoots,
+          personalProfile: _personalProfile,
           ...forwarded
         } = args;
+        // What this chat is for. An embedded runtime (an SDK host) is always
+        // `embedded`, whatever the caller sent. Elsewhere only an explicit
+        // `assistant` — what ADE's own UI and `ade chat create --personal`
+        // send — gets the assistant surface; an absent value stays `embedded`,
+        // so an SDK client attached to this runtime keeps today's behavior.
+        const personalProfile: AgentChatPersonalProfile = this.options.runtimeProfile !== "embedded"
+          && args.personalProfile === "assistant"
+          ? "assistant"
+          : "embedded";
         const created = await service.createSession({
           ...forwarded,
           // Named explicitly rather than left to `...forwarded`: these are the
@@ -273,7 +335,10 @@ export class PersonalChatScope {
           provider,
           model,
           surface: "personal",
-          sessionProfile: "light",
+          personalProfile,
+          // The assistant runs as a full chat (tool gate, approval cards, the
+          // user's MCP servers); the SDK surface keeps the lean profile.
+          sessionProfile: personalProfile === "assistant" ? "workflow" : "light",
           permissionMode: typeof args.permissionMode === "string"
             ? args.permissionMode as AgentChatCreateArgs["permissionMode"]
             : "default",
@@ -687,7 +752,11 @@ export class PersonalChatScope {
 
   private async getRuntime(): Promise<AdeRuntime> {
     if (this.runtimePromise) return await this.runtimePromise;
-    this.runtimePromise = this.createRuntime();
+    this.runtimePromise = this.createRuntime().then((runtime) => {
+      const token = this.desktopBridgeAuthToken;
+      if (token) void runtime.configureBuiltInBrowserDesktopBridgeAuth?.(token)?.catch(() => undefined);
+      return runtime;
+    });
     try {
       return await this.runtimePromise;
     } catch (error) {

@@ -1,6 +1,8 @@
 import path from "node:path";
 
-import type { AgentChatSession } from "../../../shared/types/chat";
+import { adeBundledAgentSkills } from "../../../shared/adeCliGuidance";
+import { formatAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
+import type { AgentChatPersonalProfile, AgentChatSession } from "../../../shared/types/chat";
 
 /**
  * What a personal chat is, where it runs, and what its provider is told.
@@ -22,6 +24,41 @@ import type { AgentChatSession } from "../../../shared/types/chat";
 export function isPersonalSession(session: Pick<AgentChatSession, "surface">): boolean {
   return session.surface === "personal";
 }
+
+/** A persisted or requested profile value, or null for anything else. */
+export function normalizePersonalProfile(value: unknown): AgentChatPersonalProfile | null {
+  return value === "assistant" || value === "embedded" ? value : null;
+}
+
+/**
+ * A personal chat started from ADE's own UI or CLI: a normal ADE chat that is
+ * not tied to a project. Only an explicit `assistant` counts — an absent
+ * profile (every SDK host, every row written before profiles) is `embedded`.
+ */
+export function isAssistantPersonalSession(
+  session: Pick<AgentChatSession, "surface" | "personalProfile">,
+): boolean {
+  return isPersonalSession(session) && session.personalProfile === "assistant";
+}
+
+/**
+ * A personal chat on the SDK-host surface, which keeps the pre-profile
+ * behavior exactly. The gates that used to read `isPersonalSession` for an
+ * assistant-surface choice (skills, prompt, settings, approval cards) read
+ * this instead; the project-only gates (lane id, worktree, git, lane memory)
+ * keep reading `isPersonalSession`.
+ */
+export function isEmbeddedPersonalSession(
+  session: Pick<AgentChatSession, "surface" | "personalProfile">,
+): boolean {
+  return isPersonalSession(session) && session.personalProfile !== "assistant";
+}
+
+/**
+ * Skills an `assistant` chat does not get: they act on a lane's worktree,
+ * branch or pull request, and a personal chat has none of those.
+ */
+export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["ade-lanes-git", "ade-pr-workflows"] as const;
 
 /**
  * The directory a personal chat's provider actually runs in, when the host
@@ -73,10 +110,47 @@ export const PERSONAL_CHAT_SYSTEM_PROMPT = [
  */
 export function resolvePersonalSystemPrompt(
   session: Pick<AgentChatSession, "instructions">,
+  base: string = PERSONAL_CHAT_SYSTEM_PROMPT,
 ): string {
   const instructions = session.instructions;
   const text = typeof instructions?.text === "string" ? instructions.text.trim() : "";
-  if (!text.length) return PERSONAL_CHAT_SYSTEM_PROMPT;
+  if (!text.length) return base;
   if (instructions?.mode === "replace") return text;
-  return `${PERSONAL_CHAT_SYSTEM_PROMPT}\n\n${text}`;
+  return `${base}\n\n${text}`;
+}
+
+/**
+ * The system text an `assistant` personal chat starts from.
+ *
+ * The agent is on the user's own machine and not in a project. It may use the
+ * shell, files wherever the user points it, ADE's browser, computer use, App
+ * Control and the `ade` CLI, and works in its scratch folder by default. It is
+ * deliberately not the coding-agent prompt: there is no worktree to protect,
+ * no Work board to report to, and plenty of what a user asks here is not code.
+ */
+export function buildPersonalAssistantSystemPrompt(args: {
+  /** The directory the provider runs in: the scratch folder or the host's cwd. */
+  cwd: string;
+  /** Skill roots as the agent will see them (lane-only skills already withheld). */
+  skillRoots: readonly string[];
+}): string {
+  const withheld = new Set<string>(PERSONAL_LANE_ONLY_AGENT_SKILLS);
+  const skills = adeBundledAgentSkills.filter((name) => !withheld.has(name));
+  return [
+    "You are the user's assistant inside ADE, running on their own computer.",
+    "This chat is not attached to a project, repository, branch, lane, or pull request. Not every request is about code: answer questions directly, and when the user wants something done, do it.",
+    "You can run shell commands, read and write files wherever the user points you, open and drive web pages in ADE's browser, use computer use and App Control, and use the `ade` CLI.",
+    `Your working directory is this chat's scratch folder: ${args.cwd}. Put files you create there unless the user names another place. Ask before you delete or overwrite the user's own files outside it.`,
+    "With the `ade` CLI you can list, read, start and message chats in any project on this machine (`--project-root <path>`), and on the account's other machines (`--machine`).",
+    "",
+    "## ADE",
+    "ADE capabilities ship as Agent Skills. For an ADE task, read the matching `ade-*` skill before acting.",
+    `Skills: ${skills.map((name) => `\`${name}\``).join(", ")}.`,
+    formatAdeAgentSkillRootsForPrompt(args.skillRoots),
+    "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
+    "Web pages go in ADE's browser (`ade browser`, the `ade-browser` skill), which shares the user's sign-ins; do not use a headless or external browser.",
+    "For computer use, read `ade-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
+    "Visuals: when a comparison, a trend or status across many items would read faster as a picture, add one ```scene block (read `ade-scene` first). To ask the user for structured choices, use a ```mosaic block (read `ade-mosaic`).",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up processes you start.",
+  ].join("\n");
 }

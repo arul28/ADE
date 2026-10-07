@@ -1942,6 +1942,11 @@ export async function createAdeRuntime(args: {
         resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
       });
     if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
+    // The machine's personal-chat runtime ("chat" profile, never "embedded")
+    // gets the desktop bridge too, without remote forwarding: an assistant chat
+    // drives ADE's browser on this machine, and the brain hands this runtime
+    // the desktop's token (`PersonalChatScope.setDesktopBridgeAuthToken`).
+    const personalChatRuntime = resolvedArgs.runtimeProfile === "chat";
     const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
       ? withRemoteBrowserForwarding(
         createBuiltInBrowserDesktopBridgeClient({
@@ -1952,7 +1957,14 @@ export async function createAdeRuntime(args: {
         }),
         remoteBrowserForwarder,
       )
-      : null;
+      : personalChatRuntime
+        ? createBuiltInBrowserDesktopBridgeClient({
+          socketPath: builtInBrowserBridgeSocketPath,
+          getAuthToken: () => builtInBrowserBridgeAuthToken,
+          projectRoot,
+          logger,
+        })
+        : null;
     builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
     if (appControlService) {
       const appControlRecorderBridge = createAppControlRecorderBridgeClient({
