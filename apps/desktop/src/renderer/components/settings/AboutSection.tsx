@@ -4,7 +4,6 @@ import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../sh
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { canRestartAde, restartAde } from "../app/restartAde";
-import { requestDownloadedUpdateInstall } from "../app/autoUpdateInstallAction";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
@@ -82,25 +81,28 @@ function formatCheckTime(epochMs: number): string {
 }
 
 /**
- * What the failed-check note says and offers. With an update downloaded, the
- * install is the remedy: it restarts ADE, which also clears a stuck connection.
+ * What the failed-check note says and offers. Installing a downloaded update
+ * starts with a fresh feed check, so it cannot be the remedy for a failed
+ * one: a stuck connection needs a plain restart, anything else a retry.
  */
 function checkFailureNote(args: {
   stuck: boolean;
   downloadedVersion: string | null;
-}): { message: string; action: "install" | "restart" | "check" } {
-  if (args.downloadedVersion) {
+}): { message: string; action: "restart" | "check" } {
+  if (args.stuck && canRestartAde()) {
     return {
-      message: args.stuck
-        ? `ADE's connection to the update server is stuck. Restarting to install ${args.downloadedVersion} clears it.`
-        : `Latest may be out of date. ${args.downloadedVersion} installs when ADE restarts.`,
-      action: "install",
+      message: args.downloadedVersion
+        ? `ADE's connection to the update server is stuck. Restart ADE, then install ${args.downloadedVersion}.`
+        : "ADE's connection to the update server is stuck. Restarting ADE clears it.",
+      action: "restart",
     };
   }
-  if (args.stuck && canRestartAde()) {
-    return { message: "ADE's connection to the update server is stuck. Restarting ADE clears it.", action: "restart" };
-  }
-  return { message: "Latest may be out of date. ADE tries again every 30 minutes.", action: "check" };
+  return {
+    message: args.downloadedVersion
+      ? `Latest may be out of date. ${args.downloadedVersion} stays downloaded; ADE tries again every 30 minutes.`
+      : "Latest may be out of date. ADE tries again every 30 minutes.",
+    action: "check",
+  };
 }
 
 function formatReleasedAgo(iso: string | null): string | null {
@@ -241,10 +243,10 @@ export function AboutSection() {
   let latestSub: React.ReactNode;
   if (checkFailure) {
     latestSub = <span style={{ color: "var(--kit-warn)" }}>Check failed at {formatCheckTime(checkFailure.at)}</span>;
-  } else if (latestReleasedAgo) {
-    latestSub = latestReleasedAgo.replace(/^released/, "Released");
   } else if (lastCheckedAt != null && !isDev) {
     latestSub = `Checked at ${formatCheckTime(lastCheckedAt)}`;
+  } else if (latestReleasedAgo) {
+    latestSub = latestReleasedAgo.replace(/^released/, "Released");
   } else {
     latestSub = "Newest release ADE knows about";
   }
@@ -341,11 +343,7 @@ export function AboutSection() {
               <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>ADE couldn't check for newer versions</strong>
               <span>{failureNote.message}</span>
             </div>
-            {failureNote.action === "install" ? (
-              <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void requestDownloadedUpdateInstall(updateSnapshot)}>
-                Restart to update
-              </button>
-            ) : failureNote.action === "restart" ? (
+            {failureNote.action === "restart" ? (
               <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void restartAde()}>
                 Restart ADE
               </button>
