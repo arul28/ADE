@@ -91,7 +91,8 @@ func workRowFocus(
     // fold, so the user sees it instead of trusting a dead "Working".
     if workTurnIsStalled(
       currentTurnStartedAt: summary?.currentTurnStartedAt,
-      lastActivityAt: session.lastActivityAt,
+      // Same clock as the stale check: the chat summary moves on every event.
+      lastActivityAt: summary?.lastActivityAt ?? session.lastActivityAt,
       turnOpenWorkCount: summary?.turnOpenWorkCount,
       now: now
     ) {

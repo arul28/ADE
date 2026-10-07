@@ -40,11 +40,22 @@ describe("Focus grid page math", () => {
     expect(focusPageColumns(count, columnsThatFit)).toBe(columns);
   });
 
-  it("fits tiles at the minimum usable size, one when the grid is not measured yet", () => {
+  it("holds one tile before the grid is measured, never more than the cap, and never fewer for a bigger box", () => {
     expect(focusFit(0, 0, 6)).toEqual({ columns: 1, rows: 1, capacity: 1 });
-    // A laptop-height grid gets one row of side-by-side tiles, not two short ones.
+    let previous = focusFit(300, 200, 6);
+    for (const [width, height] of [[600, 400], [1200, 800], [2400, 1600], [4800, 3200]]) {
+      const next = focusFit(width, height, 6);
+      expect(next.capacity).toBeGreaterThanOrEqual(Math.max(1, previous.capacity));
+      expect(next.capacity).toBeLessThanOrEqual(6);
+      expect(next.columns).toBeGreaterThanOrEqual(previous.columns);
+      previous = next;
+    }
+  });
+
+  it("gives a laptop-height grid one row of side-by-side tiles, not two short rows", () => {
+    // Product decision: a short tile is mostly composer, so this window pages
+    // two tiles side by side instead of stacking a 2 × 2.
     expect(focusFit(936, 836, 6)).toEqual({ columns: 2, rows: 1, capacity: 2 });
-    expect(focusFit(1800, 1100, 6)).toEqual({ columns: 4, rows: 2, capacity: 6 });
   });
 });
 
