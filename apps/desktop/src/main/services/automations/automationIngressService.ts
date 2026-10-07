@@ -1290,6 +1290,29 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               keywords: summary.split(/\s+/g).filter(Boolean),
               rawPayload,
             })));
+            // `github.pr_*` / `github.issue_*` rules match the typed event, not
+            // the raw one. The brain runs no GitHub poller, so without this the
+            // relay never starts them. Same mapping as the local-webhook path.
+            const mapped = isRecord(rawPayload) ? mapGithubWebhookToTrigger(githubEvent, rawPayload) : null;
+            if (mapped) {
+              await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
+                source: "github-relay",
+                eventKey: `${eventId}:${mapped.triggerType}`,
+                triggerType: mapped.triggerType,
+                eventName: githubEvent,
+                summary: mapped.summary,
+                cursor: eventCursor ?? eventId,
+                author: mapped.author ?? readLogin(readNested(rawPayload, "sender")) ?? null,
+                labels: mapped.labels,
+                branch: mapped.branch,
+                targetBranch: mapped.targetBranch,
+                draftState: mapped.draftState,
+                rawPayload,
+                repo: mapped.issue?.repo ?? mapped.pr?.repo ?? readRepoName(rawPayload),
+                issue: mapped.issue,
+                pr: mapped.pr,
+              })));
+            }
           } catch (error) {
             if (error instanceof GithubRelayPollSupersededError) throw error;
             args.logger.warn("automations.github_relay_dispatch_failed", {
