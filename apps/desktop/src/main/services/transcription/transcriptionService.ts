@@ -268,11 +268,9 @@ export function createTranscriptionService({
   // download the new one. Dictation stays off until the new model is present.
   // A failure (e.g. a file locked on Windows) is retried on the next launch.
   if (modelDir?.trim()) {
-    void removeStaleModelFiles(runtimeModelDir).catch((error: unknown) => {
-      logger.warn("transcription.stale_model_cleanup_failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
+    for (const failure of removeStaleModelFiles(runtimeModelDir)) {
+      logger.warn("transcription.stale_model_cleanup_failed", failure);
+    }
   }
   const tmpDir = path.join(os.tmpdir(), "ade-voice");
   const activeChildren = new Set<ReturnType<typeof spawn>>();

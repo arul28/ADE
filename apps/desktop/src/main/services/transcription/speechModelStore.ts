@@ -166,11 +166,19 @@ function sleep(ms: number): Promise<void> {
  * only when no download is in flight (the service does so once, at startup);
  * the check is whether the files exist, not which ADE version wrote them.
  */
-export async function removeStaleModelFiles(modelDir: string): Promise<void> {
-  const stale = [...LEGACY_MODEL_BASENAMES, `${SPEECH_MODEL_BASENAME}.part`];
-  for (const basename of stale) {
-    await fsp.rm(path.join(modelDir, basename), { force: true });
+export function removeStaleModelFiles(modelDir: string): Array<{ file: string; message: string }> {
+  // Synchronous on purpose: a few unlinks, done before the service answers its
+  // first status call, so status never sees a half-cleaned directory. Each file
+  // is tried on its own so one locked file does not keep the others around.
+  const failures: Array<{ file: string; message: string }> = [];
+  for (const basename of [...LEGACY_MODEL_BASENAMES, `${SPEECH_MODEL_BASENAME}.part`]) {
+    try {
+      fs.rmSync(path.join(modelDir, basename), { force: true });
+    } catch (error) {
+      failures.push({ file: basename, message: error instanceof Error ? error.message : String(error) });
+    }
   }
+  return failures;
 }
 
 export type DownloadSpeechModelResult = { modelPath: string };

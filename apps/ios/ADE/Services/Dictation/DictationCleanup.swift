@@ -9,7 +9,8 @@ import Foundation
 ///   a. Trim surrounding whitespace.
 ///   b. Remove fillers — each filler only as a standalone token/phrase
 ///      (case-insensitive word boundary) plus a comma right after it, then
-///      collapse the doubled spaces and drop punctuation left at the start.
+///      collapse the doubled spaces. An opening filler also takes the
+///      punctuation attached to it ("Um. Ship it" -> "Ship it").
 ///   c. Apply corrections longest-key-first, replacing case-insensitive
 ///      whole-phrase matches (word boundaries) with the canonical value.
 ///   d. Capitalize the first letter of each sentence (start of string and
@@ -55,15 +56,16 @@ enum DictationCleanup {
     for filler in fillers {
       let trimmed = filler.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { continue }
+      let escaped = NSRegularExpression.escapedPattern(for: trimmed)
+      // An opening filler goes with the punctuation attached to it ("Um. Ship
+      // it" -> "Ship it"); a transcript that itself starts with ".env" keeps it.
+      text = replaceRegex(in: text, pattern: "^" + escaped + "\\b[,.;:]*\\s*", with: "", caseInsensitive: true)
       // A punctuating recognizer writes "Um, rebase"; take the comma too.
-      let pattern = "\\b" + NSRegularExpression.escapedPattern(for: trimmed) + "\\b(?:\\s*,)?"
+      let pattern = "\\b" + escaped + "\\b(?:\\s*,)?"
       text = replaceRegex(in: text, pattern: pattern, with: " ", caseInsensitive: true)
     }
-    // Collapse the spaces the removals left behind, then drop punctuation a
-    // removed opening filler left at the very start ("Um. Ship it" -> "Ship it").
-    text = replaceRegex(in: text, pattern: " {2,}", with: " ", caseInsensitive: false)
-    text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return replaceRegex(in: text, pattern: "^[,.;:]+\\s*", with: "", caseInsensitive: false)
+    // Collapse the spaces the removals left behind.
+    return replaceRegex(in: text, pattern: " {2,}", with: " ", caseInsensitive: false)
   }
 
   /// Apply corrections in the glossary's longest-first order. Each key is

@@ -118,6 +118,8 @@ describe("desktop voice transcription", () => {
       ["So, uh, we should ship it.", "So, we should ship it."],
       ["Um. Ship it.", "Ship it."],
       ["We ship it. Um, then merge.", "We ship it. Then merge."],
+      ["Um, uh, ship it.", "Ship it."],
+      ["... so we ship.", "... So we ship."],
     ])("removes a punctuated filler cleanly: %s", (raw, expected) => {
       expect(clean(raw)).toBe(expected);
     });
@@ -169,9 +171,6 @@ describe("desktop voice transcription", () => {
     };
     const createService = () =>
       createTranscriptionService({ logger, isPackaged: true, resourcesPath, modelDir, glossary });
-    const waitFor = async (check: () => boolean) => {
-      for (let i = 0; i < 100 && !check(); i += 1) await new Promise((r) => setImmediate(r));
-    };
 
     beforeEach(() => {
       root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-transcription-"));
@@ -194,7 +193,6 @@ describe("desktop voice transcription", () => {
       fs.writeFileSync(modelPath, "truncated");
 
       const service = createService();
-      await waitFor(() => stale.every((name) => !fs.existsSync(path.join(modelDir, name))));
 
       expect(fs.readdirSync(modelDir)).toEqual(["parakeet-ultra-Q4_K_M.gguf"]);
       expect(service.getStatus()).toMatchObject({ installed: false, modelInstalled: false });
