@@ -455,7 +455,18 @@ export async function applyHandoffGitBundle(args: {
         const added = (await gitOut(worktreePath, ["diff", "--name-only", "--diff-filter=A", "-z", current, tip]))
           .split("\0")
           .filter(Boolean);
-        const collision = added.find((relPath) => fs.existsSync(path.join(worktreePath, relPath)));
+        // A path the lane's commit tracks (a directory the commits turn into a
+        // file, say) is git's to replace; only untracked or ignored files are
+        // at risk.
+        let collision: string | undefined;
+        for (const relPath of added) {
+          if (!fs.existsSync(path.join(worktreePath, relPath))) continue;
+          const tracked = await gitOut(worktreePath, ["ls-tree", "-r", "--name-only", current, "--", relPath]);
+          if (!tracked) {
+            collision = relPath;
+            break;
+          }
+        }
         if (collision) {
           throw new Error(
             `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,

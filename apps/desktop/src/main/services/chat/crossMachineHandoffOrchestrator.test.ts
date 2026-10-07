@@ -634,6 +634,37 @@ describe("handoff git bundle", () => {
     expect(repoState(lanePath)).toEqual(before);
   });
 
+  it("lets arriving commits replace a tracked directory with a file", async () => {
+    const { source, clone } = makeRepos();
+    git(source, "checkout", "--quiet", "-b", "dir-to-file");
+    fs.mkdirSync(path.join(source, "config"));
+    fs.writeFileSync(path.join(source, "config", "settings.json"), "{}\n");
+    git(source, "add", "-A");
+    git(source, "commit", "--quiet", "-m", "config dir");
+    git(source, "push", "--quiet", "-u", "origin", "dir-to-file");
+    // Unpushed: the directory becomes a file.
+    git(source, "rm", "--quiet", "-r", "config");
+    fs.writeFileSync(path.join(source, "config"), "now a file\n");
+    git(source, "add", "config");
+    git(source, "commit", "--quiet", "-m", "config file");
+    const bundle = await packHandoffGitBundle({ worktreePath: source, branchRef: "dir-to-file", handoffId: "handoff:dir-1" });
+    if (!bundle) throw new Error("an unpushed commit must pack");
+
+    const destination = clone("dir-destination");
+    const lanePath = path.join(path.dirname(destination), "dir-lane");
+    git(destination, "worktree", "add", "--quiet", "-b", "dir-to-file", lanePath, "origin/dir-to-file");
+    await applyHandoffGitBundle({
+      projectRoot: destination,
+      handoffId: "handoff:dir-1",
+      branchRef: "dir-to-file",
+      bundle,
+      target: { kind: "existing_worktree", worktreePath: lanePath },
+    });
+    expect(fs.readFileSync(path.join(lanePath, "config"), "utf8")).toBe("now a file\n");
+    expect(git(lanePath, "rev-parse", "HEAD")).toBe(git(source, "rev-parse", "HEAD"));
+    expect(git(lanePath, "status", "--porcelain=v1")).toBe("");
+  });
+
   it("lands one move at a time into a destination lane, so a second can't undo the first", async () => {
     const { source, clone } = makeRepos();
     const other = clone("other-source");
