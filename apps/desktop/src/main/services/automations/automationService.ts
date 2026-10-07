@@ -836,12 +836,15 @@ export function triggerMatches(
   // A rule can hold several webhook triggers; each answers only its own URL.
   if (ruleTrigger.webhook?.hookId && ruleTrigger.webhook.hookId !== trigger.webhook?.hookId) return false;
 
-  const triggerAuthor = (trigger.issue?.author ?? trigger.pr?.author ?? trigger.author ?? "").trim().toLowerCase();
+  // GitHub names bot accounts `<name>[bot]`; a rule that says `dependabot`
+  // means the same account, so the suffix and a leading `@` are ignored.
+  const normalizeAuthor = (login: string) => login.trim().toLowerCase().replace(/^@/, "").replace(/\[bot\]$/, "");
+  const triggerAuthor = normalizeAuthor(trigger.issue?.author ?? trigger.pr?.author ?? trigger.author ?? "");
   const expectedAuthors = [
     ...(ruleTrigger.authors ?? []),
     ...(ruleTrigger.author ? [ruleTrigger.author] : []),
   ]
-    .map((a) => a.trim().toLowerCase())
+    .map(normalizeAuthor)
     .filter(Boolean);
   if (expectedAuthors.length) {
     if (!triggerAuthor || !expectedAuthors.includes(triggerAuthor)) return false;

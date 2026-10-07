@@ -213,7 +213,8 @@ export function RuleBuilder({
     if (t === "github.issue_opened" || t === "linear.issue_created") {
       patchExecution({ laneMode: "create", laneNamePreset: "issue-title" });
     } else if (t === "github.pr_opened") {
-      patchExecution({ laneMode: "create", laneNamePreset: "pr-title-author" });
+      // An agent answering a PR works on that PR, so it runs on the PR's branch.
+      patchExecution({ laneMode: "pr-branch" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryTrigger.type]);

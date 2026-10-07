@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
+import { CaretDown, Robot, SlidersHorizontal } from "@phosphor-icons/react";
 import type { AutomationTrigger } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { labelCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
+
+/** Bots that open pull requests, offered as one-click author filters. */
+const BOT_AUTHORS = [
+  { login: "dependabot[bot]", label: "Dependabot" },
+  { login: "renovate[bot]", label: "Renovate" },
+];
 
 type GitHubApi = {
   listRepoLabels?: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
@@ -69,42 +77,49 @@ export function GitHubTriggerFilters({
     };
   }, [trigger.repo]);
 
+  const authors = trigger.authors ?? (trigger.author ? [trigger.author] : []);
+  const setAuthors = (next: string[]) => onPatch({ authors: next, author: undefined });
+  const isMerged = trigger.type === "git.pr_merged" || trigger.type === "github.pr_merged";
+  // The rarely used filters live behind one row; it starts open when any is set
+  // so a saved rule never hides what narrows it.
+  const moreFilterCount = [
+    trigger.repo,
+    trigger.titleRegex,
+    trigger.bodyRegex,
+    (trigger.keywords ?? []).length ? "set" : "",
+    (trigger.changedFields ?? []).length ? "set" : "",
+    isPr && trigger.draftState && trigger.draftState !== "any" ? trigger.draftState : "",
+    isPr && (trigger.labels ?? []).length ? "set" : "",
+  ].filter((value) => (value ?? "").toString().trim()).length;
+  const [moreOpen, setMoreOpen] = useState(moreFilterCount > 0);
+
   return (
     <div className="space-y-3">
       {isPr ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          <LabeledInput
-            label={trigger.type === "git.pr_merged" || trigger.type === "github.pr_merged" ? "Target branch" : "Branch"}
-            value={
-              trigger.type === "git.pr_merged" || trigger.type === "github.pr_merged"
-                ? trigger.targetBranch ?? ""
-                : trigger.branch ?? ""
-            }
-            placeholder="e.g. main"
-            onChange={(value) =>
-              onPatch(
-                trigger.type === "git.pr_merged" || trigger.type === "github.pr_merged"
-                  ? { targetBranch: value }
-                  : { branch: value },
-              )
-            }
-          />
+        <div className="space-y-3">
           <AuthorPicker
-            value={trigger.authors ?? (trigger.author ? [trigger.author] : [])}
+            value={authors}
             collaborators={collaborators}
             loading={loadingPickers}
-            onChange={(authors) => onPatch({ authors, author: undefined })}
+            onChange={setAuthors}
+            showBots
+          />
+          <LabeledInput
+            label={isMerged ? "Target branch" : "Branch"}
+            value={isMerged ? trigger.targetBranch ?? "" : trigger.branch ?? ""}
+            placeholder="Any branch, or e.g. main"
+            onChange={(value) => onPatch(isMerged ? { targetBranch: value } : { branch: value })}
           />
         </div>
       ) : null}
 
       {isIssue ? (
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           <AuthorPicker
-            value={trigger.authors ?? (trigger.author ? [trigger.author] : [])}
+            value={authors}
             collaborators={collaborators}
             loading={loadingPickers}
-            onChange={(authors) => onPatch({ authors, author: undefined })}
+            onChange={setAuthors}
           />
           <LabelPicker
             value={trigger.labels ?? []}
@@ -116,7 +131,7 @@ export function GitHubTriggerFilters({
       ) : null}
 
       {isPush ? (
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           <LabeledInput
             label="Branch"
             value={trigger.branch ?? ""}
@@ -140,67 +155,87 @@ export function GitHubTriggerFilters({
       ) : null}
 
       {isPr || isIssue ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          <LabeledInput
-            label="Repository"
-            value={trigger.repo ?? ""}
-            placeholder={repoInfo ? `${repoInfo.owner}/${repoInfo.name}` : "owner/repo"}
-            onChange={(value) => onPatch({ repo: value.trim() || undefined })}
-          />
-          {isPr ? (
-            <LabelPicker
-              label="Labels"
-              value={trigger.labels ?? []}
-              options={labels}
-              loading={loadingPickers}
-              onChange={(next) => onPatch({ labels: next })}
-            />
+        <div className="rounded-md border border-fg/[0.06] bg-fg/[0.02]">
+          <button
+            type="button"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((open) => !open)}
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <SlidersHorizontal size={12} weight="regular" className={moreFilterCount ? "text-accent" : "text-muted-fg/60"} />
+              <span className={cn("truncate text-[11.5px]", moreFilterCount ? "text-fg/90" : "text-muted-fg/75")}>
+                {moreFilterCount ? `More filters · ${moreFilterCount} set` : "More filters"}
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-fg/60">
+              {moreOpen ? "Done" : isPr ? "Repository, labels, title, draft…" : "Repository, title, body…"}
+              <CaretDown size={9} weight="bold" className={cn("transition-transform", moreOpen && "rotate-180")} />
+            </span>
+          </button>
+          {moreOpen ? (
+            <div className="grid gap-3 border-t border-fg/[0.06] px-3 pb-3 pt-2.5 md:grid-cols-2">
+              <LabeledInput
+                label="Repository"
+                value={trigger.repo ?? ""}
+                placeholder={repoInfo ? `${repoInfo.owner}/${repoInfo.name}` : "owner/repo"}
+                onChange={(value) => onPatch({ repo: value.trim() || undefined })}
+              />
+              {isPr ? (
+                <LabelPicker
+                  label="Labels"
+                  value={trigger.labels ?? []}
+                  options={labels}
+                  loading={loadingPickers}
+                  onChange={(next) => onPatch({ labels: next })}
+                />
+              ) : null}
+              <LabeledInput
+                label="Title regex"
+                value={trigger.titleRegex ?? ""}
+                placeholder="^\[release\]"
+                onChange={(value) => onPatch({ titleRegex: value })}
+              />
+              <LabeledInput
+                label="Body regex"
+                value={trigger.bodyRegex ?? ""}
+                placeholder="needs reproduction|security"
+                onChange={(value) => onPatch({ bodyRegex: value })}
+              />
+              <LabeledInput
+                label="Keywords"
+                value={(trigger.keywords ?? []).join(", ")}
+                placeholder="security, regression"
+                onChange={(value) => onPatch({ keywords: parseList(value) })}
+              />
+              <LabeledInput
+                label="Changed fields"
+                value={(trigger.changedFields ?? []).join(", ")}
+                placeholder="title, body, labels"
+                onChange={(value) => onPatch({ changedFields: parseList(value) })}
+              />
+              {isPr ? (
+                <label className="block space-y-1.5">
+                  <span className={labelCls}>Draft state</span>
+                  <select
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={trigger.draftState ?? "any"}
+                    onChange={(event) => onPatch({ draftState: event.target.value as AutomationTrigger["draftState"] })}
+                  >
+                    <option value="any">Any</option>
+                    <option value="draft">Draft</option>
+                    <option value="ready">Ready</option>
+                  </select>
+                </label>
+              ) : null}
+              {repoInfo ? (
+                <p className="text-[10.5px] leading-relaxed text-muted-fg/55 md:col-span-2">
+                  Labels and authors come from {repoInfo.owner}/{repoInfo.name}. Leave Repository blank to use the project's repository.
+                </p>
+              ) : null}
+            </div>
           ) : null}
-          <LabeledInput
-            label="Title regex"
-            value={trigger.titleRegex ?? ""}
-            placeholder="^\\[release\\]"
-            onChange={(value) => onPatch({ titleRegex: value })}
-          />
-          <LabeledInput
-            label="Body regex"
-            value={trigger.bodyRegex ?? ""}
-            placeholder="needs reproduction|security"
-            onChange={(value) => onPatch({ bodyRegex: value })}
-          />
-          <LabeledInput
-            label="Keywords"
-            value={(trigger.keywords ?? []).join(", ")}
-            placeholder="security, regression"
-            onChange={(value) => onPatch({ keywords: parseList(value) })}
-          />
-          <LabeledInput
-            label="Changed fields"
-            value={(trigger.changedFields ?? []).join(", ")}
-            placeholder="title, body, labels"
-            onChange={(value) => onPatch({ changedFields: parseList(value) })}
-          />
-          {isPr ? (
-            <label className="space-y-1 block">
-              <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">Draft state</span>
-              <select
-                className={INPUT_CLS}
-                style={INPUT_STYLE}
-                value={trigger.draftState ?? "any"}
-                onChange={(event) => onPatch({ draftState: event.target.value as AutomationTrigger["draftState"] })}
-              >
-                <option value="any">Any</option>
-                <option value="draft">Draft</option>
-                <option value="ready">Ready</option>
-              </select>
-            </label>
-          ) : null}
-        </div>
-      ) : null}
-
-      {repoInfo ? (
-        <div className="text-[10px] text-muted-fg/55">
-          Using {repoInfo.owner}/{repoInfo.name} for labels and authors. Leave Repository blank to use the project origin.
         </div>
       ) : null}
     </div>
@@ -219,8 +254,10 @@ function LabeledInput({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">{label}</span>
+    <label className="block space-y-1.5">
+      <span className="flex h-4 items-center">
+        <span className={labelCls}>{label}</span>
+      </span>
       <input
         className={INPUT_CLS}
         style={INPUT_STYLE}
@@ -287,9 +324,9 @@ function LabelPicker({
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">{label}</span>
+    <div className="space-y-1.5">
+      <div className="flex h-4 items-center justify-between">
+        <span className={labelCls}>{label}</span>
         {loading ? <span className="text-[10px] text-muted-fg/55">loading…</span> : null}
       </div>
       <div className="flex gap-2">
@@ -330,11 +367,14 @@ function AuthorPicker({
   collaborators,
   loading,
   onChange,
+  showBots = false,
 }: {
   value: string[];
   collaborators: string[];
   loading: boolean;
   onChange: (next: string[]) => void;
+  /** Offer one-click bot authors (Dependabot, Renovate) for PR triggers. */
+  showBots?: boolean;
 }) {
   const [input, setInput] = useState("");
   const available = collaborators.filter((login) => !value.includes(login));
@@ -348,11 +388,38 @@ function AuthorPicker({
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">Authors</span>
+    <div className="space-y-1.5">
+      <div className="flex h-4 items-center justify-between">
+        <span className={labelCls}>Opened by</span>
         {loading ? <span className="text-[10px] text-muted-fg/55">loading…</span> : null}
       </div>
+      {showBots ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {BOT_AUTHORS.map((bot) => {
+            const selected = value.includes(bot.login);
+            return (
+              <button
+                key={bot.login}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => onChange(selected ? value.filter((entry) => entry !== bot.login) : [...value, bot.login])}
+                className={cn(
+                  "inline-flex h-6 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors",
+                  selected
+                    ? "border-accent/40 bg-accent/[0.12] text-fg"
+                    : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/80 hover:border-fg/[0.16] hover:text-fg",
+                )}
+              >
+                <Robot size={11} weight={selected ? "fill" : "regular"} />
+                {bot.label}
+              </button>
+            );
+          })}
+          <span className="text-[10.5px] text-muted-fg/55">
+            {value.length ? "Runs only for these authors." : "Anyone. Pick a bot or type a login to narrow it."}
+          </span>
+        </div>
+      ) : null}
       <div className="flex gap-2">
         <input
           list="author-options"
@@ -383,7 +450,10 @@ function AuthorPicker({
           ))}
         </datalist>
       </div>
-      <ChipRow items={value} onRemove={(item) => onChange(value.filter((entry) => entry !== item))} />
+      <ChipRow
+        items={showBots ? value.filter((entry) => !BOT_AUTHORS.some((bot) => bot.login === entry)) : value}
+        onRemove={(item) => onChange(value.filter((entry) => entry !== item))}
+      />
     </div>
   );
 }
