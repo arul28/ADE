@@ -73,8 +73,34 @@ function formatRuntimeTimestamp(value: string | null): string | null {
   return new Date(timestamp).toLocaleString();
 }
 
-function formatClockTime(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** "3:52 PM" today, "Oct 6, 3:52 PM" on any other day. */
+function formatCheckTime(epochMs: number): string {
+  const at = new Date(epochMs);
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === new Date().toDateString()) return time;
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
+/**
+ * What the failed-check note says and offers. With an update downloaded, the
+ * install is the remedy: it restarts ADE, which also clears a stuck connection.
+ */
+function checkFailureNote(args: {
+  stuck: boolean;
+  downloadedVersion: string | null;
+}): { message: string; action: "install" | "restart" | "check" } {
+  if (args.downloadedVersion) {
+    return {
+      message: args.stuck
+        ? `ADE's connection to the update server is stuck. Restarting to install ${args.downloadedVersion} clears it.`
+        : `Latest may be out of date. ${args.downloadedVersion} installs when ADE restarts.`,
+      action: "install",
+    };
+  }
+  if (args.stuck && canRestartAde()) {
+    return { message: "ADE's connection to the update server is stuck. Restarting ADE clears it.", action: "restart" };
+  }
+  return { message: "Latest may be out of date. ADE tries again every 30 minutes.", action: "check" };
 }
 
 function formatReleasedAgo(iso: string | null): string | null {
@@ -202,18 +228,23 @@ export function AboutSection() {
   // so without this the stale Latest would read as current. An `error`
   // snapshot has its own surface in the top bar.
   const checkFailure = !isDev && updateSnapshot.status !== "error" ? updateSnapshot.checkFailure ?? null : null;
-  const checkStuck = checkFailure?.kind === "network_stuck";
-  // With an update downloaded, one note covers both facts: installing it is
-  // a restart, and a restart also clears a stuck connection.
+  // With an update downloaded, one note covers both facts, so the plain
+  // "Will update when the app restarts" note steps aside.
   const checkFailedWithDownload = checkFailure != null && restartPending && updateSnapshot.status === "ready";
+  const failureNote = checkFailure
+    ? checkFailureNote({
+        stuck: checkFailure.kind === "network_stuck",
+        downloadedVersion: checkFailedWithDownload ? downloadedVersion : null,
+      })
+    : null;
   const lastCheckedAt = updateSnapshot.lastCheckedAt ?? null;
   let latestSub: React.ReactNode;
   if (checkFailure) {
-    latestSub = <span style={{ color: "var(--kit-warn)" }}>Check failed at {formatClockTime(checkFailure.at)}</span>;
+    latestSub = <span style={{ color: "var(--kit-warn)" }}>Check failed at {formatCheckTime(checkFailure.at)}</span>;
   } else if (latestReleasedAgo) {
     latestSub = latestReleasedAgo.replace(/^released/, "Released");
   } else if (lastCheckedAt != null && !isDev) {
-    latestSub = `Checked at ${formatClockTime(lastCheckedAt)}`;
+    latestSub = `Checked at ${formatCheckTime(lastCheckedAt)}`;
   } else {
     latestSub = "Newest release ADE knows about";
   }
@@ -303,26 +334,18 @@ export function AboutSection() {
           ) : null}
         </div>
 
-        {checkFailure ? (
+        {failureNote ? (
           <div className="ade-modern-note" data-tone="warn">
             <WarningCircle size={14} weight="fill" />
             <div className="ade-modern-note-body">
               <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>ADE couldn't check for newer versions</strong>
-              <span>
-                {checkFailedWithDownload
-                  ? checkStuck
-                    ? `ADE's connection to the update server is stuck. Restarting to install ${downloadedVersion} clears it.`
-                    : `Latest may be out of date. ${downloadedVersion} installs when ADE restarts.`
-                  : checkStuck
-                    ? "ADE's connection to the update server is stuck. Restarting ADE clears it."
-                    : "Latest may be out of date. ADE tries again every 30 minutes."}
-              </span>
+              <span>{failureNote.message}</span>
             </div>
-            {checkFailedWithDownload ? (
+            {failureNote.action === "install" ? (
               <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void requestDownloadedUpdateInstall(updateSnapshot)}>
                 Restart to update
               </button>
-            ) : checkStuck && canRestartAde() ? (
+            ) : failureNote.action === "restart" ? (
               <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void restartAde()}>
                 Restart ADE
               </button>
