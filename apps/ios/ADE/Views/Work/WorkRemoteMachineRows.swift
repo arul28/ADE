@@ -150,7 +150,9 @@ func workMergeRemoteMachineRows(
     for chat in repo.chats where chat.isChatTool {
       guard seenSessionIds.insert(chat.id).inserted else { continue }
       let lane = laneById[chat.laneId]
-      let laneName = "\(lane?.name ?? "Lane") · \(repo.machineName)"
+      // The lane's own name, as desktop shows it: a machine name is not part
+      // of a title (the chat header and the Machine filter say where it is).
+      let laneName = lane?.name ?? "Lane"
       var session = chat.asTerminalSessionSummary(laneName: laneName)
       session.laneId = workRemoteLaneId(machineKey: repo.machineKey, laneId: chat.laneId)
       mergedSessions.append(session)
@@ -166,7 +168,6 @@ func workMergeRemoteMachineRows(
       guard seenLaneIds.insert(namespaced).inserted else { continue }
       var summary = (laneById[laneId] ?? RemoteRosterLane(id: laneId, name: "Lane", color: nil, icon: nil, laneType: nil, branchRef: nil)).asLaneSummary()
       summary.id = namespaced
-      summary.name = "\(summary.name) · \(repo.machineName)"
       // Never the focused project's primary lane.
       if summary.laneType == "primary" { summary.laneType = "worktree" }
       mergedLanes.append(summary)

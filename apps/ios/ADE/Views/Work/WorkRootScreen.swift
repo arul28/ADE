@@ -729,6 +729,21 @@ struct WorkRootListScreen: View, Equatable {
     sessionPresentation.sessionGroups
   }
 
+  var workFiltersSection: some View {
+    WorkFiltersSection(
+      searchText: searchTextBinding,
+      selectedLaneId: selectedLaneBinding,
+      selectedStatus: selectedStatusBinding,
+      organization: sessionOrganizationBinding,
+      foldBusyLanes: foldBusyLanesBinding,
+      filterOpen: $filterPanelOpen,
+      machineFilter: machineFilterBinding,
+      machineOptions: inputs.machineFilterOptions,
+      lanes: workOrderedLanes,
+      onClear: clearWorkFilters
+    )
+  }
+
   /// The groups on screen: lanes filed under the Working shelf render only
   /// while that shelf is expanded.
   var visibleSessionGroups: [WorkSessionGroup] {
@@ -738,9 +753,10 @@ struct WorkRootListScreen: View, Equatable {
     return groups.filter { !$0.inWorkingShelf }
   }
 
-  /// The first Snoozed/Settled shelf, which draws the quiet zone's rule.
+  /// The first shelf (Working, else Snoozed or Settled) draws the quiet zone's
+  /// one rule, so all three sit together below it, as on desktop.
   var quietZoneStartGroupId: String? {
-    sessionGroups.first(where: { $0.isShelf && $0.id != workWorkingSectionId })?.id
+    sessionGroups.first(where: \.isShelf)?.id
   }
 
   /// Lanes the user has pinned, read from the Lanes tab's store.
@@ -847,24 +863,14 @@ struct WorkRootListScreen: View, Equatable {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
-          // Search and the filter chip live in the header now; only the
-          // expanded filter panel (and the Clear affordance) sit in the list.
-          if filterPanelOpen || hasActiveFilters {
-            WorkFiltersSection(
-              searchText: searchTextBinding,
-              selectedLaneId: selectedLaneBinding,
-              selectedStatus: selectedStatusBinding,
-              organization: sessionOrganizationBinding,
-              foldBusyLanes: foldBusyLanesBinding,
-              filterOpen: $filterPanelOpen,
-              machineFilter: machineFilterBinding,
-              machineOptions: inputs.machineFilterOptions,
-              lanes: workOrderedLanes,
-              onClear: clearWorkFilters
-            )
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+          // Search and the filter button live in the header; the open panel
+          // floats over the list (below), so it opens wherever the list is
+          // scrolled. Only the Clear affordance for active filters sits here.
+          if hasActiveFilters && !filterPanelOpen {
+            workFiltersSection
+              .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
           }
 
           if let errorMessage,
@@ -934,6 +940,23 @@ struct WorkRootListScreen: View, Equatable {
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
+      .overlay(alignment: .top) {
+        if filterPanelOpen {
+          ZStack(alignment: .top) {
+            // Tapping outside the panel closes it, like a desktop dropdown.
+            Color.black.opacity(0.001)
+              .ignoresSafeArea()
+              .onTapGesture {
+                withAnimation(.snappy(duration: 0.18)) { filterPanelOpen = false }
+              }
+            workFiltersSection
+              .padding(.horizontal, 12)
+              .padding(.top, 4)
+          }
+          .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+      }
+      .animation(.snappy(duration: 0.18), value: filterPanelOpen)
       .safeAreaInset(edge: .top, spacing: 0) {
         // One row: project / back, title, search with the filter chip inside it,
         // then new chat and the overflow menu. No attention rollup lives here —

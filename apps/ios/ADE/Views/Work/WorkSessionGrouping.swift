@@ -143,8 +143,10 @@ struct WorkSessionGroup: Identifiable, Equatable {
     case warning
     /// The Snoozed shelf: a moon, never a blue dot, which is Working's colour.
     case snoozed
-    /// The Settled shelf: a check, the tier's "filed away" mark.
+    /// The Settled shelf: a hollow ring, desktop's settled mark.
     case settled
+    /// The Working shelf: a dashed circle in Working's colour.
+    case working
     case none
   }
 
@@ -789,7 +791,7 @@ func workSessionGroups(
       groups.append(WorkSessionGroup(
         id: workWorkingSectionId,
         label: "Working",
-        icon: .statusDot,
+        icon: .working,
         tint: ADEColor.info,
         // No rows of its own: its lanes follow it as their own sections, so
         // each keeps its header and nothing renders twice.
