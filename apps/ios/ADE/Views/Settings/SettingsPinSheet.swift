@@ -483,7 +483,7 @@ private struct PinKeypad: View {
       }
       GridRow {
         Color.clear
-          .frame(maxWidth: .infinity, minHeight: 48)
+          .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48)
           .accessibilityHidden(true)
 
         PinKeyButton(title: "0", isDisabled: isDisabled) {
