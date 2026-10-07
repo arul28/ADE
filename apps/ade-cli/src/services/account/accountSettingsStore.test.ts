@@ -513,6 +513,49 @@ describe("account settings store", () => {
       stop();
     });
 
+    it("pulls on the next tick after the account switches away and back, even with an unchanged mark", async () => {
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+      const mark = { settings: "2026-10-07T13:00:00.000Z", vault: null };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(TICK);
+      const pullsWhileHeld = relay.getAccountSettings.mock.calls.length;
+      expect(pullsWhileHeld).toBe(1);
+
+      // Reading as another account empties the cache; reading as this one
+      // again starts from an empty cache that has never been pulled.
+      accountUserId = "user_someone_else";
+      store.get("all", "appearance.theme");
+      accountUserId = user;
+      store.get("all", "appearance.theme");
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(pullsWhileHeld + 1);
+      expect(relay.getAccountSettings).toHaveBeenLastCalledWith({ since: null });
+      stop();
+    });
+
+    it("retries a failing sync once per tick, not again on every heartbeat", async () => {
+      relay.getAccountSettings.mockRejectedValue(new Error("relay unavailable"));
+      const store = makeStore();
+      const stop = store.startPeriodicSync(TICK);
+      const mark = { settings: "2026-10-07T14:00:00.000Z", vault: null };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(1);
+
+      for (let beat = 0; beat < 4; beat += 1) {
+        recordAccountChangeMarks(user, mark);
+        await vi.advanceTimersByTimeAsync(TICK);
+      }
+      // Four ticks, four retries: the heartbeat's unchanged mark adds none.
+      expect(relay.getAccountSettings).toHaveBeenCalledTimes(5);
+      stop();
+    });
+
     it("still uploads queued edits and runs a safety pull while marks hold", async () => {
       const store = makeStore();
       const stop = store.startPeriodicSync(TICK);

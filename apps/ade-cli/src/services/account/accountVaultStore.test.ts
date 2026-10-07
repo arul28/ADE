@@ -467,6 +467,40 @@ describe("account vault store", () => {
     }
   });
 
+  it("pulls on the next tick after a purge, instead of reporting the emptied vault ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_purge";
+      accountUserId = user;
+      const store = makeStore();
+      // Each "ready" records how many pulls had happened when it was reported.
+      const readyAfterPulls: number[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => {
+        if (status === "ready") readyAfterPulls.push(relay.getAccountVault.mock.calls.length);
+      });
+      const mark = { settings: null, vault: "2026-10-07T15:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+
+      store.purge();
+      const readyBeforePurge = readyAfterPulls.length;
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The tick after a purge goes back to the relay from the beginning.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(2);
+      expect(relay.getAccountVault).toHaveBeenLastCalledWith({ since: null });
+      // No "ready" after the purge is reported before the purged vault was pulled again.
+      const readyAfterPurge = readyAfterPulls.slice(readyBeforePurge);
+      expect(readyAfterPurge.length).toBeGreaterThan(0);
+      expect(readyAfterPurge.every((pulls) => pulls >= 2)).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing at all when signed out", async () => {
     accountUserId = null;
     await makeStore().sync();

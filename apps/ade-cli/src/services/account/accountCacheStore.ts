@@ -204,7 +204,12 @@ export function createAccountCacheStore<
   let lastSyncStatus: AccountCacheSyncStatus | null = null;
   let lastSyncedAccountUserId: string | null = null;
   let lastSyncedEpoch = -1;
+  /** The mark the most recent sync attempt started from, whatever its outcome. */
+  let lastAttemptedMark: string | null | undefined;
+  let lastAttemptedAccountUserId: string | null = null;
   const forgetLastSync = (): void => {
+    lastAttemptedMark = undefined;
+    lastAttemptedAccountUserId = null;
     lastSyncedMark = undefined;
     lastReadySyncAtMs = 0;
     lastSyncStatus = null;
@@ -608,6 +613,8 @@ export function createAccountCacheStore<
         : undefined;
       readCache();
       const epochAtStart = epoch;
+      lastAttemptedMark = markAtStart;
+      lastAttemptedAccountUserId = accountUserId;
       syncInFlight = runSync()
         .then((status) => {
           lastSyncStatus = status;
@@ -679,9 +686,10 @@ export function createAccountCacheStore<
         const kind = config.changeMarkKind;
         unsubscribeChangeMarks = subscribeAccountChangeMarks((accountUserId, marks) => {
           if (accountUserId !== config.getAccountUserId()) return;
-          // Only a mark that moved pulls early. Retries after a failed sync
-          // stay on the tick's cadence, so failures never double the traffic.
-          if (marks[kind] === lastSyncedMark && lastSyncedAccountUserId === accountUserId) return;
+          // Only a mark that moved since the last attempt pulls early. Retries
+          // after a failed sync stay on the tick's cadence, so failures never
+          // double the traffic.
+          if (marks[kind] === lastAttemptedMark && lastAttemptedAccountUserId === accountUserId) return;
           syncAndNotify();
         });
       }

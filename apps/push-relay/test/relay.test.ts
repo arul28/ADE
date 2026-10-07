@@ -134,14 +134,15 @@ class FakeD1Database {
         }
         return null; // WHERE guard suppressed the update → rejected, no write
       }
-      // Budget path: atomic increment-and-read (no window rollover).
-      const [bucket, windowStart, updatedAt] = values as [string, number, string];
+      // Budget path: a batched add-and-read (no window rollover). The
+      // isolate flushes its pending request count as one increment.
+      const [bucket, windowStart, increment, updatedAt] = values as [string, number, number, string];
       const existing = this.rateCounters.get(bucket);
       if (!existing) {
-        this.rateCounters.set(bucket, { window_start: windowStart, count: 1, updated_at: updatedAt });
-        return { count: 1 } as T;
+        this.rateCounters.set(bucket, { window_start: windowStart, count: increment, updated_at: updatedAt });
+        return { count: increment } as T;
       }
-      existing.count += 1;
+      existing.count += increment;
       existing.updated_at = updatedAt;
       return { count: existing.count } as T;
     }
@@ -1330,6 +1331,78 @@ describe("push relay", () => {
     // /health always bypasses every gate so monitoring never trips the budget.
     const health = await handleRequest(new Request("https://push.example/health"), env);
     expect(health.status).toBe(200);
+  });
+
+  it("counts every request against the budget while writing its D1 row once per batch", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      DAILY_REQUEST_BUDGET: "60",
+      IP_RATE_LIMIT_PER_MIN: "1000",
+    };
+    const budgetWrites = vi.spyOn(db, "prepare");
+    const statuses: number[] = [];
+    for (let index = 0; index < 61; index += 1) {
+      const response = await handleRequest(
+        ipRequest(`/machines/${"d".repeat(40)}/devices`, `9.9.9.${index % 200}`, { method: "GET" }),
+        env,
+      );
+      statuses.push(response.status);
+    }
+    const flushes = budgetWrites.mock.calls.filter(([sql]) =>
+      String(sql).startsWith("insert into rate_counters")).length;
+    // Exactly the 61st request is over a budget of 60, across distinct IPs.
+    expect(statuses.slice(0, 60).every((status) => status !== 429)).toBe(true);
+    expect(statuses[60]).toBe(429);
+    // 61 counted requests cost two counter writes (the first request and the
+    // 51st), not one per request.
+    expect(flushes).toBe(2);
+    const stored = [...db.rateCounters.entries()].find(([bucket]) => bucket.startsWith("budget:"));
+    expect(stored?.[1].count).toBe(51);
+  });
+
+  it("does not carry yesterday's budget into today when a flush straddles UTC midnight", async () => {
+    vi.useFakeTimers();
+    try {
+      const env: PushRelayEnv = {
+        ...makeEnv(db, undefined),
+        DAILY_REQUEST_BUDGET: "10",
+        IP_RATE_LIMIT_PER_MIN: "1000",
+      };
+      // Yesterday finished over its cap on other isolates.
+      db.rateCounters.set("budget:2026-10-07", { window_start: 0, count: 50, updated_at: "2026-10-07T23:59:00.000Z" });
+      let releaseLateFlush: () => void = () => {};
+      const lateFlush = new Promise<void>((resolve) => { releaseLateFlush = resolve; });
+      const prepare = db.prepare.bind(db);
+      let holdNextBudgetFlush = true;
+      vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+        const statement = prepare(sql);
+        if (holdNextBudgetFlush && sql.startsWith("insert into rate_counters")) {
+          holdNextBudgetFlush = false;
+          const first = statement.first.bind(statement);
+          statement.first = (async () => {
+            await lateFlush;
+            return first();
+          }) as typeof statement.first;
+        }
+        return statement;
+      });
+      const hit = () => handleRequest(
+        ipRequest(`/machines/${"d".repeat(40)}/devices`, "8.8.8.8", { method: "GET" }),
+        env,
+      );
+
+      vi.setSystemTime(new Date("2026-10-07T23:59:59.900Z"));
+      const lastOfYesterday = hit();
+      vi.setSystemTime(new Date("2026-10-08T00:00:00.100Z"));
+      expect((await hit()).status).not.toBe(429);
+      // Yesterday's flush resolves after today began, carrying yesterday's 51.
+      releaseLateFlush();
+      await lastOfYesterday;
+      expect((await hit()).status).not.toBe(429);
+      expect((await hit()).status).not.toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stops a removed machine delivering through the legacy signed routes", async () => {
