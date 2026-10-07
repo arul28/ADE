@@ -491,7 +491,13 @@ struct WorkAutoHandoffSheet: View {
   @State private var busy = false
   @State private var errorMessage: String?
 
-  private var laneOptions: [LaneSummary] { lanes.filter { $0.id != subject.laneId } }
+  /// Lanes a rule may hand off into. `lanes` is the focused project's list,
+  /// so for a chat on another machine none of them exist where the rule runs:
+  /// that chat offers no "Another lane" choice (the other targets need no id).
+  private var laneOptions: [LaneSummary] {
+    if syncService.isRemoteMachineChat(sessionId: subject.sessionId) { return [] }
+    return lanes.filter { $0.id != subject.laneId }
+  }
 
   var body: some View {
     NavigationStack {

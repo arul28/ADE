@@ -588,7 +588,14 @@ export async function landHandoffGitBundle<Lane extends HandoffBundleLane>(args:
           description: `Received from ${args.capsule.source.machineName}`,
         });
         imported = lane;
-        args.onLaneImported(lane.id);
+        // Binding the lane to the handoff record can fail; the apply only
+        // learns how to undo the lane from this return, so undo it here.
+        try {
+          args.onLaneImported(lane.id);
+        } catch (error) {
+          await args.deleteLane(lane.id).catch(() => {});
+          throw error;
+        }
         return {
           worktreePath: lane.worktreePath,
           // The bundle apply restores the branch ref itself.
