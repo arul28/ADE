@@ -510,11 +510,13 @@ import {
   accountSessionStateFromResult,
   acknowledgeActivityItem,
   activityItemDeepLink,
+  activityPaneChipForKey,
   buildActivityPaneModel,
   loadActivitySnapshot,
   reconnectOutcomeNotice,
 } from "./activityPane";
 import type { AttentionSnapshot } from "../../../desktop/src/shared/types/attention";
+import type { ActivityColumn } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import { deriveProjectId } from "../services/projects/projectRegistry";
 import {
   deletePromptSmartLinkBackward,
@@ -3859,6 +3861,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
+  // The Activity chip survives a refresh, so R does not drop the filter.
+  const activityPaneColumnRef = useRef<ActivityColumn | null>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -10955,7 +10959,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     setRightPane({
       kind: "activity",
-      model: buildActivityPaneModel(updatedSnapshot),
+      model: buildActivityPaneModel(updatedSnapshot, { column: pane.model.column }),
     });
     const conn = connectionRef.current;
     if (!conn) return;
@@ -11089,7 +11093,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       hostName: project.remoteLabel,
     });
     setAttentionSnapshot(snapshot);
-    const model = buildActivityPaneModel(snapshot);
+    const model = buildActivityPaneModel(snapshot, { column: activityPaneColumnRef.current });
     setRightSelectionIndex((index) => Math.max(0, Math.min(index, Math.max(0, model.items.length - 1))));
     setRightPane({ kind: "activity", model });
     setRightOpen(true);
@@ -17494,6 +17498,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (input.toLowerCase() === "r" && !key.ctrl && !key.meta) {
         void refreshActivityPane({ announce: true });
+        return;
+      }
+      const chip = key.ctrl || key.meta ? undefined : activityPaneChipForKey(input);
+      if (chip !== undefined) {
+        activityPaneColumnRef.current = chip;
+        setRightPane({
+          kind: "activity",
+          model: buildActivityPaneModel(rightPane.model.snapshot, { column: chip }),
+        });
+        setRightSelectionIndex(0);
         return;
       }
     }

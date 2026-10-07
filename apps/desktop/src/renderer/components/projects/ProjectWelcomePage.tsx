@@ -49,7 +49,7 @@ import {
   useMachineRows,
   useRecentStats,
 } from "./ProjectWelcomeHome";
-import { activityStateGroup } from "../activity/activityPresentation";
+import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
   WebAddProjectNotice,
@@ -148,7 +148,7 @@ export function ProjectWelcomePage() {
   }, []);
   const running = useRunningChats();
   const recentStats = useRecentStats();
-  const needsYouCount = running.filter((item) => activityStateGroup(item) === "needs-you").length;
+  const needsYouCount = running.filter((item) => activityBoardColumn(item) === "needs_you").length;
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 

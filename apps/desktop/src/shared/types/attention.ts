@@ -144,7 +144,7 @@ export type AttentionItem = {
    * It exists because "planning" is a state the Activity glyph language names
    * (violet notepad) but `AttentionPhase` cannot carry — the phase vocabulary is
    * frozen push wire, and widening it would break every older client. Readers
-   * validate it at the boundary (`activityStateGroup`) rather than trusting it.
+   * validate it at the boundary (`activityChatMode`) rather than trusting it.
    */
   chatActivityMode?: "planning" | null;
   /**

@@ -1119,6 +1119,15 @@ export const WORK_BOARD_COLUMN_LABEL: Record<WorkBoardColumn, string> = {
   done: "Done",
 };
 
+/** How each Waiting reason is written on screen — board card chip, Activity row tag. */
+export const WORK_BOARD_WAITING_REASON_LABEL: Record<WorkBoardWaitingReason, string> = {
+  snoozed: "Snoozed",
+  ci: "CI running",
+  review: "Review requested",
+  scheduled: "Wake scheduled",
+  subagent: "Subagent working",
+};
+
 /**
  * Provenance for a message ADE authored because the user dragged the chat's
  * card between Work-board columns. Host-stamped only: `from` is the column the

@@ -135,7 +135,6 @@
   --activity-fs-md: 13px;
   --activity-hairline: color-mix(in srgb, var(--color-border) 70%, transparent);
   --activity-surface: color-mix(in srgb, var(--color-card) 94%, var(--color-bg));
-  --activity-sunken: color-mix(in srgb, var(--color-bg) 45%, transparent);
   --tone-color: #a1a1aa;
   color: var(--color-fg);
   background: var(--activity-surface);
@@ -337,130 +336,199 @@ button.activity-pane-freshness {
   text-decoration: underline;
 }
 
-/* The state strip rides the filter row rather than opening a row of its own:
-   the whole reason it is glyphs and counts instead of a sixth word chip is
-   that the pane could not afford another 38px of chrome above the lists. */
-.activity-state-strip {
+/* ── Panel: both sizes ──────────────────────────────────────────────
+   The compact popover and the expanded view are one panel (`ActivityPanel`):
+   a Sessions / Inbox switch, the column chips, then the list. Only the
+   container around it differs. */
+
+.activity-panel {
+  --activity-fs-2xs: 10px;
+  --activity-fs-xs: 11px;
+  --activity-fs-sm: 12px;
+  --activity-fs-md: 13px;
+  --activity-hairline: color-mix(in srgb, var(--color-border) 70%, transparent);
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.activity-panel-toolbar {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 2px;
-  margin-left: auto;
+  gap: 6px;
+  min-height: 42px;
+  padding: 8px 12px 6px;
 }
 
-.activity-state-pip {
+.activity-panel-action {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+.activity-panel-chips {
+  flex-shrink: 0;
+  padding: 0 12px 8px;
+}
+
+/* The chips fill the row so five of them read as one summary line. */
+.activity-chips {
+  display: flex;
+  width: 100%;
+}
+
+.activity-chips > button {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
+.activity-chip-glyph {
+  display: inline-flex;
+  color: var(--tone-color);
+}
+
+/* Counts change every poll; tabular digits keep the row from twitching. */
+.activity-chip-count {
+  color: var(--kit-text-3);
+  font-size: 10.5px;
+}
+
+.kit-seg > button[aria-checked="true"] .activity-chip-count,
+.kit-seg > button[aria-selected="true"] .activity-chip-count {
+  color: var(--kit-text-2);
+}
+
+.activity-panel-scroll {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 0 6px 6px;
+}
+
+.activity-column-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* Done folds into one line until asked for: the most common state, and the
+   least urgent one. */
+.activity-done-fold {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 7px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: var(--tone-color);
-  font-size: var(--activity-fs-xs);
-  font-weight: 600;
-  /* Counts change every poll; proportional digits make the whole strip shuffle
-     sideways when a 1 becomes a 2, which reads as the UI twitching. */
-  font-variant-numeric: tabular-nums;
-  opacity: 0.72;
-  transition: opacity 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  gap: 6px;
+  align-self: stretch;
+  margin: 4px 0 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  color: var(--kit-text-2);
+  font-size: var(--activity-fs-sm);
+  font-weight: 500;
+  transition: background-color 100ms ease, color 100ms ease;
 }
 
-.activity-state-pip:hover,
-.activity-state-pip:focus-visible {
-  opacity: 1;
-  background: color-mix(in srgb, var(--tone-color) 12%, transparent);
+.activity-done-fold > svg:first-child {
+  color: var(--tone-color);
+}
+
+.activity-done-fold > svg:last-child {
+  margin-left: auto;
+  color: var(--kit-text-3);
+}
+
+.activity-done-fold:hover,
+.activity-done-fold:focus-visible {
+  background: var(--kit-hover);
+  color: var(--color-fg);
   outline: none;
 }
 
-/* The selected pip is the only lit one, because only one can be selected — the
-   strip has to keep reading as a status line while it is also a filter. */
-.activity-state-pip[data-active="true"] {
-  border-color: color-mix(in srgb, var(--tone-color) 45%, transparent);
-  background: color-mix(in srgb, var(--tone-color) 16%, transparent);
-  opacity: 1;
+/* ── Selection (expanded only) ────────────────────────────────────────
+   Selectable rows keep a gutter for the checkbox, which shows on hover, on a
+   checked row, and on every row while anything is checked. */
+
+.activity-card-shell[data-selectable="true"] > .activity-card {
+  padding-left: 20px;
 }
 
-/* ── Split body ─────────────────────────────────────────────────────── */
+.activity-card-check {
+  position: absolute;
+  z-index: 1;
+  left: 7px;
+  top: 12px;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 32%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-bg);
+  opacity: 0;
+  transition: opacity 100ms ease, background-color 100ms ease, border-color 100ms ease;
+}
+
+.activity-card-shell:hover .activity-card-check,
+.activity-card-check:focus-visible,
+.activity-card-shell[data-checked="true"] .activity-card-check,
+.activity-panel[data-selecting="true"] .activity-card-check {
+  opacity: 1;
+  outline: none;
+}
+
+.activity-card-shell[data-checked="true"] .activity-card-check {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+
+.activity-card-shell[data-checked="true"] > .activity-card {
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+
+.activity-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.activity-bulk-bar .kit-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.activity-bulk-count {
+  margin-right: 4px;
+  color: var(--kit-text-2);
+  font-size: 12px;
+}
+
+/* ── Expanded body ──────────────────────────────────────────────────── */
 
 .activity-pane-body {
   position: relative;
-  display: grid;
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
-  overflow: hidden;
-}
-
-.activity-column {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.activity-column + .activity-column {
-  border-left: 1px solid var(--activity-hairline);
-  background: var(--activity-sunken);
-}
-
-.activity-column-head {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px 8px;
-  border-bottom: 1px solid var(--activity-hairline);
-}
-
-.activity-column-head h3 {
-  margin: 0;
-  font-size: var(--activity-fs-2xs);
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--color-muted-fg);
-}
-
-.activity-column-head-count {
-  flex: 1;
-  color: var(--color-muted-fg);
-  font-family: var(--font-mono);
-  font-size: var(--activity-fs-2xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.activity-column-action {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 6px;
-  color: var(--color-muted-fg);
-  font-size: var(--activity-fs-xs);
-  font-weight: 600;
-  transition: color 120ms ease, background-color 120ms ease;
-}
-
-.activity-column-action:hover,
-.activity-column-action:focus-visible {
-  color: var(--color-fg);
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  outline: none;
-}
-
-.activity-column-scroll {
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 1px;
-  overflow-y: auto;
-  padding: 5px;
+  overflow: hidden;
 }
 
 .activity-section-heading {
   position: sticky;
-  top: -5px;
+  top: 0;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -1414,14 +1482,9 @@ button.activity-pane-freshness {
 
 /* ── Responsive and motion ──────────────────────────────────────────── */
 
-/* Below this the inbox column cannot hold a title and a meta line side by side
-   with the sessions list, so the sheet takes the whole width instead of
-   leaving a 120px sliver of columns nobody can read. */
+/* In a narrow window the sheet takes the whole width rather than leaving a
+   sliver of list nobody can read. */
 @media (max-width: 1080px) {
-  .activity-pane-body {
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr);
-  }
-
   .activity-sheet {
     width: 100%;
     min-width: 0;

@@ -4,7 +4,16 @@ import type {
   AttentionPhase,
   AttentionTone,
 } from "../../../shared/types";
-import { activityItemTier } from "../../../shared/types";
+import {
+  WORK_BOARD_COLUMN_LABEL,
+  WORK_BOARD_COLUMNS,
+  WORK_BOARD_WAITING_REASON_LABEL,
+  type WorkBoardColumn,
+} from "../../../shared/types/chat";
+import {
+  activityBoardColumn,
+  activityWaitingReason,
+} from "../../../shared/attention/activityBoardColumn";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { providerDisplayName } from "../../../shared/pendingInputLabels";
 import {
@@ -214,106 +223,75 @@ export function activityPhaseIsSessionDerived(
   return phase in SESSION_PHASE_BY_ATTENTION_PHASE;
 }
 
-/* ── The state glyph language ──────────────────────────────────────────────
-   Six states, one glyph and one hue each. This is the canonical table; the
-   notch strip, the iOS widget rows and the Live Activity all mirror it, so a
-   change here is a change everywhere and must be made here first.
+/* ── The four columns ──────────────────────────────────────────────────────
+   Activity counts and groups agents by the Work board's four columns, through
+   `activityBoardColumn` (shared/attention/activityBoardColumn.ts). This table is
+   how each column looks: one label, one hue and one glyph identity. The desktop
+   panel, the pane, the home page and the `ade code` pane all read it, so a
+   column cannot be "Waiting" in one place and "Idle" in the next.
 
-   It exists because the surfaces that summarise Activity had nothing to
-   summarise WITH: a row of repeated provider logos says "three Claudes" when
-   the useful sentence is "one is asking you something and two are working".
-   A glyph plus a count reads at a glance and survives being 14px wide.
-
-   The hues are the same one-hue-one-meaning table as everywhere else — amber is
-   "your move" and is spent nowhere else, and `cyan` is never handed to a
-   session state (see the tone doc in `shared/types/attention.ts`). `planning`
-   takes violet, which it shares with an outstanding review: both mean "someone
-   is deliberating", neither means the reader must act.
-
-   `idle` is its own band rather than a corner of `done`. A session that went
-   quiet mid-work and a session that finished are not the same fact, and
-   folding the first into the second made `done` a bucket that filled with
-   week-old roster rows — the Activity sheet's single loudest complaint. Idle
-   is neutral because nobody is blocked on it, and it sorts above `done`
-   because "stopped without finishing" is likelier to want you than "finished".
+   A failure files under Needs you, but it keeps its own red mark
+   (`activityItemFailed`): the column says "your move", the mark says why.
+   Planning folds into Working and a resting session into Done; the board has
+   no column for either.
    ────────────────────────────────────────────────────────────────────────── */
 
-export type ActivityStateGroup =
-  | "needs-you"
-  | "failed"
-  | "planning"
-  | "working"
-  | "idle"
-  | "done";
+export type ActivityColumn = WorkBoardColumn;
 
-export type ActivityStateGlyph = {
-  /** Section heading and count-group label. */
+/** Board order — the order the chips, the sections and the counts use. */
+export const ACTIVITY_COLUMNS: readonly ActivityColumn[] = WORK_BOARD_COLUMNS;
+
+export type ActivityColumnPresentation = {
   label: string;
   tone: AttentionTone;
-  /**
-   * Shared glyph identity, mapped to Phosphor by `ActivityStateGlyphMark` and
-   * to SF Symbols by the iOS mirror. `needs-you` is the filled dot — the one
-   * urgent mark — and `failed` is the warning triangle rather than the bare
-   * word the session row gets away with, because a count group has no room for
-   * a word at all.
-   */
-  glyph: Exclude<SessionStatusGlyph, null>;
 };
 
-export const ACTIVITY_STATE_GLYPHS = {
-  "needs-you": { label: "Needs you", tone: "amber", glyph: "needs-you" },
-  failed: { label: "Failed", tone: "red", glyph: "failed" },
-  planning: { label: "Planning", tone: "violet", glyph: "planning" },
-  working: { label: "Working", tone: "blue", glyph: "working" },
-  idle: { label: "Idle", tone: "neutral", glyph: "stale" },
-  done: { label: "Done", tone: "emerald", glyph: "done" },
-} as const satisfies Record<ActivityStateGroup, ActivityStateGlyph>;
+export const ACTIVITY_COLUMN_PRESENTATION = {
+  needs_you: { label: WORK_BOARD_COLUMN_LABEL.needs_you, tone: "amber" },
+  working: { label: WORK_BOARD_COLUMN_LABEL.working, tone: "blue" },
+  waiting: { label: WORK_BOARD_COLUMN_LABEL.waiting, tone: "neutral" },
+  done: { label: WORK_BOARD_COLUMN_LABEL.done, tone: "emerald" },
+} as const satisfies Record<ActivityColumn, ActivityColumnPresentation>;
 
-/** Priority order — the order the strip, the sections, and the counts use. */
-export const ACTIVITY_STATE_GROUPS = [
-  "needs-you",
-  "failed",
-  "planning",
-  "working",
-  "idle",
-  "done",
-] as const satisfies readonly ActivityStateGroup[];
+/** The red mark: a failed agent sits under Needs you but still reads as a failure. */
+export function activityItemFailed(item: Pick<AttentionItem, "kind" | "phase">): boolean {
+  return item.kind === "agent" && item.phase === "failed";
+}
+
+/** "Snoozed", "CI running", "Review requested", or null for a row that is not waiting. */
+export function activityWaitingReasonLabel(
+  item: Pick<AttentionItem, "kind" | "phase" | "activityTier" | "boardColumn" | "waitingReason">,
+): string | null {
+  const reason = activityWaitingReason(item);
+  return reason ? WORK_BOARD_WAITING_REASON_LABEL[reason] : null;
+}
 
 /**
- * Which state group an item belongs to. Idle-tier rows are quiet history no
- * matter what phase they preserved, so they land in `idle` — NOT `done`, which
- * is reserved for work that actually finished. This is the only place the rule
- * is written: section headings, glyph counts, and the notch all call it, so
- * "what is this row" has exactly one answer.
+ * A row's state, in the session status vocabulary, read off its column rather
+ * than its phase. A running agent whose PR has CI pending sits under Waiting;
+ * its row must say Waiting too, or the row and its heading disagree.
  */
-export function activityStateGroup(item: AttentionItem): ActivityStateGroup {
-  if (activityItemTier(item) === "idle") return "idle";
-  switch (item.phase) {
-    case "needs_you":
-      return "needs-you";
-    case "failed":
-    case "checks_failing":
-    case "changes_requested":
-      return "failed";
-    case "starting":
-    case "running":
-      return activityChatMode(item) === "planning" ? "planning" : "working";
-    case "stale":
-      // Went quiet mid-work. Not live, not finished — the exact gap `idle`
-      // exists to name. It used to file with `working`, which is why the
-      // island could claim agents were working hours after they stopped.
-      return "idle";
-    case "open":
-      return "working";
-    case "review_requested":
-    case "merge_ready":
-    case "blocked":
-      // Someone else's move, not the reader's: filed with the live band so it
-      // cannot borrow the amber "needs you" heading.
-      return "working";
-    default:
-      return "done";
+export function activityRowStatus(item: AttentionItem): SessionStatusPresentation | null {
+  const column = activityBoardColumn(item);
+  if (!column) return activityItemPresentation(item);
+  if (column === "needs_you") {
+    return activityItemFailed(item)
+      ? { label: "Failed", tone: "red", glyph: "needs-you", showsElapsed: true, prominent: true }
+      : { label: "Needs you", tone: "amber", glyph: "needs-you", showsElapsed: true, prominent: true };
   }
+  if (column === "working") {
+    return { label: "Working", tone: "blue", glyph: "working", showsElapsed: true, prominent: false };
+  }
+  if (column === "waiting") {
+    return {
+      label: "Waiting",
+      tone: "neutral",
+      glyph: activityWaitingReason(item) === "snoozed" ? "snoozed" : "stale",
+      showsElapsed: true,
+      prominent: false,
+    };
+  }
+  return { label: "Done", tone: "emerald", glyph: "done", showsElapsed: true, prominent: false };
 }
 
 /**
@@ -327,18 +305,19 @@ export function activityStateSentence(item: AttentionItem): string {
     return activityItemPresentation(item)?.label ?? "Tracked";
   }
   const who = providerDisplayName(item.provider);
-  switch (activityStateGroup(item)) {
-    case "needs-you":
-      return `${who} is asking a question`;
-    case "failed":
-      return `${who} stopped on an error`;
-    case "planning":
-      return `${who} is planning`;
+  switch (activityBoardColumn(item)) {
+    case "needs_you":
+      return activityItemFailed(item) ? `${who} stopped on an error` : `${who} needs you`;
     case "working":
       return `${who} is working`;
-    case "idle":
-      return `${who} is idle`;
-    case "done":
+    case "waiting": {
+      const reason = activityWaitingReason(item);
+      if (reason === "snoozed") return `${who} is snoozed`;
+      if (reason === "ci") return `${who} is waiting on CI`;
+      if (reason === "review") return `${who} is waiting on a review`;
+      return `${who} is waiting`;
+    }
+    default:
       return `${who} is done`;
   }
 }

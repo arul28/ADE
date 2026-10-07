@@ -4,7 +4,11 @@ import type { TerminalSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, laneRailTint } from "../lanes/laneDesignTokens";
 import { relativeTimeCompact } from "../../lib/format";
-import { WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
+import {
+  WORK_BOARD_COLUMN_LABEL,
+  WORK_BOARD_WAITING_REASON_LABEL,
+  type WorkBoardColumn,
+} from "../../../shared/types/chat";
 import type { WorkBoardWaitingReason } from "./useWorkSessions";
 import { sessionActivityInstant } from "../../lib/sessions";
 
@@ -102,14 +106,6 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
     hint: "Finished, idle, or settled",
   },
 ] as const;
-
-const WAITING_REASON_LABEL: Record<WorkBoardWaitingReason, string> = {
-  snoozed: "Snoozed",
-  ci: "CI running",
-  review: "Review requested",
-  scheduled: "Wake scheduled",
-  subagent: "Subagent working",
-};
 
 export type WorkKanbanBoardProps = {
   buckets: Record<WorkBoardColumn, TerminalSessionSummary[]>;
@@ -457,7 +453,7 @@ function BoardCard({
             ) : (
               <GitPullRequest size={9} aria-hidden />
             )}
-            <span className="truncate">{WAITING_REASON_LABEL[waitingReason]}</span>
+            <span className="truncate">{WORK_BOARD_WAITING_REASON_LABEL[waitingReason]}</span>
           </span>
         ) : null}
         {activityLabel ? (
