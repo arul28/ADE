@@ -11,11 +11,11 @@ import {
   type PreparedGlossary,
 } from "./dictationCleanup";
 import {
-  WHISPER_MODEL_BASENAME,
   type DownloadProgress,
   type WhisperModelSource,
   downloadWhisperModel,
-  removeLegacyModels,
+  isWhisperModelInstalled,
+  removeStaleModelFiles,
   whisperModelPath,
 } from "./whisperModelStore";
 
@@ -254,11 +254,13 @@ export function createTranscriptionService({
   // Runtime model dir: the model is downloaded here (not bundled). Fall back to
   // the bundled whisper dir so a dev/test checkout with a local model still works.
   const runtimeModelDir = modelDir?.trim() ? modelDir.trim() : whisperDir;
-  // Upgraded installs still hold the old ~141 MB whisper model; drop it now
-  // rather than waiting for the user to download the new one.
+  // Upgraded installs still hold the old ~141 MB whisper model, which the new
+  // engine cannot read; drop it at startup rather than waiting for the user to
+  // download the new one. Dictation stays off until the new model is present.
+  // A failure (e.g. a file locked on Windows) is retried on the next launch.
   if (modelDir?.trim()) {
-    void removeLegacyModels(runtimeModelDir).catch((error: unknown) => {
-      logger.warn("transcription.legacy_model_cleanup_failed", {
+    void removeStaleModelFiles(runtimeModelDir).catch((error: unknown) => {
+      logger.warn("transcription.stale_model_cleanup_failed", {
         message: error instanceof Error ? error.message : String(error),
       });
     });
@@ -277,10 +279,9 @@ export function createTranscriptionService({
   const resolveBinary = (): string | null => firstExisting([transcribeBinaryPath(whisperDir)]);
   const resolveModel = (): string | null => {
     // Runtime (downloaded) location first, then the bundled dir (dev fallback).
-    return firstExisting([
-      whisperModelPath(runtimeModelDir),
-      path.join(whisperDir, WHISPER_MODEL_BASENAME),
-    ]);
+    // A truncated file does not count, so the UI offers the download again.
+    if (isWhisperModelInstalled(runtimeModelDir)) return whisperModelPath(runtimeModelDir);
+    return isWhisperModelInstalled(whisperDir) ? whisperModelPath(whisperDir) : null;
   };
 
   const getStatus = (): TranscriptionStatus => {

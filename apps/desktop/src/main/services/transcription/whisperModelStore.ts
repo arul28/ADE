@@ -29,9 +29,8 @@ import path from "node:path";
 export const WHISPER_MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
 
 /**
- * Models earlier ADE versions downloaded into the same directory (plus their
- * in-flight partials). Nothing reads them any more, so they are deleted when the
- * transcription service starts, whether or not the user downloads the new model.
+ * Files earlier ADE versions downloaded into the same directory (plus their
+ * in-flight partials). Nothing reads them any more.
  */
 const LEGACY_MODEL_BASENAMES = ["ggml-base.en.bin", "ggml-base.en.bin.part"];
 
@@ -161,8 +160,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function removeLegacyModels(modelDir: string): Promise<void> {
-  for (const basename of LEGACY_MODEL_BASENAMES) {
+/**
+ * Delete model files nothing will read: the legacy whisper model, and a partial
+ * download of the current model left by a crash or quit mid-download. Call it
+ * only when no download is in flight (the service does so once, at startup);
+ * the check is whether the files exist, not which ADE version wrote them.
+ */
+export async function removeStaleModelFiles(modelDir: string): Promise<void> {
+  const stale = [...LEGACY_MODEL_BASENAMES, `${WHISPER_MODEL_BASENAME}.part`];
+  for (const basename of stale) {
     await fsp.rm(path.join(modelDir, basename), { force: true });
   }
 }
