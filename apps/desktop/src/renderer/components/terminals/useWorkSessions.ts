@@ -1038,11 +1038,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // snooze expires even if the roster array retains its identity. Reading the
     // route also refreshes it when Work is re-entered after a deadline elapsed
     // while the page was parked on another tab (the timer is intentionally
-    // disabled off-route).
+    // disabled off-route). Reading the roster refreshes it when a row arrives
+    // after its wake turned overdue, because the timer never fires for a
+    // deadline that has already passed.
     void snoozeEpoch;
     void isWorkRoute;
+    void allKnownSessions;
     return Date.now();
-  }, [isWorkRoute, snoozeEpoch]);
+  }, [allKnownSessions, isWorkRoute, snoozeEpoch]);
   const effectiveFilingBuckets = useMemo(
     () => effectiveSessionFilingBuckets(allKnownSessions, filingNowMs),
     [allKnownSessions, filingNowMs],

@@ -20,7 +20,7 @@ import {
   isSessionFiledAsSnoozed,
 } from "../../../shared/sessionCanonicalState";
 import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
-import { subagentKeepsParentBusy } from "../../../shared/sessionSpawnNesting";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import { isChatToolType } from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
@@ -585,12 +585,12 @@ type BoardMoveChatLink = {
 };
 
 /**
- * Whether a subagent anywhere under this chat still keeps it busy. The board
- * nests a grandchild under the root chat (`indexNestedSubagents`), so a busy
- * grandchild keeps the root busy there and must here too. Best effort like the
- * summary read: no chat service, no lister, or a throw reads as "no". A
- * child's own row supplies its phase, settle and snooze; the chat supplies the
- * wake, which is never a session column.
+ * Whether a subagent nested under this chat still keeps it busy, by the same
+ * rule the board files with (`parentsWithBusySubagents`), so a drag starts from
+ * the column the board shows. The rule reads the lane's rows: a chat row's
+ * lineage and wake come from its chat link (they are projected, never
+ * columns), and a tracked CLI row carries its lineage itself. Best effort like
+ * the summary read: a missing lister or a throw reads as "no".
  */
 async function hasBusySubagent(
   chat: BoardMoveChatService | null | undefined,
@@ -606,41 +606,28 @@ async function hasBusySubagent(
       chats = [];
     }
   }
-  // Tracked CLI subagents have no chat: their rows carry the lineage. A chat
-  // link wins for a shared id, because only the chat knows its wake.
-  const linkedIds = new Set(chats.map((link) => link.sessionId));
   let laneRows: TerminalSessionSummary[] = [];
   try {
     laneRows = sessionService.list?.({ laneId: row.laneId }) ?? [];
   } catch {
     laneRows = [];
   }
+  const rowsById = new Map<string, TerminalSessionSummary>([[row.id, row]]);
   for (const laneRow of laneRows) {
-    if (linkedIds.has(laneRow.id) || !laneRow.orchestrationParentSessionId) continue;
-    chats.push({
-      sessionId: laneRow.id,
-      spawnKind: laneRow.spawnKind ?? null,
-      orchestrationParentSessionId: laneRow.orchestrationParentSessionId,
-      nextWakeAt: laneRow.nextWakeAt ?? null,
+    if (laneRow.laneId === row.laneId && !rowsById.has(laneRow.id)) rowsById.set(laneRow.id, laneRow);
+  }
+  for (const link of chats) {
+    const linked = rowsById.get(link.sessionId) ?? sessionService.get(link.sessionId);
+    if (!linked || linked.laneId !== row.laneId) continue;
+    rowsById.set(link.sessionId, {
+      ...linked,
+      nextWakeAt: link.nextWakeAt ?? null,
+      ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
+      ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),
     });
   }
-  if (chats.length === 0) return false;
-  const visited = new Set<string>([row.id]);
-  let parents = new Set<string>([row.id]);
-  while (parents.size > 0) {
-    const next = new Set<string>();
-    for (const child of chats) {
-      if (child.spawnKind !== "subagent" || !child.orchestrationParentSessionId) continue;
-      if (!parents.has(child.orchestrationParentSessionId) || visited.has(child.sessionId)) continue;
-      const childRow = sessionService.get(child.sessionId);
-      if (!childRow || childRow.laneId !== row.laneId) continue;
-      if (subagentKeepsParentBusy({ ...childRow, nextWakeAt: child.nextWakeAt ?? null }, nowMs)) return true;
-      visited.add(child.sessionId);
-      next.add(child.sessionId);
-    }
-    parents = next;
-  }
-  return false;
+  if (rowsById.size < 2) return false;
+  return parentsWithBusySubagents([...rowsById.values()], nowMs).has(row.id);
 }
 
 /**

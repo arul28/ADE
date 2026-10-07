@@ -473,6 +473,13 @@ describe("a resting chat that will run again, dragged to Done", () => {
       chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1", nextWakeAt: inMinutes(12) }],
       rows: [row({ id: "child" })],
     }, { from: "waiting", changed: true }],
+    ["its child is settled, so the board does not count the child's busy subagent", {
+      chats: [
+        { sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" },
+        { sessionId: "grandchild", spawnKind: "subagent", orchestrationParentSessionId: "child" },
+      ],
+      rows: [row({ id: "child", settledAt: "2026-09-11T09:00:00.000Z" }), row({ id: "grandchild", runtimeState: "running" })],
+    }, { from: "done", changed: false }],
     ["nothing will run again: its subagent finished and its wake is overdue", {
       wake: inMinutes(-10),
       chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" }],

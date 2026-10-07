@@ -205,8 +205,9 @@ cannot keep a lane busy.
 Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
 `subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the
 board (reason chips "Wake scheduled" and "Subagent working"), the host's
-`deriveWorkBoardColumn` (which reads the chat's wake and walks the lane's
-subagent tree, so a drag starts from the column the board shows), the Lanes
+`deriveWorkBoardColumn` (which reads the chat's wake and applies the same
+nesting rule to the lane's chats and tracked CLI rows, so a drag starts from the
+column the board shows), the Lanes
 overview, the command palette, `ade code`'s work list and iOS. The card, the
 sidebar and the board each re-evaluate at the instant a wake turns overdue
 (`nextScheduledWakeDeadlineMs`) rather than polling; the card owns that clock
