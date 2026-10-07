@@ -667,21 +667,30 @@ Reused desktop renderer (web-mode adaptation):
   redirect, so there is no polling phase to survive.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
   shared welcome surface, adapted for web rather than replaced by a parallel UI.
-  In hosted mode its recents come from `webRecentProjects` instead of
-  `project.listRecent`, and the existing `groupRecentProjects` still collapses
-  one card per repository with the other machines behind an **Also on <machine>**
-  switcher. Each card carries the machine's dot and name, its reachability as a
-  tooltip, lane count, relative activity, and `(connects on open)` for a machine
-  that is not live; cards fed by a cached catalog shimmer until live data
-  replaces them. Clicking a card connects that machine first - saved pairing or
-  account adoption - then opens the project, so an account-only machine is never
-  a dead end. Pin, forget, and merge row actions are desktop-only: the hosted
-  list is the machines' own catalogs, which the browser does not own. **Chat
-  without a project** is labelled with the active machine, and a signed-in owner
-  with no Macs gets a pointer to sign in to ADE on one.
+  It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
+  hero, Working now, Activity & usage, Limits & machines, Pull requests) with the
+  recents side panel. In hosted mode its recents come from `webRecentProjects`
+  instead of `project.listRecent`, and the existing `groupRecentProjects` still
+  collapses one card per repository, with its machines behind one quiet
+  **N machines** chip whose menu lists each machine, its state, and opens the
+  project there. Each card carries its reachability as a tooltip, lane count, relative activity, and `(connects on
+  open)` for a machine that is not live; cards fed by a cached catalog shimmer
+  until live data replaces them. Clicking a card connects that machine first -
+  saved pairing or account adoption - then opens the project, so an account-only
+  machine is never a dead end. Pin, forget, and merge row actions are
+  desktop-only: the hosted list is the machines' own catalogs, which the browser
+  does not own. **Chat without a project** is labelled with the active machine,
+  and a signed-in owner with no Macs gets a pointer to sign in to ADE on one.
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` - the
+  home dashboard's hero and cards, shared by desktop and web. Each card answers
+  one question at a glance (what is running, this machine's activity, its live
+  limits and the machines, and the open project's pull requests), links to the
+  full surface, and reads state the renderer already holds; the PR card reads the
+  same GitHub snapshot the PRs tab reads through `prReadCache`.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebRows.tsx` -
-  the recents-row chrome: project artwork, the machine dot and name, the
-  **Also on <machine>** switcher, worktree/lane badges, and relative activity.
+  the recents-row chrome: project artwork, the **N machines** chip and its
+  menu (each machine's state, and open there), worktree/lane badges, and
+  relative activity.
   Every export is driven entirely by its props, which is what keeps the welcome
   page's own body readable as page logic rather than row markup.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebNotices.tsx` -

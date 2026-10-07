@@ -964,16 +964,26 @@ for each provider, mainly Claude and Codex. The wire contract is in
 
 ## Desktop, CLI, remote, and mobile parity
 
-- Desktop Settings > Usage is one scrolling page. The Live limits band reads
-  cached live quota without starting a ledger scan; the rest of the page owns
-  the expensive history refresh explicitly.
+- Desktop Settings > Usage is one scrolling page: headline totals with 14-day
+  trends, this machine's live rate limits as radial gauges (`UsageLimitGauges`,
+  shown for the This machine and This project scopes), the layered daily chart,
+  **Week over week** (`UsageWeekCompare`), per-provider and breakdown splits,
+  Activity, and — on the account scope only — pooled Live limits
+  (`UsagePooledLimits`). The gauges read cached live quota without starting a
+  ledger scan; the rest of the page owns the expensive history refresh
+  explicitly. The top-bar popover keeps the per-account meter rows
+  (`UsageLimitsBand` → `UsageAccountRow`), so one snapshot has a compact and a
+  gauge presentation.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
   the separate history path. `ade usage stats --text` prints the spend
   summary with the type and speed split and the top models;
   `--by chat|lane|account` prints the ledger breakdown, and
   `--provider P --model M` one model's detail.
-- Settings > Usage: the hero carries the billed / plan-value line and the type
-  and speed bars; Breakdown switches between Models (every session on the
+- Settings > Usage: the totals card carries Estimated cost with the billed /
+  plan-value line, Tokens, Sessions and Active days, each with a 14-day
+  sparkline (cost, tokens, sessions) or an on/off day strip (active days) and
+  the change against the previous window; the type and speed bars sit under the
+  cost figure. Breakdown switches between Models (every session on the
   machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
   Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
   switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
@@ -991,9 +1001,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   receives provider credentials. Older hosts that do not advertise the two
   quota actions remain connected in limited mode and show update guidance.
 - Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
-  composed in the same reading order as the desktop page: cost hero and
+  composed in its own reading order: cost hero and
   per-provider split (with the type and speed bars and the billed / plan-value
-  line), daily chart, Live limits, metric strip, breakdown. Breakdown offers
+  line), daily chart, Live limits, metric strip, breakdown. (The desktop page
+  has since added 14-day trends, radial rate-limit gauges and a week-over-week
+  card; iOS keeps the older shape.) Breakdown offers
   Models, Chats, Lanes and Accounts when the host advertises
   `usage.getCostBreakdown`; a model opens its detail screen, with Set price
   and Map to when the host advertises `usage.setModelPriceOverride`. It
@@ -1050,7 +1062,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   providers. Bars are coloured by headroom (`usageHeadroomColor`: green from
   50% left, yellow from 25%, red below), the same rule as the top-bar rings —
   accounts get no colour of their own, because hashing an account id into a
-  palette drew a Claude window in Gemini's blue. On iOS the same rows are the
+  palette drew a Claude window in Gemini's blue. The neutral meters, the
+  Settings rate-limit gauges and the home rings use the separate
+  `usageLeftLevel` rule instead — amber at 20% left, red at 5% — so a window
+  that is nearly spent reads the same on the gauges as on the home card. On iOS
+  the same rows are the
   Limits tab of the Work usage module (`WorkUsageLimitsModule.swift`, split out
   of `WorkUsageActivityCarousel.swift`) as well as the Settings Usage page.
 - A row offers **Use reset** only while its account carries a banked reset

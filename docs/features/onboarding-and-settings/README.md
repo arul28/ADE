@@ -363,16 +363,31 @@ Preload bridge:
 Renderer — onboarding:
 
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
-  — projectless welcome and project-picker surface. It lists recent local and
-  remote projects, opens or forgets entries, and launches project creation,
-  clone, or folder selection before a project-bound route is available. Each
-  row carries the same right-click project menu as a project tab — change icon,
-  clone to this machine, pin or unpin, and copy path — and a project with no
-  checkout on this machine offers **Clone locally**. `projectMenuEntries.ts`
-  holds the rows both surfaces share. A **Settings** button sits bottom-left:
-  it sets the app-store flag `standaloneSettingsOpen` and navigates to
-  `/settings`, so a person with no project can still reach the settings that
-  need none (see "Settings with no project" below).
+  — projectless home and project-picker surface. The page is a fixed dashboard
+  over the window backdrop (see `ProjectWelcomeHome.tsx` below): a hero line with
+  a greeting, the date, machines online, and running / needs-you counts, over a
+  row of actions (**Add project**, **Chat without a project**, and the recents
+  side panel). Recents list recent local and remote projects, open or forget
+  entries, and launch project creation, clone, or folder selection before a
+  project-bound route is available. Each row carries the same right-click
+  project menu as a project tab — change icon, clone to this machine, pin or
+  unpin, and copy path — and a project with no checkout on this machine offers
+  **Clone locally**. `projectMenuEntries.ts` holds the rows both surfaces share.
+  A **Settings** button sets the app-store flag `standaloneSettingsOpen` and
+  navigates to `/settings`, so a person with no project can still reach the
+  settings that need none (see "Settings with no project" below).
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` —
+  the home dashboard's hero and cards. `WelcomeHero`, `RunningCard`,
+  `ActivityUsageCard`, `LimitsMachinesCard`, and `PullRequestsCard` each answer
+  one question at a glance — what is running, how much have I done, where is my
+  headroom, and which pull requests need me — and link to the full surface
+  instead of listing everything. The page fits the window rather than scrolling:
+  each card's body flexes and clips, and the budget is one all-time stats read
+  for this machine (the same read the new-chat Activity card makes) on mount and
+  on usage updates. The PR card reads the same GitHub snapshot the PRs
+  tab reads (through `prReadCache`) and joins it to ADE's tracked PRs for checks
+  and review state, reloading on PR events and window focus, never on a timer of
+  its own.
 - `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial
@@ -395,6 +410,16 @@ Renderer — onboarding:
   the gate. Directly paired machines stay saved across account sign-out;
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
+- `apps/desktop/src/renderer/components/onboarding/GlassSignInCard.tsx` and
+  `components/account/useSignInFlow.ts` — the launch gate's sign-in. The card is
+  a frosted glass panel floating over the window backdrop (styled by
+  `onboarding/launchGateGlass.css`, which needs an `.ade-gate` ancestor for its
+  tokens), with the mark, one heading, the sign-in button, the awaiting/cancel
+  line, and the ADE Relay help affordance. `useSignInFlow` owns the shared
+  sign-in state — the browser login, the four session-state words, and the brain
+  repair offered when a stored session cannot be read — and the Account page's
+  `SignInCard` draws that same state its own way, so the two surfaces cannot
+  drift on what "expired" or "unreadable" means.
 - `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
   the permanent bar ADE shows while the account is not usable. It registers a
   model with `AppBannerHost`, which renders it through the shared `Banner`
@@ -589,13 +614,52 @@ Renderer — settings:
   `--font-sans` / `--font-mono` overrides plus `html[data-motion="reduced"]`,
   and `App` drives `MotionConfig` from the same flag so the preference reaches
   JS animations, not only CSS.
+- `apps/desktop/src/shared/accountSettingsScope.ts`,
+  `apps/desktop/src/renderer/lib/accountSettingsSync.ts`, and
+  `useAccountSettingsSync.ts` — the renderer's account-settings half. It turns
+  the four-value setting scope into the key the account store files a row under
+  (`accountSettingScopeKey`), and it makes the "Stored in your ADE account" chip
+  true for the preferences that claim it: a local-first write-through engine
+  hydrates newer remote rows and pushes local edits back, per key, with a
+  strictly-newer stamp so one machine's change cannot revert another's, and a
+  dirty queue that retries signed-out or offline edits. Only `account` and
+  `account-repo` scopes ever reach the store; machine-scoped values (paths,
+  ports, hardware facts) never leave this computer. A preference that is
+  account-scoped but one-value-per-computer — the Apple device options — keeps
+  the account-wide scope and carries the device in the key
+  (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`) so another machine
+  skips it while this brain can read it. See
+  [Sync and multi-device](../sync-and-multi-device/README.md).
+- `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
+  window backdrop, configured under Settings → This computer → Appearance →
+  **Background**. Modes are `gradient` (the theme's animated mesh), `image`
+  (one picture), and `shuffle` (a picture from the library, changed on launch,
+  wake, hourly, or daily). Pictures are bundled (`public/scenes/*.jpg` through
+  `sceneLibrary.ts`) or the user's own — re-encoded to at most 3840 px JPEG and
+  kept in IndexedDB by `userScenes.ts`, never on disk or in sync.
+  `scenePalette.ts` extracts the picture's palette, `sceneTheme.ts`
+  (`themeTintedByScene`) tints the theme from it when App colours is **From
+  picture**, and `SceneImageLayer` draws one window-aligned slice per surface so
+  the top bar, home page and new chat page read as one picture.
+  `BackgroundContextMenu.tsx` is the background right-click menu (**Next
+  picture**, light/dark, **Change background…**). Scene preferences live in
+  `interfacePreferences.scene` in `ade.userPreferences.v1` and are per computer,
+  like the theme; `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts` is a
+  one-time shipped-default reset. Full behavior:
+  [`docs/design/visual-language.md`](../../design/visual-language.md).
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
   `SettingsDisclosure`, `useSavedFlash`). `primitives/SettingsRows.tsx` adds
   the grouped-rows page vocabulary — `SettingsSection`, `SettingsPanel`,
   `SettingsRow` (with `icon`/`tone`), `SettingsColumn`, `SettingsSplit`, and
-  `SettingsSectionAction` — which most redesigned pages use. `SettingsDisclosure` is a
+  `SettingsSectionAction`. `primitives/SettingsModern.tsx` is the modern page
+  vocabulary every redesigned settings page now uses — `ModernPage` (the
+  section column), `ModernSection` (heading, one-line hint, optional actions,
+  carrying `data-settings-anchor` for search and deep links), and
+  `ModernRows` / `ModernRow` (a grouped panel with title, hint and control) —
+  and it is the settings counterpart of the surface kit in
+  `renderer/styles/surfaceKit.css`. `SettingsDisclosure` is a
   native `<details>` in a recessed card for rarely-needed fields —
   native markup keeps keyboard and find-in-page behaviour — and its
   `defaultOpen` is uncontrolled on purpose, so a caller passes `true`
@@ -1173,25 +1237,47 @@ Renderer — settings:
   — Settings > Usage. One scrolling page, deliberately not split by where a
   number comes from: dividing live limits from history means "am I spending a
   lot, and am I about to be cut off" takes two screens held in your head.
-  Reading order is cost incurred, the
-  shape of how it was incurred, then the limits that decide whether you can
-  keep going: an estimated-cost hero with a per-provider split, the layered
-  daily chart (`UsageDailyChart`), the **Live limits** band
-  (`UsageLimitsBand`, the same component the header popover uses), a metric
-  strip, **Activity** (`ActivityModule`, `variant="full"`,
-  `showRangeControl={false}`), a **Breakdown** panel (per-provider and
-  per-model totals with estimation notes, plus GitHub and ADE-local activity as
-  separate labeled columns, never max-merged), and a **Machines** list for
-  account scope. The header carries a three-way **scope** control (All machines
-  / This machine / This project, persisted to `ade.stats.scope.v1`), a **range**
-  control (Today / 7d / 30d / year / all, `ade.stats.range.v1`), and Refresh.
-  A meta line reports freshness ("refreshing"), estimation caveats, and the
-  scope the provider totals were computed at. It reads
-  `window.ade.usage.getAdeStats({ preset, scope })` and calls
-  `window.ade.usage.refreshHistory()` for explicit refresh; the first render is
-  stale-while-revalidate (cached provider/GitHub data plus live project-DB
-  aggregates return immediately while expensive provider-ledger and `gh` scans
-  refresh in the background). Provider colors come from `providerColor`.
+  Reading order is the headline totals, then whether you can keep going, then
+  the shape of the spend: a totals card (Estimated cost, Tokens, Sessions,
+  Active days — each with a 14-day
+  sparkline and a change, plus a small strip of Cached input / Output / Lines
+  changed / Pull requests), a **Rate limits** card of
+  radial gauges (`UsageLimitGauges`) shown for the This machine and This project
+  scopes, the daily chart (`UsageDailyChart`), **Week over week**
+  (`UsageWeekCompare`), **By provider** and **Where the cost went**, the
+  Breakdown panel (per-provider and per-model totals with estimation notes, plus
+  GitHub and ADE-local activity as separate labeled columns, never max-merged),
+  a **Machines** list, `ActivityModule`, and — on the account scope only — a
+  pooled **Live limits** card (`UsagePooledLimits`). The toolbar carries a
+  three-way **scope** control (All machines / This machine / This project,
+  persisted to `ade.stats.scope.v1`), a **range** control (Today / 7d / 30d /
+  year / all, `ade.stats.range.v1`), and Refresh. A meta line reports freshness
+  ("refreshing"), estimation caveats, and the scope the provider totals were
+  computed at. It reads `window.ade.usage.getAdeStats({ preset, scope })` and
+  calls `window.ade.usage.refreshHistory()` for explicit refresh; the first
+  render is stale-while-revalidate (cached provider/GitHub data plus live
+  project-DB aggregates return immediately while expensive provider-ledger and
+  `gh` scans refresh in the background). Provider colors come from
+  `providerColor`.
+- `apps/desktop/src/renderer/components/usage/UsageLimitGauges.tsx` — the
+  This machine / This project **Rate limits**: one radial gauge per provider
+  window (5-hour, weekly, monthly…), pooled across that provider's accounts. A
+  gauge reads in **% left**, marks where a perfectly steady burn would be with a
+  tick on the arc, tags itself on track / watch / low, and draws a thin cycle
+  bar ("Day 3 of 7") under the dial. `usageLeftLevel` / `usageLeftLevelColor` in
+  `usageDesign.ts` give the neutral-meter rule — amber at 20 % left, red at 5 %
+  — shared by every kit meter, gauge and home ring.
+- `apps/desktop/src/renderer/components/usage/UsageSparks.tsx` and
+  `UsageWeekCompare.tsx` — the small trend marks and the week-over-week chart.
+  `UsageSparks` draws a 14-day sparkline (area, line, a dot on today), an on/off
+  day strip, and the `periodDelta` / `DeltaTag` change, all from the same daily
+  series as the big chart so a trend cannot disagree with its number.
+  `UsageWeekCompare` pairs each of the last seven days with the same weekday a
+  week earlier as grouped bars and states both totals; below a 30-day range it
+  says so instead of drawing a misleading pair.
+- `apps/desktop/src/renderer/components/usage/usageProviderNames.ts` — the one
+  provider-name table (`humanizeProvider`), so `lmstudio` reads "LM Studio" on
+  every usage surface.
 - `apps/desktop/src/renderer/components/usage/UsageDailyChart.tsx` — the
   layered daily chart, plotting one series per provider from
   `AdeUsageDailyPoint.byProvider` for either cost or tokens. Top-N providers by
@@ -1843,9 +1929,9 @@ of repeated as a badge on every row:
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Chat, Apple devices, Notifications, Activity, Usage |
+| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, Usage |
 | **Project** | Your account, for this repository | Secrets |
-| **Machines** | The selected machine | General, Providers, Lanes, Integrations, Diagnostics |
+| **Machines** | The selected machine | General, Appearance (This computer), Apple devices (This computer), Providers, Lanes, Integrations, Diagnostics |
 
 The Machines group contains one set of pages per project machine. Calls from a
 machine page use that machine's binding; sections that only work on the current
@@ -1889,8 +1975,8 @@ The pages themselves:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, and terminal text. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
-| Apple devices (Account) | `AppleDevicesSection.tsx` | Simulator display, recording overlays, and the remote streaming cap. These follow the account because the host reads the cap from the account store. They sat on the Appearance page until Appearance became per computer. |
+| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, terminal text, and the **Background** (`#background`) scene picker — gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
+| Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
@@ -1898,9 +1984,9 @@ The pages themselves:
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
-> Live provider quota windows render from one component, `UsageLimitsBand.tsx`, in two places: the top-bar Usage popup (`HeaderUsageControl.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) and the Live limits band on Settings > Usage. The rest of that page is the retrospective cross-client dashboard.
+> Live provider quota windows render in two shapes: the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) keeps one meter row per account, while Settings > Usage's This machine / This project scope draws the same snapshot as radial `UsageLimitGauges`. The rest of that page is the retrospective cross-client dashboard.
 
 
 Legacy deep links are forwarded by `LEGACY_TAB_ALIASES` /

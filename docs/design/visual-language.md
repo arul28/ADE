@@ -238,5 +238,5 @@ Visual polish must not cost CPU or GPU while ADE is idle.
 | Scenes | `renderer/scene/*`, `renderer/styles/scene.css`, `public/scenes/` |
 | Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css` |
 | Settings | `components/settings/primitives/SettingsModern.tsx`, `settingsModern.css`, `AppearanceSection.tsx`, `ThemeGallery.tsx` |
-| Usage | `components/usage/usageDesign.ts`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `usageSurfaces.css` |
+| Usage | `components/usage/usageDesign.ts`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `usageProviderNames.ts`, `usageSurfaces.css` |
 | Sign-in | `components/onboarding/GlassSignInCard.tsx`, `launchGateGlass.css` |

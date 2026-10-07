@@ -1105,7 +1105,23 @@ Runtime support files outside `services/sync/`:
   stamped by the Worker and never by the caller, so no machine with a wrong
   clock can win an exchange; the caller's own `changedAt` is kept beside it for
   diagnostics and is never authoritative. Machine-scoped settings never arrive
-  here at all.
+  here at all. A setting that is account-scoped but one-value-per-computer — the
+  Apple device options — keeps the account-wide scope and carries the device in
+  the key instead (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey` in
+  `shared/accountSettingsScope.ts`), because the relay accepts only the `all`
+  and `repo:` scopes; another machine's row simply has a different key, and the
+  brain reads its own `device.<id>.<key>` before falling back to the old
+  account-wide key (`readAppleDeviceSetting` in `apps/ade-cli/src/bootstrap.ts`).
+- `apps/desktop/src/shared/accountSettingsScope.ts`,
+  `apps/desktop/src/renderer/lib/accountSettingsSync.ts`, and
+  `useAccountSettingsSync.ts` — the renderer's half of the account settings
+  path. `accountSettingsScope.ts` derives the store key from the four-value
+  setting scope (`accountSettingScopeKey` for `account` / `account-repo`, and
+  `accountDeviceSettingKey` for per-device rows, which returns null until the
+  device id is known); `accountSettingsSync.ts` is the local-first
+  write-through engine that hydrates newer remote rows and pushes local edits
+  with a per-key stamp and a dirty retry queue. Its registry is the only list of
+  what travels; machine-scoped values are absent by construction.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
   `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
   queue, cursor, and encrypted-cache primitives. Reads never touch the
