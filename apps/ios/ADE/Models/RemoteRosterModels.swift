@@ -772,7 +772,10 @@ extension RemoteRosterChat {
     if let title = nonEmptyTrimmed(title) { payload["title"] = title }
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
-    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
-    return try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    else { return nil }
+    summary.rosterDerived = true
+    return summary
   }
 }

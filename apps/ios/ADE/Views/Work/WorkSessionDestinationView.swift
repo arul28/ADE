@@ -1783,7 +1783,11 @@ struct WorkSessionDestinationView: View {
     // live tail, which the brain serves WITHOUT booting the foreign project.
     // The scoped chat.getSummary command routes through the project scope
     // registry and would spin up that project's runtime just to look.
-    guard !isCrossProject else { return }
+    // A chat on another machine is the exception: the command goes to that
+    // machine (where the chat is live), and without it the composer shows no
+    // access mode, or a wrong one.
+    let onOtherMachine = isRemoteMachineChat || syncService.isRemoteMachineChat(sessionId: sessionId)
+    guard !isCrossProject || onOtherMachine else { return }
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
@@ -1794,7 +1798,10 @@ struct WorkSessionDestinationView: View {
       return
     }
 
+    // The lane listing below goes to the focused machine; it cannot find a
+    // chat that lives on another one.
     guard !personalChat,
+          !onOtherMachine,
           let laneId = (session ?? initialSession)?.laneId,
           !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           syncService.supportsRemoteAction("chat.listSessions"),

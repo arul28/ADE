@@ -1115,6 +1115,10 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
+  /// Built on the phone from a roster row (`RemoteRosterChat.rosterChatSummary`)
+  /// rather than read from the host: provider and model are real, the access
+  /// mode is unknown, so the composer must not show one.
+  var rosterDerived: Bool? = nil
   var sessionId: String
   var laneId: String
   var provider: String

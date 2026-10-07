@@ -405,10 +405,15 @@ struct WorkComposerControlsRow: View {
   let fastModeEnabled: Bool
   let onOpenModelPicker: (() -> Void)?
   let onSelectMode: ((String) -> Void)?
+  /// False when the access mode is not known yet (a chat on another machine
+  /// before its summary arrives): no dot beats a wrong one.
+  var showsAccessControl: Bool = true
 
   var body: some View {
     HStack(spacing: 8) {
-      accessControl
+      if showsAccessControl {
+        accessControl
+      }
       modelPill
     }
   }
@@ -650,7 +655,8 @@ struct WorkComposerChipStrip: View {
             isCollapsed: isCollapsed,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
             onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode
+            onSelectMode: onSelectRuntimeMode,
+            showsAccessControl: chatSummary.accessModeKnown
           )
         }
       }
