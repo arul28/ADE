@@ -216,6 +216,8 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
     autoApplyPending: null,
     autoApplySuppressedUntil: null,
     updateTransaction: null,
+    lastCheckedAt: null,
+    checkFailure: null,
   };
 }
 
@@ -260,6 +262,7 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
     parked: snapshot.parked ? { ...snapshot.parked } : null,
     lastInstallFailed: snapshot.lastInstallFailed ? { ...snapshot.lastInstallFailed } : null,
     autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
+    checkFailure: snapshot.checkFailure ? { ...snapshot.checkFailure } : null,
     updateTransaction: snapshot.updateTransaction
       ? {
           ...snapshot.updateTransaction,
@@ -567,15 +570,21 @@ export function createAutoUpdateService({
    * has started the status is no longer `ready`, so a failure of the new
    * download flows through the normal error path instead.
    *
-   * Returns true when the caller must return without touching the snapshot.
+   * Keeping the download must not hide the failure, though: `checkFailure`
+   * tells Settings the newest version it shows may be out of date.
+   *
+   * Returns true when the caller must leave the rest of the snapshot alone.
    */
   function preserveStagedUpdateOnCheckFailure(err: unknown): boolean {
     if (!readyCheckInProgress || snapshot.status !== "ready") return false;
+    const message = formatErrorMessage(err);
+    const kind = checkFailureKind ?? classifyUpdateError(err, currentPhase).kind;
     logger.warn("autoUpdate.ready_check_failed", {
-      message: formatErrorMessage(err),
-      kind: classifyUpdateError(err, currentPhase).kind,
+      message,
+      kind,
       readyVersion: snapshot.version,
     });
+    patchSnapshot({ checkFailure: { kind, message, at: nowMs() } });
     return true;
   }
   const readyRefreshFailure: {
@@ -1218,6 +1227,7 @@ export function createAutoUpdateService({
         // that fails from here on is download-side.
         netRecoveryExhausted = false;
         currentPhase = "download";
+        patchSnapshot({ lastCheckedAt: nowMs(), checkFailure: null });
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
         if (
           updateInfo
