@@ -25,13 +25,24 @@
 ; the environment, so a path holding a quote stays data and an uninstaller
 ; running in place never stops itself. If PowerShell cannot start at all, the
 ; check steps aside the way the default does without PowerShell.
+; ADE_CHECK_MODE picks the pass: "probe" only reports (exit 1 = running),
+; "stop" stops them (exit 0 = gone, 2 = still running after 10s).
+; ADE_CHECK_GRACE_SECONDS is how long "stop" only waits before it forces. An
+; update gets 4s: electron-updater starts the installer and then quits ADE, and
+; ADE's quit is what ends its agent and terminal children (they live outside
+; $INSTDIR, so nothing here would). The default check waited about as long.
+!define ADE_CHECK_APP_RUNNING_COMMAND `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:ADE_CHECK_INSTDIR.TrimEnd([char]92) + [char]92; $$self = [int]$$env:ADE_CHECK_SELF_PID; $$grace = (Get-Date).AddSeconds([int]$$env:ADE_CHECK_GRACE_SECONDS); $$end = $$grace.AddSeconds(10); while ($$true) { $$p = @(Get-CimInstance Win32_Process -Filter 'ExecutablePath IS NOT NULL' | Where-Object { $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) }); if ($$p.Count -eq 0) { exit 0 }; if ($$env:ADE_CHECK_MODE -eq 'probe') { exit 1 }; if ((Get-Date) -lt $$grace) { Start-Sleep -Milliseconds 200; continue }; foreach ($$x in $$p) { Stop-Process -Id $$x.ProcessId -Force -ErrorAction SilentlyContinue }; if ((Get-Date) -gt $$end) { exit 2 }; Start-Sleep -Milliseconds 200 }"`
 !macro customCheckAppRunning
   System::Call 'kernel32::GetCurrentProcessId()i.r9'
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_INSTDIR", t "$INSTDIR")i'
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_SELF_PID", t "$9")i'
+  System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_GRACE_SECONDS", t "0")i'
+  ${If} ${isUpdated}
+    System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_GRACE_SECONDS", t "4")i'
+  ${EndIf}
   ${IfNot} ${isUpdated}
     System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_MODE", t "probe")i'
-    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:ADE_CHECK_INSTDIR.TrimEnd([char]92) + [char]92; $$self = [int]$$env:ADE_CHECK_SELF_PID; $$end = (Get-Date).AddSeconds(10); while ($$true) { $$p = @(Get-CimInstance Win32_Process -Filter 'ExecutablePath IS NOT NULL' | Where-Object { $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) }); if ($$p.Count -eq 0) { exit 0 }; if ($$env:ADE_CHECK_MODE -eq 'probe') { exit 1 }; foreach ($$x in $$p) { Stop-Process -Id $$x.ProcessId -Force -ErrorAction SilentlyContinue }; if ((Get-Date) -gt $$end) { exit 2 }; Start-Sleep -Milliseconds 200 }"`
+    nsExec::Exec `${ADE_CHECK_APP_RUNNING_COMMAND}`
     Pop $R0
     ${If} $R0 == 1
       MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK +2
@@ -41,7 +52,7 @@
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_MODE", t "stop")i'
   DetailPrint "$(appClosing)"
   ${Do}
-    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:ADE_CHECK_INSTDIR.TrimEnd([char]92) + [char]92; $$self = [int]$$env:ADE_CHECK_SELF_PID; $$end = (Get-Date).AddSeconds(10); while ($$true) { $$p = @(Get-CimInstance Win32_Process -Filter 'ExecutablePath IS NOT NULL' | Where-Object { $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) }); if ($$p.Count -eq 0) { exit 0 }; if ($$env:ADE_CHECK_MODE -eq 'probe') { exit 1 }; foreach ($$x in $$p) { Stop-Process -Id $$x.ProcessId -Force -ErrorAction SilentlyContinue }; if ((Get-Date) -gt $$end) { exit 2 }; Start-Sleep -Milliseconds 200 }"`
+    nsExec::Exec `${ADE_CHECK_APP_RUNNING_COMMAND}`
     Pop $R0
     ${If} $R0 == 0
     ${OrIf} $R0 == "error"
@@ -82,7 +93,7 @@
   Pop $0
   ${If} $0 != 0
     DetailPrint "Step 1 of 2 failed with exit code $0."
-    MessageBox MB_ICONSTOP|MB_OK "ADE could not configure its terminal command or background startup.$\r$\n$\r$\nThe setup step exited with code $0. Run the installer again. If it fails the same way, install from PowerShell with:$\r$\n$\r$\nirm https://ade-app.dev/install.ps1 | iex$\r$\n$\r$\nThat path prints the full error."
+    MessageBox MB_ICONSTOP|MB_OK "ADE could not configure its terminal command or background startup.$\r$\n$\r$\nThe setup step exited with code $0. Run the installer again. If it fails the same way, install from PowerShell with:$\r$\n$\r$\nirm https://ade-app.dev/install.ps1 | iex$\r$\n$\r$\nThat path prints the full error." /SD IDOK
     ${If} $adeHadPreviousInstall != "1"
       DetailPrint "Rolling back the incomplete ADE product installation..."
       ExecWait '"$INSTDIR\${UNINSTALL_FILENAME}" /currentuser /S' $3
@@ -94,14 +105,9 @@
   ${EndIf}
   DetailPrint "Step 1 of 2 done."
 
-  ; An update keeps the rule the first install made (or could not make): the
-  ; uninstaller below leaves it in place when a new version replaces this one,
-  ; and the rule names the same ADE.exe path. Skipping it saves a PowerShell
-  ; start and a netsh round trip on every update.
-  ${If} ${isUpdated}
-    Goto adeFirewallInstallDone
-  ${EndIf}
-
+  ; This runs on updates too. An uninstaller older than the -Updating branch
+  ; below removes the rule on every update, and the script is idempotent and
+  ; about a second, so putting the rule back costs less than losing it.
   ; Pre-authorize the LAN sync listener so first run does not raise the Windows
   ; Firewall prompt. Windows only accepts firewall rules from an elevated
   ; process and this installer is per-user (perMachine/allowElevation are both
@@ -115,7 +121,6 @@
     DetailPrint "ADE could not pre-authorize local network sync. Windows will ask once when you first use sync on this network."
   ${EndIf}
   DetailPrint "Step 2 of 2 done."
-  adeFirewallInstallDone:
 !macroend
 
 !macro customUnInstall

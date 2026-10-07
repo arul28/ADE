@@ -139,13 +139,13 @@ type CreateAutoUpdateServiceArgs = {
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
   /**
    * Runs right before the native installer takes over, so something can be on
-   * screen while ADE is gone (a Windows install is silent). The handle's
-   * `cancel` runs when the install unwinds and ADE stays open.
+   * screen while ADE is gone (a Windows install is silent). Returns a cancel
+   * that runs when the install unwinds and ADE stays open.
    */
   onInstallHandoff?: (args: {
     version: string;
     installerPath: string | null;
-  }) => Promise<{ cancel: () => void } | null | void> | { cancel: () => void } | null | void;
+  }) => (() => void) | null;
   /** Quits and reopens ADE, after the usual quit warnings. */
   /** Resolves true once the person agreed to restart; false when they kept ADE open. */
   relaunchApp?: () => Promise<boolean>;
@@ -630,6 +630,8 @@ export function createAutoUpdateService({
   let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let idleSinceMs: number | null = null;
   let installQuitArmed = false;
+  /** Cancels whatever `onInstallHandoff` put on screen for the armed install. */
+  let cancelInstallHandoff: (() => void) | null = null;
   let activityCheckFailed = false;
   let activityCheckInProgress = false;
   let downloadedFilePath: string | null = null;
@@ -1917,13 +1919,12 @@ export function createAutoUpdateService({
     });
   }
 
-  let installHandoffSurface: { cancel: () => void } | null = null;
   function cancelInstallHandoffSurface(): void {
-    const surface = installHandoffSurface;
-    installHandoffSurface = null;
-    if (!surface) return;
+    const cancel = cancelInstallHandoff;
+    cancelInstallHandoff = null;
+    if (!cancel) return;
     try {
-      surface.cancel();
+      cancel();
     } catch (error) {
       logger.warn("autoUpdate.install_handoff_surface_cancel_failed", {
         message: formatErrorMessage(error),
@@ -2028,10 +2029,10 @@ export function createAutoUpdateService({
         // costs is not counted as quitting.
         cancelInstallHandoffSurface();
         try {
-          installHandoffSurface = (await onInstallHandoff?.({
+          cancelInstallHandoff = onInstallHandoff?.({
             version: snapshot.version ?? installVersion,
             installerPath: downloadedFilePath,
-          })) ?? null;
+          }) ?? null;
         } catch (error) {
           // The window is a courtesy; the install goes ahead without it.
           logger.warn("autoUpdate.install_handoff_surface_failed", {

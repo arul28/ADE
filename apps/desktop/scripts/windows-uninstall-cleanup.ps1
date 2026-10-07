@@ -269,7 +269,7 @@ function Remove-ChannelStartupWithoutPackagedCli(
 # update's uninstall and install halves read as one timeline. Best effort only.
 function Write-AdeUninstallStep([string]$Step, [double]$Seconds, [string]$Detail) {
   try {
-    $logDir = Join-Path $timingAdeHome "runtime"
+    $logDir = Join-Path $channelAdeHome "runtime"
     if (-not (Test-Path -LiteralPath $logDir -PathType Container)) { return }
     $line = "{0} uninstall-cleanup {1} {2:N2}s {3}" -f `
       ([DateTime]::UtcNow.ToString("o")), $Step, $Seconds, $Detail
@@ -284,11 +284,11 @@ $normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
 if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
   throw "Unsupported ADE package channel: $PackageChannel"
 }
-$timingHomeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
-$timingAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
-  Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $timingHomeName
+$homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
+$channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
+  Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
 } else {
-  $AdeHome
+  Resolve-NormalizedPath $AdeHome
 }
 $cleanupMode = if ($Updating) { "updating" } else { "uninstall" }
 
@@ -303,12 +303,6 @@ if (-not $SkipServiceRemoval) {
     throw "The installer did not provide a valid ADE executable name."
   }
 
-  $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
-  $channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
-    Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
-  } else {
-    Resolve-NormalizedPath $AdeHome
-  }
   $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
   $cliPath = Join-Path $resolvedInstallDir "resources\ade-cli\cli.cjs"
   if ($Updating) {

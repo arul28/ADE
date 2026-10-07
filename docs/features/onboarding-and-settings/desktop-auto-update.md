@@ -80,10 +80,12 @@ Windows x64 uses electron-builder's per-user NSIS target and
 The handoff is silent (`quitAndInstall(true, true)`; it has to be, or the
 assisted installer never relaunches ADE), so ADE shows its own window for the
 gap. Right before the handoff, `windowsInstallProgress.ts` copies
-`resources/ade-cli/windows-update-progress.ps1` to `%TEMP%\ade-update-<channel>\`
-and starts it through `cmd /c start`. It runs from outside the install folder
-because the installer renames that folder away and kills every process whose
-image lives in it. It uses `cmd start` because, from Electron, a `detached`
+`resources/ade-cli/windows-update-progress.ps1` to
+`%LOCALAPPDATA%\ADE\update-progress-<channel>\` and starts it through
+`cmd /c start`. It runs from outside the install folder because the installer
+renames that folder away and kills every process whose image lives in it, and
+not from `%TEMP%` because some machines point TEMP at a folder other users can
+write. It uses `cmd start` because, from Electron, a `detached`
 powershell.exe exits without running and an attached one dies with ADE. The
 small, topmost "Updating ADE to vX" window follows the old app quitting, the
 installer running, and the steps in `install-steps.log`. It closes when the new
@@ -94,7 +96,8 @@ says so and offers Open ADE. Its log is read into `ade-update.jsonl` as
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads
 it, brings the window forward, and exits before starting anything, instead of
-being force-killed by the installer seconds later.
+being force-killed by the installer seconds later. An `ade://` link opened in
+that window of time is dropped with it.
 
 An in-place update does only what an update needs. The old uninstaller runs with
 `--updated`, so `customUnInstall` passes `-Updating`: it stops the background
@@ -102,12 +105,17 @@ service without starting ADE.exe, and leaves the terminal shim, the user PATH
 entry, `ade://`, file associations and the firewall rule in place.
 `customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
 refreshes only the shim. The relaunched app reinstalls, restarts and verifies
-the service itself (`runUpdateTransaction`). `install-path.cmd` broadcasts
+the service itself (`runUpdateTransaction`). Every `--updated` install comes
+from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
+pending install that makes that launch run the transaction. The trade: if the
+new ADE does not open at all, the brain stays down, and the machine is
+unreachable from the phone, until ADE is next opened. `install-path.cmd` broadcasts
 `WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
 per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
 replaces electron-builder's app-running check with one PowerShell pass instead
 of three or four. Every step appends its duration to
-`~/.ade/runtime/install-steps.log`.
+`runtime/install-steps.log` in the channel's ADE home (`~/.ade` on Stable,
+`~/.ade-beta` and `~/.ade-alpha` on the channels).
 
 Measured in Windows Sandbox with real installers (2026-10-07): from
 `quit_and_install` to the new ADE on screen took 77 s before these changes
@@ -277,9 +285,9 @@ internal-only `ade_update_install_did_not_land` event with just the bounded
 top-bar pill reads "Retry install vX" instead of silently offering the same
 update again. Requesting another install clears `lastInstallFailed` (the new
 attempt supersedes the notice). A launch on the target version or newer clears
-`failedInstallAttempts` entirely, even when no pending marker remains. That
-happens when an earlier launch already consumed the marker. Before this, a
-successful retry still logged `install_did_not_land`.
+`failedInstallAttempts` entirely, even when no pending marker remains, as when
+an earlier launch already consumed the marker; a landed retry does not log
+`install_did_not_land`.
 
 The first such failure **keeps** the cached archive. It was checksum-verified
 before the update was ever offered, so a lost quit race says nothing about the

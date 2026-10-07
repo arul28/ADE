@@ -43,6 +43,7 @@ type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
   PACKAGE_CHANNEL_ARGV_PREFIX,
+  appPackageChannelDisplayName,
   normalizeAppPackageChannel,
 } from "../shared/packageChannel";
 import {
@@ -293,7 +294,7 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
-import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
@@ -3029,14 +3030,13 @@ app.whenReady().then(async () => {
     onInstallHandoff: process.platform === "win32" && app.isPackaged
       ? ({ version, installerPath }) => startWindowsInstallProgress({
           channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
-          // Not app.getName(): on Stable that is the npm package name.
-          productName: process.env.ADE_DESKTOP_APP_NAME || "ADE",
+          productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
           currentVersion: app.getVersion(),
           targetVersion: version,
           appExe: process.execPath,
           installerPath,
           resourcesPath: process.resourcesPath,
-          adeHome: process.env.ADE_HOME || path.join(os.homedir(), ".ade"),
+          adeHome: resolveMachineAdeDir(),
           log: (event, data) => updateLogger.info(event, data),
         })
       : undefined,

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
  * The "Updating ADE" window on Windows, and the guard that keeps a hand-launched
@@ -10,12 +11,16 @@ import path from "node:path";
  * A Windows update is a silent NSIS install, so ADE vanishes for the whole of
  * it. People reopened ADE, the installer force-killed every ADE.exe under the
  * install folder, and that read as "ADE crashes on launch". The window
- * (`scripts/windows-update-progress.ps1`) runs from %TEMP% under powershell.exe:
- * the installer renames the install folder away and kills every process whose
- * image lives inside it, so neither the script nor its host may live there.
+ * (`scripts/windows-update-progress.ps1`) runs from %LOCALAPPDATA%\ADE under
+ * powershell.exe: the installer renames the install folder away and kills every
+ * process whose image lives inside it, so neither the script nor its host may
+ * live there. Not %TEMP%: some machines point TEMP at a folder other users can
+ * write, and these files decide what runs and whether ADE starts.
  */
 
 const HEARTBEAT_FRESH_MS = 5_000;
+/** A heartbeat this far in the future is a clock change, not a live window. */
+const HEARTBEAT_FUTURE_SLACK_MS = 5_000;
 /** Plenty for one update's lifecycle lines; a corrupt or runaway log is cut. */
 const MAX_REPORT_LINES = 40;
 
@@ -26,16 +31,29 @@ type Heartbeat = {
   updatedAt?: unknown;
 };
 
-export function windowsInstallProgressDir(channel: string | null): string {
-  return path.join(os.tmpdir(), `ade-update-${channel ?? "stable"}`);
+/**
+ * Every file the window and ADE share, in one per-channel folder. The script
+ * finds its settings beside itself (`progress-args.json`) and writes the
+ * heartbeat and log at the paths given there; `.focus` and `.cancel` sit next
+ * to the heartbeat.
+ */
+function progressFiles(channel: string | null) {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  const dir = path.join(localAppData, "ADE", `update-progress-${channel ?? "stable"}`);
+  const heartbeat = path.join(dir, "progress.json");
+  return {
+    dir,
+    script: path.join(dir, "windows-update-progress.ps1"),
+    args: path.join(dir, "progress-args.json"),
+    heartbeat,
+    focus: `${heartbeat}.focus`,
+    cancel: `${heartbeat}.cancel`,
+    log: path.join(dir, "progress.log"),
+  };
 }
 
-function heartbeatPath(dir: string): string {
-  return path.join(dir, "progress.json");
-}
-
-function progressLogPath(dir: string): string {
-  return path.join(dir, "progress.log");
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function processAlive(pid: number): boolean {
@@ -58,12 +76,11 @@ function processAlive(pid: number): boolean {
 export function deferToRunningWindowsInstall(args: {
   channel: string | null;
   appVersion: string;
-  nowMs?: number;
 }): boolean {
-  const dir = windowsInstallProgressDir(args.channel);
+  const files = progressFiles(args.channel);
   let heartbeat: Heartbeat;
   try {
-    heartbeat = JSON.parse(fs.readFileSync(heartbeatPath(dir), "utf8")) as Heartbeat;
+    heartbeat = JSON.parse(fs.readFileSync(files.heartbeat, "utf8")) as Heartbeat;
   } catch {
     return false;
   }
@@ -72,10 +89,11 @@ export function deferToRunningWindowsInstall(args: {
   if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(updatedAtMs)) return false;
   if (heartbeat.phase === "failed") return false;
   if (heartbeat.targetVersion === args.appVersion) return false;
-  if ((args.nowMs ?? Date.now()) - updatedAtMs > HEARTBEAT_FRESH_MS) return false;
+  const ageMs = Date.now() - updatedAtMs;
+  if (ageMs > HEARTBEAT_FRESH_MS || ageMs < -HEARTBEAT_FUTURE_SLACK_MS) return false;
   if (!processAlive(pid)) return false;
   try {
-    fs.writeFileSync(`${heartbeatPath(dir)}.focus`, String(process.pid));
+    fs.writeFileSync(files.focus, String(process.pid));
   } catch {
     // The window is still up and still says what is happening.
   }
@@ -83,12 +101,12 @@ export function deferToRunningWindowsInstall(args: {
 }
 
 /**
- * Starts the update window just before the installer takes over. ADE does not
- * wait for it: waiting held the old window on screen, blank, for seconds, and
- * the window owns its own lifecycle anyway. Whether it showed, and what it saw,
- * reaches the update log on the next launch through
- * `takeWindowsInstallProgressReport`. Returns null when it could not be
- * started; the install goes ahead either way.
+ * Starts the update window just before the installer takes over and returns a
+ * cancel for an install that unwinds, or null when it could not be started; the
+ * install goes ahead either way. ADE does not wait for the window: waiting held
+ * the old window on screen, blank, for seconds, and the window owns its own
+ * lifecycle anyway. Whether it showed, and what it saw, reaches the update log
+ * on the next launch through `takeWindowsInstallProgressReport`.
  */
 export function startWindowsInstallProgress(args: {
   channel: string | null;
@@ -100,46 +118,33 @@ export function startWindowsInstallProgress(args: {
   resourcesPath: string;
   adeHome: string;
   log: (event: string, data?: Record<string, unknown>) => void;
-}): { cancel: () => void } | null {
-  const sourceScript = path.join(args.resourcesPath, "ade-cli", "windows-update-progress.ps1");
-  const dir = windowsInstallProgressDir(args.channel);
-  const script = path.join(dir, "windows-update-progress.ps1");
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.copyFileSync(sourceScript, script);
-  } catch (error) {
-    args.log("autoUpdate.install_progress_unavailable", {
-      reason: "script_copy_failed",
-      message: error instanceof Error ? error.message : String(error),
-    });
+}): (() => void) | null {
+  const files = progressFiles(args.channel);
+  const unavailable = (reason: string, error: unknown) => {
+    args.log("autoUpdate.install_progress_unavailable", { reason, message: errorMessage(error) });
     return null;
-  }
-  const config = {
-    targetVersion: args.targetVersion,
-    currentVersion: args.currentVersion,
-    productName: args.productName,
-    appExe: args.appExe,
-    heartbeatPath: heartbeatPath(dir),
-    stepsLogPath: path.join(args.adeHome, "runtime", "install-steps.log"),
-    parentPid: process.pid,
-    logPath: progressLogPath(dir),
-    installerPath: args.installerPath ?? "",
   };
   try {
-    fs.writeFileSync(path.join(dir, "progress-args.json"), JSON.stringify(config));
-    fs.rmSync(heartbeatPath(dir), { force: true });
-    fs.rmSync(`${heartbeatPath(dir)}.cancel`, { force: true });
-    fs.rmSync(progressLogPath(dir), { force: true });
+    fs.mkdirSync(files.dir, { recursive: true });
+    fs.copyFileSync(path.join(args.resourcesPath, "ade-cli", "windows-update-progress.ps1"), files.script);
+    fs.writeFileSync(files.args, JSON.stringify({
+      targetVersion: args.targetVersion,
+      currentVersion: args.currentVersion,
+      productName: args.productName,
+      appExe: args.appExe,
+      heartbeatPath: files.heartbeat,
+      stepsLogPath: path.join(args.adeHome, "runtime", "install-steps.log"),
+      parentPid: process.pid,
+      logPath: files.log,
+      installerPath: args.installerPath ?? "",
+    }));
+    // The cancel file is left alone: a window from an earlier attempt that has
+    // not ticked yet still needs to see it. The new window only honors a cancel
+    // written after it started.
+    for (const stale of [files.heartbeat, files.log]) fs.rmSync(stale, { force: true });
   } catch (error) {
-    args.log("autoUpdate.install_progress_unavailable", {
-      reason: "config_write_failed",
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return null;
+    return unavailable("prepare_failed", error);
   }
-  const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
-  const cmd = path.join(systemRoot, "System32", "cmd.exe");
-  const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   // Through `cmd /c start`, the one launch measured to work: from Electron, a
   // powershell.exe spawned `detached` exits within half a second without
   // running anything (with or without windowsHide, -WindowStyle Hidden, or a
@@ -152,36 +157,33 @@ export function startWindowsInstallProgress(args: {
   const commandLine = '/d /v:on /s /c "start "" /min "!ADE_UPDATE_PS!" -NoProfile -NonInteractive -STA'
     + ' -WindowStyle Hidden -ExecutionPolicy Bypass -File "!ADE_UPDATE_SCRIPT!""';
   try {
-    const child = spawn(cmd, [commandLine], {
+    const child = spawn(resolveTrustedWindowsTool("cmd"), [commandLine], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
       windowsVerbatimArguments: true,
-      env: { ...process.env, ADE_UPDATE_PS: powershell, ADE_UPDATE_SCRIPT: script },
+      env: {
+        ...process.env,
+        ADE_UPDATE_PS: resolveTrustedWindowsTool("powershell"),
+        ADE_UPDATE_SCRIPT: files.script,
+      },
     });
-    child.on("error", (error) => {
-      args.log("autoUpdate.install_progress_unavailable", { reason: "spawn_failed", message: error.message });
-    });
+    child.on("error", (error) => unavailable("spawn_failed", error));
     child.unref();
   } catch (error) {
-    args.log("autoUpdate.install_progress_unavailable", {
-      reason: "spawn_failed",
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return null;
+    return unavailable("spawn_failed", error);
   }
   args.log("autoUpdate.install_progress_started", { targetVersion: args.targetVersion });
   // The window watches for this file and closes itself: ADE is staying open
   // because the install unwound. It also gives up on its own if ADE never
   // quits, so a cancel that cannot be written still ends it.
-  const cancel = () => {
+  return () => {
     try {
-      fs.writeFileSync(`${heartbeatPath(dir)}.cancel`, String(process.pid));
+      fs.writeFileSync(files.cancel, String(process.pid));
     } catch {
       // See above.
     }
   };
-  return { cancel };
 }
 
 /**
@@ -190,7 +192,7 @@ export function startWindowsInstallProgress(args: {
  * not, which steps it saw, how it ended) reaches ADE's update log.
  */
 export function takeWindowsInstallProgressReport(channel: string | null): string[] | null {
-  const file = progressLogPath(windowsInstallProgressDir(channel));
+  const file = progressFiles(channel).log;
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");

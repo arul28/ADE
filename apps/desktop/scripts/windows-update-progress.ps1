@@ -7,10 +7,11 @@
 # installer force-killed every ADE.exe under the install folder, which looked
 # like a crash on launch.
 #
-# The desktop app copies this file out of the install folder before it quits
-# and starts it with powershell.exe. Both matter: the installer renames the
-# install folder away and kills every process whose image lives inside it, and
-# powershell.exe lives in System32.
+# The desktop app copies this file out of the install folder (to
+# %LOCALAPPDATA%\ADE\update-progress-<channel>) before it quits and starts it
+# with powershell.exe. Both matter: the installer renames the install folder
+# away and kills every process whose image lives in it, and powershell.exe
+# lives in System32.
 #
 # Settings come from progress-args.json beside this file, not the command line.
 # The app has to start this through `cmd /c start` (a detached powershell.exe
@@ -33,16 +34,8 @@
 # It also publishes a heartbeat file. A copy of ADE launched by hand during the
 # install reads it, asks this window to come forward, and exits instead of
 # starting up only to be killed by the installer.
-[CmdletBinding()]
-param(
-  [string]$ConfigPath = ""
-)
-
 $ErrorActionPreference = "Stop"
-if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-  $ConfigPath = Join-Path $PSScriptRoot "progress-args.json"
-}
-$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$config = Get-Content -LiteralPath (Join-Path $PSScriptRoot "progress-args.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 function Read-ConfigString([string]$Name, [string]$Default = "") {
   $value = $config.$Name
   if ($null -eq $value) { return $Default }
@@ -57,7 +50,12 @@ $InstallerPath = Read-ConfigString "installerPath"
 $StepsLogPath = Read-ConfigString "stepsLogPath"
 $ParentPid = [int](Read-ConfigString "parentPid" "0")
 $LogPath = Read-ConfigString "logPath"
-$TimeoutSeconds = [int](Read-ConfigString "timeoutSeconds" "600")
+# Past this, whatever is happening is not an update finishing.
+$TimeoutSeconds = 600
+# Grace after the installer exits for the new ADE to put up a window, and after
+# ADE quits for the installer to appear.
+$AppOpenGraceSeconds = 20
+$InstallerStartGraceSeconds = 60
 if ([string]::IsNullOrWhiteSpace($TargetVersion) -or [string]::IsNullOrWhiteSpace($AppExe) -or [string]::IsNullOrWhiteSpace($HeartbeatPath)) {
   throw "progress-args.json needs targetVersion, appExe and heartbeatPath."
 }
@@ -101,18 +99,16 @@ function Get-InstalledVersion {
 }
 
 # Each line in install-steps.log names a step that just FINISHED, so the step
-# shown is the one that comes after the newest finished step.
+# shown is the one that comes after the newest finished step. An update logs
+# only these two (windows-install-setup.ps1 -Updating skips the service steps).
 $stepAfter = @{
-  "service_removal"     = "Installing $ProductName $TargetVersion$ellipsis"
-  "service_status_read" = "Setting up the ade command$ellipsis"
-  "path_shim_install"   = "Opening $ProductName$ellipsis"
-  "brain_start"         = "Opening $ProductName$ellipsis"
+  "service_removal"   = "Installing $ProductName $TargetVersion$ellipsis"
+  "path_shim_install" = "Opening $ProductName$ellipsis"
 }
 $stepsLogOffset = 0L
 if (-not [string]::IsNullOrWhiteSpace($StepsLogPath) -and (Test-Path -LiteralPath $StepsLogPath -PathType Leaf)) {
   $stepsLogOffset = (Get-Item -LiteralPath $StepsLogPath).Length
 }
-$lastFinishedStep = ""
 
 function Update-LastFinishedStep {
   if ([string]::IsNullOrWhiteSpace($StepsLogPath)) { return }
@@ -132,7 +128,7 @@ function Update-LastFinishedStep {
     foreach ($line in ($text -split "`r?`n")) {
       $parts = $line.Trim() -split '\s+'
       if ($parts.Count -ge 3 -and $stepAfter.ContainsKey($parts[2])) {
-        $script:lastFinishedStep = $parts[2]
+        $state.lastFinishedStep = $parts[2]
         Write-ProgressLog "step_finished" $line.Trim()
       }
     }
@@ -146,7 +142,6 @@ function Write-Heartbeat([string]$Phase) {
     $payload = @{
       pid = $PID
       targetVersion = $TargetVersion
-      appExe = $AppExe
       phase = $Phase
       updatedAt = [DateTime]::UtcNow.ToString("o")
     } | ConvertTo-Json -Compress
@@ -166,7 +161,6 @@ function Remove-Heartbeat {
     # Already gone.
   }
   Remove-Item -LiteralPath "$HeartbeatPath.focus" -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath "$HeartbeatPath.cancel" -Force -ErrorAction SilentlyContinue
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
@@ -261,6 +255,8 @@ $state = @{
   installerSeen = $false
   installerGoneAt = $null
   parentGoneAt = $null
+  lastFinishedStep = ""
+  openingLogged = $false
   done = $false
 }
 
@@ -310,8 +306,12 @@ $timer.Add_Tick({
 
     if ($state.phase -eq "failed") { return }
 
-    # ADE unwound the install and is staying open: nothing to show.
-    if (Test-Path -LiteralPath "$HeartbeatPath.cancel") {
+    # ADE unwound the install and is staying open: nothing to show. Only a
+    # cancel written after this window started is for it; an older one belongs
+    # to an earlier attempt.
+    $cancelFile = Get-Item -LiteralPath "$HeartbeatPath.cancel" -ErrorAction SilentlyContinue
+    if ($cancelFile -and $cancelFile.LastWriteTime -ge $startedAt) {
+      Remove-Item -LiteralPath $cancelFile.FullName -Force -ErrorAction SilentlyContinue
       Write-ProgressLog "cancelled"
       $window.Close()
       return
@@ -321,26 +321,17 @@ $timer.Add_Tick({
     $newApps = @(Get-ProcessesAtPath $AppExe | Where-Object {
       try { $_.StartTime -gt $startedAt -and $_.Id -ne $ParentPid } catch { $false }
     })
-    if ($newApps.Count -gt 0) {
-      if ($state.phase -ne "opening") {
-        $state.phase = "opening"
-        $subline.Text = "Opening $ProductName$ellipsis"
-        Write-ProgressLog "app_started" ("pid=" + (($newApps | ForEach-Object { $_.Id }) -join ","))
+    $windowed = @($newApps | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+    if ($windowed.Count -gt 0) {
+      $installed = Get-InstalledVersion
+      Write-ProgressLog "app_window_shown" "version=$installed"
+      if (-not [string]::IsNullOrWhiteSpace($installed) -and $installed -ne $TargetVersion) {
+        # The app came back, but on the old version. It shows its own
+        # "did not install" notice, so this window only gets out of the way.
+        Write-ProgressLog "came_back_on_other_version" "installed=$installed target=$TargetVersion"
       }
-      $windowed = @($newApps | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
-      if ($windowed.Count -gt 0) {
-        $installed = Get-InstalledVersion
-        Write-ProgressLog "app_window_shown" "version=$installed"
-        if (-not [string]::IsNullOrWhiteSpace($installed) -and $installed -ne $TargetVersion) {
-          # The app came back, but on the old version. It shows its own
-          # "did not install" notice, so this window only gets out of the way.
-          Write-ProgressLog "came_back_on_other_version" "installed=$installed target=$TargetVersion"
-        }
-        $state.done = $true
-        $window.Close()
-        return
-      }
-      Write-Heartbeat "opening"
+      $state.done = $true
+      $window.Close()
       return
     }
 
@@ -350,7 +341,10 @@ $timer.Add_Tick({
       Write-ProgressLog "parent_exited"
     }
 
-    $installerAlive = (Get-ProcessesAtPath $InstallerPath).Count -gt 0
+    # Without the installer's path (ADE had no recorded download for it) the
+    # installer rules below cannot be judged; only the overall timeout applies.
+    $installerKnown = -not [string]::IsNullOrWhiteSpace($InstallerPath)
+    $installerAlive = $installerKnown -and (Get-ProcessesAtPath $InstallerPath).Count -gt 0
     if ($installerAlive -and -not $state.installerSeen) {
       $state.installerSeen = $true
       Write-ProgressLog "installer_seen"
@@ -370,10 +364,20 @@ $timer.Add_Tick({
       return
     }
 
+    # A new ADE.exe without a window yet counts as opening only once the
+    # installer is done: during the install the same exe also runs as the CLI.
+    $opening = $newApps.Count -gt 0 -and -not $installerAlive
+    if ($opening -and -not $state.openingLogged) {
+      $state.openingLogged = $true
+      Write-ProgressLog "app_started" ("pid=" + (($newApps | ForEach-Object { $_.Id }) -join ","))
+    }
     if ($parentAlive) {
       $state.phase = "closing"
       $subline.Text = "Closing $ProductName$ellipsis"
-    } elseif ($state.lastFinishedStep -and $stepAfter.ContainsKey($state.lastFinishedStep)) {
+    } elseif ($opening) {
+      $state.phase = "opening"
+      $subline.Text = "Opening $ProductName$ellipsis"
+    } elseif ($state.lastFinishedStep) {
       $state.phase = "installing"
       $subline.Text = $stepAfter[$state.lastFinishedStep]
     } else {
@@ -382,24 +386,19 @@ $timer.Add_Tick({
     }
     Write-Heartbeat $state.phase
 
-    $installed = $null
-    if ($state.installerGoneAt -and ($now - $state.installerGoneAt).TotalSeconds -ge 20) {
+    $installerFinished = $state.installerGoneAt -and -not $opening -and
+      ($now - $state.installerGoneAt).TotalSeconds -ge $AppOpenGraceSeconds
+    $installerNeverRan = $installerKnown -and -not $state.installerSeen -and $state.parentGoneAt -and
+      ($now - $state.parentGoneAt).TotalSeconds -ge $InstallerStartGraceSeconds
+    if ($installerFinished -or $installerNeverRan) {
       $installed = Get-InstalledVersion
       if ($installed -eq $TargetVersion) {
         Show-Failure "$ProductName $TargetVersion is installed" "It did not open on its own. Open it to finish."
+      } elseif ($installerNeverRan) {
+        Show-Failure "The update did not start" "The installer never ran. Open $ProductName and choose Restart to retry."
       } else {
         $stillOn = if ($installed) { $installed } elseif ($CurrentVersion) { $CurrentVersion } else { "the previous version" }
         Show-Failure "The update did not install" "$ProductName is still on $stillOn. Open it and choose Restart to retry."
-      }
-      return
-    }
-    # The installer never showed up (blocked, or it failed before we saw it).
-    if (-not $state.installerSeen -and $state.parentGoneAt -and ($now - $state.parentGoneAt).TotalSeconds -ge 60) {
-      $installed = Get-InstalledVersion
-      if ($installed -eq $TargetVersion) {
-        Show-Failure "$ProductName $TargetVersion is installed" "It did not open on its own. Open it to finish."
-      } else {
-        Show-Failure "The update did not start" "The installer never ran. Open $ProductName and choose Restart to retry."
       }
       return
     }
