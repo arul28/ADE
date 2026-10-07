@@ -24,9 +24,12 @@ struct FilesWorkspaceHeader: View {
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
 
-        Text(isLive ? "Live" : "Cached")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(isLive ? ADEColor.success : ADEColor.textMuted)
+        HStack(spacing: 5) {
+          ADEKitDot(tone: isLive ? .ok : .neutral)
+          Text(isLive ? "Live" : "Cached")
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.textMuted)
+        }
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel("Workspace path \(selectedWorkspace.rootPath), \(isLive ? "live" : "cached")")
@@ -44,20 +47,26 @@ struct FilesProofSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 10) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text("Proof")
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-          Text("Recent screenshot and video artifacts linked to this lane.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
+        Image(systemName: "photo.on.rectangle")
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(ADEColor.textMuted)
+        Text("Proof")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        if !artifacts.isEmpty {
+          Text("\(artifacts.count)")
+            .font(.adeMono(11))
+            .foregroundStyle(ADEColor.textMuted)
         }
         Spacer(minLength: 8)
         Button(action: onRefresh) {
           Image(systemName: "arrow.clockwise")
-            .font(.system(size: 14, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 30, height: 30)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.plain)
         .accessibilityLabel("Refresh proof artifacts")
       }
 
@@ -70,12 +79,10 @@ struct FilesProofSection: View {
           onAction: onRefresh
         )
       } else if artifacts.isEmpty {
-        Text("No proof artifacts are cached for this lane yet.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
+        Text("No screenshots or recordings for this lane yet.")
+          .font(.system(size: 13))
+          .foregroundStyle(ADEColor.textMuted)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(12)
-          .adeInsetField(cornerRadius: 12, padding: 0)
       } else {
         VStack(spacing: 10) {
           ForEach(artifacts) { artifact in
@@ -88,7 +95,7 @@ struct FilesProofSection: View {
         }
       }
     }
-    .adeGlassCard(cornerRadius: 18)
+    .adeKitCard()
   }
 }
 
@@ -102,52 +109,40 @@ struct FilesProofArtifactRow: View {
   }
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: icon)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 32, height: 32)
-        .background(ADEColor.accent.opacity(0.14), in: Circle())
-        .glassEffect()
-
-      VStack(alignment: .leading, spacing: 4) {
-        Text(artifact.title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-        Text(artifact.artifactKind.replacingOccurrences(of: "_", with: " ").capitalized)
-          .font(.caption2.monospaced())
-          .foregroundStyle(ADEColor.textSecondary)
-        if let description = artifact.description, !description.isEmpty {
-          Text(description)
-            .font(.caption)
+    HStack(spacing: 10) {
+      Button(action: onOpen) {
+        HStack(spacing: 10) {
+          Image(systemName: icon)
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
+            .frame(width: 30, height: 30)
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          VStack(alignment: .leading, spacing: 2) {
+            Text(artifact.title)
+              .font(.system(size: 14, weight: .medium))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Text(artifact.artifactKind.replacingOccurrences(of: "_", with: " ").capitalized)
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          Spacer(minLength: 4)
         }
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Open proof \(artifact.title)")
 
-      Spacer(minLength: 8)
-
-      HStack(spacing: 6) {
-        Button(action: onOpen) {
-          Image(systemName: "eye")
-            .font(.system(size: 15, weight: .semibold))
-            .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Open proof \(artifact.title)")
-
-        Button(action: onCopyReference) {
-          Image(systemName: "doc.on.doc")
-            .font(.system(size: 15, weight: .semibold))
-            .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Copy reference for \(artifact.title)")
+      Button(action: onCopyReference) {
+        Image(systemName: "doc.on.doc")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 36, height: 36)
+          .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Copy reference for \(artifact.title)")
     }
-    .padding(12)
-    .adeInsetField(cornerRadius: 14, padding: 0)
   }
 }
 
@@ -164,13 +159,13 @@ struct FilesTreeNodeRow: View {
     Button(action: onOpen) {
       HStack(spacing: 10) {
         Image(systemName: node.type == "directory" ? "folder.fill" : fileIcon(for: node.name))
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(node.type == "directory" ? ADEColor.accent : fileTint(for: node.name))
-          .frame(width: 18)
+          .font(.system(size: 14, weight: .regular))
+          .foregroundStyle(node.type == "directory" ? ADEColor.textSecondary : fileTint(for: node.name))
+          .frame(width: 20)
           .adeMatchedGeometry(id: canTransition ? filesTransitionId(kind: "icon", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
 
         Text(node.name)
-          .font(.subheadline.weight(.medium))
+          .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .adeMatchedGeometry(id: canTransition ? filesTransitionId(kind: "title", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
@@ -190,17 +185,14 @@ struct FilesTreeNodeRow: View {
         }
 
         if node.type == "directory" {
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+          ADESettingsChevron()
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 9)
-      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .padding(.horizontal, ADEKit.inset)
+      .frame(minHeight: 44)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
     .contextMenu {
       Button("Copy Full Path", action: onCopyPath)
       Button("Copy Relative Path", action: onCopyRelativePath)

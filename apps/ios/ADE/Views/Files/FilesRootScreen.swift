@@ -97,8 +97,7 @@ struct FilesRootScreen: View {
                   Task { await reload(refreshRemote: true) }
                 }
               }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.accent)
+              .buttonStyle(ADEKitButtonStyle(prominent: true))
             }
           }
 
@@ -214,16 +213,18 @@ struct FilesRootScreen: View {
               pendingSearchQuery = ""
               isSearchPresented = true
             } label: {
-              Image(systemName: "magnifyingglass")
+              ADEKitCircleIcon(systemImage: "magnifyingglass")
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Search files")
             .disabled(!canUseLiveFileActions)
           }
           Button {
             Task { await reload(refreshRemote: true) }
           } label: {
-            Image(systemName: "arrow.clockwise")
+            ADEKitCircleIcon(systemImage: "arrow.clockwise")
           }
+          .buttonStyle(.plain)
           .accessibilityLabel("Refresh files")
           .disabled(syncService.activeHostProfile == nil && workspaces.isEmpty)
         }

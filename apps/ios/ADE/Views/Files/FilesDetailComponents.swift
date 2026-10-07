@@ -29,10 +29,13 @@ struct FilesCompactSegmentedControl<Item: Identifiable & Equatable>: View {
           .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textMuted)
           .padding(.horizontal, 10)
           .padding(.vertical, 6)
-          .background(
-            isSelected ? ADEColor.accent.opacity(0.18) : Color.clear,
-            in: Capsule(style: .continuous)
-          )
+          .background {
+            if isSelected {
+              Capsule(style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            }
+          }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label(item))
@@ -40,7 +43,7 @@ struct FilesCompactSegmentedControl<Item: Identifiable & Equatable>: View {
       }
     }
     .padding(2)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: Capsule(style: .continuous))
+    .background(ADEKit.track, in: Capsule(style: .continuous))
   }
 }
 
@@ -143,8 +146,7 @@ struct FilesHeaderStrip: View {
         .font(.system(size: 17, weight: .semibold))
         .foregroundStyle(fileTint(for: relativePath))
         .frame(width: 38, height: 38)
-        .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 12))
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .adeMatchedGeometry(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "icon", workspaceId: workspaceId, path: relativePath), in: transitionNamespace)
 
       VStack(alignment: .leading, spacing: 3) {
@@ -158,7 +160,7 @@ struct FilesHeaderStrip: View {
         HStack(spacing: 6) {
           Text(fileKindLabel.uppercased())
             .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(ADEColor.textSecondary)
           Text("·").foregroundStyle(ADEColor.textMuted)
           Text(formattedFileSize(fileSize))
             .font(.caption2.monospaced())
@@ -180,7 +182,7 @@ struct FilesHeaderStrip: View {
             .font(.system(size: 18, weight: .semibold))
             .frame(width: 34, height: 34)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(ADEKitButtonStyle())
         .accessibilityLabel("File details")
       }
     }
@@ -211,7 +213,7 @@ struct FilesCompactBanner: View {
 
       if let actionTitle, let onAction {
         Button(actionTitle, action: onAction)
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
           .controlSize(.mini)
           .tint(tint)
       }
@@ -237,10 +239,9 @@ struct FilesContentFallback: View {
     VStack(spacing: 12) {
       Image(systemName: symbol)
         .font(.system(size: 24, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
+        .foregroundStyle(ADEColor.textMuted)
         .frame(width: 50, height: 50)
-        .background(ADEColor.accent.opacity(0.12), in: Circle())
-        .glassEffect(in: .circle)
+        .background(ADEKit.track, in: Circle())
 
       Text(title)
         .font(.headline)
@@ -253,8 +254,7 @@ struct FilesContentFallback: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity)
-    .padding(24)
-    .adeInsetField(cornerRadius: 18, padding: 24)
+    .adeKitCard(padding: 24)
   }
 }
 
@@ -298,7 +298,7 @@ struct FilesDetailsFallback: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(14)
-    .adeInsetField(cornerRadius: 14, padding: 14)
+    .adeKitCard(padding: 14)
   }
 }
 
@@ -337,7 +337,7 @@ struct FilesHistoryEntryCard: View {
       .font(.caption)
       .foregroundStyle(ADEColor.textSecondary)
     }
-    .adeInsetField(cornerRadius: 14, padding: 14)
+    .adeKitCard(padding: 14)
   }
 
   private func historyChangeTypeLabel(_ changeType: String) -> String {
@@ -409,8 +409,7 @@ struct FilesDetailsSheet: View {
         .font(.system(size: 19, weight: .semibold))
         .foregroundStyle(fileTint(for: relativePath))
         .frame(width: 42, height: 42)
-        .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 12))
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
       VStack(alignment: .leading, spacing: 3) {
         Text(lastPathComponent(relativePath))
@@ -450,7 +449,7 @@ struct FilesDetailsSheet: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .adeInsetField(cornerRadius: 16, padding: 16)
+      .adeKitCard(padding: 16)
     }
   }
 
@@ -469,7 +468,7 @@ struct FilesDetailsSheet: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adeInsetField(cornerRadius: 14, padding: 0)
+        .adeKitCard(padding: 0)
       } else if let fallback = historyFallback {
         FilesDetailsFallback(fallback: fallback, symbol: "clock.arrow.circlepath")
       } else {
@@ -678,10 +677,10 @@ struct FilesProofArtifactSheet: View {
         VStack(alignment: .leading, spacing: 16) {
           HStack(alignment: .top, spacing: 12) {
             Image(systemName: artifact.artifactKind == "video_recording" ? "video.fill" : "photo.fill")
-              .font(.system(size: 20, weight: .semibold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(width: 44, height: 44)
-              .background(ADEColor.accent.opacity(0.12), in: Circle())
+              .font(.system(size: 17, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 40, height: 40)
+              .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
               Text(artifact.title)
@@ -704,7 +703,7 @@ struct FilesProofArtifactSheet: View {
             FilesMetadataRow(label: "Reference", value: artifact.uri)
             FilesMetadataRow(label: "Captured", value: relativeDateDescription(from: artifact.createdAt) ?? artifact.createdAt)
           }
-          .adeInsetField(cornerRadius: 16, padding: 16)
+          .adeKitCard(padding: 16)
         }
         .padding(16)
       }
@@ -759,14 +758,14 @@ struct FilesProofArtifactSheet: View {
         .resizable()
         .scaledToFit()
         .frame(maxWidth: .infinity)
-        .adeInsetField(cornerRadius: 16, padding: 0)
+        .adeKitCard(padding: 0)
     } else if let blob, !blob.isBinary {
       Text(blob.content)
         .font(.system(.caption, design: .monospaced))
         .foregroundStyle(ADEColor.textPrimary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adeInsetField(cornerRadius: 16, padding: 14)
+        .adeKitCard(padding: 14)
     } else if blob == nil {
       ADECardSkeleton(rows: 4)
     } else {
@@ -797,7 +796,7 @@ private struct FilesPreviewContainerStyle: ViewModifier {
     if fillsContainer {
       content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     } else {
-      content.adeInsetField(cornerRadius: 16, padding: 0)
+      content.adeKitCard(padding: 0)
     }
   }
 }

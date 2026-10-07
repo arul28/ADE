@@ -31,9 +31,7 @@ struct FilesDirectoryContentsView: View {
       }
 
       if isLoading {
-        ForEach(0..<4, id: \.self) { _ in
-          ADECardSkeleton(rows: 2)
-        }
+        ADECardSkeleton(rows: 5)
       } else if nodes.isEmpty {
         ADEEmptyStateView(
           symbol: parentPath.isEmpty ? "folder" : "folder.badge.minus",
@@ -41,7 +39,12 @@ struct FilesDirectoryContentsView: View {
           message: isLive ? "This directory does not have any files to preview on iPhone yet." : "Reconnect to refresh files from the machine."
         )
       } else {
-        ForEach(filesSortedNodes(nodes)) { node in
+        // One kit panel, hairlines between rows.
+        LazyVStack(alignment: .leading, spacing: 0) {
+        ForEach(Array(filesSortedNodes(nodes).enumerated()), id: \.element.id) { index, node in
+          if index > 0 {
+            Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 44)
+          }
           FilesTreeNodeRow(
             workspaceId: workspace.id,
             node: node,
@@ -72,6 +75,8 @@ struct FilesDirectoryContentsView: View {
             copyRelativePath(for: node)
           }
         }
+        }
+        .adeKitCard(padding: nil)
       }
     }
     .task(id: DirectoryReloadKey(
