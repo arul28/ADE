@@ -288,7 +288,7 @@ private struct ActivityHomeRowLink<Content: View>: View {
 /// between three legible rows and three clipped ones — and the two tails are
 /// the same sentence anyway: *here is what else there is*.
 ///
-/// The events line is the mirror of the notch's right-wing signal slot: PR/CI
+/// The events line is PR/CI
 /// traffic compressed into one sentence *inside* the agents widget, rather than
 /// a second widget or a row of its own. A PR rendered as a row is how "3
 /// agents" came to mean "1 agent and 2 pull requests".
@@ -555,7 +555,7 @@ private enum ActivityHomePreviewData {
         agent("s3", "Audit pairing", .running, minutesAgo: 4, chatActivityMode: .planning),
         agent("s4", "Ship mobile status", .completed, minutesAgo: 9),
         agent("s5", "Fix flaky shard", .failed, minutesAgo: 14),
-        agent("s6", "Port notch design", .running, project: "ade-web", minutesAgo: 3),
+        agent("s6", "Port the widget design", .running, project: "ade-web", minutesAgo: 3),
         agent("s7", "Rewrite roster builder", .running, minutesAgo: 6),
         agent("s8", "Bump relay deps", .completed, minutesAgo: 22),
         pr("pr1", 1038, .checksFailing),

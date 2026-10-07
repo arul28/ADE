@@ -3225,6 +3225,14 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
 struct HubNotice: Equatable, Identifiable {
   let id = UUID()
   let message: String
+  let createdAt = Date()
+
+  /// A notice older than this is about a tap the user has moved past.
+  static let maxAge: TimeInterval = 60
+
+  func isFresh(now: Date = Date()) -> Bool {
+    now.timeIntervalSince(createdAt) < Self.maxAge
+  }
 }
 
 enum WorkSessionNavigationDestination: Equatable {

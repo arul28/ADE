@@ -123,6 +123,12 @@ struct HubScreen: View {
     // here and says why ("Arul's Mac Studio is offline.").
     .onChange(of: syncService.hubNotice, initial: true) { _, notice in
       guard let notice else { return }
+      // A notice raised while the Hub could not show (signed out, still
+      // launching) is about a tap the user has long moved past.
+      guard notice.isFresh() else {
+        syncService.hubNotice = nil
+        return
+      }
       openChatTarget = nil
       projectOpenFailureToast = ADEToastMessage(text: notice.message, kind: .info)
       syncService.hubNotice = nil
@@ -187,8 +193,11 @@ struct HubScreen: View {
 
   @MainActor
   private func handleRequestedWorkSessionNavigation() {
-    guard openChatTarget == nil,
-          let request = syncService.requestedWorkSessionNavigation else { return }
+    guard let request = syncService.requestedWorkSessionNavigation else { return }
+    // A chat already open here yields to a tap from outside the app (a push, a
+    // widget, the Live Activity): that tap names the chat the user wants now.
+    // An in-app request never replaces the open chat.
+    guard openChatTarget == nil || request.origin == .external else { return }
     if request.origin == .external, let fleetTarget = syncService.fleetChatTarget(for: request) {
       openChatTarget = HubChatTarget(
         project: fleetTarget.project.asRemoteMachineProjectSummary,

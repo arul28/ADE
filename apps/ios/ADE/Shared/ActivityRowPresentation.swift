@@ -42,7 +42,7 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 /// table stays renderer-free. `systemImage` is the SF Symbols binding both
 /// Apple-platform consumers happen to share.
 ///
-/// The five headline shapes are the notch/dropdown language, verbatim:
+/// The five headline shapes are the desktop Activity language, verbatim:
 ///
 ///   ●  needsYou  filled dot      your move
 ///   ▤  planning  notepad         a plan is being written
@@ -58,10 +58,10 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 /// **What is shared and what is not.** The *glyph identity* is the contract
 /// (`ACTIVITY_STATE_GLYPHS` in `renderer/components/activity/activityPresentation.ts`);
 /// each surface maps it to its own icon set — Phosphor on the web,
-/// SF Symbols here and in the notch. Two Swift surfaces may therefore pick
-/// different symbols for one identity where their sizes differ: the notch
-/// strip draws bare 14pt marks (`circle`, `checkmark`), while these rows draw
-/// into a disc and use the enclosed forms. Divergence in *identity*, tone or
+/// SF Symbols here. Two Swift surfaces may therefore pick different symbols for
+/// one identity where their sizes differ: a bare small mark (`circle`,
+/// `checkmark`) in one place, the enclosed form drawn into a disc in these
+/// rows. Divergence in *identity*, tone or
 /// word is a drift bug; divergence in symbol at a different size is not.
 public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case working
@@ -90,8 +90,8 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     public var systemImage: String {
         switch self {
         case .working: return "circle.dotted"
-        // Same notepad the notch strip uses; `list.bullet.rectangle` lost its
-        // rules below ~10pt and read as a smear.
+        // `list.bullet.rectangle` lost its rules below ~10pt and read as a
+        // smear.
         case .planning: return "note.text"
         case .exploring: return "binoculars.fill"
         case .implementing: return "chevron.left.forwardslash.chevron.right"
@@ -101,7 +101,8 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         case .shipping: return "paperplane.fill"
         case .monitoring: return "eye.fill"
         case .recording: return "record.circle.fill"
-        case .waiting: return "hourglass"
+        // The Waiting column's own mark, so a row, its chip and its tile match.
+        case .waiting: return "pause.circle"
         // A filled dot, not a bell. The bell said "notification"; the row is
         // not a notification, it is a state, and the strip/island read it
         // beside four other state glyphs where a bell was the odd shape out.
@@ -116,7 +117,7 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     }
 }
 
-/// The coarse state buckets the notch strip, the widget header and the Dynamic
+/// The coarse state buckets the older widget header and the Dynamic
 /// Island's compact leading all count by. Finer than `ActivityBand` (which
 /// folds failure into "needs you") and coarser than a phase — this is the level
 /// at which "glyph + count" is honest.
@@ -143,7 +144,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
     }
 
     /// The two resting bands. Surfaces with room for a glance and nothing more
-    /// — the island's compact pill, the notch popover — lead with the live
+    /// — the island's compact pill, the desktop popover — lead with the live
     /// bands and let these two be reached by opening the full list.
     public var isResting: Bool { self == .idle || self == .done }
 

@@ -244,8 +244,8 @@ final class ActivityRowPresentationTests: XCTestCase {
 
     /// The pin. `apps/desktop/src/shared/attention/activityStateGroup.cases.json`
     /// encodes the canonical rule from `activityStateGroup` in
-    /// `renderer/components/activity/activityPresentation.ts`, and all four
-    /// mirrors — renderer, notch, relay, and this one — run the same cases
+    /// `renderer/components/activity/activityPresentation.ts`, and the
+    /// mirrors — renderer, relay, and this one — run the same cases
     /// through their own mapper. Documentation alone did not keep them in step:
     /// this copy drifted on `merge_ready`, on idle-tier demotion, and on how
     /// `planning` is derived, in the commit that created it.

@@ -131,8 +131,7 @@ public enum ActivityWidgetPresentation {
 
     /// The single events line (#21): PR/CI traffic compressed to one sentence,
     /// living inside the agents widget rather than in a widget of its own.
-    /// Agent rows stay agent-only; this is the mirror of the notch's right-wing
-    /// signal slot.
+    /// Agent rows stay agent-only.
     public struct EventSignal: Identifiable, Hashable, Sendable {
         public let id: String
         /// "#1038 checks failing" — already includes the PR number when there

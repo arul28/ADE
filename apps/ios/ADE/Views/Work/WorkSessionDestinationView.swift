@@ -1346,9 +1346,10 @@ struct WorkSessionDestinationView: View {
   }
 
   /// Shown until the chat loads. Its task resolves the owning machine and,
-  /// when nothing has loaded after `SyncService.workSessionNavigationTimeout`,
-  /// leaves for the Hub with a notice. The task is cancelled the moment the
-  /// real chat replaces the frame.
+  /// when the machine stays unreachable for `SyncService.workSessionNavigationTimeout`,
+  /// leaves for the Hub with a notice. A slow load over a live connection is
+  /// progress, not a failure, so it never times out. The task is cancelled the
+  /// moment the real chat replaces the frame.
   private var connectingFrame: some View {
     WorkChatConnectingFrame(machineName: sessionDestinationNavigationSubtitle)
       .task(id: sessionId) { await watchChatConnecting() }
@@ -1371,6 +1372,13 @@ struct WorkSessionDestinationView: View {
         ownerResolved = true
         _ = await syncService.ensureAccountMachineForNavigation(ownerKey, sessionId: sessionId)
         if Task.isCancelled { return }
+      }
+      // Connected to the chat's own machine: the chat is loading, however
+      // slowly. Only an unreachable owner runs the clock down.
+      let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
+      if syncService.connectionState == .connected,
+         ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
       }
       // Never time out under the Wake & open prompt; give the open a fresh
       // window once the person has answered.
