@@ -2359,15 +2359,29 @@ the same source-revision, account-cursor, tombstone, and expiry rules as
 desktop. The existing per-project drawer is a project lens over that model; it
 is not a separate inbox.
 
-The sheet sections **Sessions** by the six canonical groups (Needs you → Failed
-→ Planning → Working → Idle → Done) and keeps **Inbox** for PR/CI work and
-unseen outcomes. Resting bands (idle, done) collapse into a summary line unless
-the reader expands them or a state filter is on. A glyph strip at the top is
-the status display and the single-select filter; tapping a count opens that
-band. It includes project filtering and machine/project context on every item,
+The sheet sections **Sessions** by the Work board's four columns (Needs you →
+Working → Waiting → Done, from `activityBoardColumn`) and keeps **Inbox** for
+PR/CI work and unseen outcomes. Done is folded into one row until the reader
+opens it or filters to it. The five chips at the top (All · Needs you ·
+Working · Waiting · Done, the same `HubRosterFilterBar` the Hub uses) are the
+count display and the single-select filter. A failed row sits under Needs you
+with its own red mark; a Waiting row says why ("Snoozed", "CI running",
+"Review requested"). It includes project filtering and machine/project context on every item,
 and remains useful when the phone is
 account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
+
+**Every tap lands somewhere visible.** Approve and Deny on a push connect to the
+machine the payload's `accountMachineKey` names before they send, and send
+nothing when it cannot be reached. An ADE link that reaches no route in
+`DeepLinkRouter`, or a push with no usable target, calls
+`SyncService.landOnHub(notice:)`: the Hub opens and shows one line. An outside
+session link that has not opened after `workSessionNavigationTimeout` (10 s)
+lands there too, with a notice that names the machine ("Arul's Mac Studio is
+offline."); the timer waits while the Wake & open prompt is up. A chat that is
+still loading shows its real frame — header with title and machine, a centred
+"Connecting to <machine>…" line, a disabled composer — and goes to the Hub with
+a notice after the same 10 s.
 
 `rebuild(from:live:)` merges the paired host's live `WorkspaceSnapshot` over
 that host's relay rows (session identity always, machine identity when the live
@@ -2408,9 +2422,12 @@ extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
 both files are pinned to the extension's iOS 17 deployment target.
 
-`ActivityRowPresentation.swift` also holds iOS's copy of the six-group state
-table (`ActivityStateGroup`: needs-you, failed, planning, working, idle, done),
-pinned
+`ActivityRowPresentation.swift` holds iOS's copy of the four-column rule
+(`ActivityBoardColumn` and `activityBoardColumn(_:)`), pinned to
+`apps/desktop/src/shared/attention/activityBoardColumn.cases.json`. Every
+Activity surface on the phone counts by it. The file also keeps the older
+six-group state table (`ActivityStateGroup`: needs-you, failed, planning,
+working, idle, done) for row glyphs and the Live Activity fallback, pinned
 to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the same
 fixture the renderer and the relay run, because this copy
 drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
@@ -3039,10 +3056,13 @@ The iOS pieces:
   `countsTowardRunning` (live running, not snoozed) and
   `applyLocalSnoozeOverlay`, because snooze does not bump `lastActivityAt` and a
   fresher remote row would otherwise wipe the overlay the phone just wrote.
-- `apps/ios/ADE/Views/Hub/HubActivityState.swift` maps a roster chat onto
-  `ActivityStateGroup`: a raised hand outranks a failure, a snoozed running chat
-  is `idle`, and both `idle` and `ended` strings land on `idle` rather than
-  `done` so week-old roster history does not paint emerald.
+- `apps/ios/ADE/Views/Hub/HubActivityState.swift` maps a roster chat onto the
+  four board columns (`hubChatBoardState`), the Swift copy of the brain's
+  `rosterBoardColumn` plus its snooze overlay: awaiting and failed are Needs
+  you (failed keeps a red mark), a snoozed chat that is not failed or asking is
+  Waiting, a running chat whose lane carries `prWaitingReason` is Waiting, and
+  idle and ended are Done. The Hub's chips (All · Needs you · Working · Waiting
+  · Done) and the project and lane counts read the same states.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
   callers. The phone does not author activity-report columns; the host filters
   phone-authored copies and sends normalized reports through CRR. Session
