@@ -130,6 +130,10 @@
 }
 .import-row:hover, .import-row:focus-visible { background: var(--kit-hover); }
 .import-row[aria-selected="true"] { background: var(--kit-active); }
+.import-row:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent);
+  outline-offset: 1px;
+}
 .import-row-title {
   min-width: 0;
   flex: 1;
