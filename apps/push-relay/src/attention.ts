@@ -2057,8 +2057,8 @@ async function linkMachineToAccount(
       last_seen_at = excluded.last_seen_at
   `).bind(machineKey, userId, machineName, now, now).run();
   await env.DB
-    .prepare("update machines set account_user_id = ? where machine_key = ?")
-    .bind(userId, machineKey)
+    .prepare("update machines set account_user_id = ? where machine_key = ? and account_user_id is not ?")
+    .bind(userId, machineKey, userId)
     .run();
   if (previous?.legacy_devices_imported_at) return;
 
@@ -2155,6 +2155,15 @@ async function refreshActivityMachinePresence(
     now: string;
   },
 ): Promise<void> {
+  // Presence runs every 30 s per machine. When the link already belongs to
+  // this user, touch only unindexed columns: one billed row instead of the
+  // upsert's two (setting `user_id`, even unchanged, rewrites its index).
+  const touched = await env.DB.prepare(`
+    update attention_machine_links
+       set machine_name = ?, last_seen_at = ?
+     where machine_key = ? and user_id = ?
+  `).bind(args.machineName, args.now, args.machineKey, args.userId).run();
+  if ((touched.meta?.changes ?? 0) > 0) return;
   await env.DB.prepare(`
     insert into attention_machine_links(
       machine_key, user_id, machine_name, last_seen_at, linked_at,
@@ -2275,6 +2284,24 @@ async function activityPublishAcknowledgments(
 export type VerifiedMachineIdentity = {
   machineKey: string;
 };
+
+/**
+ * The newest settings and vault change for an account, piggybacked on the
+ * machine's publish response. A brain pulls settings or vault only when one of
+ * these moved, instead of polling both every 30 s. Each is an index seek on
+ * (user_id, updated_at); deletes stamp updated_at, so tombstones move it too.
+ */
+async function accountChangeMarks(
+  env: AttentionRelayEnv,
+  userId: string,
+): Promise<{ accountUserId: string; settings: string | null; vault: string | null }> {
+  const row = await env.DB.prepare(`
+    select
+      (select max(updated_at) from account_settings where user_id = ?) as settings,
+      (select max(updated_at) from account_vault_items where user_id = ?) as vault
+  `).bind(userId, userId).first<{ settings: string | null; vault: string | null }>();
+  return { accountUserId: userId, settings: row?.settings ?? null, vault: row?.vault ?? null };
+}
 
 export async function handleAttentionMachinePublish(
   request: Request,
@@ -2439,7 +2466,7 @@ export async function handleAttentionMachinePublish(
       now,
     );
     await deliverAttentionNotifications(env, account.userId, storedItems);
-    const [current, acks] = await Promise.all([
+    const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")
         .bind(account.userId)
@@ -2449,6 +2476,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: [],
       }),
+      accountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2458,6 +2486,7 @@ export async function handleAttentionMachinePublish(
       upserted: 0,
       removed: 0,
       unchanged: true,
+      accountChanges,
     });
   }
   await linkMachineToAccount(
@@ -2484,7 +2513,7 @@ export async function handleAttentionMachinePublish(
       items as ParsedAttentionItem[],
     );
     await deliverAccountLiveActivity(env, account.userId);
-    const [current, acks] = await Promise.all([
+    const [current, acks, accountChanges] = await Promise.all([
       env.DB
         .prepare("select revision from attention_revisions where user_id = ? limit 1")
         .bind(account.userId)
@@ -2494,6 +2523,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: items as ParsedAttentionItem[],
       }),
+      accountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2503,6 +2533,7 @@ export async function handleAttentionMachinePublish(
       upserted: 0,
       removed: 0,
       unchanged: true,
+      accountChanges,
     });
   }
   let accountRevision = await commitAttentionMachineChanges(env, {
@@ -2531,11 +2562,14 @@ export async function handleAttentionMachinePublish(
     items as ParsedAttentionItem[],
   );
   await deliverAccountLiveActivity(env, account.userId);
-  const acks = await activityPublishAcknowledgments(env, {
-    userId: account.userId,
-    machineKey,
-    requestItems: items as ParsedAttentionItem[],
-  });
+  const [acks, accountChanges] = await Promise.all([
+    activityPublishAcknowledgments(env, {
+      userId: account.userId,
+      machineKey,
+      requestItems: items as ParsedAttentionItem[],
+    }),
+    accountChangeMarks(env, account.userId),
+  ]);
 
   return json({
     ok: true,
@@ -2545,6 +2579,7 @@ export async function handleAttentionMachinePublish(
     upserted: items.length,
     removed: tombstones.length,
     ...(cap.itemsTruncated ? { itemsTruncated: true } : {}),
+    accountChanges,
   });
 }
 

@@ -7,6 +7,7 @@ import {
   type AccountVaultRelay,
 } from "./accountVaultStore";
 import type { AccountVaultItem } from "../push/pushRelayClient";
+import { recordAccountChangeMarks } from "./accountChangeMarks";
 
 /**
  * The vault cache is the settings cache with one extra duty: what it holds is a
@@ -438,6 +439,32 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "linear")).toBe("a-key");
     expect(store.get("all", "integration", "linear")).toBe("an-oauth-token");
     expect(store.get("repo:github.com/arul28/ade", "integration", "linear")).toBe("a-repo-token");
+  });
+
+  it("keeps the ready tick for local follow-up while the vault mark holds, without pulling", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_marks";
+      accountUserId = user;
+      const store = makeStore();
+      const ticks: string[] = [];
+      const stop = store.startPeriodicSync(30_000, (status) => ticks.push(status));
+      recordAccountChangeMarks(user, { settings: null, vault: "2026-10-07T12:00:00.000Z" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready"]);
+
+      for (let beat = 0; beat < 3; beat += 1) {
+        recordAccountChangeMarks(user, { settings: "s-moved", vault: "2026-10-07T12:00:00.000Z" });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // A settings change does not pull the vault, and every tick still says ready.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(ticks).toEqual(["ready", "ready", "ready", "ready"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does nothing at all when signed out", async () => {

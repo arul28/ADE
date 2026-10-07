@@ -225,15 +225,18 @@ change and redeploy to apply:
 
 | Var | Default | What it bounds |
 |---|---|---|
-| `DAILY_REQUEST_BUDGET` | `500000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. Sized to keep a full month pinned at the cap ≈ $1.50 of Cloudflare overage — this accounts for the guards' own D1 counter writes (~2/request), which stay inside the 50M/month D1 free tier at this volume, plus request overage. Still ~100–500× realistic single/small-team use. |
-| `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes. |
+| `DAILY_REQUEST_BUDGET` | `750000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. The guards no longer write D1 per request (the per-IP gate is in isolate memory; the budget is counted in memory and flushed to one D1 row every ~50 requests or 30 s), so a full month pinned at the cap costs about its request fee plus CPU, ≈ $7. That leaves ~2x headroom over legitimate traffic at ~100 users; raise it with the user base, not past the ~$10 ceiling. |
+| `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes, counted per isolate. |
 | `CLAIM_RATE_LIMIT_PER_MIN` | `10` | Tighter per-IP limit on the unauthenticated `/claim` write path (bounds `machines`-table growth). |
 
-Backed by the `rate_counters` D1 table (migration `0002`, fixed-window). An
-over-limit window is rejected on a **read**, never a write, so the limiter
-never amplifies the spend it exists to bound; the daily budget latches in
-isolate memory once blown so further requests reject for free. `/health`
-bypasses every gate.
+The general per-IP gate is a fixed window in isolate memory, so it costs no
+D1 write; a client spread across isolates can exceed it by that factor, and the
+daily budget remains the hard backstop. The `/claim` gate and the daily budget
+use the `rate_counters` D1 table (migration `0002`). The claim gate rejects an
+over-limit window on a **read**, never a write; the budget is counted in memory
+and flushed as one upsert per ~50 requests or 30 s, then latches in isolate
+memory once blown so further requests reject for free. `/health` bypasses every
+gate.
 
 ## Observability
 

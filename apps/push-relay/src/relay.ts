@@ -58,6 +58,7 @@ export type PushRelayEnv = {
 type MachineRow = {
   machine_key: string;
   secret: string;
+  last_seen_at?: string | null;
 };
 
 type DeviceRow = {
@@ -146,15 +147,15 @@ const DEFAULT_REGISTRATION_RETENTION_DAYS = 120;
 const DEFAULT_MAX_DEVICES_PER_MACHINE = 16;
 
 // Spend backstop. Cloudflare has no native hard billing cap, so we enforce one
-// in code. The default accounts for the guards' OWN D1 writes, not just Worker
-// requests: every under-cap request does ~2 counter writes (daily budget + the
-// per-IP gate). 500,000 requests/day = ~15M/month → requests are ~5M over the
-// 10M included ($0.30/M ≈ $1.50), and ~30M counter writes stay under the 50M
-// D1 free tier ($0) — so a full month pinned at the cap is ≈ $1.50, safely
-// under a ~$10 ceiling with margin, while still ~100–500× realistic
-// single/small-team use. (At 1M/day the counter writes alone would cross the
-// D1 free tier and push the month toward ~$16.) Tunable via `DAILY_REQUEST_BUDGET`.
-const DEFAULT_DAILY_REQUEST_BUDGET = 500_000;
+// in code. The guards themselves no longer write D1 per request (the IP gate is
+// in memory, the budget flushes one row per ~50 requests), so a request at the
+// cap costs about its own fee plus CPU: ~$0.30/M requests over the account's
+// 10M included plus ~6 ms CPU ≈ $0.12/M. 750,000/day ≈ 22.5M/month, so a whole
+// month pinned at the cap adds about $7 — inside a ~$10 ceiling — while leaving
+// ~2x headroom over legitimate traffic at ~100 users (≈ 330K/day: one presence
+// beat per brain per 30 s plus phone and browser sessions). Raise it with the
+// user base, not past the ceiling. Tunable via `DAILY_REQUEST_BUDGET`.
+const DEFAULT_DAILY_REQUEST_BUDGET = 750_000;
 // General per-IP gate: a busy brain makes maybe 10–30 relay calls/min, so 120
 // tolerates several machines behind one NAT yet crushes a flood.
 const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
@@ -163,6 +164,7 @@ const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
 // bursts and near-zero for a spammer trying to grow the machines table.
 const DEFAULT_CLAIM_RATE_LIMIT_PER_MIN = 10;
 const RATE_WINDOW_SECONDS = 60;
+const MACHINE_LAST_SEEN_STAMP_INTERVAL_MS = 60 * 60 * 1000;
 const RATE_COUNTER_RETENTION_MINUTES = 15;
 
 // Phase-dependent APNs TTLs: a "running" transition is worthless a couple of
@@ -283,7 +285,7 @@ function parseTimestampSeconds(raw: string): number | null {
 
 async function loadMachine(env: PushRelayEnv, machineKey: string): Promise<MachineRow | null> {
   return await env.DB
-    .prepare("select machine_key, secret from machines where machine_key = ? limit 1")
+    .prepare("select machine_key, secret, last_seen_at from machines where machine_key = ? limit 1")
     .bind(machineKey)
     .first<MachineRow>();
 }
@@ -322,10 +324,15 @@ async function assertMachineAuthorized(
     logEvent("auth_failed", { reason: "bad_signature", machineKey: keyPrefix, ip: clientIp(request) });
     return { response: json({ ok: false, error: "unauthorized" }, { status: 401 }) };
   }
-  await env.DB
-    .prepare("update machines set last_seen_at = ? where machine_key = ?")
-    .bind(new Date().toISOString(), machineKey)
-    .run();
+  // A diagnostic "last authenticated" stamp; nothing gates on it. Hourly
+  // granularity is enough, and stamping every 30 s heartbeat was a billed write.
+  const lastSeenMs = machine.last_seen_at ? Date.parse(machine.last_seen_at) : Number.NaN;
+  if (!Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs >= MACHINE_LAST_SEEN_STAMP_INTERVAL_MS) {
+    await env.DB
+      .prepare("update machines set last_seen_at = ? where machine_key = ?")
+      .bind(new Date().toISOString(), machineKey)
+      .run();
+  }
   return { machine };
 }
 
@@ -629,6 +636,19 @@ async function checkRateLimit(
 // every further request for free (no D1) until the UTC day rolls over.
 let budgetTrippedUntilMs = 0;
 
+// The per-IP gate and the daily budget run on every request, so they must not
+// write D1 per request: at 4 billed rows per request they were three quarters
+// of this relay's D1 writes. The IP gate is in-isolate memory; the budget is
+// counted in memory and flushed to its D1 row in batches.
+const ipWindows = new Map<string, { windowStart: number; count: number }>();
+const MAX_TRACKED_IPS = 10_000;
+const BUDGET_FLUSH_EVERY_REQUESTS = 50;
+const BUDGET_FLUSH_INTERVAL_MS = 30_000;
+let budgetDay = "";
+let budgetPending = 0;
+let budgetFlushedTotal = 0;
+let budgetLastFlushMs = 0;
+
 /** Cheap memory check — true when this isolate already saw today's budget blown. */
 function budgetTrippedNow(): boolean {
   return Date.now() < budgetTrippedUntilMs;
@@ -637,35 +657,98 @@ function budgetTrippedNow(): boolean {
 /** Test hook: clears the in-isolate budget latch so cases don't leak state. */
 export function resetSpendGuardsForTests(): void {
   budgetTrippedUntilMs = 0;
+  ipWindows.clear();
+  budgetDay = "";
+  budgetPending = 0;
+  budgetFlushedTotal = 0;
+  budgetLastFlushMs = 0;
 }
 
 /**
- * Increments the global daily request counter and returns whether we are still
- * under the configured budget. On the first over-budget request the isolate
- * latches `budgetTrippedUntilMs` to end-of-day so subsequent checks short-circuit
- * in memory (see `budgetTrippedNow`).
+ * Fixed-window per-IP limiter in isolate memory: same window and limit as the
+ * D1 limiter, without a write per request. It is per isolate, so a client
+ * spread across isolates can exceed `limit` by that factor; the global daily
+ * budget remains the hard spend backstop, as it already was against rotating
+ * IPs. The map is bounded so a flood of distinct IPs cannot grow memory.
+ */
+function checkIpRateInMemory(ip: string, limit: number, windowSeconds: number): { allowed: boolean; count: number } {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  let entry = ipWindows.get(ip);
+  if (!entry || nowSeconds - entry.windowStart >= windowSeconds) {
+    if (!entry && ipWindows.size >= MAX_TRACKED_IPS) {
+      for (const [key, value] of ipWindows) {
+        if (nowSeconds - value.windowStart >= windowSeconds) ipWindows.delete(key);
+      }
+      // Still full of live windows: drop the oldest-inserted entries rather
+      // than grow without bound. Those IPs start a fresh window.
+      for (const key of ipWindows.keys()) {
+        if (ipWindows.size < MAX_TRACKED_IPS) break;
+        ipWindows.delete(key);
+      }
+    }
+    entry = { windowStart: nowSeconds, count: 0 };
+    ipWindows.set(ip, entry);
+  }
+  if (entry.count >= limit) return { allowed: false, count: entry.count };
+  entry.count += 1;
+  return { allowed: true, count: entry.count };
+}
+
+async function flushBudgetCount(env: PushRelayEnv, day: string, increment: number, nowMs: number): Promise<number> {
+  const row = await env.DB
+    .prepare(
+      `insert into rate_counters(bucket, window_start, count, updated_at)
+       values (?, ?, ?, ?)
+       on conflict(bucket) do update set count = rate_counters.count + excluded.count,
+                                         updated_at = excluded.updated_at
+       returning count`,
+    )
+    .bind(`budget:${day}`, Math.floor(nowMs / 1000), increment, new Date(nowMs).toISOString())
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+/**
+ * Counts this request against the global daily budget and returns whether the
+ * day is still under it. Requests are counted in isolate memory and flushed to
+ * the shared `budget:<day>` row every `BUDGET_FLUSH_EVERY_REQUESTS` requests or
+ * `BUDGET_FLUSH_INTERVAL_MS`, whichever comes first; the first request in an
+ * isolate flushes at once so it learns the global count. The cap is a coarse
+ * spend backstop: overshoot is bounded by one unflushed batch per isolate. On
+ * the first over-budget request the isolate latches `budgetTrippedUntilMs` to
+ * end-of-day so later checks short-circuit in memory.
  */
 async function recordDailyBudget(env: PushRelayEnv): Promise<{ allowed: boolean }> {
   const nowMs = Date.now();
   const budget = positiveIntEnv(env.DAILY_REQUEST_BUDGET, DEFAULT_DAILY_REQUEST_BUDGET);
   const day = new Date(nowMs).toISOString().slice(0, 10);
-  const bucket = `budget:${day}`;
-  // Atomic increment-and-read in a single statement (`returning`), so a request
-  // never evaluates a count staler than its own increment. Cross-request
-  // boundary overshoot is still possible but bounded by in-flight concurrency
-  // (a handful of requests ≈ fractions of a cent against a 1M/day cap) — this
-  // is a coarse spend backstop, not an exact quota.
-  const row = await env.DB
-    .prepare(
-      `insert into rate_counters(bucket, window_start, count, updated_at)
-       values (?, ?, 1, ?)
-       on conflict(bucket) do update set count = rate_counters.count + 1,
-                                         updated_at = excluded.updated_at
-       returning count`,
-    )
-    .bind(bucket, Math.floor(nowMs / 1000), new Date(nowMs).toISOString())
-    .first<{ count: number }>();
-  const count = row?.count ?? 0;
+  if (day !== budgetDay) {
+    const previousDay = budgetDay;
+    const carried = budgetPending;
+    budgetDay = day;
+    budgetPending = 0;
+    budgetFlushedTotal = 0;
+    budgetLastFlushMs = 0;
+    if (previousDay && carried > 0) {
+      // Best effort: yesterday's tail only matters for its own (closed) cap.
+      await flushBudgetCount(env, previousDay, carried, nowMs).catch(() => undefined);
+    }
+  }
+  budgetPending += 1;
+  if (budgetPending >= BUDGET_FLUSH_EVERY_REQUESTS || nowMs - budgetLastFlushMs >= BUDGET_FLUSH_INTERVAL_MS) {
+    const increment = budgetPending;
+    budgetPending = 0;
+    budgetLastFlushMs = nowMs;
+    try {
+      budgetFlushedTotal = await flushBudgetCount(env, day, increment, nowMs);
+    } catch (error) {
+      // Keep the requests counted for the next flush, then fail as before.
+      if (budgetDay === day) budgetPending += increment;
+      budgetLastFlushMs = 0;
+      throw error;
+    }
+  }
+  const count = budgetFlushedTotal + budgetPending;
   if (count > budget) {
     budgetTrippedUntilMs = Date.parse(`${day}T23:59:59.999Z`);
     logEvent("budget_exceeded", { day, count, budget });
@@ -1412,7 +1495,7 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   // limits are never bypassed off-edge. A dev machine never approaches them.
   const ip = clientIp(request);
   const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
-  const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
+  const ipGate = checkIpRateInMemory(ip, ipLimit, RATE_WINDOW_SECONDS);
   if (!ipGate.allowed) {
     logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
     return withAllowedAccountCors(rateLimitedResponse());

@@ -1,3 +1,4 @@
+import { recordAccountChangeMarks } from "../account/accountChangeMarks";
 import { createHash, createHmac } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
@@ -416,6 +417,23 @@ export function createPushRelayClient(args: {
     return body as unknown as AttentionSnapshot;
   };
 
+  /**
+   * Settings/vault change marks ride on the publish response (additive; older
+   * relays omit them). They are advisory, so a missing or malformed value is
+   * ignored rather than failing the publish, and marks for any account other
+   * than the one this publish was for are dropped.
+   */
+  const recordPublishedAccountChangeMarks = (body: unknown, expectedAccountUserId: string): void => {
+    if (!isRecord(body) || !isRecord(body.accountChanges)) return;
+    const changes = body.accountChanges;
+    const mark = (value: unknown): string | null | undefined =>
+      value === null ? null : typeof value === "string" && value.length <= 64 ? value : undefined;
+    const settings = mark(changes.settings);
+    const vault = mark(changes.vault);
+    if (changes.accountUserId !== expectedAccountUserId || settings === undefined || vault === undefined) return;
+    recordAccountChangeMarks(expectedAccountUserId, { settings, vault });
+  };
+
   const requireActivityPublishResult = (
     response: RelayResponse,
   ): ActivityPublishResult => {
@@ -579,7 +597,9 @@ export function createPushRelayClient(args: {
       if (revoked) {
         throw new PushRelayMachineRevokedError("publishAttention", revoked.revokedAt);
       }
-      return requireActivityPublishResult(response);
+      const result = requireActivityPublishResult(response);
+      recordPublishedAccountChangeMarks(response.body, expectedAccountUserId);
+      return result;
     },
 
     async getAttentionSnapshot(

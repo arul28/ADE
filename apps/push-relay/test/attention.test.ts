@@ -188,9 +188,14 @@ class SqliteD1Statement {
     };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.runSync();
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta: { changes: number } }> {
+    if (/\breturning\b/i.test(this.sql)) {
+      const rows = this.runSync();
+      return { success: true, meta: { changes: rows.length } };
+    }
+    // Real D1 reports affected rows in `meta.changes`; callers branch on it.
+    const result = this.database.prepare(this.sql).run(...this.values) as { changes?: number | bigint };
+    return { success: true, meta: { changes: Number(result.changes ?? 0) } };
   }
 
   runSync(): Array<Record<string, unknown>> {
@@ -219,6 +224,10 @@ class SqliteD1Database {
         "../migrations/0004_device_registration_generation.sql",
         "../migrations/0005_activity_feed.sql",
         "../migrations/0006_machine_revocation.sql",
+        "../migrations/0007_revoked_machine_key_index.sql",
+        "../migrations/0008_account_settings.sql",
+        "../migrations/0009_account_vault.sql",
+        "../migrations/0010_heartbeat_write_costs.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
