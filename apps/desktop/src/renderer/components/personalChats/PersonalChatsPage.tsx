@@ -1,37 +1,36 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { AppWindow, ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
+import { useLocation, useNavigate } from "react-router-dom";
 import type {
   AgentChatFileRef,
-  AgentChatModelCatalog,
   AgentChatSession,
   AgentChatSessionSummary,
   OpenProjectBinding,
-  PersonalChatAction,
-  PersonalChatCallResponse,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
-import { AgentChatApiProvider, type ChatPaneScope } from "../chat/agentChatApi";
+import { AgentChatApiProvider } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { sessionPreview, sessionTitle } from "./sessionHelpers";
-import { createPersonalAgentChatApi, type PersonalChatsBridge } from "./personalAgentChatApi";
-import { projectOnOtherMachine, switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
+import { SuggestionChips } from "./SuggestionChips";
 import {
-  agentChatModelCatalogHasAvailableModels,
-  descriptorsFromAgentChatModelCatalog,
-  personalChatCatalogScopeKey,
-} from "../shared/ModelPicker/modelCatalog";
+  callPersonal,
+  resolvePersonalChatsCatalogTargetKey,
+  usePersonalChatPaneScope,
+} from "./usePersonalChatPaneScope";
+import { projectOnOtherMachine, switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { useWebChatsMachines, type WebChatsMachinePicker } from "../../webclient/workspace/useWebChatsMachines";
+import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
+import { openChatInBrowserTab, openUrlInBrowserTab } from "../browser/browserTab";
+import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -43,29 +42,12 @@ import {
 type ToolPanel = "browser" | "terminal" | null;
 
 /** Ways to start a new chat. A chip fills the composer; the user finishes the sentence. */
-const SUGGESTION_PROMPTS: ReadonlyArray<{ label: string; prefill: string }> = [
+const CHAT_SUGGESTIONS: ReadonlyArray<{ label: string; prefill: string }> = [
   { label: "Think through a decision", prefill: "Help me think through a decision I'm facing: " },
   { label: "Draft from a rough idea", prefill: "Help me draft this from a rough idea: " },
   { label: "Research a topic", prefill: "Research this topic with me: " },
   { label: "Plan from my notes", prefill: "Turn these notes into an action plan:\n" },
 ];
-
-function SuggestionChips({ onSelect }: { onSelect: (prefill: string) => void }) {
-  return (
-    <div className="flex flex-wrap justify-center gap-1.5" aria-label="Suggestions">
-      {SUGGESTION_PROMPTS.map((prompt) => (
-        <button
-          key={prompt.label}
-          type="button"
-          onClick={() => onSelect(prompt.prefill)}
-          className="h-7 rounded-full border border-fg/[0.08] bg-fg/[0.03] px-3 font-sans text-[11px] text-fg/65 transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.06] hover:text-fg/85"
-        >
-          {prompt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export type PersonalChatsMachineOption = { id: string; name: string };
 
@@ -75,24 +57,6 @@ const EMPTY_REMOTE_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
 const EMPTY_TAB_ROOTS: string[] = [];
 /** Rail refreshes coalesce: a streaming turn emits many events a second. */
 const SESSIONS_REFRESH_DEBOUNCE_MS = 400;
-
-function bridge(): PersonalChatsBridge {
-  const candidate = (window.ade as typeof window.ade & { personalChats?: PersonalChatsBridge }).personalChats;
-  if (!candidate) throw new Error("Personal chats are not available in this ADE runtime.");
-  return candidate;
-}
-
-function resultOf<T>(response: PersonalChatCallResponse | T): T {
-  if (response && typeof response === "object" && "result" in response) {
-    return (response as PersonalChatCallResponse).result as T;
-  }
-  return response as T;
-}
-
-async function callPersonal<T>(action: PersonalChatAction, args?: Record<string, unknown>): Promise<T> {
-  const request = (args === undefined ? { action } : { action, args }) as Parameters<PersonalChatsBridge["call"]>[0];
-  return resultOf<T>(await bridge().call(request));
-}
 
 function groupLabel(value: string | null | undefined): string {
   const timestamp = value ? Date.parse(value) : NaN;
@@ -104,40 +68,29 @@ function groupLabel(value: string | null | undefined): string {
   return "Older";
 }
 
-/** Machine identity for personal Chats catalog scope and target-scoped reload effects. */
-export function resolvePersonalChatsCatalogTargetKey(
-  projectBinding: OpenProjectBinding | null | undefined,
-  webMachines: WebChatsMachinePicker | null,
-): string {
-  if (webMachines) {
-    const webKey = webMachines.machineId?.trim();
-    return webKey ? `web:${webKey}` : "web:pending";
-  }
-  return projectBinding?.kind === "remote" ? projectBinding.key : "local-machine";
-}
+// Kept importable from here: the Chats page is where this key is read.
+export { resolvePersonalChatsCatalogTargetKey };
 
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const projectBinding = useAppStore((state) => state.projectBinding);
   const openRemoteProjectTabs = useAppStore((state) => state.openRemoteProjectTabs) ?? EMPTY_REMOTE_TABS;
   const openProjectTabRoots = useAppStore((state) => state.openProjectTabRoots) ?? EMPTY_TAB_ROOTS;
   const localProjectRootPath = useAppStore((state) => state.project?.rootPath ?? null);
   const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
   const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
+  const browserTabOpen = useAppStore((state) => state.browserTabOpen) ?? false;
   const webMachines = useWebChatsMachines();
   const targetKey = useMemo(
     () => resolvePersonalChatsCatalogTargetKey(projectBinding, webMachines),
     [projectBinding, webMachines, webMachines?.machineId],
   );
-  const personalCatalogScopeKey = personalChatCatalogScopeKey(targetKey);
-  const personalCatalogScopeKeyRef = useRef(personalCatalogScopeKey);
-  personalCatalogScopeKeyRef.current = personalCatalogScopeKey;
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Bumped only when the user navigates (picks a chat, starts a new one), so a
   // chat created by the pane's own first send keeps the same pane mounted.
   const [paneGeneration, setPaneGeneration] = useState(0);
-  const [catalog, setCatalog] = useState<AgentChatModelCatalog | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -145,7 +98,6 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [toolPanel, setToolPanel] = useState<ToolPanel>(null);
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const targetGenerationRef = useRef(0);
-  const catalogRequestSeqRef = useRef(0);
   // The pane owns the draft; chips and the browser panel write to it through
   // the pane's composer handle.
   const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
@@ -160,19 +112,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     [],
   );
 
-  // The one routing decision for the pane: every chat call it makes goes to
-  // this machine's personal scope. Rebuilt per machine so a switched window
-  // never keeps polling the previous machine's stream.
-  const chatScope = useMemo<ChatPaneScope>(() => ({
-    kind: "personal",
-    // Resolved per call, so a runtime without personal chats surfaces as a
-    // call error in the page rather than a render crash.
-    agentChat: createPersonalAgentChatApi({
-      call: (request) => bridge().call(request),
-      streamEvents: (request) => bridge().streamEvents(request),
-    }),
-    modelCatalogScopeKey: personalCatalogScopeKey,
-  }), [personalCatalogScopeKey]);
+  // The pane's personal API scope and model catalog for this machine; both
+  // reset when the window moves to another machine.
+  const { chatScope, catalog, availableModelIds, providerUnavailable } = usePersonalChatPaneScope(targetKey, {
+    onError: setError,
+  });
 
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
@@ -183,38 +127,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setSessions(ordered);
   }, []);
 
-  const loadModelCatalog = useCallback(async (
-    mode: "cached" | "refresh-stale" | "force" = "refresh-stale",
-    generation = targetGenerationRef.current,
-  ) => {
-    const requestId = ++catalogRequestSeqRef.current;
-    const scopeKey = personalCatalogScopeKeyRef.current;
-    const publish = (next: AgentChatModelCatalog) => {
-      if (generation !== targetGenerationRef.current) return;
-      if (requestId !== catalogRequestSeqRef.current) return;
-      if (scopeKey !== personalCatalogScopeKeyRef.current) return;
-      setCatalog(next);
-    };
-    let next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode });
-    publish(next);
-    if (generation !== targetGenerationRef.current || requestId !== catalogRequestSeqRef.current) return;
-    if (
-      mode === "refresh-stale"
-      && (next.stale === true || !agentChatModelCatalogHasAvailableModels(next))
-    ) {
-      next = await callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "force" });
-      publish(next);
-    }
-  }, []);
-
   useEffect(() => {
     const generation = ++targetGenerationRef.current;
-    catalogRequestSeqRef.current += 1;
     setSessions([]);
     setSelectedId(null);
     setPaneGeneration((value) => value + 1);
     setToolPanel(null);
-    setCatalog(null);
     setLoading(true);
     setError(null);
     void refreshSessions(generation).catch((reason) => {
@@ -224,12 +142,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     }).finally(() => {
       if (generation === targetGenerationRef.current) setLoading(false);
     });
-    void loadModelCatalog("refresh-stale", generation).catch((reason) => {
-      if (generation === targetGenerationRef.current) {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    });
-  }, [loadModelCatalog, refreshSessions, targetKey]);
+  }, [refreshSessions, targetKey]);
 
   // The rail follows the same event stream the pane reads: titles, activity
   // and new chats appear without a manual refresh.
@@ -248,11 +161,22 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     };
   }, [chatScope, refreshSessions]);
 
+  // A link opens beside the chat when the Browser panel is already showing
+  // there. Otherwise, with the Browser tab open, it opens in that tab: the
+  // same personal tabs, full size. With neither, the panel opens here.
+  const toolPanelRef = useRef(toolPanel);
+  toolPanelRef.current = toolPanel;
+  const browserTabOpenRef = useRef(browserTabOpen);
+  browserTabOpenRef.current = browserTabOpen;
   useEffect(() => {
     const openPersonalBrowser = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
       if (!event.detail?.url || isWebClientMode()) return;
       event.preventDefault();
+      if (toolPanelRef.current !== "browser" && browserTabOpenRef.current) {
+        openUrlInBrowserTab(event.detail.url, navigate, () => setError("ADE Browser couldn't open that link. Try again."));
+        return;
+      }
       setToolPanel("browser");
       navigateUrlInAdeBrowser(event.detail.url, {
         newTab: true,
@@ -264,15 +188,10 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
     return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
-  }, []);
+  }, [navigate]);
 
   const selectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
-  // Registers the personal catalog's descriptors under its scope key, which is
-  // where the pane's model picker reads them.
-  const availableModelIds = useMemo(
-    () => (catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, personalCatalogScopeKey).availableModelIds : []),
-    [catalog, personalCatalogScopeKey],
-  );
+
 
   const selectSession = useCallback((sessionId: string | null) => {
     setSelectedId(sessionId);
@@ -280,6 +199,17 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setMenuId(null);
     setMobileListOpen(false);
   }, []);
+
+  // `/chats?chat=<id>` opens that chat: the Browser tab's dock sends its chat
+  // here to be read full size.
+  const requestedChatId = new URLSearchParams(location.search).get("chat");
+  useEffect(() => {
+    if (!requestedChatId) return;
+    selectSession(requestedChatId);
+    navigate("/chats", { replace: true });
+    // selectSession is stable; only a new request should re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedChatId]);
 
   const handleSessionCreated = useCallback((session: AgentChatSession) => {
     // Same pane, now locked to the chat its first message created.
@@ -329,6 +259,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   }, [filtered]);
 
   const browserAvailable = !isWebClientMode() && Boolean(window.ade?.builtInBrowser);
+  // A chat that is browsing, or the one docked in the Browser tab, is one
+  // click from its page there.
+  const selectedBrowsingSince = useAgentBrowserPresenceSince(selectedId);
+  const browserDockChatId = useAppStore((state) => state.browserDock?.chat?.sessionId ?? null);
+  const showInBrowserTab = browserAvailable && selectedId != null
+    && (selectedBrowsingSince != null || browserDockChatId === selectedId);
   const isRemote = projectBinding?.kind === "remote";
   // Machines are named absolutely — the Chats tab runs on whichever machine this
   // window is bound to, so the name is the fact and the picker is the control.
@@ -409,9 +345,6 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       webMachines,
     ],
   );
-  // Only declare the provider unavailable once the catalog has actually
-  // loaded — an in-flight fetch is not "no provider".
-  const providerUnavailable = catalog !== null && availableModelIds.length === 0;
   const showReconnecting = Boolean(error) && isRemote;
   const title = selectedSession ? sessionTitle(selectedSession) : "New chat";
 
@@ -448,6 +381,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
               <SpinnerGap size={11} className="animate-spin" /> Reconnecting…
             </span>
           ) : null}
+          {showInBrowserTab && selectedId ? (
+            <button type="button" onClick={() => void openChatInBrowserTab(selectedId, targetKey, navigate).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))} className="flex h-7 w-7 items-center justify-center rounded-md border border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 transition-colors hover:text-fg" title="Show beside its page in the Browser tab" aria-label="Show in the Browser tab"><AppWindow size={14} /></button>
+          ) : null}
           {browserAvailable ? (
             <button type="button" onClick={() => setToolPanel((current) => current === "browser" ? null : "browser")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "browser" ? "border-sky-300/25 bg-sky-500/10 text-sky-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Browser" aria-label="Toggle browser"><Globe size={14} /></button>
           ) : null}
@@ -479,7 +415,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 availableModelIdsOverride={availableModelIds}
                 onSessionCreated={handleSessionCreated}
                 composerHandleRef={composerRef}
-                emptyStateAccessory={providerUnavailable ? null : <SuggestionChips onSelect={setComposerDraft} />}
+                emptyStateAccessory={providerUnavailable ? null : <SuggestionChips prompts={CHAT_SUGGESTIONS} onSelect={setComposerDraft} />}
                 hideSessionTabs
                 hideWorkspaceChrome
                 hideSurfaceHeader
