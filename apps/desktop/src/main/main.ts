@@ -5910,8 +5910,41 @@ app.whenReady().then(async () => {
     // locally-created services so that the registry's service map resolves.
     // Using a function closure means this stays reactive to late-bound refs
     // like CTO state bindings.
+    // Desktop automations run in this process, where no push publisher lives.
+    // A "Send notification" step still reaches the relay directly, with the
+    // same account sign-in and machine identity the brain's publisher uses.
+    let automationNotifyRelay: {
+      client: ReturnType<typeof createPushRelayClient>;
+      store: ReturnType<typeof createPushRegistrationStore>;
+    } | null = null;
+    const sendCustomNotificationFromDesktop: NonNullable<AdeRuntime["sendCustomNotification"]> = async (
+      notification,
+    ) => {
+      if (!automationNotifyRelay) {
+        const authService = getSharedAccountAuthService();
+        const store = createPushRegistrationStore({
+          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+        });
+        const client = createPushRelayClient({
+          store,
+          logger: localRuntimeLogger,
+          getAccountAccessToken: (options) => getSignedInAccountAccessToken(authService, options),
+          getAccountUserId: () => {
+            const status = authService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        });
+        automationNotifyRelay = { client, store };
+      }
+      return await automationNotifyRelay.client.sendAccountNotification({
+        ...notification,
+        machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+      });
+    };
+
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
+        sendCustomNotification: sendCustomNotificationFromDesktop,
         laneService,
         gitService,
         diffService,

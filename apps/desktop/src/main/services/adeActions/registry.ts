@@ -1346,9 +1346,57 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
   };
 }
 
+/**
+ * `ade notify`: a push the caller wrote, to every phone on the account. Open to
+ * agents and automation steps; the relay caps an account at
+ * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
+ */
+function buildSendNotificationAction(
+  runtime: AdeRuntime,
+  send: NonNullable<AdeRuntime["sendCustomNotification"]>,
+) {
+  return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
+    const problem = customNotificationProblem(args ?? {});
+    if (problem) throw new Error(problem);
+    // A process without the account service (desktop automations) learns the
+    // sign-in state from the relay's 401 below instead.
+    if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
+      throw new Error(
+        "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
+      );
+    }
+    const body = typeof args?.body === "string" ? args.body.trim() : "";
+    const open = typeof args?.open === "string" ? args.open.trim() : "";
+    try {
+      const result = await send({
+        title: String(args?.title).trim(),
+        body: body || null,
+        deepLink: open || null,
+      });
+      return { sent: result.delivered > 0, ...result };
+    } catch (error) {
+      if (error instanceof PushRelayNotifyRateLimitedError) {
+        const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
+        throw new Error(
+          `This account has sent ${CUSTOM_NOTIFICATION_HOURLY_LIMIT} notifications in the last hour.`
+            + (minutes ? ` Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` : " Try again later."),
+        );
+      }
+      if (error instanceof PushRelayRequestError && error.status === 401) {
+        throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
+      }
+      throw error;
+    }
+  };
+}
+
 function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null {
   const publisher = runtime.pushPublisherService;
-  if (!publisher) return null;
+  if (!publisher) {
+    // Desktop automations run without a publisher; they can still notify.
+    const send = runtime.sendCustomNotification;
+    return send ? { sendNotification: buildSendNotificationAction(runtime, send) } : null;
+  }
   const requireCurrentAccountOwner = (value: unknown): string => {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     const status = runtime.accountAuthService?.getStatus();
@@ -1410,42 +1458,8 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
         args.preferences,
       );
     },
-    /**
-     * `ade notify`: a push the caller wrote, to every phone on the account.
-     * Open to agents and automation steps; the relay caps an account at
-     * `CUSTOM_NOTIFICATION_HOURLY_LIMIT` an hour.
-     */
-    sendNotification: async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
-      const problem = customNotificationProblem(args ?? {});
-      if (problem) throw new Error(problem);
-      if (!runtime.accountAuthService?.getStatus().signedIn) {
-        throw new Error(
-          "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
-        );
-      }
-      const body = typeof args?.body === "string" ? args.body.trim() : "";
-      const open = typeof args?.open === "string" ? args.open.trim() : "";
-      try {
-        const result = await publisher.sendCustomNotification({
-          title: String(args?.title).trim(),
-          body: body || null,
-          deepLink: open || null,
-        });
-        return { sent: result.delivered > 0, ...result };
-      } catch (error) {
-        if (error instanceof PushRelayNotifyRateLimitedError) {
-          const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;
-          throw new Error(
-            `This account has sent ${CUSTOM_NOTIFICATION_HOURLY_LIMIT} notifications in the last hour.`
-              + (minutes ? ` Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` : " Try again later."),
-          );
-        }
-        if (error instanceof PushRelayRequestError && error.status === 401) {
-          throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
-        }
-        throw error;
-      }
-    },
+    sendNotification: buildSendNotificationAction(runtime, (notification) =>
+      publisher.sendCustomNotification(notification)),
     putMachinePreferences: (args?: {
       accountOwnerId?: unknown;
       machineKey?: unknown;

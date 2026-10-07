@@ -172,7 +172,14 @@ export function ActivityPane({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
-  const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * Checked rows, each with the alert fingerprint it had when the user checked
+   * it. A row whose alert changes since (a working agent that now asks a
+   * question) leaves the selection, so a bulk action never acknowledges an
+   * alert the user did not see.
+   */
+  const [checked, setChecked] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  const checkedIds = useMemo<ReadonlySet<string>>(() => new Set(checked.keys()), [checked]);
   const [bulkPending, setBulkPending] = useState(false);
 
   const allItems = useMemo(() => Object.values(itemsById), [itemsById]);
@@ -229,22 +236,25 @@ export function ActivityPane({
   // cannot stay counted in a selection the user can no longer see.
   useEffect(() => {
     if (selectedItemId && !itemsById[selectedItemId]) setSelectedItemId(null);
-    setCheckedIds((current) => {
+    setChecked((current) => {
       if (current.size === 0) return current;
-      const next = new Set([...current].filter((id) => itemsById[id] && !itemsById[id].dismissedAt));
+      const next = new Map([...current].filter(([id, fingerprint]) => {
+        const item = itemsById[id];
+        return Boolean(item) && !item.dismissedAt && (item.alertFingerprint ?? null) === fingerprint;
+      }));
       return next.size === current.size ? current : next;
     });
   }, [itemsById, selectedItemId]);
 
   useEffect(() => {
-    if (!open) setCheckedIds(new Set());
+    if (!open) setChecked(new Map());
   }, [open]);
 
   const toggleChecked = useCallback((item: AttentionItem) => {
-    setCheckedIds((current) => {
-      const next = new Set(current);
+    setChecked((current) => {
+      const next = new Map(current);
       if (next.has(item.id)) next.delete(item.id);
-      else next.add(item.id);
+      else next.set(item.id, item.alertFingerprint ?? null);
       return next;
     });
   }, []);
@@ -346,7 +356,7 @@ export function ActivityPane({
         ? seenOutcomeMessage(outcome, checkedItems.length)
         : clearOutcomeMessage(outcome, checkedItems.length);
       if (message) setNavigationError(message);
-      setCheckedIds(new Set());
+      setChecked(new Map());
     } catch (error) {
       setNavigationError(
         kind === "seen"
@@ -370,7 +380,7 @@ export function ActivityPane({
       for (const item of checkedItems.slice(0, MAX_BULK_OPEN)) {
         if (!(await openDestination(item))) return;
       }
-      setCheckedIds(new Set());
+      setChecked(new Map());
       onClose();
     } finally {
       setBulkPending(false);
@@ -527,7 +537,7 @@ export function ActivityPane({
                   className="kit-icon-btn"
                   aria-label="Clear selection"
                   title="Clear selection"
-                  onClick={() => setCheckedIds(new Set())}
+                  onClick={() => setChecked(new Map())}
                 >
                   <X size={12} />
                 </button>

@@ -476,6 +476,11 @@ export type AdeRuntime = {
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
+  /**
+   * Sends an `ade notify` push where no push publisher runs in the process
+   * (desktop automations). The brain sends through `pushPublisherService`.
+   */
+  sendCustomNotification?: PushPublisherService["sendCustomNotification"] | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
