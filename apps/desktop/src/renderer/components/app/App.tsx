@@ -105,6 +105,9 @@ const SettingsPage = React.lazy(() =>
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
 );
+const BrowserPage = React.lazy(() =>
+  import("../browser/BrowserPage").then((m) => ({ default: m.BrowserPage }))
+);
 const AccountPage = React.lazy(() =>
   import("../account/AccountPage").then((m) => ({ default: m.AccountPage }))
 );
@@ -138,6 +141,7 @@ import {
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
+import { isBrowserTabRoute } from "../browser/browserTab";
 import {
   githubRepoSlugsEqual,
   parseGithubRemoteUrl,
@@ -681,6 +685,9 @@ function ProjectTabHost() {
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  // The Browser top tab is machine-level like Chats: no project surface under it.
+  const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -738,10 +745,10 @@ function ProjectTabHost() {
   }, [isLegacyHubRoute, navigate]);
 
   React.useEffect(() => {
-    // Machine-level routes (personal chats, account) are not project surfaces;
-    // the route-restore below would otherwise clobber them with the active
-    // project's stored route on load.
-    if (isPersonalChatsRoute || isAccountRoute || isLegacyHubRoute) return;
+    // Machine-level routes (personal chats, browser, account) are not project
+    // surfaces; the route-restore below would otherwise clobber them with the
+    // active project's stored route on load.
+    if (isMachineRoute || isAccountRoute || isLegacyHubRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -761,7 +768,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isMachineRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -933,7 +940,7 @@ function ProjectTabHost() {
   }
 
   const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
-  if (!isPersonalChatsRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isMachineRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
     // along with the welcome page — this is the one state where the machine
@@ -982,7 +989,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -994,6 +1001,13 @@ function ProjectTabHost() {
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <PersonalChatsPage standalone={showWelcome || !activeProject} />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
+      {isBrowserRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <BrowserPage />
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
@@ -1022,7 +1036,7 @@ function ProjectTabHost() {
         </PageErrorBoundary>
       ) : null}
       {transitionLabel ? <ProjectTransitionVeil label={transitionLabel} /> : null}
-      {webMode && !isAccountRoute && !isPersonalChatsRoute ? <ProjectHostRecoveryScreen /> : null}
+      {webMode && !isAccountRoute && !isMachineRoute ? <ProjectHostRecoveryScreen /> : null}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
 import {
   AppWindow,
   ArrowCounterClockwise,
@@ -7,6 +8,7 @@ import {
   FolderOpen,
   FolderSimple,
   GitMerge,
+  Globe,
   Plus,
   Trash,
 } from "@phosphor-icons/react";
@@ -600,26 +602,39 @@ export function ProjectWelcomePage() {
   }, [focusRowButton]);
 
   const hasProjects = visibleProjectGroups.length > 0;
+  const browserAvailable = !webMode && browserTabAvailable();
   const showSide = !webMode || webMachines.length > 0;
   const hasRunning = running.length > 0;
-  const backgroundPageEntries = useMemo((): ContextMenuEntry[] => [
-    {
-      kind: "item",
-      key: "add-project",
-      label: "Add project…",
-      icon: Plus,
-      disabled: webMode && !activeWebMachine,
-      onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
-    },
-    {
-      kind: "item",
-      key: "chat",
-      label: "Chat without a project",
-      icon: ChatCircleDots,
-      disabled: webMode && !activeWebMachine,
-      onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
-    },
-  ], [activeWebMachine, navigate, openWebChats, webMode]);
+  const backgroundPageEntries = useMemo((): ContextMenuEntry[] => {
+    const entries: ContextMenuEntry[] = [
+      {
+        kind: "item",
+        key: "add-project",
+        label: "Add project…",
+        icon: Plus,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+      },
+      {
+        kind: "item",
+        key: "chat",
+        label: "Chat without a project",
+        icon: ChatCircleDots,
+        disabled: webMode && !activeWebMachine,
+        onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
+      },
+    ];
+    if (browserAvailable) {
+      entries.push({
+        kind: "item",
+        key: "browser",
+        label: "Open the browser",
+        icon: Globe,
+        onSelect: () => navigate(BROWSER_TAB_ROUTE),
+      });
+    }
+    return entries;
+  }, [activeWebMachine, browserAvailable, navigate, openWebChats, webMode]);
   const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
@@ -721,6 +736,14 @@ export function ProjectWelcomePage() {
                 disabled={webMode && !activeWebMachine}
                 onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
               />
+              {/* The desktop's own browser, as a tab of its own. */}
+              {browserAvailable ? (
+                <HomeAction
+                  icon={Globe}
+                  label="Browser"
+                  onClick={() => navigate(BROWSER_TAB_ROUTE)}
+                />
+              ) : null}
             </>
           )}
         />

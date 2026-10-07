@@ -284,6 +284,57 @@ Explicit session metadata regeneration is a user-invoked, one-shot call through 
 - **Dev servers are discovered, never probed.** The PTY output pipeline sniffs the ready lines frameworks already print (`Local:   http://localhost:5173/`, `ready on`, `listening on`) with one bounded regex per chunk plus a carry for lines split across chunk boundaries, and publishes `{ port, url, source: { sessionId, laneId, projectRoot }, detectedAt }` into an in-memory registry (`main/services/devServers/devServerRegistry.ts`). The registry forgets a session's ports when its terminal ends. Renderers read it through `builtInBrowser.getDevServers()` / `localhost.getDevServers()`; nothing opens a socket. When a lane's server appears and that lane already holds a browser tab — or the Browser tool has nothing open — ADE opens it in a **background** tab once per (lane, port) per app session (`openPanel: false`, no focus steal) and emits `dev-server-detected` for the corner card. Both the auto-open target and the event's stamped collection are resolved from the record's own `projectRoot` — the detecting terminal's project, captured at detection time because nothing downstream can recover it from a lane id. On a two-project machine that is the difference between the lane's launchpad showing its `localhost` chip and another project's pane showing it instead; when the lane's project has no Browser collection materialized at all there is no chip event, and its pane lists the server from the registry the moment it opens. `browser.autoOpenDevServer` (default `true`, same `browser:` config block as `linkOpenMode`) turns the auto-open off without turning discovery off.
 - **`ade browser proof --har`** exports the tab's HAR alongside the screenshot and ingests it as a `browser_trace` artifact under the same owners, in one call. It requires network logging to be on for that tab and fails with that message when it is not, rather than filing half the proof.
 
+## The Browser top tab
+
+The ADE browser is also a top-level tab of its own, beside Chats
+(`renderer/components/browser/BrowserPage.tsx`, route `/browser`,
+`browserTabOpen` in the app store). It needs no project and stays in the tab
+strip across project opens, switches and closes, like Chats.
+
+- **Same profile, personal tabs.** It mounts `ChatBuiltInBrowserPanel`
+  full-size with `projectRootOverride={null}`, so it shows the `personal` tab
+  collection on the global `persist:ade-browser` profile: the same sign-ins as
+  every ADE browser, and the same tabs a project-less chat's agent drives.
+- **The page lives in main.** Leaving the tab unmounts the panel, which hides
+  the `WebContentsView` (`useNativeBrowserViewBounds` cleanup); a project
+  surface is never drawn over. Coming back re-attaches the same page, scroll
+  and history included. Resizes and the dock opening or closing re-measure the
+  stage through the hook's resize observer.
+- **Entry points.** The home page's **Browser** button (and its right-click
+  menu), `Mod+Shift+B` (`shell.browser.open` in `shared/keybindings.ts`,
+  rebindable; it was free in both the app and the menu accelerators), and link
+  routing: links in the docked chat open as tabs here, and links in a Chats
+  page chat open here when the Browser tab is open and the Chats page's own
+  Browser panel is not. The shortcut is a renderer keydown, so it does not fire
+  while keyboard focus is inside a page's own `WebContents`.
+- **No chat, no chat tools.** Without a chat beside it the panel has no
+  `sessionId`, so Inspect, Attach and "insert into the message" are not shown,
+  and the Work pane's preview toggle and maximize (meaningless outside Work)
+  are replaced by the host's own `toolbarEnd` slot.
+- **Ask agent.** The toolbar button docks a normal project-less chat on the
+  right (`AgentChatPane` with the personal scope from
+  `usePersonalChatPaneScope`, shared with the Chats page). Opening the dock
+  attaches the tab in front as one badge in the composer through
+  `attachBrowserTabToComposer` (`chat/browser/attachBrowserTabToChat.ts`): the
+  badge's id is the tab's id, so attaching the same tab again replaces its
+  badge (the pane dedupes context by `originalElementId`). This is the one
+  function any "attach this tab to a chat" entry point should call. The tab is
+  leased to the chat (`ownerChatSessionId`, via a `switchTab` claim) when the
+  chat's first message creates it, or at once when the dock already has a
+  chat, so the chat's `ade browser` calls drive the tab the person is watching.
+  The dock keeps its chat (`browserDock` in the app store) until **New chat**;
+  its header switches to any recent chat, opens the chat full size in Chats
+  (`/chats?chat=<id>`), or closes the dock. Its unsent draft is stored under
+  its own key (`personalDraftKey`), apart from the Chats page's.
+- **From Chats back to the page.** A Chats page chat that is browsing (agent
+  presence) or is the dock's chat shows a **Show in the Browser tab** button:
+  it opens the Browser tab with that chat docked and brings forward the tab
+  the chat holds (`openChatInBrowserTab`).
+- **Machine.** The dock chat lives on the machine the Chats tab uses (the
+  window's binding). The browser itself is always this computer's; with a
+  remote project tab active, `localhost` in this tab is localized to that
+  machine exactly as in the Chats page's Browser panel.
+
 ## The corner card and parked preview views
 
 The Work tab has one pane for one screen tool, so the browser is

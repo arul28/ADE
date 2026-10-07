@@ -14,6 +14,12 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     scope: "global"
   },
   {
+    id: "shell.browser.open",
+    description: "Open the Browser tab",
+    defaultBinding: "Mod+Shift+B",
+    scope: "global"
+  },
+  {
     id: "shell.tab.work",
     description: "Open Work",
     defaultBinding: "Mod+1",

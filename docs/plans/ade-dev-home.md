@@ -150,6 +150,15 @@ store) and classify each one as hide, route or n/a.
 
 ## 2. Browser as a top-level tab
 
+**Status: built (2026-10-07).** `/browser` top tab, home-page button,
+`Mod+Shift+B`, Ask agent dock with the tab attached and leased, Chats ⇄ Browser
+jumps. Details: "The Browser top tab" in `docs/features/chat/README.md`.
+Open: the dock chat follows the window's machine binding (remote project tab
+means a remote chat beside this computer's browser), and an agent's `click` on
+a Wikipedia link did not navigate in the verification run (it fell back to
+`ade browser open` on the same tab), which is worth a look in the browser
+service.
+
 ### What is true today
 
 - **Profile:** one global persistent partition, `persist:ade-browser`, so

@@ -3660,6 +3660,7 @@ export function AgentChatPane({
   isTileVisible = isTileActive,
   shouldAutofocusComposer = false,
   draftContextTargetId = null,
+  personalDraftKey = PERSONAL_DRAFT_COMPANION_STATE_KEY,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
@@ -3737,6 +3738,12 @@ export function AgentChatPane({
   shouldAutofocusComposer?: boolean;
   /** Stable Work-sidebar target id for an unsaved draft composer. */
   draftContextTargetId?: string | null;
+  /**
+   * Where a project-less pane keeps its unsent new-chat draft. Two hosts that
+   * are open together (Chats and the Browser tab's dock) pass different keys,
+   * so one's draft and attached context never appear in the other.
+   */
+  personalDraftKey?: string;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
@@ -4438,7 +4445,7 @@ export function AgentChatPane({
   const companionStateKey = selectedSessionId
     ?? (isWorkDraftComposer
       ? WORK_START_DRAFT_COMPANION_STATE_KEY
-      : personalScope ? PERSONAL_DRAFT_COMPANION_STATE_KEY : laneId ? `draft:${laneId}` : "draft");
+      : personalScope ? personalDraftKey : laneId ? `draft:${laneId}` : "draft");
   // Personal drafts are machine-scoped, not filed under whichever project the
   // window happens to have open.
   const composerDraftProjectRoot = personalScope ? PERSONAL_COMPOSER_DRAFT_ROOT : projectRoot;
@@ -9636,19 +9643,22 @@ export function AgentChatPane({
     if (attachmentPath) {
       linkedBuiltInBrowserAttachmentPathsRef.current.add(attachmentPath);
     }
+    // The same element or page added again (the Browser tab's "Ask agent"
+    // stages its page on every open) replaces its earlier chip, not stacks.
+    const originalElementId = item.metadata.originalElementId ?? item.id;
     setBuiltInBrowserContextItems((current) => [
       {
         ...item,
         id: instanceId,
         metadata: {
           ...item.metadata,
-          originalElementId: item.metadata.originalElementId ?? item.id,
+          originalElementId,
           contextInstanceId: instanceId,
           ...(selectedSessionId ? { chatSessionId: selectedSessionId } : {}),
           ...(attachmentPath ? { attachmentPath } : {}),
         },
       },
-      ...current.slice(0, 4),
+      ...current.filter((existing) => existing.metadata.originalElementId !== originalElementId).slice(0, 4),
     ]);
   }, [claimDraftAttachmentOwner, saveContextScreenshot, selectedSessionId]);
 
@@ -13301,7 +13311,7 @@ export function AgentChatPane({
           // draft must not offer it again the next time New chat is opened.
           for (const key of composerDraftStorageKeys({
             projectRoot: PERSONAL_COMPOSER_DRAFT_ROOT,
-            companionStateKey: PERSONAL_DRAFT_COMPANION_STATE_KEY,
+            companionStateKey: personalDraftKey,
             surfaceProfile,
             workDraftKind: workDraftStorageKind,
           })) {

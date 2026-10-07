@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   WarningCircle,
@@ -211,6 +211,15 @@ type ChatBuiltInBrowserPanelProps = {
    * prop: the pane is not inside the chat's runtime scope.
    */
   groupLaneId?: string | null;
+  /**
+   * The host's own controls at the toolbar's far right, in place of the Work
+   * pane's preview toggle and maximize. Those two only mean something inside
+   * the Work tools pane; a host that is a page of its own (the Browser tab)
+   * draws what it needs here instead.
+   */
+  toolbarEnd?: ReactNode;
+  /** How many toolbar controls `toolbarEnd` is as wide as, so the omnibox is priced around it. */
+  toolbarEndControlCount?: number;
 };
 
 type MessageTone = "info" | "error";
@@ -311,6 +320,8 @@ export function ChatBuiltInBrowserPanel({
   onInsertDraft,
   runtimePin = null,
   groupLaneId = null,
+  toolbarEnd,
+  toolbarEndControlCount = 1,
 }: ChatBuiltInBrowserPanelProps) {
   // Screenshots go to the surrounding chat's attachment store: a personal
   // chat's own, not the active project's.
@@ -2475,14 +2486,15 @@ export function ChatBuiltInBrowserPanel({
   // so Inspect, Attach and "screenshot to chat" are not shown here rather than
   // shown broken.
   const canAttachContext = Boolean(onAddContext);
+  const hostToolbarEnd = toolbarEnd !== undefined;
   const toolbar = useMemo(() => browserToolbarLayout(paneWidth, {
     hasSelection,
     canAttachContext,
     recording: isRecording,
-    // The pane always draws two fixed controls at the far right (preview
-    // toggle + maximize); price them so the omnibox is not clipped by them.
-    extraRightControlCount: 2,
-  }), [canAttachContext, hasSelection, isRecording, paneWidth]);
+    // The pane draws two fixed controls at the far right (preview toggle +
+    // maximize), or the host's own; price them so the omnibox is not clipped.
+    extraRightControlCount: hostToolbarEnd ? toolbarEndControlCount : 2,
+  }), [canAttachContext, hasSelection, hostToolbarEnd, isRecording, paneWidth, toolbarEndControlCount]);
   /**
    * `status != null` matters: before the first status lands the panel knows
    * nothing, and flashing the launchpad there would both blink the surface and
@@ -2866,7 +2878,9 @@ export function ChatBuiltInBrowserPanel({
               selectionFrame={selectionFrame}
             />
           )}
-          previewControls={<WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          previewControls={hostToolbarEnd
+            ? toolbarEnd
+            : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
         />
 
         <BrowserFindBar

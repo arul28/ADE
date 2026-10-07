@@ -65,6 +65,12 @@ import { ActivityPane } from "../activity/ActivityPane";
 import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { isActivityRoute } from "../../lib/legacyRoutes";
+import {
+  BROWSER_TAB_KEYBINDING,
+  BROWSER_TAB_ROUTE,
+  browserTabAvailable,
+  isBrowserTabRoute,
+} from "../browser/browserTab";
 
 function primaryTabPath(pathname: string): string {
   const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
@@ -84,6 +90,7 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/cto",
   "/settings",
   "/chats",
+  "/browser",
 ] as const;
 
 /**
@@ -215,6 +222,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const setPersonalChatsTabOpen = useAppStore(
     (s) => s.setPersonalChatsTabOpen,
   );
+  const setBrowserTabOpen = useAppStore((s) => s.setBrowserTabOpen);
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const closeProject = useAppStore((s) => s.closeProject);
@@ -246,6 +254,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  // Machine-level like Chats. Desktop only: the hosted client has no browser view.
+  const isBrowserRoute = isBrowserTabRoute(location.pathname) && browserTabAvailable();
   const activityDeepLink = isActivityRoute(location.pathname);
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
@@ -304,6 +314,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // selectable affordance for the surface being shown.
     if (isPersonalChatsRoute) setPersonalChatsTabOpen(true);
   }, [isPersonalChatsRoute, setPersonalChatsTabOpen]);
+
+  useEffect(() => {
+    // Same rule as Chats: being on /browser is what puts the Browser tab in the strip.
+    if (isBrowserRoute) setBrowserTabOpen(true);
+  }, [isBrowserRoute, setBrowserTabOpen]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -912,9 +927,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Mod+1..5 and Mod+B act on the project surface, so they are off while the
-  // welcome page, Chats, or the account page is in front.
+  // welcome page, Chats, Browser, or the account page is in front.
   useProjectSidebarShortcuts({
-    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isAccountRoute,
+    enabled: Boolean(project?.rootPath) && !showWelcome && !isPersonalChatsRoute && !isBrowserRoute && !isAccountRoute,
     projectRoot: currentProjectRoot,
     keybindings,
     navigate,
@@ -930,6 +945,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [commandPaletteBinding]);
 
+  // Mod+Shift+B opens the Browser tab from anywhere, project or not. Like the
+  // command palette it works while a field has focus; a handler that already
+  // used the chord wins by calling preventDefault first.
+  const isBrowserRouteRef = useRef(isBrowserRoute);
+  isBrowserRouteRef.current = isBrowserRoute;
+  const browserTabBinding = useMemo(
+    () => getEffectiveBinding(keybindings, BROWSER_TAB_KEYBINDING.id, BROWSER_TAB_KEYBINDING.fallback),
+    [keybindings],
+  );
+  useEffect(() => {
+    if (!browserTabAvailable()) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (!eventMatchesBinding(e, browserTabBinding)) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      setBrowserTabOpen(true);
+      if (!isBrowserRouteRef.current) navigate(BROWSER_TAB_ROUTE);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [browserTabBinding, navigate, setBrowserTabOpen]);
+
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/activity": "tab-tint-work",
@@ -943,6 +981,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/cto": "tab-tint-cto",
       "/settings": "tab-tint-settings",
       "/chats": "tab-tint-work",
+      "/browser": "tab-tint-work",
     };
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
@@ -961,6 +1000,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="shrink-0 relative z-20">
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
+          browserRouteActive={isBrowserRoute}
           accountRouteActive={isAccountRoute}
           settingsRouteActive={location.pathname === "/settings"}
           onNavigate={(path, opts) => navigate(path, opts)}
