@@ -6985,6 +6985,7 @@ describe("ADE CLI", () => {
       params: {
         action: "create",
         args: {
+          personalProfile: "assistant",
           provider: "codex",
           model: "openai/gpt-5.5",
           modelId: "openai/gpt-5.5",

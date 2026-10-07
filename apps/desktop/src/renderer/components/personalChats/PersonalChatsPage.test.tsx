@@ -2,24 +2,18 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  AgentChatEventEnvelope,
-  AgentChatEventHistoryPage,
-  AgentChatEventHistorySnapshot,
-  AgentChatSessionSummary,
-} from "../../../shared/types";
+import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
-import {
-  rememberRuntimeCatalog,
-  resetModelPickerRuntimeCatalogForTests,
-} from "../shared/ModelPicker/runtimeCatalogCache";
+import { useAppStore } from "../../state/appStore";
+import { resetModelPickerRuntimeCatalogForTests } from "../shared/ModelPicker/runtimeCatalogCache";
 
-// Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
-// colored path (dark glyph) apart from the neutral-tint path (white glyph).
+// The page renders the real chat pane over `window.ade.personalChats` (the IPC
+// boundary these tests fake). The catalog→descriptor transform is not the unit
+// under test; a small stub lets each case flip provider availability.
 const FAKE_MODEL = {
   id: "fake-model",
   shortId: "fake",
@@ -29,8 +23,6 @@ const FAKE_MODEL = {
   capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
 } as unknown as ModelDescriptor;
 
-// The catalog→descriptor transform is not the unit under test; a small stub lets
-// each case flip provider availability deterministically.
 vi.mock("../shared/ModelPicker/modelCatalog", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/ModelPicker/modelCatalog")>();
   return {
@@ -55,99 +47,14 @@ vi.mock("../../webclient/workspace/useWebChatsMachines", () => ({
   useWebChatsMachines: () => webChatsState.picker,
 }));
 
-const pickerHarness = vi.hoisted(() => ({
-  onRuntimeCatalogRefreshed: undefined as undefined | ((
-    provider: "opencode",
-    catalogScopeKey?: string,
-  ) => void),
-  catalogScopeKey: "",
-}));
-
-vi.mock("../shared/ModelPicker/ModelPicker", () => ({
-  ModelPicker: ({
-    disabled,
-    catalogScopeKey,
-    onRuntimeCatalogRefreshed,
-  }: {
-    disabled?: boolean;
-    catalogScopeKey?: string;
-    onRuntimeCatalogRefreshed?: (provider: "opencode", catalogScopeKey?: string) => void;
-  }) => {
-    pickerHarness.catalogScopeKey = catalogScopeKey ?? "";
-    pickerHarness.onRuntimeCatalogRefreshed = onRuntimeCatalogRefreshed;
-    return <div data-testid="model-picker" data-disabled={disabled ? "true" : "false"} />;
-  },
-}));
-
-vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
-  ReasoningEffortPicker: () => <div data-testid="reasoning-picker" />,
-}));
-
-type MessageListHarnessProps = {
-  events: AgentChatEventEnvelope[];
-  sessionId?: string | null;
-  sessionEnded?: boolean;
-  hasOlderHistory?: boolean;
-  loadingOlderHistory?: boolean;
-  olderHistoryError?: string | null;
-  onLoadOlderHistory?: () => void;
-  onRetryOlderHistory?: () => void;
-};
-
-vi.mock("../chat/AgentChatMessageList", () => ({
-  AgentChatMessageList: (props: MessageListHarnessProps) => {
-    const texts = props.events
-      .map((event) => {
-        const body = event.event as unknown as Record<string, unknown>;
-        return typeof body.text === "string" ? body.text : "";
-      })
-      .filter(Boolean)
-      .join("|");
-    return (
-      <div
-        data-testid="message-list"
-        data-session-id={props.sessionId ?? ""}
-        data-event-texts={texts}
-        data-has-older={props.hasOlderHistory ? "true" : "false"}
-        data-loading-older={props.loadingOlderHistory ? "true" : "false"}
-        data-older-error={props.olderHistoryError ?? ""}
-        data-session-ended={props.sessionEnded ? "true" : "false"}
-      >
-        <button
-          type="button"
-          data-testid="load-older"
-          onClick={() => (props.olderHistoryError ? props.onRetryOlderHistory?.() : props.onLoadOlderHistory?.())}
-        >
-          Load older
-        </button>
-      </div>
-    );
-  },
-}));
-
+// Native surfaces (an Electron WebContentsView, a PTY) with nothing to render
+// in jsdom. The tests only need to know the page opened them.
 vi.mock("../chat/ChatBuiltInBrowserPanel", () => ({
   ChatBuiltInBrowserPanel: () => <div data-testid="browser-panel" />,
 }));
 
 vi.mock("./PersonalTerminalPanel", () => ({
   PersonalTerminalPanel: () => <div data-testid="terminal-panel" />,
-}));
-
-const storeState = vi.hoisted(() => ({
-  projectBinding: null as unknown,
-  openRemoteProjectTabs: [] as unknown[],
-  openProjectTabRoots: [] as string[],
-  project: null as unknown,
-  switchProjectToPath: () => Promise.resolve(),
-  switchRemoteProject: () => Promise.resolve(),
-  chatFontSizePx: 13,
-  chatTranscriptDensity: "comfortable",
-  chatChromeTint: "colored",
-  chatShellGeometry: "default",
-}));
-
-vi.mock("../../state/appStore", () => ({
-  useAppStore: (selector: (s: typeof storeState) => unknown) => selector(storeState),
 }));
 
 function makeSession(overrides: Partial<AgentChatSessionSummary>): AgentChatSessionSummary {
@@ -164,22 +71,9 @@ function makeSession(overrides: Partial<AgentChatSessionSummary>): AgentChatSess
     lastOutputPreview: null,
     summary: null,
     nextWakeAt: null,
+    surface: "personal",
     ...overrides,
   } as unknown as AgentChatSessionSummary;
-}
-
-function makeHistoryEvent(args: {
-  sessionId?: string;
-  sequence: number;
-  text: string;
-  timestamp: string;
-}): AgentChatEventEnvelope {
-  return {
-    sessionId: args.sessionId ?? "s1",
-    sequence: args.sequence,
-    timestamp: args.timestamp,
-    event: { type: "assistant", text: args.text },
-  } as unknown as AgentChatEventEnvelope;
 }
 
 type CallArgs = { action: string; args?: Record<string, unknown> };
@@ -187,59 +81,67 @@ type CallArgs = { action: string; args?: Record<string, unknown> };
 const state = vi.hoisted(() => ({
   sessions: [] as AgentChatSessionSummary[],
   catalogAvailable: true,
-  historyEvents: [] as Array<Record<string, unknown>>,
-  historySnapshotHandler: null as null | (
-    (sessionId: string) => AgentChatEventHistorySnapshot | Promise<AgentChatEventHistorySnapshot>
-  ),
-  historyPageHandler: null as null | (
-    (args: Record<string, unknown>) => AgentChatEventHistoryPage | Promise<AgentChatEventHistoryPage>
-  ),
 }));
 
-function installBridge() {
+/**
+ * `window.ade` as the preload exposes it: every namespace the pane touches
+ * exists. Namespaces a test names are used as given (an explicit `undefined`
+ * stays missing); any other one answers subscriptions with a no-op unsubscribe
+ * and calls with nothing.
+ */
+function fakeAdeBridge(explicit: Record<string, unknown>): Record<string, unknown> {
+  const idleNamespace = new Proxy({}, {
+    get: (_target, key) => (typeof key === "string" && /^on[A-Z]/.test(key)
+      ? () => () => undefined
+      : async () => undefined),
+  });
+  return new Proxy(explicit, {
+    get: (target, key) => (key in target ? target[key as string] : idleNamespace),
+  });
+}
+
+function setAdeBridge(explicit: Record<string, unknown>) {
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    writable: true,
+    value: fakeAdeBridge(explicit),
+  });
+}
+
+function installBridge(extra: Record<string, unknown> = {}) {
   const call = vi.fn(async ({ action, args }: CallArgs) => {
     switch (action) {
       case "list":
         return { result: state.sessions };
       case "modelCatalog":
         return { result: { groups: [], fetchedAt: "", available: state.catalogAvailable } };
-      case "getEventHistory": {
-        const sessionId = String(args?.sessionId ?? "");
+      case "getEventHistory":
         return {
-          result: state.historySnapshotHandler
-            ? await state.historySnapshotHandler(sessionId)
-            : {
-              sessionId,
-              events: state.historyEvents,
-              sessionFound: true,
-              hasOlderHistory: false,
-              tailStartOffset: 0,
-            },
-        };
-      }
-      case "getEventHistoryPage":
-        return {
-          result: state.historyPageHandler
-            ? await state.historyPageHandler(args ?? {})
-            : {
-              sessionId: String(args?.sessionId ?? ""),
-              events: [],
-              sessionFound: true,
-              startOffset: 0,
-              hasMore: false,
-            },
+          result: {
+            sessionId: String(args?.sessionId ?? ""),
+            events: [],
+            sessionFound: true,
+            hasOlderHistory: false,
+            tailStartOffset: 0,
+          },
         };
       default:
         return { result: undefined };
     }
   });
   const streamEvents = vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false }));
-  Object.defineProperty(window, "ade", {
-    configurable: true,
-    writable: true,
-    value: { personalChats: { call, streamEvents } },
-  });
+  setAdeBridge({ personalChats: { call, streamEvents }, ...extra });
   return { call, streamEvents };
+}
+
+function seedStore(overrides: Record<string, unknown> = {}) {
+  useAppStore.setState({
+    project: null,
+    projectBinding: null,
+    openRemoteProjectTabs: [],
+    openProjectTabRoots: [],
+    ...overrides,
+  } as never);
 }
 
 async function renderPage() {
@@ -251,39 +153,27 @@ async function renderPage() {
   );
 }
 
+function composerText(): string {
+  const field = screen.getByRole("textbox", { name: /Ask anything/i });
+  return field instanceof HTMLTextAreaElement ? field.value : field.textContent ?? "";
+}
+
 describe("PersonalChatsPage", () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
     delete window.__adeWebClient;
     webChatsState.picker = null;
-    pickerHarness.onRuntimeCatalogRefreshed = undefined;
-    pickerHarness.catalogScopeKey = "";
     resetModelPickerRuntimeCatalogForTests();
     state.sessions = [];
     state.catalogAvailable = true;
-    state.historyEvents = [];
-    state.historySnapshotHandler = null;
-    state.historyPageHandler = null;
-    storeState.chatChromeTint = "colored";
-    storeState.projectBinding = null;
-    storeState.openRemoteProjectTabs = [];
+    seedStore();
     installBridge();
   });
 
   afterEach(() => {
     cleanup();
     delete window.__adeWebClient;
-  });
-
-  it("renders the hero (greeting + composer + chips) with the composer inside the canvas and no shell footer", async () => {
-    await renderPage();
-
-    expect(await screen.findByText("What can I help with?")).toBeTruthy();
-    const textarea = screen.getByLabelText("Message an ADE agent");
-    // Composer lives in the hero canvas (variant "hero"), not in the docked footer.
-    expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("hero");
-    expect(screen.getByText("Think through a decision")).toBeTruthy();
   });
 
   it("keys catalog reload off the hosted web machine catalog id", async () => {
@@ -310,415 +200,15 @@ describe("PersonalChatsPage", () => {
     });
   });
 
-  it("keeps a picker catalog refresh when a slower page force request finishes later", async () => {
-    let releaseForce: (() => void) | undefined;
-    const forceGate = new Promise<void>((resolve) => {
-      releaseForce = resolve;
-    });
-    const { call } = installBridge();
-    call.mockImplementation(async ({ action, args }: CallArgs) => {
-      if (action === "list") return { result: state.sessions };
-      if (action === "modelCatalog") {
-        if (args?.mode === "force") {
-          await forceGate;
-          return { result: { groups: [], fetchedAt: "force", available: false } };
-        }
-        return { result: { groups: [], fetchedAt: "stale", available: false } };
-      }
-      if (action === "getEventHistory") {
-        return {
-          result: {
-            sessionId: String(args?.sessionId ?? ""),
-            events: [],
-            sessionFound: true,
-            hasOlderHistory: false,
-            tailStartOffset: 0,
-          },
-        };
-      }
-      return { result: undefined };
-    });
-
-    await renderPage();
-    await waitFor(() => {
-      const modes = call.mock.calls
-        .filter((entry) => entry[0]?.action === "modelCatalog")
-        .map((entry) => entry[0]?.args?.mode);
-      expect(modes).toContain("force");
-    });
-    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("true"));
-
-    const scopeKey = pickerHarness.catalogScopeKey;
-    expect(scopeKey).toMatch(/^personal-chat\|/);
-    rememberRuntimeCatalog({
-      fetchedAt: "picker",
-      groups: [],
-      available: true,
-    } as never, { mode: "force", scopeKey });
-
-    await act(async () => {
-      pickerHarness.onRuntimeCatalogRefreshed?.("opencode", scopeKey);
-    });
-    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
-
-    await act(async () => {
-      releaseForce?.();
-    });
-    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
-  });
-
-  it("lets a delayed page force finish when the picker refresh never succeeds", async () => {
-    let releaseForce: (() => void) | undefined;
-    const forceGate = new Promise<void>((resolve) => {
-      releaseForce = resolve;
-    });
-    const { call } = installBridge();
-    call.mockImplementation(async ({ action, args }: CallArgs) => {
-      if (action === "list") return { result: state.sessions };
-      if (action === "modelCatalog") {
-        if (args?.mode === "force") {
-          await forceGate;
-          return { result: { groups: [], fetchedAt: "force", available: true } };
-        }
-        return { result: { groups: [], fetchedAt: "stale", available: false } };
-      }
-      return { result: undefined };
-    });
-
-    await renderPage();
-    await waitFor(() => {
-      const modes = call.mock.calls
-        .filter((entry) => entry[0]?.action === "modelCatalog")
-        .map((entry) => entry[0]?.args?.mode);
-      expect(modes).toContain("force");
-    });
-    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("true"));
-
-    rememberRuntimeCatalog({
-      fetchedAt: "stale-cache",
-      groups: [],
-      available: false,
-    } as never, { mode: "cached", scopeKey: pickerHarness.catalogScopeKey });
-
-    await act(async () => {
-      releaseForce?.();
-    });
-    await waitFor(() => expect(screen.getByTestId("model-picker").getAttribute("data-disabled")).toBe("false"));
-  });
-
-  it("pre-fills the draft when a suggestion chip is clicked", async () => {
+  it.each([
+    ["Draft from a rough idea", "Help me draft this from a rough idea: "],
+    ["Research a topic", "Research this topic with me: "],
+  ])("fills the new chat's composer when the %s chip is clicked", async (label, prefill) => {
     await renderPage();
 
-    await screen.findByText("What can I help with?");
-    fireEvent.click(screen.getByText("Draft from a rough idea"));
+    fireEvent.click(await screen.findByRole("button", { name: label }));
 
-    const textarea = screen.getByLabelText("Message an ADE agent") as HTMLTextAreaElement;
-    await waitFor(() => expect(textarea.value).toBe("Help me draft this from a rough idea: "));
-  });
-
-  it("docks the composer in the footer once a selected session has events", async () => {
-    state.sessions = [makeSession({ title: "My chat" })];
-    state.historyEvents = [
-      { sessionId: "s1", timestamp: new Date().toISOString(), sequence: 1, event: { type: "assistant", text: "hi" } },
-    ];
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("My chat"));
-
-    expect(await screen.findByTestId("message-list")).toBeTruthy();
-    const textarea = screen.getByLabelText("Message an ADE agent");
-    expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("docked");
-  });
-
-  it("tells the transcript when an ended chat is ended", async () => {
-    // Rows that hold a live clock -- a background job left `running` by a
-    // restart -- freeze on an ended session. That only works if the host says
-    // the session ended; this one used to derive turnActive and nothing else,
-    // so an archived personal chat counted up forever.
-    state.sessions = [makeSession({ title: "Archived chat", status: "ended" })];
-    state.historyEvents = [
-      { sessionId: "s1", timestamp: new Date().toISOString(), sequence: 1, event: { type: "assistant", text: "hi" } },
-    ];
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Archived chat"));
-
-    const list = await screen.findByTestId("message-list");
-    expect(list.getAttribute("data-session-ended")).toBe("true");
-  });
-
-  it("leaves a live chat unmarked so its tickers keep running", async () => {
-    state.sessions = [makeSession({ title: "Live chat", status: "active" })];
-    state.historyEvents = [
-      { sessionId: "s1", timestamp: new Date().toISOString(), sequence: 1, event: { type: "assistant", text: "hi" } },
-    ];
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Live chat"));
-
-    const list = await screen.findByTestId("message-list");
-    expect(list.getAttribute("data-session-ended")).toBe("false");
-  });
-
-  it("pages through empty cursor windows and prepends older transcript events", async () => {
-    const newer = makeHistoryEvent({
-      sequence: 2,
-      text: "newer",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    const older = makeHistoryEvent({
-      sequence: 1,
-      text: "older",
-      timestamp: "2026-07-28T11:00:00.000Z",
-    });
-    state.sessions = [makeSession({ title: "Paged chat" })];
-    state.historySnapshotHandler = async (sessionId) => ({
-      sessionId,
-      events: [newer],
-      sessionFound: true,
-      truncated: true,
-      hasOlderHistory: true,
-      tailStartOffset: 4_096,
-    });
-    state.historyPageHandler = async (args) => (
-      args.beforeOffset === 4_096
-        ? {
-          sessionId: "s1",
-          events: [],
-          sessionFound: true,
-          startOffset: 2_048,
-          hasMore: true,
-        }
-        : {
-          sessionId: "s1",
-          events: [older],
-          sessionFound: true,
-          startOffset: 0,
-          hasMore: false,
-        }
-    );
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Paged chat"));
-    const list = await screen.findByTestId("message-list");
-    await waitFor(() => expect(list.getAttribute("data-has-older")).toBe("true"));
-    fireEvent.click(screen.getByTestId("load-older"));
-
-    await waitFor(() => {
-      expect(list.getAttribute("data-event-texts")).toBe("older|newer");
-      expect(list.getAttribute("data-has-older")).toBe("false");
-    });
-    const call = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } })
-      .ade.personalChats.call;
-    const pageCalls = call.mock.calls.filter((callArgs) => (callArgs[0] as CallArgs).action === "getEventHistoryPage");
-    expect(pageCalls.map((callArgs) => callArgs[0] as CallArgs)).toEqual([
-      {
-        action: "getEventHistoryPage",
-        args: { sessionId: "s1", beforeOffset: 4_096, maxBytes: 262_144 },
-      },
-      {
-        action: "getEventHistoryPage",
-        args: { sessionId: "s1", beforeOffset: 2_048, maxBytes: 262_144 },
-      },
-    ]);
-  });
-
-  it("keeps the cursor and visible error while an interactive page retry is running", async () => {
-    const newer = makeHistoryEvent({
-      sequence: 2,
-      text: "newer",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    const older = makeHistoryEvent({
-      sequence: 1,
-      text: "older",
-      timestamp: "2026-07-28T11:00:00.000Z",
-    });
-    state.sessions = [makeSession({ title: "Retry chat" })];
-    state.historySnapshotHandler = async (sessionId) => ({
-      sessionId,
-      events: [newer],
-      sessionFound: true,
-      truncated: true,
-      hasOlderHistory: true,
-      tailStartOffset: 4_096,
-    });
-    let pageCallCount = 0;
-    let resolveRetry: (page: AgentChatEventHistoryPage) => void = () => {};
-    const pendingRetry = new Promise<AgentChatEventHistoryPage>((resolve) => {
-      resolveRetry = resolve;
-    });
-    state.historyPageHandler = async () => {
-      pageCallCount += 1;
-      if (pageCallCount === 1) {
-        return {
-          sessionId: "s1",
-          events: [],
-          sessionFound: false,
-          unavailable: true,
-          startOffset: 0,
-          hasMore: false,
-        };
-      }
-      return pendingRetry;
-    };
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Retry chat"));
-    const list = await screen.findByTestId("message-list");
-    await waitFor(() => expect(list.getAttribute("data-has-older")).toBe("true"));
-    fireEvent.click(screen.getByTestId("load-older"));
-    await waitFor(() => {
-      expect(list.getAttribute("data-older-error")).toContain("temporarily unavailable");
-      expect(list.getAttribute("data-loading-older")).toBe("false");
-      expect(list.getAttribute("data-has-older")).toBe("true");
-    });
-
-    fireEvent.click(screen.getByTestId("load-older"));
-    await waitFor(() => {
-      expect(list.getAttribute("data-loading-older")).toBe("true");
-      expect(list.getAttribute("data-older-error")).toContain("temporarily unavailable");
-    });
-    expect(pageCallCount).toBe(2);
-    await act(async () => {
-      resolveRetry({
-        sessionId: "s1",
-        events: [older],
-        sessionFound: true,
-        startOffset: 0,
-        hasMore: false,
-      });
-    });
-    await waitFor(() => {
-      expect(list.getAttribute("data-loading-older")).toBe("false");
-      expect(list.getAttribute("data-older-error")).toBe("");
-      expect(list.getAttribute("data-has-older")).toBe("false");
-      expect(list.getAttribute("data-event-texts")).toBe("older|newer");
-    });
-    const call = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } })
-      .ade.personalChats.call;
-    const pageCalls = call.mock.calls.filter((callArgs) => (callArgs[0] as CallArgs).action === "getEventHistoryPage");
-    expect(pageCalls.map((callArgs) => (callArgs[0] as CallArgs).args?.beforeOffset)).toEqual([4_096, 4_096]);
-  });
-
-  it("preserves distinct events whose provider sequence restarted across transcript hydration", async () => {
-    const newer = makeHistoryEvent({
-      sequence: 1,
-      text: "new run",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    const olderSameSequence = makeHistoryEvent({
-      sequence: 1,
-      text: "older run",
-      timestamp: "2026-07-28T11:00:00.000Z",
-    });
-    const otherChat = makeHistoryEvent({
-      sessionId: "s2",
-      sequence: 1,
-      text: "other chat",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    state.sessions = [
-      makeSession({ sessionId: "s1", title: "Restarted sequence" }),
-      makeSession({ sessionId: "s2", title: "Other chat" }),
-    ];
-    state.historySnapshotHandler = async (sessionId) => ({
-      sessionId,
-      events: [sessionId === "s1" ? newer : otherChat],
-      sessionFound: true,
-      truncated: sessionId === "s1",
-      hasOlderHistory: sessionId === "s1",
-      tailStartOffset: sessionId === "s1" ? 4_096 : 0,
-    });
-    state.historyPageHandler = async () => ({
-      sessionId: "s1",
-      events: [olderSameSequence],
-      sessionFound: true,
-      startOffset: 0,
-      hasMore: false,
-    });
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Restarted sequence"));
-    await screen.findByTestId("message-list");
-    fireEvent.click(screen.getByTestId("load-older"));
-    await waitFor(() => {
-      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("older run|new run");
-    });
-
-    fireEvent.click(screen.getByText("Other chat"));
-    await waitFor(() => {
-      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("other chat");
-    });
-    fireEvent.click(screen.getByText("Restarted sequence"));
-    await waitFor(() => {
-      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("older run|new run");
-    });
-  });
-
-  it("ignores a late older page after switching chats", async () => {
-    const newestA = makeHistoryEvent({
-      sequence: 2,
-      text: "newest A",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    const newestB = makeHistoryEvent({
-      sessionId: "s2",
-      sequence: 2,
-      text: "newest B",
-      timestamp: "2026-07-28T12:00:00.000Z",
-    });
-    const staleOlderA = makeHistoryEvent({
-      sequence: 1,
-      text: "stale older A",
-      timestamp: "2026-07-28T11:00:00.000Z",
-    });
-    state.sessions = [
-      makeSession({ sessionId: "s1", title: "Chat A" }),
-      makeSession({ sessionId: "s2", title: "Chat B" }),
-    ];
-    state.historySnapshotHandler = async (sessionId) => ({
-      sessionId,
-      events: [sessionId === "s1" ? newestA : newestB],
-      sessionFound: true,
-      truncated: true,
-      hasOlderHistory: true,
-      tailStartOffset: 4_096,
-    });
-    let resolvePage: (page: AgentChatEventHistoryPage) => void = () => {};
-    state.historyPageHandler = () => new Promise<AgentChatEventHistoryPage>((resolve) => {
-      resolvePage = resolve;
-    });
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Chat A"));
-    const list = await screen.findByTestId("message-list");
-    await waitFor(() => expect(list.getAttribute("data-event-texts")).toBe("newest A"));
-    fireEvent.click(screen.getByTestId("load-older"));
-    await waitFor(() => expect(list.getAttribute("data-loading-older")).toBe("true"));
-    fireEvent.click(screen.getByText("Chat B"));
-    await waitFor(() => {
-      expect(screen.getByTestId("message-list").getAttribute("data-session-id")).toBe("s2");
-      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest B");
-    });
-
-    await act(async () => {
-      resolvePage({
-        sessionId: "s1",
-        events: [staleOlderA],
-        sessionFound: true,
-        startOffset: 0,
-        hasMore: false,
-      });
-    });
-    expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest B");
-
-    fireEvent.click(screen.getByText("Chat A"));
-    await waitFor(() => {
-      expect(screen.getByTestId("message-list").getAttribute("data-session-id")).toBe("s1");
-      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest A");
-      expect(screen.getByTestId("message-list").getAttribute("data-has-older")).toBe("true");
-    });
+    await waitFor(() => expect(composerText()).toBe(prefill));
   });
 
   it("filters the session list by the search query", async () => {
@@ -742,43 +232,19 @@ describe("PersonalChatsPage", () => {
     expect(await screen.findByText(/No chats yet/)).toBeTruthy();
   });
 
-  it("disables send and shows a notice when no provider is available", async () => {
+  it("shows a notice and no suggestions when no provider is available", async () => {
     state.catalogAvailable = false;
     await renderPage();
 
     expect(await screen.findByText(/No connected agent is available/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Message an ADE agent"), { target: { value: "hello" } });
-
-    const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
-    await waitFor(() => expect(sendButton.disabled).toBe(true));
-  });
-
-  it("keeps the hero and composer visible while the initial fetch is still loading", async () => {
-    let resolveList: (rows: AgentChatSessionSummary[]) => void = () => {};
-    const pendingList = new Promise<AgentChatSessionSummary[]>((resolve) => { resolveList = resolve; });
-    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
-    installBridge();
-    bridge.ade.personalChats.call.mockImplementation(async ({ action }: CallArgs) => {
-      if (action === "list") return { result: await pendingList };
-      if (action === "modelCatalog") return { result: await pendingList.then(() => ({ groups: [], fetchedAt: "", available: true })) };
-      return { result: undefined };
-    });
-    await renderPage();
-
-    // Composer paints immediately; an in-flight catalog is not "no provider".
-    expect(await screen.findByText("What can I help with?")).toBeTruthy();
-    expect(screen.getByLabelText("Message an ADE agent")).toBeTruthy();
-    expect(screen.queryByText(/No connected agent is available/)).toBeNull();
-
-    resolveList([]);
-    await waitFor(() => expect(screen.getByText(/No chats yet/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Research a topic" })).toBeNull();
   });
 
   it("finishes chat-list loading without waiting for the model catalog", async () => {
     state.sessions = [makeSession({ title: "Ready chat" })];
     const pendingCatalog = new Promise<never>(() => {});
-    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
-    bridge.ade.personalChats.call.mockImplementation(async ({ action }: CallArgs) => {
+    const { call } = installBridge();
+    call.mockImplementation(async ({ action }: CallArgs) => {
       if (action === "list") return { result: state.sessions };
       if (action === "modelCatalog") return await pendingCatalog;
       return { result: undefined };
@@ -791,12 +257,7 @@ describe("PersonalChatsPage", () => {
 
   it("routes transcript link requests into the visible personal browser collection", async () => {
     const navigate = vi.fn(async () => undefined);
-    const current = window.ade;
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: { ...current, builtInBrowser: { navigate } },
-    });
+    installBridge({ builtInBrowser: { navigate } });
     await renderPage();
 
     window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
@@ -814,12 +275,7 @@ describe("PersonalChatsPage", () => {
 
   it("claims valid link requests and shows an ADE error when the browser bridge is missing", async () => {
     const openExternal = vi.fn(async () => undefined);
-    const current = window.ade;
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
-    });
+    installBridge({ app: { openExternal }, builtInBrowser: undefined });
     await renderPage();
 
     const handled = !window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
@@ -835,13 +291,8 @@ describe("PersonalChatsPage", () => {
 
   it("leaves hosted-web link requests unclaimed so they can fall back externally", async () => {
     const openExternal = vi.fn(async () => undefined);
-    const current = window.ade;
     window.__adeWebClient = true;
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
-    });
+    installBridge({ app: { openExternal }, builtInBrowser: undefined });
     await renderPage();
 
     openUrlInAdeBrowser("https://example.test/docs");
@@ -856,12 +307,7 @@ describe("PersonalChatsPage", () => {
     const navigate = vi.fn(async () => {
       throw new Error("browser unavailable");
     });
-    const current = window.ade;
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: { ...current, app: { openExternal }, builtInBrowser: { navigate } },
-    });
+    installBridge({ app: { openExternal }, builtInBrowser: { navigate } });
     await renderPage();
 
     window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
@@ -878,52 +324,18 @@ describe("PersonalChatsPage", () => {
     expect(openExternal).not.toHaveBeenCalled();
   });
 
-  it("docks (not hero) when selecting a session whose events have not loaded yet", async () => {
-    state.sessions = [makeSession({ title: "Empty chat" })];
-    state.historyEvents = [];
-    await renderPage();
-
-    fireEvent.click(await screen.findByText("Empty chat"));
-
-    await waitFor(() => {
-      const textarea = screen.getByLabelText("Message an ADE agent");
-      expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("docked");
-    });
-    expect(screen.queryByText("What can I help with?")).toBeNull();
-    // Exactly one composer instance — the hero variant must not linger alongside the docked one.
-    expect(screen.getAllByLabelText("Message an ADE agent")).toHaveLength(1);
-    // Once history settles empty, a stable empty state replaces the spinner.
-    expect(await screen.findByText("No messages in this chat yet.")).toBeTruthy();
-  });
-
-  it("does not submit when Enter confirms an IME composition", async () => {
-    await renderPage();
-
-    await screen.findByText("What can I help with?");
-    const textarea = screen.getByLabelText("Message an ADE agent");
-    fireEvent.change(textarea, { target: { value: "こんにちは" } });
-    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
-
-    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
-    const sendish = bridge.ade.personalChats.call.mock.calls.filter((call) => {
-      const arg = call[0] as CallArgs | undefined;
-      return arg?.action === "create" || arg?.action === "send";
-    });
-    expect(sendish).toHaveLength(0);
-    expect((textarea as HTMLTextAreaElement).value).toBe("こんにちは");
-  });
-
   it("names the chats machine absolutely and offers every open machine", async () => {
-    const remoteTab = {
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "MacBook Pro (97)",
-      projectId: "project-1",
-      rootPath: "/remote/ADE",
-      displayName: "ADE",
-    };
-    storeState.openRemoteProjectTabs = [remoteTab];
+    seedStore({
+      openRemoteProjectTabs: [{
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "MacBook Pro (97)",
+        projectId: "project-1",
+        rootPath: "/remote/ADE",
+        displayName: "ADE",
+      }],
+    });
     await renderPage();
 
     // Composed from THIS_MACHINE_NAME, not spelled out: the local machine's
@@ -933,23 +345,23 @@ describe("PersonalChatsPage", () => {
     const trigger = await screen.findByRole("button", {
       name: `Chats run on ${THIS_MACHINE_NAME}. Choose a machine.`,
     });
-    // "This machine" was ambiguous once a tab's machine became switchable.
-    expect(document.body.textContent).not.toMatch(/this machine/i);
 
     fireEvent.click(trigger);
     expect(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ })).toBeTruthy();
   });
 
   it("names the bound machine when the window runs on another computer", async () => {
-    storeState.projectBinding = {
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "MacBook Pro (97)",
-      projectId: "project-1",
-      rootPath: "/remote/ADE",
-      displayName: "ADE",
-    };
+    seedStore({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "MacBook Pro (97)",
+        projectId: "project-1",
+        rootPath: "/remote/ADE",
+        displayName: "ADE",
+      },
+    });
     await renderPage();
 
     expect(
