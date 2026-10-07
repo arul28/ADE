@@ -469,6 +469,7 @@ func buildWorkRootSessionPresentation(
       workOrderedLanes: workOrderedLanes,
       lanePrTagsByLaneId: lanePrTagsByLaneId,
       laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
+      busySubagentParentIds: busySubagentParentIds,
       chatSummaries: chatSummaries
     )
   )
@@ -483,6 +484,7 @@ private func workRootSessionPresentationRenderSignature(
   workOrderedLanes: [LaneSummary],
   lanePrTagsByLaneId: [String: LanePrTag],
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason],
+  busySubagentParentIds: Set<String>,
   chatSummaries: [String: AgentChatSessionSummary]
 ) -> Int {
   var hasher = Hasher()
@@ -592,6 +594,11 @@ private func workRootSessionPresentationRenderSignature(
   for key in laneWaitingReasonByLaneId.keys.sorted() {
     hasher.combine(key)
     hasher.combine(laneWaitingReasonByLaneId[key])
+  }
+  // The busy-parent set moves with time (a subagent's wake turning overdue)
+  // without any row changing, and it decides the parent's Waiting label.
+  for parentId in busySubagentParentIds.sorted() {
+    hasher.combine(parentId)
   }
   return hasher.finalize()
 }
