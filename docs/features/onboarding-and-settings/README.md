@@ -1949,8 +1949,14 @@ when Settings is opened outside a project.
 machine snapshot. `SettingsMachineScope` carries either the current-machine
 target or an explicit `OpenProjectBinding`; `machineSectionAvailable()` keeps
 local-only and bound-runtime sections on the machine they can actually reach.
-GitHub and Linear integrations are still managed on the selected machine that
-owns those credentials.
+GitHub and Linear are `routed`: every call they make, including the per-machine
+GitHub App account status in `useGithubAppUserAuth`, carries the page's pin, so
+each machine's Integrations page shows and changes that machine's own
+credentials. Browser steps (the GitHub device code, Linear sign-in) open on
+This computer; Linear browser sign-in is not offered for another machine
+because its callback cannot reach it, and the API key path is shown instead.
+Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
+integration banner, a PR's GitHub notice) landing on the tab's machine.
 
 Section pages are one column of a few named blocks, each with an icon, a
 title and one line: General is **ADE**, **This project**, **This computer**,

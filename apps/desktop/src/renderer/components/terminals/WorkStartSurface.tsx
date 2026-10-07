@@ -108,10 +108,11 @@ export function WorkStartSurface({
     }
   }, [boundMachineId, draftMachineId, onDraftLaneChange, selectLaneGlobal]);
 
+  // `lanes` is this tab's machine only. A draft lane on another machine does
+  // not depend on it, so an empty local list neither clears nor hides it.
+  const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
+
   useEffect(() => {
-    // `lanes` is this tab's machine only. A draft lane on another machine does
-    // not depend on it, so an empty local list must not clear that choice.
-    const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
     if (!lanes.length && !foreignDraft) {
       setSelectedLaneId("");
       return;
@@ -138,6 +139,7 @@ export function WorkStartSurface({
     draftLaneId,
     draftMachineId,
     boundMachineId,
+    foreignDraft,
     globallySelectedLaneId,
     isKnownLaneId,
     lanes,
@@ -164,7 +166,7 @@ export function WorkStartSurface({
     }
   };
 
-  if (!lanes.length) {
+  if (!lanes.length && !foreignDraft) {
     return (
       <div className="flex h-full items-center justify-center px-6">
         <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg p-5 text-center">

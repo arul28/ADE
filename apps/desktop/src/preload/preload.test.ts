@@ -7624,6 +7624,45 @@ describe("per-chat runtime routing", () => {
     );
   });
 
+  it("routes a machine's GitHub and Linear settings to that machine without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.github.getStatus({ forceRefresh: true }, machineB);
+    await bridge.github.setToken("ghp_test", machineB);
+    await bridge.github.getAppUserAuthStatus(machineB);
+    await bridge.github.getAppInstallationStatus({}, machineB);
+    await bridge.cto.getLinearConnectionStatus(machineB);
+    await bridge.cto.setLinearToken({ token: "lin_api_test" }, machineB);
+    await bridge.cto.clearLinearToken(machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "github.getStatus",
+      "github.setToken",
+      "github.getAppUserAuthStatus",
+      "github.getAppInstallationStatus",
+      "linear_issue_tracker.getConnectionStatus",
+      "linear_credentials.setToken",
+      "linear_issue_tracker.getConnectionStatus",
+      "linear_credentials.clearToken",
+      "linear_issue_tracker.getConnectionStatus",
+    ]);
+    for (const call of remoteRequests) {
+      expect(call.id).toBe("target-b");
+      expect(call.projectId).toBe("project-b");
+    }
+    // Nothing reached the window's own machine or its plain IPC handlers.
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetStatus, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSetLinearToken, expect.anything());
+  });
+
   it("routes pinned file writes to the machine that owns the bytes", async () => {
     const { bridge, invoke } = await mountBridge(machineA);
 

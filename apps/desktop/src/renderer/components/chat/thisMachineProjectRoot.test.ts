@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  projectOnOtherMachine,
   resolveThisMachineProjectRoot,
   THIS_MACHINE_PROJECT_MISSING_MESSAGE,
 } from "./thisMachineProjectRoot";
@@ -144,5 +145,25 @@ describe("resolveThisMachineProjectRoot", () => {
         localProjectRootPath: "/Users/admin/Projects/ADE",
       }),
     ).toEqual({ ok: true, rootPath: "/Users/admin/Projects/ADE" });
+  });
+});
+
+describe("projectOnOtherMachine", () => {
+  const ORIGIN = "git@github.com:arul28/ADE.git";
+  const sameRepo = { projectId: "ade-studio", gitOriginUrl: "https://github.com/arul28/ADE" };
+  const otherRepo = { projectId: "other", gitOriginUrl: "git@github.com:arul28/other.git" };
+
+  it.each([
+    { name: "binds the same repository on that machine", origin: ORIGIN, openTab: "other", projects: [otherRepo, sameRepo], expected: "ade-studio" },
+    { name: "falls back to a project of that machine already open in a tab", origin: ORIGIN, openTab: "other", projects: [otherRepo], expected: "other" },
+    { name: "never opens an unrelated repository", origin: ORIGIN, openTab: null, projects: [otherRepo], expected: null },
+    { name: "takes any project when this window's repository is unknown", origin: null, openTab: null, projects: [otherRepo], expected: "other" },
+    { name: "has nothing to bind on a machine with no projects", origin: null, openTab: null, projects: [], expected: null },
+  ])("$name", ({ origin, openTab, projects, expected }) => {
+    expect(projectOnOtherMachine({
+      currentOrigin: origin,
+      openTabProjectId: openTab,
+      machineProjects: projects,
+    })).toBe(expected);
   });
 });
