@@ -57,49 +57,10 @@ struct SettingsPushDeliverySection: View {
     var content: Content = .controls
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Group {
             if content == .controls {
-                SettingsSectionHeader(
-                    label: "PUSH DELIVERY",
-                    hint: "Remote notifications and Live Activities"
-                )
-
-                enableNotificationsControl
-
-                VStack(spacing: 8) {
-                    PushToggleRow(
-                        symbol: "bell.badge",
-                        title: "Notifications",
-                        subtitle: "Approvals, replies, and failures",
-                        isOn: notificationsBinding
-                    )
-                    PushToggleRow(
-                        symbol: "square.stack.3d.up",
-                        title: "Live Activities",
-                        subtitle: "Agent runs on the Lock Screen",
-                        isOn: liveActivitiesBinding
-                    )
-                    PushToggleRow(
-                        symbol: "eye.slash",
-                        title: "Hide details",
-                        subtitle: "Use private Lock Screen previews",
-                        isOn: hideDetailsBinding
-                    )
-                    PushToggleRow(
-                        symbol: "moon",
-                        title: "Quiet hours",
-                        subtitle: pushService.prefs.quietHoursEnabled
-                            ? "\(pushService.prefs.quietHoursStart)–\(pushService.prefs.quietHoursEnd) · \(Self.shortTimezone(pushService.prefs.quietHoursTimezone))"
-                            : "Mute pushes on a schedule",
-                        isOn: quietHoursBinding
-                    )
-
-                    if pushService.prefs.quietHoursEnabled {
-                        quietHoursPickers
-                    }
-                }
+                controls
             } else {
-                SettingsSectionHeader(label: "DELIVERY DIAGNOSTICS")
                 diagnosticsContent
             }
         }
@@ -109,232 +70,140 @@ struct SettingsPushDeliverySection: View {
         }
     }
 
-    // MARK: - Enable notifications affordance
+    // MARK: - Controls
 
     @ViewBuilder
-    private var enableNotificationsControl: some View {
+    private var controls: some View {
+        if let notice = permissionNotice {
+            ADESettingsNotice(
+                message: notice.message,
+                tone: .warn,
+                actionTitle: notice.actionTitle,
+                action: notice.action
+            )
+        }
+
+        ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.") {
+            ADESettingsRows {
+                toggleRow("Notifications", hint: "Approvals, replies and failures", isOn: notificationsBinding)
+                toggleRow("Live Activities", hint: "Agent runs on the Lock Screen", isOn: liveActivitiesBinding)
+                toggleRow("Hide details", hint: "Private Lock Screen previews", isOn: hideDetailsBinding)
+            }
+        }
+
+        ADESettingsSection("Quiet hours", hint: "Mute pushes on a schedule.") {
+            ADESettingsRows {
+                toggleRow("Quiet hours", hint: nil, isOn: quietHoursBinding)
+                if pushService.prefs.quietHoursEnabled {
+                    ADESettingsRow(title: "From") {
+                        DatePicker("", selection: quietHoursDateBinding(\.quietHoursStart), displayedComponents: .hourAndMinute)
+                            .labelsHidden()
+                    }
+                    ADESettingsRow(title: "To") {
+                        DatePicker("", selection: quietHoursDateBinding(\.quietHoursEnd), displayedComponents: .hourAndMinute)
+                            .labelsHidden()
+                    }
+                    ADESettingsValueRow(
+                        title: "Time zone",
+                        value: Self.shortTimezone(pushService.prefs.quietHoursTimezone),
+                        mono: true
+                    )
+                }
+            }
+        }
+    }
+
+    private func toggleRow(_ title: String, hint: String?, isOn: Binding<Bool>) -> some View {
+        ADESettingsRow(title: title, hint: hint) {
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(ADEColor.accent)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+    }
+
+    /// What stands between this phone and its first push, with the fix.
+    private var permissionNotice: (message: String, actionTitle: String?, action: (() -> Void)?)? {
         let permissionStatus = pushService.permissionStatus
         if !snapshot.canEnableNotifications {
-            VStack(alignment: .leading, spacing: 6) {
-                enableNotificationsButton(label: "Enable notifications", enabled: false, action: {})
-                Text("Sign in or pair a computer to enable notifications")
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textMuted)
-                    .padding(.horizontal, 4)
-            }
-        } else if permissionStatus == .notDetermined || permissionStatus == .denied {
-            enableNotificationsButton(
-                label: permissionStatus == .denied ? "Turn on in iOS Settings" : "Enable notifications",
-                enabled: true
-            ) {
-                if permissionStatus == .denied {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                } else {
-                    Task { await pushService.enableIfPaired() }
-                }
-            }
+            return ("Sign in or pair a computer to get notifications.", nil, nil)
         }
+        if permissionStatus == .denied {
+            return ("Notifications are off for ADE in iOS Settings.", "Open iOS Settings", {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            })
+        }
+        if permissionStatus == .notDetermined {
+            return ("Notifications are not on yet.", "Enable notifications", {
+                Task { await pushService.enableIfPaired() }
+            })
+        }
+        return nil
     }
 
-    private func enableNotificationsButton(
-        label: String,
-        enabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: "bell.badge.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(ADEColor.purpleAccent)
-                Text(label)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ADEColor.textPrimary)
-                Spacer(minLength: 8)
-                if enabled {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ADEColor.purpleAccent.opacity(0.55))
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(ADEColor.purpleAccent.opacity(0.10))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
-            )
-        }
-        .buttonStyle(ADEScaleButtonStyle())
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
-    }
-
-    // MARK: - Diagnostics (collapsed by default)
+    // MARK: - Diagnostics
 
     @ViewBuilder
     private var diagnosticsContent: some View {
-        VStack(spacing: 10) {
-            VStack(spacing: 10) {
-                SettingsDetailRow(
-                    symbol: statusSymbol,
-                    label: "Status",
-                    value: statusValue
-                )
-
+        ADESettingsSection("This device") {
+            ADESettingsRows {
+                ADESettingsValueRow(title: "Status", value: statusValue, tone: statusTone)
                 if let tokenSuffix = snapshot.tokenSuffix {
-                    SettingsDetailRow(
-                        symbol: "key.horizontal",
-                        label: "APNs token",
-                        value: "…\(tokenSuffix) · \(snapshot.apnsEnvironment)"
-                    )
+                    ADESettingsValueRow(title: "APNs token", value: "…\(tokenSuffix) · \(snapshot.apnsEnvironment)", mono: true)
                 }
-
-                SettingsDetailRow(
-                    symbol: liveActivityDiagnosticSymbol,
-                    label: "Live Activity",
-                    value: liveActivityDiagnosticValue
-                )
-
+                ADESettingsValueRow(title: "Live Activity", value: liveActivityDiagnosticValue)
                 if let lastPush = snapshot.lastPushReceivedAt {
-                    SettingsDetailRow(
-                        symbol: "tray.and.arrow.down",
-                        label: "Last push",
-                        value: Self.relativeDescription(lastPush)
-                    )
+                    ADESettingsValueRow(title: "Last push", value: Self.relativeDescription(lastPush))
                 } else if let registered = snapshot.lastRegisteredAt {
-                    SettingsDetailRow(
-                        symbol: "clock.arrow.circlepath",
-                        label: "Registered",
-                        value: Self.relativeDescription(registered)
-                    )
+                    ADESettingsValueRow(title: "Registered", value: Self.relativeDescription(registered))
                 }
+            }
+        }
 
+        ADESettingsSection("Relay", trailing: {
+            Button {
+                Task { await pushService.refreshStatus() }
+            } label: {
+                if pushService.isRefreshingStatus {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Text("Refresh")
+                }
+            }
+            .buttonStyle(ADEKitButtonStyle())
+            .disabled(pushService.isRefreshingStatus || !snapshot.canRefreshRelayStatus)
+            .opacity(snapshot.canRefreshRelayStatus ? 1 : 0.45)
+            .accessibilityLabel("Refresh status")
+        }) {
+            ADESettingsRows {
                 if snapshot.relayResolved {
-                    SettingsDetailRow(
-                        symbol: "antenna.radiowaves.left.and.right",
-                        label: "Relay",
-                        value: relayValue
-                    )
+                    ADESettingsValueRow(title: "Relay", value: relayValue)
                     if snapshot.registeredDeviceCount > 0 {
-                        SettingsDetailRow(
-                            symbol: "iphone.gen3",
-                            label: "Registered devices",
-                            value: "\(snapshot.registeredDeviceCount)"
-                        )
+                        ADESettingsValueRow(title: "Registered devices", value: "\(snapshot.registeredDeviceCount)", mono: true)
                     }
                     if let lastPublish = snapshot.lastPublishAt {
-                        SettingsDetailRow(
-                            symbol: "paperplane",
-                            label: "Last delivery",
-                            value: Self.relativeDescription(lastPublish)
-                        )
+                        ADESettingsValueRow(title: "Last delivery", value: Self.relativeDescription(lastPublish))
                     }
                     if let publishError = snapshot.lastPublishError {
-                        SettingsDetailRow(
-                            symbol: "exclamationmark.triangle",
-                            label: "Delivery error",
-                            value: publishError
-                        )
+                        ADESettingsRow("Delivery error", hint: publishError)
                     }
-                }
-            }
-
-            refreshButton
-
-            if let inlineStatusMessage {
-                Text(inlineStatusMessage)
-                    .font(.caption)
-                    .foregroundStyle(inlineStatusTint)
-                    .padding(.horizontal, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    // MARK: - Quiet hours pickers
-
-    @ViewBuilder
-    private var quietHoursPickers: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("From")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEColor.textSecondary)
-                Spacer()
-                DatePicker(
-                    "",
-                    selection: quietHoursDateBinding(\.quietHoursStart),
-                    displayedComponents: .hourAndMinute
-                )
-                .labelsHidden()
-            }
-            HStack {
-                Text("To")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEColor.textSecondary)
-                Spacer()
-                DatePicker(
-                    "",
-                    selection: quietHoursDateBinding(\.quietHoursEnd),
-                    displayedComponents: .hourAndMinute
-                )
-                .labelsHidden()
-            }
-            HStack {
-                Text("Time zone")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEColor.textSecondary)
-                Spacer()
-                Text(Self.shortTimezone(pushService.prefs.quietHoursTimezone))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(ADEColor.textSecondary)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(ADEColor.surfaceBackground.opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.6)
-        )
-    }
-
-    // MARK: - Refresh
-
-    @ViewBuilder
-    private var refreshButton: some View {
-        Button {
-            Task { await pushService.refreshStatus() }
-        } label: {
-            HStack(spacing: 8) {
-                if pushService.isRefreshingStatus {
-                    ProgressView().controlSize(.small)
                 } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
+                    ADESettingsRow(
+                        snapshot.canRefreshRelayStatus ? "Not checked yet" : "Connect a computer to check the relay"
+                    )
                 }
-                Text(refreshButtonLabel)
-                    .font(.subheadline.weight(.medium))
             }
-            .foregroundStyle(snapshot.canRefreshRelayStatus ? ADEColor.purpleAccent : ADEColor.textSecondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill((snapshot.canRefreshRelayStatus ? ADEColor.purpleAccent : ADEColor.textSecondary).opacity(0.08))
+        }
+
+        if let inlineStatusMessage {
+            ADESettingsNotice(
+                message: inlineStatusMessage,
+                tone: snapshot.relayRefreshError == nil ? .crit : .warn
             )
         }
-        .buttonStyle(ADEScaleButtonStyle())
-        .disabled(pushService.isRefreshingStatus || !snapshot.canRefreshRelayStatus)
     }
 
     // MARK: - Bindings
@@ -385,15 +254,12 @@ struct SettingsPushDeliverySection: View {
 
     // MARK: - Derived display
 
-    private var statusSymbol: String {
-        if snapshot.permissionStatus == .denied { return "bell.slash" }
+    private var statusTone: ADEKitTone? {
+        if snapshot.permissionStatus == .denied { return .warn }
         switch snapshot.registrationState {
-        case .registered: return "bell.badge.fill"
-        case .waitingForMachine: return "wifi.exclamationmark"
-        case .registering, .awaitingToken: return "arrow.triangle.2.circlepath"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .permissionDenied: return "bell.slash"
-        case .unsupported, .notDetermined: return "bell"
+        case .registered: return .ok
+        case .failed, .permissionDenied: return .crit
+        default: return nil
         }
     }
 
@@ -419,14 +285,6 @@ struct SettingsPushDeliverySection: View {
         return snapshot.relayApnsConfigured ? "Reachable · APNs key configured" : "Reachable · APNs key missing"
     }
 
-    private var liveActivityDiagnosticSymbol: String {
-        if !pushService.prefs.liveActivitiesEnabled { return "slash.circle" }
-        if !snapshot.liveActivitiesAuthorized { return "slash.circle" }
-        if snapshot.liveActivityTokenRegistered { return "dot.radiowaves.up.forward" }
-        if snapshot.liveActivityTokenPresent { return "arrow.triangle.2.circlepath" }
-        return "hourglass"
-    }
-
     private var liveActivityDiagnosticValue: String {
         guard pushService.prefs.liveActivitiesEnabled else { return "Disabled in ADE" }
         guard snapshot.liveActivitiesAuthorized else { return "Off in iOS Settings" }
@@ -435,17 +293,8 @@ struct SettingsPushDeliverySection: View {
         return "Waiting for push-to-start token"
     }
 
-    private var refreshButtonLabel: String {
-        if pushService.isRefreshingStatus { return "Checking relay…" }
-        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect a computer to refresh"
-    }
-
     private var inlineStatusMessage: String? {
         snapshot.relayRefreshError ?? snapshot.lastError
-    }
-
-    private var inlineStatusTint: Color {
-        snapshot.relayRefreshError == nil ? ADESharedTheme.statusFailed : ADEColor.warning
     }
 
     // MARK: - Formatting helpers
@@ -473,58 +322,5 @@ struct SettingsPushDeliverySection: View {
     private static func hhmm(from date: Date) -> String {
         let components = Calendar.current.dateComponents([.hour, .minute], from: date)
         return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
-    }
-}
-
-// MARK: - Toggle row
-
-private struct PushToggleRow: View {
-    let symbol: String
-    let title: String
-    let subtitle: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(ADEColor.purpleAccent)
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(ADEColor.purpleAccent.opacity(0.14))
-                )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ADEColor.textPrimary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textSecondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .tint(ADEColor.purpleAccent)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(ADEColor.surfaceBackground.opacity(0.06))
-        )
-        .glassEffect(in: .rect(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.6)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-        .accessibilityValue(isOn ? "On" : "Off")
     }
 }

@@ -72,7 +72,7 @@ struct SettingsPairingScannerSheet: View {
         } label: {
           Image(systemName: torchOn ? "bolt.fill" : "bolt.slash.fill")
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(torchOn ? ADEColor.purpleAccent : .white)
+            .foregroundStyle(torchOn ? Color.yellow : .white)
             .frame(width: 40, height: 40)
             .background(Circle().fill(.black.opacity(0.35)))
         }
@@ -94,11 +94,10 @@ struct SettingsPairingScannerSheet: View {
 
         RoundedRectangle(cornerRadius: 28, style: .continuous)
           .strokeBorder(
-            showUnrecognized ? ADEColor.danger : ADEColor.purpleAccent.opacity(0.9),
-            lineWidth: 2.5
+            showUnrecognized ? ADEColor.danger : Color.white.opacity(0.9),
+            lineWidth: 2
           )
           .frame(width: side, height: side)
-          .shadow(color: ADEColor.purpleGlow.opacity(0.4), radius: 10)
       }
       .frame(width: proxy.size.width, height: proxy.size.height)
     }
@@ -127,12 +126,12 @@ struct SettingsPairingScannerSheet: View {
   private var permissionPrompt: some View {
     VStack(spacing: 16) {
       Image(systemName: "qrcode.viewfinder")
-        .font(.system(size: 44, weight: .regular))
-        .foregroundStyle(ADEColor.purpleAccent)
+        .font(.system(size: 44, weight: .light))
+        .foregroundStyle(.white.opacity(0.8))
       Text("Camera access needed")
         .font(.title3.weight(.semibold))
         .foregroundStyle(.white)
-      Text("ADE scans your computer's pairing code to connect. Enable camera access in Settings.")
+      Text("Allow camera access in iOS Settings to scan your computer's pairing code.")
         .font(.subheadline)
         .foregroundStyle(.white.opacity(0.75))
         .multilineTextAlignment(.center)
@@ -143,12 +142,8 @@ struct SettingsPairingScannerSheet: View {
         }
       } label: {
         Text("Open Settings")
-          .font(.subheadline.weight(.semibold))
-          .padding(.horizontal, 18)
-          .padding(.vertical, 10)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.purpleAccent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true))
     }
     .padding(.horizontal, 36)
   }

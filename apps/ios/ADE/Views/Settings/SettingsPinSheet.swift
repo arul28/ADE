@@ -49,10 +49,10 @@ struct SettingsPinSheet: View {
       VStack(alignment: .leading, spacing: 18) {
         VStack(alignment: .leading, spacing: 4) {
           Text(noPairingCode ? "No pairing code set" : "Enter pairing PIN")
-            .font(.title2.weight(.semibold))
+            .font(.system(size: 22, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("Connecting to \(preset.hostDisplayName)")
-            .font(.subheadline)
+            .font(.system(size: 14))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
@@ -66,7 +66,7 @@ struct SettingsPinSheet: View {
             withAnimation(.easeInOut(duration: 0.2)) { noPairingCode = false }
           } label: {
             Text("Enter code anyway")
-              .font(.subheadline.weight(.semibold))
+              .font(.system(size: 14, weight: .semibold))
               .foregroundStyle(ADEColor.accent)
               .frame(maxWidth: .infinity)
               .frame(minHeight: 44)
@@ -125,8 +125,8 @@ struct SettingsPinSheet: View {
     .accessibilityLabel("Pairing PIN")
     .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-    Text("You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer.")
-      .font(.footnote)
+    Text("Enter the pairing code shown in ADE on that computer.")
+      .font(.system(size: 13))
       .foregroundStyle(ADEColor.textSecondary)
 
     PinKeypad(
@@ -140,26 +140,7 @@ struct SettingsPinSheet: View {
   // MARK: - No pairing code message (M10)
 
   private var noPairingCodeCard: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(systemName: "key.slash")
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.warning)
-        .frame(width: 30, height: 30)
-        .background(ADEColor.warning.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      Text("That computer has no pairing code set — set one in ADE on that computer.")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textPrimary)
-        .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: 0)
-    }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.75)
-    )
-    .accessibilityElement(children: .combine)
+    ADESettingsNotice(message: "That computer has no pairing code set. Set one in ADE on that computer.", tone: .warn)
   }
 
   // MARK: - Footer
@@ -175,23 +156,16 @@ struct SettingsPinSheet: View {
         dismiss()
       } label: {
         Text("Cancel")
-          .font(.subheadline.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 10)
       }
-      .buttonStyle(.glass)
+      .buttonStyle(ADEKitButtonStyle(wide: true))
 
       if noPairingCode {
         Button {
           onNeedsPinSetup(setupRoute)
         } label: {
           Text("How to set one")
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.purpleAccent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       } else {
         Button {
           submit()
@@ -201,14 +175,11 @@ struct SettingsPinSheet: View {
               ProgressView().controlSize(.small)
             }
             Text("Connect")
-              .font(.subheadline.weight(.semibold))
           }
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 10)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.purpleAccent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         .disabled(!isComplete || isSubmitting)
+        .opacity(!isComplete || isSubmitting ? 0.5 : 1)
       }
     }
   }
@@ -344,15 +315,11 @@ struct SettingsPinSetupSheet: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 20) {
           VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "lock.shield")
-              .font(.system(size: 30, weight: .regular))
-              .foregroundStyle(ADEColor.purpleAccent)
-              .padding(.bottom, 2)
             Text("Set a PIN to connect")
-              .font(.title2.weight(.semibold))
+              .font(.system(size: 22, weight: .semibold))
               .foregroundStyle(ADEColor.textPrimary)
-            Text("Set a pairing PIN in ADE on \(route.machineDisplayName), then return here.")
-              .font(.subheadline)
+            Text("Set a pairing PIN on \(route.machineDisplayName), then come back.")
+              .font(.system(size: 14))
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -380,14 +347,7 @@ struct SettingsPinSetupSheet: View {
               }
               .padding(.horizontal, 12)
               .padding(.vertical, 10)
-              .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                  .fill(ADEColor.recessedBackground.opacity(0.82))
-              )
-              .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                  .stroke(ADEColor.border.opacity(0.2), lineWidth: 0.75)
-              )
+              .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(didCopyCommand ? "Command copied" : "Copy command \(setPinCommand)")
@@ -405,12 +365,8 @@ struct SettingsPinSetupSheet: View {
             onTryAgain(route.pinPreset)
           } label: {
             Text("Try again")
-              .font(.subheadline.weight(.semibold))
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 11)
           }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.purpleAccent)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 22)
@@ -439,31 +395,22 @@ struct SettingsPinSetupSheet: View {
   ) -> some View {
     HStack(alignment: .top, spacing: 12) {
       Text("\(number)")
-        .font(.subheadline.weight(.bold))
-        .foregroundStyle(ADEColor.purpleAccent)
-        .frame(width: 26, height: 26)
-        .background(Circle().fill(ADEColor.purpleAccent.opacity(0.14)))
+        .font(.adeMono(12, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 22, height: 22)
+        .background(Circle().fill(ADEKit.track))
       VStack(alignment: .leading, spacing: 6) {
         Text(title)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Text(detail)
-          .font(.footnote)
+          .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
         content()
       }
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .fill(ADEColor.cardBackground.opacity(0.5))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 1)
-    )
+    .adeKitCard()
   }
 }
 
@@ -491,17 +438,17 @@ private struct PinDigitBox: View {
 
   var body: some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.82))
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(ADEKit.surface)
 
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(
-          isActive ? ADEColor.purpleAccent : ADEColor.border.opacity(0.25),
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(
+          isActive ? ADEColor.accent : ADEKit.edge,
           lineWidth: isActive ? 1.5 : 0.75
         )
 
       Text(digit)
-        .font(.system(size: 28, weight: .semibold, design: .rounded))
+        .font(.system(size: 26, weight: .medium, design: .monospaced))
         .foregroundStyle(ADEColor.textPrimary)
     }
     .frame(maxWidth: .infinity, minHeight: 54, maxHeight: 54)
@@ -552,14 +499,8 @@ private struct PinKeypad: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
-        .background(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(ADEColor.recessedBackground.opacity(isDisabled ? 0.35 : 0.78))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
-        )
+        .background(ADEKit.surface.opacity(isDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
         .accessibilityLabel("Delete digit")
       }
     }
@@ -590,7 +531,6 @@ struct ConnectSuccessBeat: View {
       Image(systemName: "checkmark.circle.fill")
         .font(.system(size: 56, weight: .semibold))
         .foregroundStyle(ADEColor.success)
-        .shadow(color: ADEColor.success.opacity(0.4), radius: 16)
     }
     .transition(.scale(scale: 0.6).combined(with: .opacity))
     .accessibilityLabel("Connected")
@@ -605,21 +545,15 @@ private struct PinKeyButton: View {
   var body: some View {
     Button(action: action) {
       Text(title)
-        .font(.title3.weight(.semibold))
+        .font(.system(size: 20, weight: .medium))
         .frame(maxWidth: .infinity, minHeight: 48)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(isDisabled)
     .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(isDisabled ? 0.35 : 0.78))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
-    )
+        .background(ADEKit.surface.opacity(isDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
     .accessibilityLabel("Digit \(title)")
   }
 }

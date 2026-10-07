@@ -139,35 +139,27 @@ struct ProviderAccountsMachinePicker: View {
   }
 
   private func label(showsChevron: Bool) -> some View {
-    HStack(spacing: 8) {
+    HStack(spacing: 10) {
       Image(systemName: "desktopcomputer")
-        .font(.system(size: 13, weight: .semibold))
+        .font(.system(size: 15))
         .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 22)
       VStack(alignment: .leading, spacing: 1) {
-        Text("ACCOUNTS ON")
-          .font(.caption2.weight(.semibold))
-          .tracking(0.5)
-          .foregroundStyle(ADEColor.textMuted)
         Text(selected?.name ?? "This machine")
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+        Text(showsChevron ? "\(machines.count) machines" : "Accounts on this computer")
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
       }
       Spacer(minLength: 8)
       if showsChevron {
-        HStack(spacing: 4) {
-          Text("\(machines.count) machines")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-          Image(systemName: "chevron.up.chevron.down")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .contentShape(Rectangle())
   }
 }
@@ -191,18 +183,21 @@ struct ProviderAccountsScreen: View {
   var body: some View {
     List {
       Section {
+        ADEKitSegmented(
+          selection: $provider,
+          options: ProviderAccountProvider.allCases.map { (value: $0, title: $0.title) }
+        )
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+      }
+
+      Section {
         if let selectedMachineId {
           ProviderAccountsMachinePicker(machines: machines, selectedId: selectedMachineId)
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
+            .adeSettingsListRow()
         }
-        Picker("Provider", selection: $provider) {
-          ForEach(ProviderAccountProvider.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
-
         balanceRow
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 2, trailing: 16), separator: .hidden)
+          .adeSettingsListRow()
       }
 
       if let error = store.errorMessage {
@@ -210,13 +205,13 @@ struct ProviderAccountsScreen: View {
           ADEFlatInlineNotice(message: error, tint: ADEColor.danger) {
             Task { await store.load(refresh: true) }
           }
-          .adeFlatRow()
+          .adeSettingsListRow()
         }
       }
 
       Section {
         if !store.loaded {
-          HStack { ProgressView(); Spacer() }.adeFlatRow()
+          HStack { ProgressView(); Spacer() }.adeSettingsListRow()
         }
         ForEach(store.accounts) { account in
           NavigationLink {
@@ -236,7 +231,7 @@ struct ProviderAccountsScreen: View {
               busy: store.busyAccountId == account.id
             )
           }
-          .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+          .adeSettingsListRow(insets: EdgeInsets(top: 12, leading: ADEKit.inset, bottom: 12, trailing: ADEKit.inset))
           .swipeActions(edge: .leading, allowsFullSwipe: true) {
             if canChange, !account.isDefault, account.hasLogin {
               Button { makeDefault(account) } label: { Label("Default", systemImage: "star.fill") }
@@ -252,32 +247,21 @@ struct ProviderAccountsScreen: View {
         }
         if canChange, store.loaded {
           Button { addPresented = true } label: {
-            Label("Add \(provider.title) account", systemImage: "plus.circle.fill")
-              .font(.subheadline.weight(.semibold))
+            Label("Add \(provider.title) account", systemImage: "plus")
+              .font(.system(size: 15))
               .foregroundStyle(ADEColor.accent)
           }
           .buttonStyle(.plain)
-          .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+          .adeSettingsListRow()
         }
       } header: {
-        ADEFlatSectionHeader("Accounts", detail: store.accounts.isEmpty ? nil : "\(store.accounts.count)")
-      }
-
-      Section {
-        Label {
-          Text(footerText)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-          Image(systemName: "info.circle")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .adeFlatRow(insets: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
+        ADESettingsListHeader(
+          store.accounts.isEmpty ? "Accounts" : "Accounts · \(store.accounts.count)",
+          hint: footerText
+        )
       }
     }
-    .adeFlatList()
+    .adeSettingsList()
     .refreshable {
       await store.load(refresh: true)
       await machine.loadQuota(refresh: true)
@@ -341,18 +325,17 @@ struct ProviderAccountsScreen: View {
 
   private var balanceRow: some View {
     let enabled = store.settings?.smartBalance ?? false
-    return HStack(alignment: .top, spacing: 12) {
+    return HStack(alignment: .center, spacing: 10) {
       Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(enabled ? ADEColor.accent : ADEColor.textMuted)
-        .frame(width: 30, height: 30)
-        .background((enabled ? ADEColor.accent : ADEColor.textMuted).opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      VStack(alignment: .leading, spacing: 3) {
+        .font(.system(size: 15))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 22)
+      VStack(alignment: .leading, spacing: 2) {
         Text("Smart balance")
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
         Text(balanceDetail(enabled: enabled))
-          .font(.caption)
+          .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -382,8 +365,7 @@ struct ProviderAccountsScreen: View {
   }
 
   private var footerText: String {
-    let machine = "on \(self.machine.name)"
-    return "These logins live \(machine). Switching the default only changes new chats; chats already running stay on their account."
+    "The default only changes new chats."
   }
 
   @ViewBuilder
@@ -443,8 +425,11 @@ struct ProviderAccountRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
+        if let asset = providerAssetName(account.provider) {
+          Image(asset).resizable().scaledToFit().frame(width: 14, height: 14)
+        }
         Text(account.label)
-          .font(.body.weight(.semibold))
+          .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         badges
@@ -452,7 +437,7 @@ struct ProviderAccountRow: View {
         if busy { ProgressView().controlSize(.mini) }
       }
       Text(detailLine)
-        .font(.caption)
+        .font(.system(size: 12.5))
         .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -475,9 +460,9 @@ struct ProviderAccountRow: View {
 
   @ViewBuilder
   private var badges: some View {
-    if account.isDefault { ADEFlatBadge(text: "Default", tint: ADEColor.accent) }
-    if isNext { ADEFlatBadge(text: "Next", tint: ADEColor.info) }
-    if account.loginBroken == true { ADEFlatBadge(text: "Signed out", tint: ADEColor.warning) }
+    if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
+    if isNext { ADEKitTag(text: "Next") }
+    if account.loginBroken == true { ADEKitTag(text: "Signed out", tone: .warn) }
   }
 }
 
@@ -489,31 +474,25 @@ struct ProviderAccountQuotaMeter: View {
 
   var body: some View {
     let left = adeUsageDisplayPercentLeft(window)
-    let color = ADEUsagePressure.color(percent: 100 - left, providerColor: tint)
+    let tone = ADEUsagePressure.tone(percentLeft: left)
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 4) {
         Text(adeUsageWindowLabel(window))
-          .font(.caption2.weight(.medium))
+          .font(.system(size: 11.5))
           .foregroundStyle(ADEColor.textMuted)
         Spacer(minLength: 4)
-        Text("\(Int(left.rounded()))%")
-          .font(.adeMono(10.5, weight: .semibold))
-          .foregroundStyle(100 - left > ADEUsagePressure.critical ? ADEColor.danger : ADEColor.textSecondary)
+        Text("\(Int(left.rounded()))% left")
+          .font(.adeMono(10.5, weight: .medium))
+          .foregroundStyle(tone == .neutral ? ADEColor.textSecondary : tone.color)
       }
-      GeometryReader { proxy in
-        ZStack(alignment: .leading) {
-          Capsule().fill(ADEColor.textPrimary.opacity(0.08))
-          Capsule().fill(color).frame(width: max(3, proxy.size.width * left / 100))
-        }
-      }
-      .frame(height: 4)
+      ADEKitMeter(fraction: left / 100, color: ADEUsagePressure.color(percentLeft: left, fallback: tint))
       if wide {
         Text(resetLine(window))
-          .font(.caption2)
+          .font(.system(size: 11.5))
           .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .frame(maxWidth: wide ? .infinity : 120)
+    .frame(maxWidth: wide ? .infinity : 130)
   }
 
   private func resetLine(_ window: MobileUsageQuotaWindow) -> String {
@@ -552,82 +531,71 @@ struct ProviderAccountDetailPage: View {
 
   private func content(_ account: ProviderAccount) -> some View {
     let windows = providerAccountWindows(account, snapshot: machine.quota)
-    return List {
-      Section {
-        VStack(spacing: 10) {
-          VStack(spacing: 4) {
-            Text(account.label)
-              .font(.title2.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text(providerAccountDetailLine(account))
-              .font(.subheadline)
-              .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
-              .multilineTextAlignment(.center)
-          }
-          HStack(spacing: 6) {
-            ADEFlatChip(symbol: nil, text: providerAccountProviderTitle(account), tint: ADEColor.providerBrand(for: account.provider))
-            if account.isDefault { ADEFlatBadge(text: "Default", tint: ADEColor.accent) }
-          }
-        }
-        .frame(maxWidth: .infinity)
-        .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 18, trailing: 16), separator: .hidden)
-
-        actionBar(account)
-          .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
-      }
-
-      if let replaced = account.replacedAccount {
-        Section {
-          VStack(alignment: .leading, spacing: 8) {
-            Label("Login replaced", systemImage: "arrow.left.arrow.right")
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.warning)
-            Text("\(replaced.email) was signed in here until another login replaced it outside ADE. Add it back as its own account to keep both.")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-            if canChange {
-              Button("Dismiss") {
-                Task { await store.dismissReplaced(id: account.id) }
-              }
-              .font(.footnote.weight(.semibold))
-              .buttonStyle(.glass)
-              .controlSize(.small)
+    return ScrollView {
+      VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+        VStack(alignment: .leading, spacing: 14) {
+          HStack(spacing: 12) {
+            if let asset = providerAssetName(account.provider) {
+              Image(asset).resizable().scaledToFit().frame(width: 28, height: 28)
             }
+            VStack(alignment: .leading, spacing: 3) {
+              HStack(spacing: 6) {
+                Text(account.label)
+                  .font(.system(size: 18, weight: .semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
+              }
+              Text(providerAccountDetailLine(account))
+                .font(.system(size: 12.5))
+                .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
+            }
+            Spacer(minLength: 0)
           }
-          .adeFlatRow()
+          actionBar(account)
         }
-      }
+        .adeKitCard()
 
-      if account.signedIn, !windows.isEmpty {
-        Section {
-          ForEach(windows) { window in
-            ProviderAccountQuotaMeter(window: window, tint: ADEColor.providerBrand(for: account.provider), wide: true)
-              .adeFlatRow(insets: EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        if let replaced = account.replacedAccount {
+          ADESettingsNotice(
+            message: "\(replaced.email) was replaced by another login outside ADE. Add it back as its own account to keep both.",
+            tone: .warn,
+            actionTitle: canChange ? "Dismiss" : nil,
+            action: canChange ? { Task { await store.dismissReplaced(id: account.id) } } : nil
+          )
+        }
+
+        if account.signedIn, !windows.isEmpty {
+          ADESettingsSection("Limits") {
+            VStack(spacing: 14) {
+              ForEach(windows) { window in
+                ProviderAccountQuotaMeter(window: window, tint: ADEColor.providerBrand(for: account.provider), wide: true)
+              }
+            }
+            .adeKitCard()
           }
-        } header: {
-          ADEFlatSectionHeader("Limits")
+        }
+
+        ADESettingsSection("Details") {
+          ADESettingsRows {
+            if let plan = account.plan { ADESettingsValueRow(title: "Plan", value: plan.capitalized) }
+            ADESettingsValueRow(title: "Provider", value: providerAccountProviderTitle(account))
+            ADESettingsValueRow(title: "Machine", value: machine.name)
+            ADESettingsValueRow(title: "Folder", value: account.configHome, mono: true)
+              .textSelection(.enabled)
+          }
+        }
+
+        if canChange, !account.isDefault {
+          ADESettingsRows {
+            ADESettingsActionRow(title: "Remove account", destructive: true) { confirmRemove = true }
+          }
         }
       }
-
-      Section {
-        if let plan = account.plan { fact("Plan", plan.capitalized) }
-        fact("Machine", machine.name)
-        fact("Folder", account.configHome, mono: true)
-      } header: {
-        ADEFlatSectionHeader("Details")
-      }
-
-      if canChange, !account.isDefault {
-        Section {
-          Button(role: .destructive) { confirmRemove = true } label: { Text("Remove account") }
-            .adeFlatRow()
-        } header: {
-          Color.clear.frame(height: 8)
-        }
-      }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 36)
     }
-    .adeFlatList()
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .alert("Rename account", isPresented: $renamePresented) {
       TextField("Name", text: $renameText)
       Button("Cancel", role: .cancel) {}
@@ -652,76 +620,26 @@ struct ProviderAccountDetailPage: View {
   @ViewBuilder
   private func actionBar(_ account: ProviderAccount) -> some View {
     if canChange {
-      HStack(spacing: 10) {
-        if account.signedIn {
-          actionTile(
-            account.isDefault ? "Default" : "Make default",
-            systemImage: account.isDefault ? "star.fill" : "star",
-            prominent: !account.isDefault,
-            enabled: !account.isDefault
-          ) {
+      HStack(spacing: 8) {
+        if account.signedIn, !account.isDefault {
+          Button("Make default") {
             Task {
               if await store.makeDefault(id: account.id) { ADEHaptics.success() }
             }
           }
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
         }
-        actionTile(
-          account.signedIn ? "Sign in again" : "Sign in",
-          systemImage: account.signedIn ? "arrow.clockwise" : "person.badge.key",
-          prominent: !account.signedIn
-        ) { onSignIn(account) }
-        actionTile("Rename", systemImage: "pencil") {
+        Button(account.signedIn ? "Sign in again" : "Sign in") { onSignIn(account) }
+          .buttonStyle(ADEKitButtonStyle(prominent: !account.signedIn))
+        Button("Rename") {
           renameText = account.label
           renamePresented = true
         }
+        .buttonStyle(ADEKitButtonStyle())
+        Spacer(minLength: 0)
       }
       .disabled(store.busyAccountId == account.id)
     }
-  }
-
-  private func actionTile(
-    _ title: String,
-    systemImage: String,
-    prominent: Bool = false,
-    enabled: Bool = true,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      VStack(spacing: 6) {
-        Image(systemName: systemImage)
-          .font(.system(size: 17, weight: .semibold))
-          .frame(height: 22)
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .lineLimit(1)
-          .minimumScaleFactor(0.8)
-      }
-      .foregroundStyle(prominent ? Color.white : (enabled ? ADEColor.accent : ADEColor.textMuted))
-      .frame(maxWidth: .infinity, minHeight: 62)
-      .background(
-        prominent ? AnyShapeStyle(ADEColor.accent) : AnyShapeStyle(ADEColor.textPrimary.opacity(0.05)),
-        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-      )
-    }
-    .buttonStyle(.plain)
-    .disabled(!enabled)
-  }
-
-  private func fact(_ label: String, _ value: String, mono: Bool = false) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(label)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-      Spacer(minLength: 12)
-      Text(value)
-        .font(mono ? .adeMono(11.5) : .subheadline)
-        .foregroundStyle(ADEColor.textPrimary)
-        .multilineTextAlignment(.trailing)
-        .lineLimit(2)
-        .truncationMode(.middle)
-        .textSelection(.enabled)
-    }
-    .adeFlatRow()
   }
 }
 
@@ -739,41 +657,25 @@ struct ProviderAccountAddSheet: View {
 
   var body: some View {
     NavigationStack {
-      List {
-        Section {
-          VStack(spacing: 12) {
-            Text("Name it so you can tell it apart, like Work or Personal. You sign in next.")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-              .multilineTextAlignment(.center)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          ADESettingsSection("Name", hint: "Like Work or Personal. You sign in next.") {
+            TextField("Account name", text: $label)
+              .font(.system(size: 15))
+              .focused($focused)
+              .submitLabel(.next)
+              .onSubmit(create)
+              .padding(.horizontal, ADEKit.inset)
+              .frame(minHeight: 48)
+              .adeKitCard(padding: nil)
           }
-          .frame(maxWidth: .infinity)
-          .adeFlatRow(insets: EdgeInsets(top: 8, leading: 24, bottom: 16, trailing: 24), separator: .hidden)
-        }
-        Section {
-          TextField("Account name", text: $label)
-            .font(.body)
-            .focused($focused)
-            .submitLabel(.next)
-            .onSubmit(create)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-              RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(focused ? ADEColor.accent.opacity(0.6) : Color.clear, lineWidth: 1)
-            )
-            .adeFlatRow(insets: EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-        } header: {
-          ADEFlatSectionHeader("Name")
-        }
-        if let error {
-          Section {
-            ADEFlatInlineNotice(message: error, tint: ADEColor.danger).adeFlatRow()
+          if let error {
+            ADESettingsNotice(message: error, tone: .crit)
           }
         }
+        .padding(16)
       }
-      .adeFlatList()
+      .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("New \(provider.title) account")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -822,8 +724,7 @@ struct ProviderAccountsMachineGoneView: View {
       message: "Its accounts show here again when it reconnects."
     ) {
       Button("Show \(primaryName)", action: showPrimary)
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
     }
   }
 }

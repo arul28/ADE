@@ -94,6 +94,7 @@ enum WebhookPresentation {
     }
   }
 
+
   static func relative(_ iso: String) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -144,32 +145,22 @@ struct SettingsWebhooksPage: View {
 
   var body: some View {
     List {
-      Section {
-        Text("Automations run in ADE on your computer. Here you can see each webhook's URL and every request that rang it, including the ones ADE skipped and why.")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .adeFlatRow()
-      }
       if let errorMessage {
         Section {
-          Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.warning)
-            .adeFlatRow()
+          ADESettingsNotice(message: errorMessage, tone: .warn)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
         }
       }
       if let automations {
-        if automations.isEmpty {
+        if automations.isEmpty, errorMessage == nil {
           Section {
-            ADEEmptyStateView(
-              symbol: "bell.badge",
-              title: "No webhooks yet",
-              message: "Make one in ADE on your computer: Automations → New → Webhook."
-            )
-            .frame(maxWidth: .infinity)
-            .adeFlatRow()
+            ADESettingsRow("No webhooks yet", hint: "Make one in ADE on your computer: Automations → New → Webhook.")
+              .adeSettingsListRow(insets: EdgeInsets())
+          } header: {
+            ADESettingsListHeader("Webhooks", hint: "Requests that reach your automations.")
           }
-        } else {
+        } else if !automations.isEmpty {
           Section {
             ForEach(automations) { automation in
               NavigationLink {
@@ -177,19 +168,19 @@ struct SettingsWebhooksPage: View {
               } label: {
                 WebhookAutomationRow(automation: automation)
               }
-              .adeFlatRow()
+              .adeSettingsListRow()
             }
           } header: {
-            ADEFlatSectionHeader("Webhooks", detail: "\(automations.count)")
+            ADESettingsListHeader("Webhooks · \(automations.count)", hint: "Requests that reach your automations.")
           }
         }
       } else if errorMessage == nil {
         Section {
-          ProgressView().frame(maxWidth: .infinity).adeFlatRow()
+          ProgressView().frame(maxWidth: .infinity).adeSettingsListRow()
         }
       }
     }
-    .adeFlatList()
+    .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await load() }
@@ -219,26 +210,29 @@ struct WebhookAutomationRow: View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
         Text(automation.ruleName)
-          .font(.body.weight(.semibold))
+          .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if !automation.enabled {
-          ADEStatusPill(text: "OFF", tint: ADEColor.textMuted)
+          ADEKitTag(text: "Off")
         }
       }
       Text(WebhookPresentation.serviceName(automation.preset)
         + (automation.filters.isEmpty ? " · every request" : " · only when \(automation.filters.joined(separator: " and "))"))
-        .font(.caption)
+        .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(2)
       if let last = automation.lastDelivery {
         let outcome = WebhookPresentation.outcome(last.outcome)
-        Text("\(outcome.label) · \(WebhookPresentation.relative(last.receivedAt))")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(outcome.tint)
+        HStack(spacing: 6) {
+          Circle().fill(outcome.tint).frame(width: 6, height: 6)
+          Text("\(outcome.label) · \(WebhookPresentation.relative(last.receivedAt))")
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
       } else {
         Text("No deliveries yet")
-          .font(.caption2)
+          .font(.system(size: 11.5))
           .foregroundStyle(ADEColor.textMuted)
       }
     }
@@ -268,55 +262,56 @@ struct WebhookAutomationDetailPage: View {
                 .foregroundStyle(ADEColor.textPrimary)
                 .lineLimit(2)
                 .truncationMode(.middle)
-              Label(copied ? "Copied" : "Tap to copy · treat it like a password", systemImage: copied ? "checkmark.circle.fill" : "doc.on.doc")
-                .font(.caption)
+              Label(copied ? "Copied" : "Tap to copy · keep it private", systemImage: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                .font(.system(size: 12.5))
                 .foregroundStyle(copied ? ADEColor.success : ADEColor.accent)
             }
           }
-          .adeFlatRow()
+          .adeSettingsListRow()
           if automation.route != "relay" && automation.route != "gateway" {
-            Label("Reachable only from the computer it was made on until you sign in to ADE there.", systemImage: "exclamationmark.triangle")
-              .font(.caption)
+            Label("Only reachable from its computer until you sign in to ADE there.", systemImage: "exclamationmark.triangle.fill")
+              .font(.system(size: 12.5))
               .foregroundStyle(ADEColor.warning)
-              .adeFlatRow()
+              .adeSettingsListRow()
           }
         } else {
           Text("This URL belongs to another machine.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
-            .adeFlatRow()
+            .adeSettingsListRow()
         }
-        signatureRow.adeFlatRow()
+        signatureRow.adeSettingsListRow()
       } header: {
-        ADEFlatSectionHeader(WebhookPresentation.serviceName(automation.preset))
+        ADESettingsListHeader(WebhookPresentation.serviceName(automation.preset))
       }
 
       Section {
         if let errorMessage {
           Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-            .font(.footnote)
+            .font(.system(size: 13))
             .foregroundStyle(ADEColor.warning)
-            .adeFlatRow()
+            .adeSettingsListRow()
         } else if let deliveries {
           if deliveries.isEmpty {
             Text("Nothing yet. Requests show up here the moment they arrive.")
               .font(.footnote)
               .foregroundStyle(ADEColor.textSecondary)
-              .adeFlatRow()
+              .adeSettingsListRow()
           } else {
             ForEach(deliveries) { delivery in
               Button { openDelivery = delivery } label: { WebhookDeliveryRow(delivery: delivery) }
-                .adeFlatRow()
+                .buttonStyle(.plain)
+                .adeSettingsListRow()
             }
           }
         } else {
-          ProgressView().frame(maxWidth: .infinity).adeFlatRow()
+          ProgressView().frame(maxWidth: .infinity).adeSettingsListRow()
         }
       } header: {
-        ADEFlatSectionHeader("Deliveries")
+        ADESettingsListHeader("Deliveries", hint: "The last 20 requests.")
       }
     }
-    .adeFlatList()
+    .adeSettingsList()
     .navigationTitle(automation.ruleName)
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await load() }
@@ -334,7 +329,7 @@ struct WebhookAutomationDetailPage: View {
     if automation.signatureRequired {
       if automation.secretSaved {
         Label("Signed · \(automation.secretName ?? "secret") saved", systemImage: "checkmark.shield.fill")
-          .font(.footnote)
+          .font(.system(size: 13))
           .foregroundStyle(ADEColor.success)
       } else {
         Label("Signing secret \(automation.secretName ?? "") not saved yet", systemImage: "exclamationmark.shield.fill")
@@ -365,22 +360,25 @@ struct WebhookDeliveryRow: View {
   var body: some View {
     let outcome = WebhookPresentation.outcome(delivery.outcome)
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      ADEStatusPill(text: outcome.label, tint: outcome.tint)
       VStack(alignment: .leading, spacing: 2) {
         Text(delivery.eventLabel ?? "\(delivery.method) request")
-          .font(.subheadline)
+          .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text(outcome.label)
+          .font(.system(size: 12.5, weight: .medium))
+          .foregroundStyle(outcome.tint)
           .lineLimit(1)
         if let detail = delivery.detail, delivery.outcome != "ran" {
           Text(detail)
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(2)
         }
       }
       Spacer(minLength: 4)
       Text(WebhookPresentation.relative(delivery.receivedAt))
-        .font(.caption2)
+        .font(.system(size: 11.5))
         .foregroundStyle(ADEColor.textMuted)
     }
   }
@@ -414,10 +412,10 @@ struct WebhookDeliveryDetailContent: View {
       VStack(alignment: .leading, spacing: 14) {
         let outcome = WebhookPresentation.outcome(summary.outcome)
         HStack(spacing: 8) {
-          ADEStatusPill(text: outcome.label, tint: outcome.tint)
           Text(summary.eventLabel ?? summary.method)
-            .font(.headline)
+            .font(.system(size: 17, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
+          ADEKitTag(text: outcome.label, tone: webhookOutcomeTone(summary.outcome))
         }
         Text(summary.outcome == "ran" && summary.detail == nil ? "Passed every check and started a run." : (summary.detail ?? ""))
           .font(.footnote)
@@ -436,24 +434,28 @@ struct WebhookDeliveryDetailContent: View {
       }
       .padding(16)
     }
-    .background(ADEColor.pageBackground)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
   private func codeBlock(_ title: String, _ text: String) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(title.uppercased())
-        .font(.caption2.weight(.semibold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
+      ADEEyebrow(title)
       Text(text)
         .font(.adeMono(11))
         .foregroundStyle(ADEColor.textPrimary)
         .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.5))
+        .adeKitCard(padding: 12)
     }
+  }
+}
+
+/// The kit tone for a delivery outcome, matching `WebhookPresentation.outcome`.
+func webhookOutcomeTone(_ outcome: String) -> ADEKitTone {
+  switch outcome {
+  case "ran": return .ok
+  case "expired", "rate_limited", "too_large": return .warn
+  case "no_rule", "disabled", "filtered", "duplicate": return .neutral
+  default: return .crit
   }
 }
 
@@ -494,20 +496,20 @@ private enum WebhookPreviewData {
     List {
       Section {
         ForEach(WebhookPreviewData.automations) { automation in
-          WebhookAutomationRow(automation: automation).adeFlatRow()
+          WebhookAutomationRow(automation: automation).adeSettingsListRow()
         }
       } header: {
-        ADEFlatSectionHeader("Webhooks", detail: "2")
+        ADESettingsListHeader("Webhooks · 2")
       }
       Section {
         ForEach(WebhookPreviewData.deliveries) { delivery in
-          WebhookDeliveryRow(delivery: delivery).adeFlatRow()
+          WebhookDeliveryRow(delivery: delivery).adeSettingsListRow()
         }
       } header: {
-        ADEFlatSectionHeader("Deliveries")
+        ADESettingsListHeader("Deliveries")
       }
     }
-    .adeFlatList()
+    .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
   }

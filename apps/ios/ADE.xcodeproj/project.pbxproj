@@ -33,6 +33,7 @@
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
+		E20000000000000000000F3A /* ADEKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F3A /* ADEKit.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
 		E20000000000000000000094 /* LinearPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000094 /* LinearPaneStore.swift */; };
@@ -470,6 +471,7 @@
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
+		D20000000000000000000F3A /* ADEKit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEKit.swift; path = ADE/Views/Components/ADEKit.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
 		D20000000000000000000094 /* LinearPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneStore.swift; path = ADE/Views/Linear/LinearPaneStore.swift; sourceTree = "<group>"; };
@@ -932,6 +934,7 @@
 				F20000000000000000000B51 /* ADEGlassComposer.swift */,
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				D20000000000000000000F30 /* ADEFlat.swift */,
+				D20000000000000000000F3A /* ADEKit.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
 				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
@@ -2014,6 +2017,7 @@
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,
+				E20000000000000000000F3A /* ADEKit.swift in Sources */,
 				B1000000000000000000002B /* ADEBorderBeam.swift in Sources */,
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,

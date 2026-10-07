@@ -29,7 +29,10 @@ struct SSHPairingView: View {
         securitySection
         statusSection
       }
-      .navigationTitle("SSH (advanced)")
+      .scrollContentBackground(.hidden)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .tint(ADEColor.accent)
+      .navigationTitle("Set up with SSH")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -37,13 +40,13 @@ struct SSHPairingView: View {
         }
       }
       .safeAreaInset(edge: .bottom) {
-        Button("Connect", systemImage: "lock.shield", action: beginPairing)
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .disabled(model.state.isBusy || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || username.isEmpty || privateKey.isEmpty)
-          .padding()
-          .frame(maxWidth: .infinity)
-          .background(.bar)
+        Button("Connect", action: beginPairing)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          .disabled(connectDisabled)
+          .opacity(connectDisabled ? 0.5 : 1)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 10)
+          .background(ADEColor.pageBackground)
       }
       .fileImporter(
         isPresented: $importsKey,
@@ -75,6 +78,10 @@ struct SSHPairingView: View {
         pairingTask = nil
       }
     }
+  }
+
+  private var connectDisabled: Bool {
+    model.state.isBusy || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || username.isEmpty || privateKey.isEmpty
   }
 
   private var destinationSection: some View {
@@ -120,7 +127,7 @@ struct SSHPairingView: View {
       if let importError {
         Text(importError)
           .font(.footnote)
-          .foregroundStyle(.red)
+          .foregroundStyle(ADEColor.danger)
       }
       Button("Use saved key", systemImage: "faceid") {
         Task {
@@ -138,7 +145,7 @@ struct SSHPairingView: View {
     } header: {
       Text("Private key")
     } footer: {
-      Text("Supported: Ed25519 with or without a passphrase, and unencrypted ECDSA P-256, P-384, or P-521. Encrypted ECDSA and RSA keys are not accepted. For encrypted ECDSA, use an unencrypted copy or create an Ed25519 key.")
+      Text("Ed25519, or unencrypted ECDSA. RSA keys are not accepted.")
     }
   }
 
@@ -165,11 +172,10 @@ struct SSHPairingView: View {
   }
 
   private var securitySection: some View {
-    Section("Security") {
-      Label("ADE asks you to compare the computer's fingerprint before trusting it.", systemImage: "checkmark.shield")
+    Section {
+      Label("You compare the computer's fingerprint before ADE trusts it. SSH is only used for setup.", systemImage: "checkmark.shield")
         .font(.footnote)
-      Label("SSH is used only for setup. ADE reconnects normally after that.", systemImage: "link.badge.plus")
-        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
     }
   }
 
@@ -182,11 +188,11 @@ struct SSHPairingView: View {
       Section { ProgressView("Connecting to ADE…") }
     case .paired(let machine, let warning):
       Section {
-        Label("Paired with \(machine)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        if let warning { Text(warning).font(.footnote).foregroundStyle(.orange) }
+        Label("Paired with \(machine)", systemImage: "checkmark.circle.fill").foregroundStyle(ADEColor.success)
+        if let warning { Text(warning).font(.footnote).foregroundStyle(ADEColor.warning) }
       }
     case .failed(let message):
-      Section { Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
+      Section { Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(ADEColor.danger) }
     case .idle, .needsHostConfirmation:
       EmptyView()
     }

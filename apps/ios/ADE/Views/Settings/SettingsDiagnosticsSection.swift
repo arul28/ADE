@@ -16,83 +16,49 @@ struct SettingsDiagnosticsSection: View {
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      if content != .about {
-        VStack(alignment: .leading, spacing: 10) {
-          SettingsSectionHeader(label: "CONNECTION DETAILS")
-
-          if snapshot.connectionRoute == nil, snapshot.connectionPerformance == nil {
-            SettingsConnectionDetailsEmptyState()
-          } else {
-            VStack(spacing: 10) {
-              if let route = snapshot.connectionRoute {
-                SettingsDetailRow(
-                  symbol: "point.3.connected.trianglepath.dotted",
-                  label: "Route",
-                  value: route
-                )
-              }
-
-              if let performance = snapshot.connectionPerformance {
-                SettingsDetailRow(
-                  symbol: "timer",
-                  label: "Last connection",
-                  value: performance
-                )
-              }
+    if content != .about {
+      ADESettingsSection("Connection") {
+        if snapshot.connectionRoute == nil, snapshot.connectionPerformance == nil {
+          ADESettingsRows {
+            ADESettingsRow("Not connected", hint: "Connect to a machine to see its route.", symbol: "desktopcomputer")
+          }
+        } else {
+          ADESettingsRows {
+            if let route = snapshot.connectionRoute {
+              ADESettingsValueRow(title: "Route", value: route, mono: true)
+            }
+            if let performance = snapshot.connectionPerformance {
+              ADESettingsValueRow(title: "Last connection", value: performance, mono: true)
             }
           }
         }
       }
+    }
 
-      if content != .connection {
-        VStack(alignment: .leading, spacing: 10) {
-          SettingsSectionHeader(label: "ABOUT")
-
-          VStack(spacing: 10) {
-            SettingsDetailRow(
-              symbol: "app.badge",
-              label: "ADE",
-              value: Self.appVersionString
-            )
-
-            SettingsAppUpdateRow(advisor: appUpdateAdvisor)
-
-            if let identity = snapshot.pairedMachineIdentity {
-              SettingsDetailRow(
-                symbol: "desktopcomputer.and.arrow.down",
-                label: "Paired machine",
-                value: identity
-              )
-            }
-
-            if let lastSync = snapshot.lastSyncDescription {
-              SettingsDetailRow(
-                symbol: "clock.arrow.circlepath",
-                label: "Last sync",
-                value: lastSync
-              )
-            }
-
-            if let deviceId = snapshot.deviceIdentity {
-              SettingsDetailRow(
-                symbol: "iphone",
-                label: "This device",
-                value: deviceId
-              )
-            }
-
-            // Performance logs from a diagnostics launch, to AirDrop to the
-            // Mac when the phone has no cable data link.
-            let logFiles = ScrollDiagnostics.logFileURLs
-            if !logFiles.isEmpty {
-              ShareLink(items: logFiles) {
-                Label("Share diagnostics log", systemImage: "square.and.arrow.up")
-                  .font(.subheadline.weight(.semibold))
-                  .foregroundStyle(ADEColor.accent)
-                  .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    if content != .connection {
+      ADESettingsSection("This device") {
+        ADESettingsRows {
+          ADESettingsValueRow(title: "ADE", value: Self.appVersionString, mono: true)
+          SettingsAppUpdateRow(advisor: appUpdateAdvisor)
+          if let identity = snapshot.pairedMachineIdentity {
+            ADESettingsValueRow(title: "Paired machine", value: identity, mono: true)
+          }
+          if let lastSync = snapshot.lastSyncDescription {
+            ADESettingsValueRow(title: "Last sync", value: lastSync)
+          }
+          if let deviceId = snapshot.deviceIdentity {
+            ADESettingsValueRow(title: "Device id", value: deviceId, mono: true)
+          }
+          // Performance logs from a diagnostics launch, to AirDrop to the
+          // Mac when the phone has no cable data link.
+          let logFiles = ScrollDiagnostics.logFileURLs
+          if !logFiles.isEmpty {
+            ShareLink(items: logFiles) {
+              ADESettingsRow(title: "Share diagnostics log", symbol: "square.and.arrow.up", titleColor: ADEColor.accent) {
+                EmptyView()
               }
             }
+            .buttonStyle(ADEKitRowButtonStyle())
           }
         }
       }
@@ -117,130 +83,15 @@ private struct SettingsAppUpdateRow: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .center, spacing: 12) {
-        Image(systemName: "arrow.down.circle")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 28, height: 28)
-          .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-              .fill(ADEColor.purpleAccent.opacity(0.14))
-          )
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text("App updates")
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(status)
-            .font(.caption.monospaced())
-            .foregroundStyle(
-              advisor.availableVersion == nil ? ADEColor.textSecondary : ADEColor.purpleAccent
-            )
-            .lineLimit(1)
-        }
-
-        Spacer(minLength: 8)
-      }
-
-      Button {
+    ADESettingsRow(title: "App updates", hint: status) {
+      Button("Check") {
         Task { await advisor.checkForUpdates(force: true) }
-      } label: {
-        Label("Check for updates", systemImage: "arrow.clockwise")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(maxWidth: .infinity, minHeight: 44)
-          .background(ADEColor.purpleAccent.opacity(0.10), in: Capsule())
-          .contentShape(Capsule())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(prominent: advisor.availableVersion != nil))
       .disabled(advisor.isChecking)
       .opacity(advisor.isChecking ? 0.55 : 1)
+      .accessibilityLabel("Check for updates")
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.06))
-    )
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.6)
-    )
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("App updates: \(status)")
-  }
-}
-
-private struct SettingsConnectionDetailsEmptyState: View {
-  var body: some View {
-    HStack(spacing: 12) {
-      Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-
-      Text("Connect to a machine to see route and performance details.")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 16)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 12)
-        .fill(ADEColor.surfaceBackground.opacity(0.55))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12)
-        .stroke(ADEColor.border.opacity(0.45), lineWidth: 0.75)
-    )
-  }
-}
-
-struct SettingsDetailRow: View {
-  let symbol: String
-  let label: String
-  let value: String
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      Image(systemName: symbol)
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.purpleAccent)
-        .frame(width: 28, height: 28)
-        .background(
-          RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(ADEColor.purpleAccent.opacity(0.14))
-        )
-
-      Text(label)
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(ADEColor.textPrimary)
-
-      Spacer(minLength: 8)
-
-      Text(value)
-        .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.06))
-    )
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.6)
-    )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(label): \(value)")
   }
 }

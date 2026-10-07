@@ -42,13 +42,12 @@ struct ConnectionSettingsView: View {
       Group {
         if pairingOnly {
           ScrollView {
-            LazyVStack(spacing: 18) {
-              pairingOnlyGroup
-              Spacer(minLength: 20)
-            }
-            .padding(.vertical, 12)
+            pairingOnlyGroup
+              .padding(.horizontal, 16)
+              .padding(.top, 8)
+              .padding(.bottom, 36)
           }
-          .background(SettingsAuroraBackground().ignoresSafeArea())
+          .background(ADEColor.pageBackground.ignoresSafeArea())
         } else {
           settingsList
         }
@@ -142,153 +141,138 @@ struct ConnectionSettingsView: View {
   /// the pair actions, nothing else.
   @ViewBuilder
   private var pairingOnlyGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "CONNECTION", hint: "Your computer connection")
-
-      SettingsConnectionHeader(
-        snapshot: presentationModel.connectionSnapshot,
-        onDisconnect: { syncService.disconnectForUserConnectionChange() },
-        onReconnect: {
-          Task { await syncService.reconnectForUserConnectionChange() }
-        },
-        onPairWithPin: {
-          if let host = syncService.accountPairingPinFallbackHost {
-            pinPreset = .discover(host)
-          }
-        },
-        onWake: wakeAsleepMachine
-      )
+    VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+      ADESettingsSection("Connection") {
+        SettingsConnectionHeader(
+          snapshot: presentationModel.connectionSnapshot,
+          onDisconnect: { syncService.disconnectForUserConnectionChange() },
+          onReconnect: {
+            Task { await syncService.reconnectForUserConnectionChange() }
+          },
+          onPairWithPin: {
+            if let host = syncService.accountPairingPinFallbackHost {
+              pinPreset = .discover(host)
+            }
+          },
+          onWake: wakeAsleepMachine
+        )
+      }
 
       SettingsPairingSection(
         snapshot: presentationModel.pairingSnapshot,
-        presentedSheet: $presentedSheet,
-        initiallyExpanded: true
+        presentedSheet: $presentedSheet
       )
     }
-    .padding(.horizontal, 16)
-    .padding(.top, 4)
   }
 
   private var settingsList: some View {
-    List {
-      Section {
-        accountRow
-      }
-      SettingsMachineSections(
-        syncService: syncService,
-        controller: machineController,
-        presentedSheet: $presentedSheet
-      )
-      Section {
-        linkRow("Appearance", systemImage: "circle.lefthalf.filled") {
-          SettingsDestinationPage(title: "Appearance") { SettingsAppearanceSection() }
-        }
-        linkRow("Notifications", systemImage: "bell.badge") {
-          SettingsDestinationPage(title: "Notifications") {
-            SettingsPushDeliverySection(
-              snapshot: presentationModel.pushDeliverySnapshot,
-              pushService: PushNotificationService.shared
-            )
+    ScrollView {
+      VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+        accountSection
+        SettingsMachineSections(
+          syncService: syncService,
+          controller: machineController,
+          presentedSheet: $presentedSheet
+        )
+        ADESettingsSection("App") {
+          ADESettingsRows {
+            ADESettingsLink(title: "Appearance", symbol: "circle.lefthalf.filled", value: colorSchemeChoice.label) {
+              ADESettingsPage(title: "Appearance") { SettingsAppearanceSection() }
+            }
+            ADESettingsLink(title: "Notifications", symbol: "bell") {
+              ADESettingsPage(title: "Notifications") {
+                SettingsPushDeliverySection(
+                  snapshot: presentationModel.pushDeliverySnapshot,
+                  pushService: PushNotificationService.shared
+                )
+              }
+            }
+            ADESettingsLink(title: "Usage", symbol: "chart.bar") {
+              SettingsUsagePage(syncService: syncService)
+            }
+            ADESettingsLink(title: "Webhooks", symbol: "link") {
+              SettingsWebhooksPage(syncService: syncService)
+            }
+            ADESettingsLink(title: "AI accounts", symbol: "person.2") {
+              SettingsProviderAccountsPage(syncService: syncService)
+            }
           }
         }
-        linkRow("Usage", systemImage: "chart.line.uptrend.xyaxis") {
-          SettingsUsagePage(syncService: syncService)
-        }
-        linkRow("Webhooks", systemImage: "bell.badge.waveform") {
-          SettingsWebhooksPage(syncService: syncService)
-        }
-        linkRow("AI accounts", systemImage: "person.2.badge.key") {
-          SettingsProviderAccountsPage(syncService: syncService)
-        }
-      } header: {
-        ADEFlatSectionHeader("App")
-      }
-      Section {
-        linkRow("Connection details", systemImage: "point.3.connected.trianglepath.dotted") {
-          SettingsDestinationPage(title: "Connection details") {
-            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
-          }
-        }
-        linkRow("Delivery diagnostics", systemImage: "stethoscope") {
-          SettingsDestinationPage(title: "Delivery diagnostics") {
-            SettingsPushDeliverySection(
-              snapshot: presentationModel.pushDeliverySnapshot,
-              pushService: PushNotificationService.shared,
-              content: .diagnostics
-            )
-          }
-        }
-        linkRow("About \(thisDeviceGroupLabel.replacingOccurrences(of: "This ", with: "this "))", systemImage: "info.circle") {
-          SettingsDestinationPage(title: "About") {
-            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
-          }
-        }
-      } header: {
-        ADEFlatSectionHeader("About")
-      }
-    }
-    .adeFlatList()
-  }
-
-  @ViewBuilder
-  private var accountRow: some View {
-    if account.isConfigured {
-      switch account.phase {
-      case .signedIn:
-        if let identity = account.identity {
-          NavigationLink {
-            SettingsAccountPage()
-          } label: {
-            HStack(spacing: 12) {
-              AccountAvatar(identity: identity)
-              VStack(alignment: .leading, spacing: 2) {
-                Text(identity.displayName)
-                  .font(.body.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                if let email = identity.email {
-                  Text(email)
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                }
+        ADESettingsSection("About") {
+          ADESettingsRows {
+            ADESettingsLink(title: "Connection details", symbol: "point.3.connected.trianglepath.dotted") {
+              ADESettingsPage(title: "Connection details") {
+                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
+              }
+            }
+            ADESettingsLink(title: "Delivery diagnostics", symbol: "stethoscope") {
+              ADESettingsPage(title: "Delivery diagnostics") {
+                SettingsPushDeliverySection(
+                  snapshot: presentationModel.pushDeliverySnapshot,
+                  pushService: PushNotificationService.shared,
+                  content: .diagnostics
+                )
+              }
+            }
+            ADESettingsLink(title: "About \(thisDeviceGroupLabel.replacingOccurrences(of: "This ", with: "this "))", symbol: "info.circle") {
+              ADESettingsPage(title: "About") {
+                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
               }
             }
           }
-          .adeFlatRow()
         }
-      case .loading:
-        ProgressView()
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .adeFlatRow()
-      default:
-        Button {
-          signInPresented = true
-        } label: {
-          Label("Sign in to ADE", systemImage: "person.crop.circle.badge.plus")
-            .foregroundStyle(ADEColor.accent)
-        }
-        .adeFlatRow()
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 36)
     }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
-  private func linkRow<Destination: View>(
-    _ title: String,
-    systemImage: String,
-    @ViewBuilder destination: @escaping () -> Destination
-  ) -> some View {
-    NavigationLink(destination: destination) {
-      Label {
-        Text(title)
-          .foregroundStyle(ADEColor.textPrimary)
-      } icon: {
-        Image(systemName: systemImage)
-          .foregroundStyle(ADEColor.accent)
+  /// The signed-in account as the page's header row, or Sign in.
+  @ViewBuilder
+  private var accountSection: some View {
+    if account.isConfigured {
+      ADESettingsRows {
+        switch account.phase {
+        case .signedIn:
+          if let identity = account.identity {
+            NavigationLink {
+              SettingsAccountPage()
+            } label: {
+              HStack(spacing: 12) {
+                AccountAvatar(identity: identity)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(identity.displayName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                  if let email = identity.email {
+                    Text(email)
+                      .font(.system(size: 12.5))
+                      .foregroundStyle(ADEColor.textSecondary)
+                      .lineLimit(1)
+                      .truncationMode(.middle)
+                  }
+                }
+                Spacer(minLength: 8)
+                ADESettingsChevron()
+              }
+              .padding(.horizontal, ADEKit.inset)
+              .padding(.vertical, 12)
+            }
+            .buttonStyle(ADEKitRowButtonStyle())
+          }
+        case .loading:
+          ProgressView()
+            .frame(maxWidth: .infinity, minHeight: 64)
+        default:
+          ADESettingsActionRow(title: "Sign in to ADE", symbol: "person.crop.circle.badge.plus") {
+            signInPresented = true
+          }
+        }
       }
     }
-    .adeFlatRow()
   }
 
   @ViewBuilder
@@ -372,23 +356,6 @@ struct ConnectionSettingsView: View {
         pinPreset = .qr(payload)
       }
     }
-  }
-}
-
-private struct SettingsDestinationPage<Content: View>: View {
-  let title: String
-  @ViewBuilder let content: () -> Content
-
-  var body: some View {
-    ScrollView {
-      content()
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-    .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeNavigationGlass()
-    .navigationTitle(title)
-    .navigationBarTitleDisplayMode(.inline)
   }
 }
 
@@ -709,88 +676,40 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
-private struct SettingsAuroraBackground: View {
-  var body: some View {
-    ZStack {
-      ADEColor.pageBackground
-
-      RadialGradient(
-        colors: [
-          ADEColor.purpleAccent.opacity(0.35),
-          ADEColor.purpleAccent.opacity(0.0),
-        ],
-        center: UnitPoint(x: 0.5, y: -0.05),
-        startRadius: 30,
-        endRadius: 420
-      )
-
-      RadialGradient(
-        colors: [
-          Color(red: 99.0 / 255.0, green: 102.0 / 255.0, blue: 241.0 / 255.0).opacity(0.22),
-          .clear,
-        ],
-        center: UnitPoint(
-          x: 0.92,
-          y: 0.18
-        ),
-        startRadius: 8,
-        endRadius: 280
-      )
-
-      RadialGradient(
-        colors: [
-          Color(red: 236.0 / 255.0, green: 72.0 / 255.0, blue: 153.0 / 255.0).opacity(0.14),
-          .clear,
-        ],
-        center: UnitPoint(
-          x: 0.05,
-          y: 0.32
-        ),
-        startRadius: 6,
-        endRadius: 240
-      )
-    }
-  }
-}
-
 /// Settings > Account: who is signed in, and Sign out.
 struct SettingsAccountPage: View {
   @ObservedObject private var account = AccountService.shared
   @State private var confirmSignOut = false
 
   var body: some View {
-    List {
+    ADESettingsPage(title: "Account") {
       if let identity = account.identity {
-        Section {
+        ADESettingsRows {
           HStack(spacing: 14) {
             AccountAvatar(identity: identity)
             VStack(alignment: .leading, spacing: 3) {
               Text(identity.displayName)
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
               if let email = identity.email {
                 Text(email)
-                  .font(.footnote)
+                  .font(.system(size: 13))
                   .foregroundStyle(ADEColor.textSecondary)
                   .truncationMode(.middle)
               }
             }
             Spacer(minLength: 8)
-            ADEFlatBadge(text: identity.providerLabel, tint: identity.accent)
+            ADEKitTag(text: identity.providerLabel)
           }
-          .adeFlatRow(separator: .hidden)
+          .padding(ADEKit.inset)
         }
       }
-      Section {
-        Button("Sign out", role: .destructive) {
+      ADESettingsRows {
+        ADESettingsActionRow(title: "Sign out", destructive: true) {
           confirmSignOut = true
         }
-        .adeFlatRow()
       }
     }
-    .adeFlatList()
-    .navigationTitle("Account")
-    .navigationBarTitleDisplayMode(.inline)
     .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
       Button("Sign out", role: .destructive) {
         Task { await account.signOut() }
