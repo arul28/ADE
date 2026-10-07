@@ -80,6 +80,7 @@ let budgetTrippedUntilMs = 0;
 // counted in memory and flushed to its D1 row in batches.
 const ipWindows = new Map<string, { windowStart: number; count: number }>();
 const MAX_TRACKED_IPS = 10_000;
+let ipWindowsSweptAtSecond = 0;
 const BUDGET_FLUSH_EVERY_REQUESTS = 50;
 const BUDGET_FLUSH_INTERVAL_MS = 30_000;
 let budgetDay = "";
@@ -96,6 +97,7 @@ export function budgetTrippedNow(): boolean {
 export function resetSpendGuardsForTests(): void {
   budgetTrippedUntilMs = 0;
   ipWindows.clear();
+  ipWindowsSweptAtSecond = 0;
   budgetDay = "";
   budgetPending = 0;
   budgetFlushedTotal = 0;
@@ -114,14 +116,19 @@ export function checkIpRateInMemory(ip: string, limit: number, windowSeconds: nu
   let entry = ipWindows.get(ip);
   if (!entry || nowSeconds - entry.windowStart >= windowSeconds) {
     if (!entry && ipWindows.size >= MAX_TRACKED_IPS) {
-      for (const [key, value] of ipWindows) {
-        if (nowSeconds - value.windowStart >= windowSeconds) ipWindows.delete(key);
+      // Sweep expired windows at most once a second, so a flood of distinct
+      // IPs cannot make every request scan the whole map.
+      if (nowSeconds !== ipWindowsSweptAtSecond) {
+        ipWindowsSweptAtSecond = nowSeconds;
+        for (const [key, value] of ipWindows) {
+          if (nowSeconds - value.windowStart >= windowSeconds) ipWindows.delete(key);
+        }
       }
-      // Still full of live windows: drop the oldest-inserted entries rather
-      // than grow without bound. Those IPs start a fresh window.
-      for (const key of ipWindows.keys()) {
-        if (ipWindows.size < MAX_TRACKED_IPS) break;
-        ipWindows.delete(key);
+      // Still full of live windows: drop the oldest-inserted entry rather than
+      // grow without bound. That IP starts a fresh window.
+      if (ipWindows.size >= MAX_TRACKED_IPS) {
+        const oldest = ipWindows.keys().next();
+        if (!oldest.done) ipWindows.delete(oldest.value);
       }
     }
     entry = { windowStart: nowSeconds, count: 0 };
@@ -180,7 +187,10 @@ export async function recordDailyBudget(
     budgetPending = 0;
     budgetLastFlushMs = nowMs;
     try {
-      budgetFlushedTotal = await flushBudgetCount(env, day, increment, nowMs);
+      const total = await flushBudgetCount(env, day, increment, nowMs);
+      // A flush that straddles UTC midnight returns yesterday's total; it must
+      // not become today's baseline (it could trip today's cap at 00:00).
+      if (budgetDay === day) budgetFlushedTotal = total;
     } catch (error) {
       // Keep the requests counted for the next flush, then fail as before.
       if (budgetDay === day) budgetPending += increment;

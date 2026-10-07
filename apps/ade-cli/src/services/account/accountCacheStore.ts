@@ -203,15 +203,26 @@ export function createAccountCacheStore<
   let lastReadySyncAtMs = 0;
   let lastSyncStatus: AccountCacheSyncStatus | null = null;
   let lastSyncedAccountUserId: string | null = null;
+  let lastSyncedEpoch = -1;
   const forgetLastSync = (): void => {
     lastSyncedMark = undefined;
     lastReadySyncAtMs = 0;
     lastSyncStatus = null;
     lastSyncedAccountUserId = null;
+    lastSyncedEpoch = -1;
   };
-  /** True when the last sync was a successful pull for this account. */
-  const lastSyncWasReadyFor = (accountUserId: string): boolean =>
-    lastSyncStatus === "ready" && lastSyncedAccountUserId === accountUserId;
+  /**
+   * True when the last sync was a successful pull for this account into the
+   * cache that is loaded now. Reads the cache first: that is what notices an
+   * owner change and bumps the epoch, so an A→B→A switch (which empties A's
+   * cache) never counts as already synced.
+   */
+  const lastSyncWasReadyFor = (accountUserId: string): boolean => {
+    readCache();
+    return lastSyncStatus === "ready"
+      && lastSyncedAccountUserId === accountUserId
+      && lastSyncedEpoch === epoch;
+  };
   let unsubscribeChangeMarks: (() => void) | null = null;
   /**
    * How many callers asked for the background sync.
@@ -595,10 +606,13 @@ export function createAccountCacheStore<
       const markAtStart = config.changeMarkKind && accountUserId
         ? readAccountChangeMarks(accountUserId)?.marks[config.changeMarkKind]
         : undefined;
+      readCache();
+      const epochAtStart = epoch;
       syncInFlight = runSync()
         .then((status) => {
           lastSyncStatus = status;
           lastSyncedAccountUserId = accountUserId;
+          lastSyncedEpoch = epochAtStart;
           if (status === "ready") {
             lastSyncedMark = markAtStart;
             lastReadySyncAtMs = Date.now();
@@ -648,7 +662,9 @@ export function createAccountCacheStore<
           });
       };
       syncTimer = setInterval(() => {
-        if (shouldPullOnTick(Date.now())) {
+        // A sync already running (sign-in, a user action) is joined, never
+        // pre-empted by a synthetic "ready" that would land before its pull.
+        if (syncInFlight || shouldPullOnTick(Date.now())) {
           syncAndNotify();
           return;
         }
@@ -663,7 +679,9 @@ export function createAccountCacheStore<
         const kind = config.changeMarkKind;
         unsubscribeChangeMarks = subscribeAccountChangeMarks((accountUserId, marks) => {
           if (accountUserId !== config.getAccountUserId()) return;
-          if (lastSyncWasReadyFor(accountUserId) && marks[kind] === lastSyncedMark) return;
+          // Only a mark that moved pulls early. Retries after a failed sync
+          // stay on the tick's cadence, so failures never double the traffic.
+          if (marks[kind] === lastSyncedMark && lastSyncedAccountUserId === accountUserId) return;
           syncAndNotify();
         });
       }

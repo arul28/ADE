@@ -2286,6 +2286,14 @@ export type VerifiedMachineIdentity = {
   machineKey: string;
 };
 
+/** Marks are advisory: a failed read leaves them out instead of failing the publish. */
+async function optionalAccountChangeMarks(
+  env: AttentionRelayEnv,
+  userId: string,
+): Promise<Awaited<ReturnType<typeof accountChangeMarks>> | undefined> {
+  return await accountChangeMarks(env, userId).catch(() => undefined);
+}
+
 export async function handleAttentionMachinePublish(
   request: Request,
   env: AttentionRelayEnv,
@@ -2459,7 +2467,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: [],
       }),
-      accountChangeMarks(env, account.userId),
+      optionalAccountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2506,7 +2514,7 @@ export async function handleAttentionMachinePublish(
         machineKey,
         requestItems: items as ParsedAttentionItem[],
       }),
-      accountChangeMarks(env, account.userId),
+      optionalAccountChangeMarks(env, account.userId),
     ]);
     return json({
       ok: true,
@@ -2551,7 +2559,7 @@ export async function handleAttentionMachinePublish(
       machineKey,
       requestItems: items as ParsedAttentionItem[],
     }),
-    accountChangeMarks(env, account.userId),
+    optionalAccountChangeMarks(env, account.userId),
   ]);
 
   return json({
