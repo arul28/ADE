@@ -893,7 +893,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -5582,10 +5582,17 @@ export function registerIpc({
       const ctx = getCtx();
       // Same reasoning as diagnostics: this updates the CLI on the machine the
       // main process runs on, never a remote host's.
-      return await runAcpProviderUpdate({
+      const result = await runAcpProviderUpdate({
         provider: arg.provider,
         cwd: ctx.project.rootPath,
       });
+      captureProviderCliUpdateAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        provider: arg.provider,
+        outcome: result.ok ? "completed" : "failed",
+      });
+      return result;
     },
   );
 

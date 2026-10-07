@@ -889,10 +889,12 @@ each range is in the dialect file. Raise a range only after a live check of
 the new version.
 
 - **Below the range.** When an ACP chat is ready, the runtime reads the
-  binary's `--version` once per binary per run (`readAcpProviderLaunchStanding`,
-  cached) and, if it is below the range, adds a `system_notice` with status
-  `acp_provider_outdated` and `detail.providerUpdate`. The chat row shows an
-  **Update to <max>** button when the install is resolvable. The check runs
+  binary's `--version` (`readAcpProviderLaunchStanding`, cached per binary for
+  30 minutes so an update made outside ADE is seen without a restart) and, if
+  it is below the range, adds a `system_notice` with status
+  `acp_provider_outdated` and `detail.providerUpdate`, at most once per chat.
+  The chat row (`ProviderOutdatedNoticeRow`) shows an **Update to <max>**
+  button when the install is resolvable, and runs it on the chat's machine. The check runs
   after the chat is ready and never delays it; a spawn override (a cloud
   runtime) is skipped.
 - **Inside the range, not at the top.** The provider's Settings page offers
@@ -903,7 +905,10 @@ the new version.
   runs `npm install -g --prefix <prefix> <pkg>@<max>`, where the prefix comes
   from the binary's real path (`<prefix>/lib/node_modules/<pkg>` on POSIX,
   the `.cmd` shim beside `<prefix>\node_modules\<pkg>` on Windows) and npm is
-  the one in that prefix when present. An install ADE cannot place (or Kimi
+  the one in that prefix when present. A project-local install
+  (`<repo>/node_modules/<pkg>`) has neither layout and stays manual. After the
+  installer exits 0, the binary must report `tested.max`; otherwise the
+  update fails with the version it still reports. An install ADE cannot place (or Kimi
   and Devin, which have no npm package or exact-version updater) shows a
   manual note and no button.
 - The updater spawns through `resolveCliSpawnInvocation`, so a Windows `.cmd`

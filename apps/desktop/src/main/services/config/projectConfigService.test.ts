@@ -1260,7 +1260,7 @@ describe("projectConfigService - automation execution", () => {
     expect(laneCleanupRule.enabled).toBe(true);
   });
 
-  it("flags fixed target lanes on require-on-trigger automation execution", () => {
+  it("flags fixed target lanes on require-on-trigger and pr-branch on a trigger with no PR", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-automation-execution-validation-");
 
     const service = createProjectConfigService({
@@ -1328,6 +1328,25 @@ describe("projectConfigService - automation execution", () => {
             verification: { verifyBeforePublish: false, mode: "intervention" },
             billingCode: "auto:test",
           },
+          // The PR's branch needs a trigger that carries a PR.
+          ...(["manual", "github.pr_opened"] as const).map((type) => ({
+            id: `pr-branch-${type}`,
+            name: `PR branch on ${type}`,
+            enabled: true,
+            mode: "review",
+            trigger: { type },
+            triggers: [{ type }],
+            execution: { kind: "agent-session", laneMode: "pr-branch" },
+            executor: { mode: "automation-bot" },
+            prompt: "Run.",
+            reviewProfile: "quick",
+            toolPalette: ["repo"],
+            contextSources: [],
+            guardrails: {},
+            outputs: { disposition: "comment-only", createArtifact: true },
+            verification: { verifyBeforePublish: false, mode: "intervention" },
+            billingCode: "auto:test",
+          })),
         ],
       },
     } as any);
@@ -1341,8 +1360,13 @@ describe("projectConfigService - automation execution", () => {
         expect.objectContaining({
           path: "effective.automations[1].execution.builtIn.actions[0].targetLaneId",
         }),
+        expect.objectContaining({
+          path: "effective.automations[2].triggers[0].type",
+        }),
       ]),
     );
+    // A PR trigger is a valid home for the mode, and the mode survives the read.
+    expect(validation.issues.filter((issue) => issue.path.startsWith("effective.automations[3]"))).toEqual([]);
   });
 });
 

@@ -1,177 +1,200 @@
-import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
 
 import {
-  collectGrokUpdateInfo,
-  compareGrokVersions,
-  decideGrokUpdate,
-  fetchGrokUpdateBaseline,
-  resolveGrokInstaller,
-  runGrokUpdate,
-  type GrokInstallerIo,
-  type GrokRunResult,
-  type GrokSpawn,
-} from "./grokUpdate";
+  ACP_PROVIDER_VERSION_POLICY,
+  compareVersions,
+  decideAcpProviderUpdate,
+  resolveAcpInstaller,
+  runAcpProviderInstall,
+  type AcpInstaller,
+  type AcpInstallerIo,
+  type AcpRunResult,
+  type AcpSpawn,
+} from "./acpProviderUpdate";
 
-function installerIo(files: Record<string, string | null>): GrokInstallerIo {
+/** A fake disk: `files` maps a path to its first line, `links` maps a path to its real path. */
+function installerIo(files: Record<string, string | null>, links: Record<string, string> = {}): AcpInstallerIo {
+  const known = new Set([...Object.keys(files), ...Object.values(links)]);
   return {
-    exists: (path) => path in files,
+    exists: (path) => known.has(path),
+    realpath: (path) => links[path] ?? path,
     readFirstLine: (path) => files[path] ?? null,
   };
 }
 
-describe("resolveGrokInstaller", () => {
-  it("treats a real executable as the native installer", () => {
-    const io = installerIo({ "/usr/local/bin/grok": null });
-    expect(resolveGrokInstaller("/usr/local/bin/grok", io)).toEqual({ installer: "native" });
-  });
+const GROK_MAX = ACP_PROVIDER_VERSION_POLICY.grok.tested.max;
+const GROK_MIN = ACP_PROVIDER_VERSION_POLICY.grok.tested.min;
 
-  it("recognizes a Windows npm shim", () => {
-    const io = installerIo({ "C:\\Users\\me\\AppData\\Roaming\\npm\\grok.cmd": "@echo off" });
-    expect(resolveGrokInstaller("C:\\Users\\me\\AppData\\Roaming\\npm\\grok.cmd", io).installer).toBe("npm");
-  });
-
-  it("recognizes a Node-shebang script under node_modules", () => {
-    const io = installerIo({ "/usr/local/lib/node_modules/@xai-official/grok/bin/grok.js": "#!/usr/bin/env node" });
-    expect(resolveGrokInstaller("/usr/local/lib/node_modules/@xai-official/grok/bin/grok.js", io).installer).toBe("npm");
-  });
-
-  it("returns null for a binary that does not exist, so the candidate stays manual", () => {
-    expect(resolveGrokInstaller("/opt/bin/grok", installerIo({}))).toEqual({ installer: null });
-    expect(resolveGrokInstaller(null, installerIo({}))).toEqual({ installer: null });
+describe("resolveAcpInstaller", () => {
+  it.each<[string, Parameters<typeof resolveAcpInstaller>[0], string | null, AcpInstallerIo, AcpInstaller | null]>([
+    [
+      "an npm global install on POSIX resolves its prefix through the bin symlink",
+      "grok",
+      "/opt/homebrew/bin/grok",
+      installerIo({ "/opt/homebrew/bin/grok": null }, { "/opt/homebrew/bin/grok": "/opt/homebrew/lib/node_modules/@xai-official/grok/bin/grok.js" }),
+      { kind: "npm", binaryPath: "/opt/homebrew/bin/grok", prefix: "/opt/homebrew" },
+    ],
+    [
+      "a Windows npm .cmd shim resolves to the folder that holds node_modules",
+      "qwen",
+      "C:\\Users\\me\\AppData\\Roaming\\npm\\qwen.cmd",
+      installerIo({
+        "C:\\Users\\me\\AppData\\Roaming\\npm\\qwen.cmd": "@echo off",
+        [path.win32.join("C:\\Users\\me\\AppData\\Roaming\\npm", "node_modules", "@qwen-code", "qwen-code")]: null,
+      }),
+      { kind: "npm", binaryPath: "C:\\Users\\me\\AppData\\Roaming\\npm\\qwen.cmd", prefix: "C:\\Users\\me\\AppData\\Roaming\\npm" },
+    ],
+    [
+      "a vendor-native Grok binary uses Grok's own updater",
+      "grok",
+      "/Users/me/.grok/bin/grok",
+      installerIo({ "/Users/me/.grok/bin/grok": "\u007fELF" }),
+      { kind: "native", binaryPath: "/Users/me/.grok/bin/grok" },
+    ],
+    [
+      "a project-local install stays manual: a global install would not change it",
+      "qwen",
+      "/Users/me/proj/node_modules/.bin/qwen",
+      installerIo({ "/Users/me/proj/node_modules/.bin/qwen": "#!/usr/bin/env node" }, { "/Users/me/proj/node_modules/.bin/qwen": "/Users/me/proj/node_modules/@qwen-code/qwen-code/cli.js" }),
+      null,
+    ],
+    [
+      "a Node script ADE cannot place stays manual instead of guessing a prefix",
+      "grok",
+      "/somewhere/grok",
+      installerIo({ "/somewhere/grok": "#!/usr/bin/env node" }),
+      null,
+    ],
+    [
+      "a native Copilot has no exact-version updater, so it stays manual",
+      "copilot",
+      "/opt/homebrew/bin/copilot",
+      installerIo({ "/opt/homebrew/bin/copilot": null }),
+      null,
+    ],
+    [
+      "Kimi has no npm package and no updater ADE can drive",
+      "kimi",
+      "/Users/me/.kimi-code/bin/kimi",
+      installerIo({ "/Users/me/.kimi-code/bin/kimi": null }),
+      null,
+    ],
+    ["a missing binary stays manual", "grok", "/opt/bin/grok", installerIo({}), null],
+    ["no binary path stays manual", "grok", null, installerIo({}), null],
+  ])("%s", (_label, provider, binaryPath, io, expected) => {
+    expect(resolveAcpInstaller(provider, binaryPath, io)).toEqual(expected);
   });
 });
 
-describe("compareGrokVersions", () => {
+describe("compareVersions", () => {
   it.each([
     ["1.0.13", "1.0.34", -1],
     ["1.0.40", "1.0.40", 0],
-    ["grok 1.0.41", "1.0.40", 1],
+    ["grok 1.0.41 (4220f3b224a6) [stable]", "1.0.40", 1],
     ["2.0.0", "1.9.9", 1],
-  ])("compares %j to %j", (current, latest, sign) => {
-    const result = compareGrokVersions(current, latest);
+  ])("compares %j to %j", (current, other, sign) => {
+    const result = compareVersions(current, other);
     expect(result).not.toBeNull();
     expect(Math.sign(result!)).toBe(sign);
   });
 
   it("returns null when a version cannot be parsed", () => {
-    expect(compareGrokVersions("unknown", "1.0.0")).toBeNull();
-    expect(compareGrokVersions("1.0.0", null)).toBeNull();
+    expect(compareVersions("unknown", "1.0.0")).toBeNull();
+    expect(compareVersions("1.0.0", null)).toBeNull();
   });
 });
 
-describe("decideGrokUpdate", () => {
-  it("offers an update when the native install is behind latest", () => {
-    expect(decideGrokUpdate({ currentVersion: "1.0.13", latestVersion: "1.0.34", installer: "native" })).toEqual({
-      latestVersion: "1.0.34",
-      updateAvailable: true,
-      installer: "native",
-      canUpdate: true,
-      note: null,
-    });
+describe("decideAcpProviderUpdate", () => {
+  const native: AcpInstaller = { kind: "native", binaryPath: "/Users/me/.grok/bin/grok" };
+
+  it.each([
+    ["below the tested range", "grok 1.0.13", "below", true, true],
+    ["inside the range, not at the top", `grok ${GROK_MIN}`, "tested", true, true],
+    ["at the top of the range", `grok ${GROK_MAX}`, "tested", false, false],
+    ["newer than ADE has tested", "grok 9.0.0", "above", false, false],
+    ["an unreadable version", "grok (dev build)", "unknown", false, false],
+  ] as const)("%s", (_label, versionLine, standing, updateAvailable, canUpdate) => {
+    const info = decideAcpProviderUpdate({ provider: "grok", versionLine, installer: native });
+    expect(info.standing).toBe(standing);
+    expect(info.updateAvailable).toBe(updateAvailable);
+    expect(info.canUpdate).toBe(canUpdate);
+    // An update always targets the top of the tested range, never npm `latest`.
+    expect(info.targetVersion).toBe(GROK_MAX);
+    expect(info.note).toBeNull();
   });
 
-  it("does not offer an update when the version is current", () => {
-    const info = decideGrokUpdate({ currentVersion: "1.0.40", latestVersion: "1.0.40", installer: "npm" });
-    expect(info.updateAvailable).toBe(false);
-    expect(info.canUpdate).toBe(true);
-  });
-
-  it("keeps an unresolvable install manual with a note and no button", () => {
-    const info = decideGrokUpdate({ currentVersion: "1.0.13", latestVersion: "1.0.34", installer: null });
+  it("names the manual command when ADE cannot place the install", () => {
+    const info = decideAcpProviderUpdate({ provider: "qwen", versionLine: "0.22.3", installer: null });
     expect(info.updateAvailable).toBe(true);
     expect(info.canUpdate).toBe(false);
-    expect(info.note).toContain("could not tell how this Grok was installed");
-  });
-
-  it("notes when the registry read failed", () => {
-    const info = decideGrokUpdate({ currentVersion: "1.0.13", latestVersion: null, installer: "native" });
-    expect(info.updateAvailable).toBe(false);
-    expect(info.note).toContain("npm");
-  });
-});
-
-describe("collectGrokUpdateInfo", () => {
-  it("skips the registry entirely when the installer cannot be resolved", async () => {
-    const fetchImpl = vi.fn();
-    const info = await collectGrokUpdateInfo({
-      binaryPath: "/opt/bin/grok",
-      currentVersion: "1.0.13",
-      installerIo: installerIo({}),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
     expect(info.installer).toBeNull();
-  });
-
-  it("reads the registry and offers the update for a resolved native install", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ version: "1.0.34" }),
-    })) as unknown as typeof fetch;
-    const info = await collectGrokUpdateInfo({
-      binaryPath: "/usr/local/bin/grok",
-      currentVersion: "1.0.13",
-      installerIo: installerIo({ "/usr/local/bin/grok": null }),
-      fetchImpl,
-      force: true,
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(info).toMatchObject({ installer: "native", latestVersion: "1.0.34", updateAvailable: true, canUpdate: true });
+    expect(info.note).toContain(`@qwen-code/qwen-code@${ACP_PROVIDER_VERSION_POLICY.qwen.tested.max}`);
   });
 });
 
-describe("fetchGrokUpdateBaseline", () => {
-  it("skips the registry when the installer cannot be resolved", async () => {
-    const fetchImpl = vi.fn();
-    const baseline = await fetchGrokUpdateBaseline({
-      binaryPath: "/opt/bin/grok",
-      installerIo: installerIo({}),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(baseline).toEqual({ installer: null, latestVersion: null });
-  });
-
-  it("resolves the installer and latest version without the installed version", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ version: "1.0.40" }),
-    })) as unknown as typeof fetch;
-    const baseline = await fetchGrokUpdateBaseline({
-      binaryPath: "/usr/local/bin/grok",
-      installerIo: installerIo({ "/usr/local/bin/grok": null }),
-      fetchImpl,
-      force: true,
-    });
-    expect(baseline).toEqual({ installer: "native", latestVersion: "1.0.40" });
-  });
-});
-
-describe("runGrokUpdate", () => {
-  it("runs update then --version with the instance GROK_HOME", async () => {
-    const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
-    const run: GrokSpawn = async (_command, args, opts): Promise<GrokRunResult> => {
-      calls.push({ args, env: opts.env });
-      return args[0] === "update"
-        ? { status: 0, stdout: "updated\n", stderr: "" }
-        : { status: 0, stdout: "1.0.34\n", stderr: "" };
+describe("runAcpProviderInstall", () => {
+  function recordingRun(results: Record<string, AcpRunResult>) {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const run: AcpSpawn = async (command, args) => {
+      calls.push({ command, args });
+      return results[args[0] ?? ""] ?? { status: 0, stdout: "", stderr: "" };
     };
-    const result = await runGrokUpdate({
-      binaryPath: "/usr/local/bin/grok",
-      configHome: "/tmp/grok-custom",
+    return { calls, run };
+  }
+
+  it("installs the newest tested version into the binary's own npm prefix, then reads the version", async () => {
+    const { calls, run } = recordingRun({ "--version": { status: 0, stdout: `${ACP_PROVIDER_VERSION_POLICY.qwen.tested.max}\n`, stderr: "" } });
+    const io = installerIo({ "/usr/local/bin/npm": null });
+    const result = await runAcpProviderInstall({
+      provider: "qwen",
+      installer: { kind: "npm", binaryPath: "/usr/local/bin/qwen", prefix: "/usr/local" },
       env: { PATH: "/usr/bin" },
       run,
+      io,
     });
-    expect(result).toEqual({ ok: true, message: "Grok updated to 1.0.34.", version: "1.0.34" });
-    expect(calls.map((call) => call.args)).toEqual([["update"], ["--version"]]);
-    expect(calls.every((call) => call.env.GROK_HOME === "/tmp/grok-custom")).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.version).toBe(ACP_PROVIDER_VERSION_POLICY.qwen.tested.max);
+    expect(calls[0]).toEqual({
+      command: "/usr/local/bin/npm",
+      args: ["install", "-g", "--prefix", "/usr/local", `@qwen-code/qwen-code@${ACP_PROVIDER_VERSION_POLICY.qwen.tested.max}`],
+    });
+    expect(calls[1]).toEqual({ command: "/usr/local/bin/qwen", args: ["--version"] });
+  });
+
+  it("asks a native Grok for the exact tested version", async () => {
+    const { calls, run } = recordingRun({});
+    await runAcpProviderInstall({ provider: "grok", installer: { kind: "native", binaryPath: "/g/grok" }, run, io: installerIo({}) });
+    expect(calls[0]).toEqual({ command: "/g/grok", args: ["update", "--version", GROK_MAX] });
+  });
+
+  it.each([
+    ["still reports the old version", { status: 0, stdout: "0.22.3\n", stderr: "" }, /still reports 0\.22\.3/],
+    ["cannot report a version", { status: 1, stdout: "", stderr: "" }, /could not confirm/],
+  ])("fails an install that exited 0 when the binary %s", async (_label, versionResult, message) => {
+    const { run } = recordingRun({ "--version": versionResult });
+    const result = await runAcpProviderInstall({
+      provider: "qwen",
+      installer: { kind: "npm", binaryPath: "/usr/local/bin/qwen", prefix: "/usr/local" },
+      run,
+      io: installerIo({}),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(message);
   });
 
   it("reports a failed update without inventing a version", async () => {
-    const run: GrokSpawn = async () => ({ status: 1, stdout: "", stderr: "network unreachable\n" });
-    const result = await runGrokUpdate({ binaryPath: "grok", run });
+    const { calls, run } = recordingRun({ install: { status: 1, stdout: "", stderr: "EACCES: permission denied\n" } });
+    const result = await runAcpProviderInstall({
+      provider: "copilot",
+      installer: { kind: "npm", binaryPath: "/usr/local/bin/copilot", prefix: "/usr/local" },
+      run,
+      io: installerIo({}),
+    });
     expect(result.ok).toBe(false);
     expect(result.version).toBeNull();
-    expect(result.message).toContain("network unreachable");
+    expect(result.message).toContain("EACCES");
+    // No version re-read after a failed install.
+    expect(calls).toHaveLength(1);
   });
 });

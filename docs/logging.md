@@ -275,6 +275,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -283,6 +284,14 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+ADE's one-click update of a user-installed provider CLI (from the provider's
+Settings page or the chat warning for a CLI older than ADE supports) records
+`updates/provider_cli_updated` where the update runs: the desktop IPC handler
+(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
+It is a rare, deliberate click, deduplicated per outcome and provider family
+for an hour, so the worst case is a few events a day inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute ceilings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the

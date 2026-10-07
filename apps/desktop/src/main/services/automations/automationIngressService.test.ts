@@ -166,7 +166,10 @@ describe("automationIngressService", () => {
     }));
   });
 
-  it("polls GitHub relay events with the stored cursor and fans PR payloads into the PR cache", async () => {
+  it.each([
+    ["only the raw event where a GitHub poller runs beside it", false],
+    ["the typed event too where no poller runs (the brain)", true],
+  ] as const)("polls GitHub relay events with the stored cursor, fills the PR cache, and dispatches %s", async (_label, typed) => {
     const updates: Array<Record<string, unknown>> = [];
     const cursors = new Map<string, string | null>([["github-relay", "delivery-1"]]);
     const ingestGithubWebhook = vi.fn(async () => ({
@@ -237,9 +240,28 @@ describe("automationIngressService", () => {
       } as never,
       getAccountAccessToken: vi.fn(async () => "clerk-account-token"),
       listRules: () => [],
+      ...(typed ? { relayDispatchesTypedGithubEvents: true } : {}),
     });
 
     await service.pollNow();
+
+    // `github.pr_*` rules match only the typed event. Sending it where a poller
+    // also does would start one rule twice for one PR.
+    const typedCalls = dispatchIngressTrigger.mock.calls.filter(([args]) => args.triggerType !== "github-webhook");
+    if (typed) {
+      expect(typedCalls).toHaveLength(1);
+      expect(typedCalls[0]?.[0]).toMatchObject({
+        source: "github-relay",
+        eventKey: "delivery-2:github.pr_updated",
+        triggerType: "github.pr_updated",
+        cursor: "seq:2",
+        repo: "arul28/ADE",
+        draftState: "ready",
+        pr: expect.objectContaining({ number: 42, headBranch: "feature/webhooks", baseBranch: "main" }),
+      });
+    } else {
+      expect(typedCalls).toHaveLength(0);
+    }
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "https://relay.example.com/projects/project%201/github/events?after=delivery-1",
@@ -261,6 +283,7 @@ describe("automationIngressService", () => {
     expect(dispatchIngressTrigger).toHaveBeenCalledWith(expect.objectContaining({
       source: "github-relay",
       eventKey: "delivery-2",
+      triggerType: "github-webhook",
       cursor: "seq:2",
       rawPayload: expect.objectContaining({
         pull_request: expect.objectContaining({ number: 42 }),

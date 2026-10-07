@@ -14,6 +14,7 @@ import {
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
+import { resolvePrBranchLane } from "./automationPrBranchLane";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
@@ -171,6 +172,95 @@ describe("triggerMatches", () => {
       trigger.branch,
       trigger.laneName,
     )).toBe(false);
+  });
+
+  it.each([
+    ["the exact bot login", ["dependabot[bot]"], "dependabot[bot]", true],
+    ["the bot name without [bot]", ["dependabot"], "dependabot[bot]", true],
+    ["an @-prefixed, mixed-case login", ["@Dependabot"], "dependabot[bot]", true],
+    ["one of several authors", ["renovate[bot]", "dependabot[bot]"], "dependabot[bot]", true],
+    ["a person when only the bot is allowed", ["dependabot[bot]"], "octocat", false],
+    ["a different bot", ["dependabot"], "renovate[bot]", false],
+  ])("matches a PR author filter against %s", (_label, authors, author, expected) => {
+    const trigger = {
+      triggerType: "github.pr_opened" as const,
+      pr: { number: 7, title: "Bump @openai/codex", author, repo: "acme/ade" },
+    };
+    expect(triggerMatches({ type: "github.pr_opened", authors }, trigger, undefined, undefined)).toBe(expected);
+  });
+});
+
+describe("resolvePrBranchLane", () => {
+  const pr = { number: 7, title: "Bump", repo: "acme/ade", url: "https://github.com/acme/ade/pull/7" };
+  const lane = { id: "lane-7", name: "Bump", branchRef: "dependabot/npm/codex" };
+  const preflight = (block: Record<string, unknown> | null, canCreate = !block) => ({
+    preflight: { canCreate, blockingConflict: block, headBranch: "dependabot/npm/codex" },
+    lane: null,
+    pr: null,
+  });
+
+  it("reuses the lane already linked to the PR, so a second event runs where the first did", async () => {
+    const createLaneFromPrBranch = vi.fn();
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "",
+      prService: {
+        preflightCreateLaneFromPrBranch: vi.fn(async () => preflight({ code: "already_mapped", message: "linked", laneId: "lane-7" })),
+        createLaneFromPrBranch,
+      } as never,
+      listActiveLanes: async () => [lane],
+    });
+    expect(result).toEqual(lane);
+    expect(createLaneFromPrBranch).not.toHaveBeenCalled();
+  });
+
+  it("imports the PR's branch by its URL with the rule's lane name when no lane is linked", async () => {
+    const createLaneFromPrBranch = vi.fn(async () => ({ lane, pr: {}, preflight: {} }));
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "Dependabot: Bump",
+      prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(null)), createLaneFromPrBranch } as never,
+      listActiveLanes: async () => [],
+    });
+    expect(result).toEqual(lane);
+    expect(createLaneFromPrBranch).toHaveBeenCalledWith({ prUrlOrNumber: pr.url, laneName: "Dependabot: Bump" });
+  });
+
+  it("uses the lane a racing event just imported instead of failing", async () => {
+    const preflightCreateLaneFromPrBranch = vi.fn()
+      .mockResolvedValueOnce(preflight(null))
+      .mockResolvedValueOnce(preflight({ code: "already_mapped", message: "linked", laneId: "lane-7" }));
+    const result = await resolvePrBranchLane({
+      pr,
+      triggerLane: null,
+      laneName: "",
+      prService: {
+        preflightCreateLaneFromPrBranch,
+        createLaneFromPrBranch: vi.fn(async () => { throw new Error("worktree already exists"); }),
+      } as never,
+      listActiveLanes: async () => [lane],
+    });
+    expect(result).toEqual(lane);
+    expect(preflightCreateLaneFromPrBranch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["the linked lane is archived", { pr, block: { code: "already_mapped", message: "PR #7 is linked to 'Old'.", laneId: "lane-old" } }, /archived/],
+    ["the linked lane is on another branch", { pr, block: { code: "already_mapped", message: "linked", laneId: "lane-main" } }, /not on the PR's branch 'dependabot\/npm\/codex'/],
+    ["the import is blocked", { pr, block: { code: "branch_owned", message: "Branch is checked out in another lane." } }, /checked out in another lane/],
+    ["the trigger carries no PR", { pr: null, block: null }, /trigger has no pull request/],
+  ] as const)("fails without falling back to another lane when %s", async (_label, { pr: triggerPr, block }, message) => {
+    const createLaneFromPrBranch = vi.fn();
+    await expect(resolvePrBranchLane({
+      pr: triggerPr,
+      triggerLane: null,
+      laneName: "",
+      prService: { preflightCreateLaneFromPrBranch: vi.fn(async () => preflight(block, false)), createLaneFromPrBranch } as never,
+      listActiveLanes: async () => [lane, { id: "lane-main", name: "Primary", branchRef: "refs/heads/main" }],
+    })).rejects.toThrow(message);
+    expect(createLaneFromPrBranch).not.toHaveBeenCalled();
   });
 });
 

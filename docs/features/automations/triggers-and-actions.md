@@ -34,7 +34,7 @@ The complete surface of triggers the automation runtime listens for, and the act
 
 Canonical trigger names are `github.*`. The older `git.pr_*` names still work (see `LEGACY_GITHUB_PR_TRIGGER_ALIASES`) but are aliased to the canonical ones at dispatch.
 
-- `github.pr_opened` / `github.pr_updated` / `github.pr_closed` / `github.pr_merged` — PR lifecycle. Filters: `branch`, `targetBranch`, `draftState: "draft" | "ready" | "any"`, `labels`, `authors`, `repo`, `titleRegex`, `bodyRegex`, `keywords`.
+- `github.pr_opened` / `github.pr_updated` / `github.pr_closed` / `github.pr_merged` — PR lifecycle. Filters: `branch`, `targetBranch`, `draftState: "draft" | "ready" | "any"`, `labels`, `authors`, `repo`, `titleRegex`, `bodyRegex`, `keywords`. `authors` compares logins case-insensitively and ignores a leading `@` and a `[bot]` suffix, so `dependabot` matches the `dependabot[bot]` account. The builder offers Dependabot and Renovate as one-click authors, and the **Dependabot PR → its branch + agent** template pairs that filter with `laneMode: "pr-branch"`.
 - `github.pr_commented` — a comment was added to a PR. Filters: `authors`, `keywords`, `titleRegex`/`bodyRegex`, `repo`.
 - `github.pr_review_submitted` — a review was submitted on a PR.
 - `github.issue_opened` / `github.issue_edited` / `github.issue_closed` — issue lifecycle. Filters: `labels`, `authors`, `titleRegex`, `bodyRegex`, `keywords`, `repo`.
