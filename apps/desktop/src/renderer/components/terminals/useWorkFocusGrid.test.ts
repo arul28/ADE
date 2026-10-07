@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { focusEvenPages, focusFit, focusPageColumns } from "./WorkFocusGrid";
 import { useWorkFocusGrid } from "./useWorkFocusGrid";
-import type { WorkFocusQueueItem } from "./useWorkFocusQueueReport";
+import { useWorkFocusQueueReport, type WorkFocusQueueItem } from "./useWorkFocusQueueReport";
 
 function chat(id: string): TerminalSessionSummary {
   return { id, laneId: "lane-1", title: id, status: "running", toolType: "claude-chat" } as unknown as TerminalSessionSummary;
@@ -153,5 +153,41 @@ describe("useWorkFocusGrid", () => {
     act(() => hook.result.current.pager?.onPage(2));
     expect(hook.result.current.marks?.get("f")).toEqual({ page: 2, onScreen: true, unseen: false });
     expect(hook.result.current.pager?.newAfter).toBe(false);
+  });
+});
+
+describe("Focus queue for another machine's lanes", () => {
+  it("gives no tile to a parent its subagent keeps busy, but keeps one for a finished parent", () => {
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const row = (overrides: Record<string, unknown>) => ({
+      laneId: "lane-f",
+      status: "running",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      startedAt: "2026-04-01T11:00:00.000Z",
+      lastActivityAt: "2026-04-01T11:30:00.000Z",
+      ...overrides,
+    }) as unknown as TerminalSessionSummary;
+    const busyParent = row({ id: "busy-parent" });
+    const helper = row({ id: "helper", runtimeState: "running", spawnKind: "subagent", orchestrationParentSessionId: "busy-parent" });
+    const doneParent = row({ id: "done-parent" });
+    const binding = { kind: "remote", key: "remote:studio" } as never;
+    const reported: string[][] = [];
+    renderHook(() => useWorkFocusQueueReport({
+      active: true,
+      localSessions: [],
+      localIds: [],
+      foreignRows: [{ machineId: "studio", lane: { id: "lane-f" }, binding, sessions: [busyParent, helper, doneParent] }],
+      foldedForeignLaneIds: new Set(),
+      filingBucketsFor: () => new Map(),
+      foreignNesting: new Map([["studio:lane-f", { excludedTopLevelIds: new Set(["helper"]) }]]),
+      nowMs,
+      onChange: (items) => reported.push(items.map((item) => item.session.id)),
+    }));
+
+    const tiles = reported.at(-1) ?? [];
+    expect(tiles).toContain("done-parent");
+    expect(tiles).not.toContain("busy-parent");
+    expect(tiles).not.toContain("helper");
   });
 });

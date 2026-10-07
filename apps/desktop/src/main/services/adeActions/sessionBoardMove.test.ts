@@ -465,6 +465,10 @@ describe("a resting chat that will run again, dragged to Done", () => {
       ],
       rows: [row({ id: "child" }), row({ id: "grandchild", runtimeState: "running" })],
     }, { from: "waiting", changed: true }],
+    ["a tracked CLI subagent is mid-turn (lineage only on its row)", {
+      chats: [],
+      rows: [row({ id: "cli", toolType: "codex", runtimeState: "running", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" } as Partial<Row>)],
+    }, { from: "waiting", changed: true }],
     ["its subagent is parked on a wake", {
       chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1", nextWakeAt: inMinutes(12) }],
       rows: [row({ id: "child" })],
@@ -480,6 +484,7 @@ describe("a resting chat that will run again, dragged to Done", () => {
       sessionService: {
         ...sessions.service,
         get: (id: string) => setup.rows.find((candidate) => candidate.id === id) ?? sessions.service.get(id),
+        list: () => [sessions.current, ...setup.rows],
       },
       agentChatService: {
         getSessionSummary: async () => ({ awaitingInput: false, nextWakeAt: setup.wake ?? null }),

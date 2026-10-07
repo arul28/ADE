@@ -365,7 +365,14 @@ export type BoardMoveSessionService = Pick<
   | "requestAttention"
   | "clearAttentionRequest"
   | "settleSession"
->;
+> & {
+  /**
+   * The lane's session rows, for tracked CLI subagents: their lineage lives on
+   * the row (resume metadata), not on a chat. Optional so a host without it
+   * still answers from the chats alone.
+   */
+  list?: (args?: { laneId?: string }) => TerminalSessionSummary[];
+};
 
 /**
  * Put the row where the column says it is.
@@ -591,13 +598,33 @@ async function hasBusySubagent(
   row: TerminalSessionSummary,
   nowMs: number,
 ): Promise<boolean> {
-  if (typeof chat?.listSessions !== "function") return false;
-  let chats: BoardMoveChatLink[];
-  try {
-    chats = await chat.listSessions(row.laneId);
-  } catch {
-    return false;
+  let chats: BoardMoveChatLink[] = [];
+  if (typeof chat?.listSessions === "function") {
+    try {
+      chats = await chat.listSessions(row.laneId);
+    } catch {
+      chats = [];
+    }
   }
+  // Tracked CLI subagents have no chat: their rows carry the lineage. A chat
+  // link wins for a shared id, because only the chat knows its wake.
+  const linkedIds = new Set(chats.map((link) => link.sessionId));
+  let laneRows: TerminalSessionSummary[] = [];
+  try {
+    laneRows = sessionService.list?.({ laneId: row.laneId }) ?? [];
+  } catch {
+    laneRows = [];
+  }
+  for (const laneRow of laneRows) {
+    if (linkedIds.has(laneRow.id) || !laneRow.orchestrationParentSessionId) continue;
+    chats.push({
+      sessionId: laneRow.id,
+      spawnKind: laneRow.spawnKind ?? null,
+      orchestrationParentSessionId: laneRow.orchestrationParentSessionId,
+      nextWakeAt: laneRow.nextWakeAt ?? null,
+    });
+  }
+  if (chats.length === 0) return false;
   const visited = new Set<string>([row.id]);
   let parents = new Set<string>([row.id]);
   while (parents.size > 0) {
