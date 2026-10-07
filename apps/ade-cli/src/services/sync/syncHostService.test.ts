@@ -6448,6 +6448,9 @@ describe("CTO-gated Linear sync commands", () => {
         releaseConnection: vi.fn(),
         dispose: vi.fn(),
       },
+      // A runtime with automations wires its webhook source, which is what
+      // registers the optional `automations.webhook*` actions.
+      getWebhookAutomations: () => null,
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
