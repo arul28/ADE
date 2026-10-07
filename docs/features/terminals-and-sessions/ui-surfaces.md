@@ -189,7 +189,23 @@ the row's status slot shows **No output** with the time since the last output
 exactly at the next stall deadline (`nextTurnStallDeadlineMs`) instead of
 polling. A resting chat is never stale or stalled: `canonicalSessionState`
 checks idle before silence, because a chat row keeps status `running` between
-turns and the old order filed every reply older than three hours as busy. Turning the option off forgets the return state, so turning it back on
+turns and the old order filed every reply older than three hours as busy.
+
+A resting chat with a **scheduled wake** still to come (a subagent polling CI,
+a `/loop`) is Waiting, not Done, on every surface: the row label, the lane
+rollup, the board (reason chip "Wake scheduled") and the host's
+`deriveWorkBoardColumn`. `scheduledWakeState` is the one rule. A wake past due
+by more than `SCHEDULED_WAKE_GRACE_MS` (two minutes) that never started a turn
+is Done again and holds its lane out, even when nested or seen, so a paused or
+dead scheduler cannot leave a lane folded. A finished parent whose nested
+subagent is still Working or Waiting rolls up as Waiting and gets no Focus
+tile, because the subagent wakes it when its turn ends. The board files that
+parent in Waiting too (reason chip "Subagent working"), and the host's drag
+check answers the same from the lane's chats (`subagentKeepsParentBusy` is the
+one rule). Attached shells do not count, so a dev server left running cannot
+keep a lane busy.
+
+Turning the option off forgets the return state, so turning it back on
 takes a fresh baseline instead of floating every lane at once.
 
 Each by-lane header carries one rolled-up status dot

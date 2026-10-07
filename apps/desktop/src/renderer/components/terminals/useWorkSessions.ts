@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
@@ -224,8 +226,14 @@ function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
  */
 export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>;
 
-/** Why a running row was pulled out of Working. Rendered as the card's reason chip. */
-export type WorkBoardWaitingReason = "snoozed" | "ci" | "review";
+/**
+ * Why a row sits in Waiting. Rendered as the card's reason chip. `scheduled`
+ * is a finished chat parked on a wake that has not come due yet
+ * (`scheduledWakeState`), so it is out of Done until it runs again. `subagent`
+ * is a finished chat whose subagent is still busy (`subagentKeepsParentBusy`):
+ * the subagent wakes it when its turn ends, so its Done is still to come.
+ */
+export type WorkBoardWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
 
 /**
  * Does this lane's PR park a running session in Waiting?
@@ -364,6 +372,8 @@ export function appendForeignMachinesToBoard(args: {
       settledFiltered: partitioned.settledFiltered,
       snoozedFiltered: partitioned.snoozedFiltered,
       laneWaitingReason: machine.laneWaitingReason,
+      busySubagentParentIds: parentsWithBusySubagents(machine.sessions, args.nowMs),
+      nowMs: args.nowMs,
     });
     for (const column of Object.keys(buckets) as WorkBoardColumn[]) {
       buckets[column].push(...model.buckets[column]);
@@ -395,10 +405,20 @@ export function buildWorkBoardModel(args: {
   snoozedFiltered: readonly TerminalSessionSummary[];
   /** Lane → the PR-derived wait, if any. Injected so the model stays pure. */
   laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
+  /**
+   * Chats whose subagent is still busy (`parentsWithBusySubagents`), from the
+   * unfiltered roster so a search that hides the subagent cannot file its
+   * parent as Done.
+   */
+  busySubagentParentIds?: ReadonlySet<string>;
+  /** The clock for the scheduled-wake rule. */
+  nowMs?: number;
 }): WorkBoardModel {
+  const nowMs = args.nowMs ?? Date.now();
   const waitingReasonBySessionId = new Map<string, WorkBoardWaitingReason>();
   const waiting: TerminalSessionSummary[] = [];
   const working: TerminalSessionSummary[] = [];
+  const resting: TerminalSessionSummary[] = [];
 
   for (const session of args.snoozedFiltered) {
     waitingReasonBySessionId.set(session.id, "snoozed");
@@ -413,6 +433,18 @@ export function buildWorkBoardModel(args: {
     waitingReasonBySessionId.set(session.id, reason);
     waiting.push(session);
   }
+  // A finished chat that will start again on its own is not Done yet.
+  for (const session of args.restingFiltered) {
+    const reason: WorkBoardWaitingReason | null = scheduledWakeState(session.nextWakeAt, nowMs) === "pending"
+      ? "scheduled"
+      : args.busySubagentParentIds?.has(session.id) ? "subagent" : null;
+    if (!reason) {
+      resting.push(session);
+      continue;
+    }
+    waitingReasonBySessionId.set(session.id, reason);
+    waiting.push(session);
+  }
 
   return {
     buckets: {
@@ -422,7 +454,7 @@ export function buildWorkBoardModel(args: {
       // Loudest tier first. Resting rows are live sessions that just finished a
       // turn, so they are the ones worth looking at; ended is a dead process;
       // settled is the quietest, because the user already filed it.
-      done: [...args.restingFiltered, ...args.endedFiltered, ...args.settledFiltered],
+      done: [...resting, ...args.endedFiltered, ...args.settledFiltered],
     },
     waitingReasonBySessionId,
   };
@@ -2172,8 +2204,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       settledFiltered,
       snoozedFiltered,
       laneWaitingReason: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)),
+      busySubagentParentIds: parentsWithBusySubagents(allKnownSessions, filingNowMs),
+      nowMs: filingNowMs,
     }),
     [
+      allKnownSessions,
+      filingNowMs,
       endedFiltered,
       needsYouFiltered,
       prsByLaneId,

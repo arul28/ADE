@@ -19,6 +19,8 @@ import {
   canonicalSessionState,
   isSessionFiledAsSnoozed,
 } from "../../../shared/sessionCanonicalState";
+import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { subagentKeepsParentBusy } from "../../../shared/sessionSpawnNesting";
 import { isChatToolType } from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
@@ -108,10 +110,19 @@ export function boardMoveMessageText(
  * by a pending check derives as `working` here, and dragging it to Working is
  * a legitimate no-op — `moveOnBoard` returns the derived `from` so the caller
  * can say so instead of appearing to do nothing.
+ *
+ * A finished chat with a pending scheduled wake IS modelled: it is the row's
+ * own state, not its lane's, and the board files it in Waiting
+ * (`scheduledWakeState`). `nextWakeAt` is projected from the chat summary and
+ * is not a session column, so `moveOnBoard` reads it from the chat first.
+ * So is a finished parent whose subagent is still busy (`hasBusySubagent`,
+ * which `moveOnBoard` answers from the lane's chats): the board files it in
+ * Waiting, and a drag out of Waiting must start from there.
  */
 export function deriveWorkBoardColumn(
   session: TerminalSessionSummary,
   nowMs: number = Date.now(),
+  options: { hasBusySubagent?: boolean } = {},
 ): WorkBoardColumn {
   const phase = canonicalSessionState({
     status: session.status,
@@ -131,6 +142,12 @@ export function deriveWorkBoardColumn(
     isChatTool: isChatToolType,
   }).phase;
   if (isSessionFiledAsSnoozed(session, phase, nowMs)) return "waiting";
+  if (
+    (phase === "ready" || phase === "idle")
+    && (scheduledWakeState(session.nextWakeAt, nowMs) === "pending" || options.hasBusySubagent === true)
+  ) {
+    return "waiting";
+  }
   return canonicalBoardColumnForPhase(phase);
 }
 
@@ -546,29 +563,67 @@ export type BoardMoveChatService = {
    * Needs you — which is exactly how a move to Working could report success
    * over a live card. `awaitingInput` is the chat service's own
    * `hasLivePendingInput`, the same check `chat.sendMessage` refuses on.
+   * `nextWakeAt` is read for the same reason: it is projected, never a column.
    */
-  getSessionSummary?(sessionId: string): Promise<{ awaitingInput?: boolean } | null>;
+  getSessionSummary?(sessionId: string): Promise<{ awaitingInput?: boolean; nextWakeAt?: string | null } | null>;
+  /** The lane's chats, to find this row's subagents and their wakes. */
+  listSessions?(laneId?: string): Promise<BoardMoveChatLink[]>;
+};
+
+type BoardMoveChatLink = {
+  sessionId: string;
+  nextWakeAt?: string | null;
+  orchestrationParentSessionId?: string | null;
+  spawnKind?: string | null;
 };
 
 /**
- * Whether the provider is still blocked on a structured card nobody answered.
+ * Whether one of this chat's direct subagents still keeps it busy. Best effort
+ * like the summary read: no chat service, no lister, or a throw reads as "no".
+ * The child's own row supplies its phase, settle and snooze; the chat supplies
+ * the wake, which is never a session column.
+ */
+async function hasBusySubagent(
+  chat: BoardMoveChatService | null | undefined,
+  sessionService: BoardMoveSessionService,
+  row: TerminalSessionSummary,
+  nowMs: number,
+): Promise<boolean> {
+  if (typeof chat?.listSessions !== "function") return false;
+  let chats: BoardMoveChatLink[];
+  try {
+    chats = await chat.listSessions(row.laneId);
+  } catch {
+    return false;
+  }
+  for (const child of chats) {
+    if (child.spawnKind !== "subagent" || child.orchestrationParentSessionId !== row.id) continue;
+    const childRow = sessionService.get(child.sessionId);
+    if (!childRow || childRow.laneId !== row.laneId) continue;
+    if (subagentKeepsParentBusy({ ...childRow, nextWakeAt: child.nextWakeAt ?? null }, nowMs)) return true;
+  }
+  return false;
+}
+
+/**
+ * The live chat's summary, for two questions: is the provider still blocked on
+ * a structured card nobody answered, and is a scheduled wake pending.
  *
  * Best effort by design: a host with no chat service, an older one with no
- * summary reader, or a summary read that throws all answer "no" and let the
- * move through. A board move must not fail because the question could not be
+ * summary reader, or a summary read that throws all answer null, which reads
+ * as "no card, no wake" and lets the move through. A board move must not fail because the question could not be
  * asked — the refusal it feeds exists to stop a move that would LIE, and a
  * thrown probe is not evidence of one.
  */
-async function hasLiveStructuredCard(
+async function readBoardMoveChatSummary(
   chat: BoardMoveChatService | null | undefined,
   sessionId: string,
-): Promise<boolean> {
-  if (typeof chat?.getSessionSummary !== "function") return false;
+): Promise<{ awaitingInput?: boolean; nextWakeAt?: string | null } | null> {
+  if (typeof chat?.getSessionSummary !== "function") return null;
   try {
-    const summary = await chat.getSessionSummary(sessionId);
-    return summary?.awaitingInput === true;
+    return await chat.getSessionSummary(sessionId);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -613,8 +668,14 @@ export function createSessionBoardMoveActions(deps: {
           `session.moveOnBoard 'to' must be one of ${WORK_BOARD_MOVE_TARGETS.join(", ")}.`,
         );
       }
-      const row = sessionService.get(sessionId);
-      if (!row) throw new Error(`Session '${sessionId}' was not found.`);
+      const rawRow = sessionService.get(sessionId);
+      if (!rawRow) throw new Error(`Session '${sessionId}' was not found.`);
+      const chatSummary = await readBoardMoveChatSummary(deps.agentChatService, sessionId);
+      const withWake = (session: TerminalSessionSummary): TerminalSessionSummary => (
+        chatSummary?.nextWakeAt !== undefined ? { ...session, nextWakeAt: chatSummary.nextWakeAt } : session
+      );
+      const row = withWake(rawRow);
+      const busySubagent = await hasBusySubagent(deps.agentChatService, sessionService, rawRow, Date.now());
       // A live structured card outranks the drag, and the drag cannot answer
       // it. `clearAttentionRequest` clears the attention columns but not the
       // provider's pending item, so a move to Working or Done over a live card
@@ -629,7 +690,7 @@ export function createSessionBoardMoveActions(deps: {
       //
       // With no chat service (or an older one with no summary reader) there is
       // nothing to ask, and the move proceeds as it did before.
-      if (to !== "needs_you" && (await hasLiveStructuredCard(deps.agentChatService, sessionId))) {
+      if (to !== "needs_you" && chatSummary?.awaitingInput === true) {
         return {
           ok: false,
           sessionId,
@@ -646,7 +707,7 @@ export function createSessionBoardMoveActions(deps: {
       // Checked BEFORE the flush below, so a duplicate drop event — which
       // arrives as a second call to the column the first one just reached —
       // stays a pure no-op instead of cutting the real move's undo short.
-      if (deriveWorkBoardColumn(row) === to) {
+      if (deriveWorkBoardColumn(row, Date.now(), { hasBusySubagent: busySubagent }) === to) {
         return { ok: true, sessionId, from: to, to, changed: false, moveId: null, undoExpiresAt: null };
       }
       // This session's previous move, if it still has one, goes out NOW. Its
@@ -658,8 +719,8 @@ export function createSessionBoardMoveActions(deps: {
       // Re-read and re-derive: a flushed move whose message could not be
       // delivered restores its own snapshot, so both the row and the column it
       // is in may have moved under us.
-      const rowAfterFlush = sessionService.get(sessionId) ?? row;
-      const from = deriveWorkBoardColumn(rowAfterFlush);
+      const rowAfterFlush = withWake(sessionService.get(sessionId) ?? rawRow);
+      const from = deriveWorkBoardColumn(rowAfterFlush, Date.now(), { hasBusySubagent: busySubagent });
       if (from === to) {
         return { ok: true, sessionId, from, to, changed: false, moveId: null, undoExpiresAt: null };
       }

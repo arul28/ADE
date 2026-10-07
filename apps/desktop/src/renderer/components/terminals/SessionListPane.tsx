@@ -117,6 +117,7 @@ import {
 import {
   attachedShellSectionId,
   nestedSubagentSectionId,
+  parentsWithBusySubagents,
   workNestingDrawers,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
@@ -1609,6 +1610,25 @@ export const SessionListPane = React.memo(function SessionListPane({
   const stallNowMs = useTurnStallClock(allSessionsUnfiltered);
 
   /**
+   * Chats a busy subagent keeps open, so their row reads Waiting like the lane
+   * and the board. Each machine's roster is indexed on its own: a subagent only
+   * nests under a parent on the same machine and lane.
+   */
+  const busySubagentParentIds = useMemo(() => {
+    const ids = parentsWithBusySubagents(allSessionsUnfiltered, stallNowMs);
+    const foreignByMachine = new Map<string, TerminalSessionSummary[]>();
+    for (const row of foreignRows) {
+      const list = foreignByMachine.get(row.machineId) ?? [];
+      list.push(...row.sessions);
+      foreignByMachine.set(row.machineId, list);
+    }
+    for (const sessions of foreignByMachine.values()) {
+      for (const id of parentsWithBusySubagents(sessions, stallNowMs)) ids.add(id);
+    }
+    return ids;
+  }, [allSessionsUnfiltered, foreignRows, stallNowMs]);
+
+  /**
    * Each local lane's rolled-up focus status and whether it folds into the
    * Working shelf (`summarizeLaneFocus`). Read from the unfiltered roster for
    * the same reason `isLaneQuiet` is: a lane must not change shelves as the
@@ -1624,6 +1644,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneWaiting: lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
         seenAtBySessionId: workSeenAtBySessionId,
         nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+        subagentParentBySessionId: unfilteredNesting.nestedChildToRootParentId,
         launching: unfilteredHandoffCountByLaneId.get(laneId) ?? 0,
         nowMs: stallNowMs,
       }));
@@ -1636,6 +1657,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     stallNowMs,
     unfilteredHandoffCountByLaneId,
     unfilteredNesting.excludedTopLevelIds,
+    unfilteredNesting.nestedChildToRootParentId,
     unfilteredSessionsByLane,
     workSeenAtBySessionId,
   ]);
@@ -1668,6 +1690,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
+      subagentParentBySessionId: unfilteredNesting.nestedChildToRootParentId,
+      roster: allSessionsUnfiltered,
       nowMs: stallNowMs,
     });
   }, [
@@ -1679,6 +1703,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedLaneIds,
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
+    unfilteredNesting.nestedChildToRootParentId,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1860,6 +1885,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       laneWaiting: false,
       seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: excluded,
+      subagentParentBySessionId: fullNesting.nestedChildToRootParentId,
       nowMs: stallNowMs,
     });
     const shelf = ((): WorkLaneShelf | null => {
@@ -2498,6 +2524,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         session={session}
         lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
+        subagentBusy={busySubagentParentIds.has(session.id)}
         parentSessionTitle={
           !foreignRow && session.orchestrationParentSessionId
             ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null

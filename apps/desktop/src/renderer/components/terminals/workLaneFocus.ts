@@ -14,12 +14,18 @@
  * whole lane out, with every row still visible, so the user sees the context of
  * the thing asking for them.
  *
+ * A finished chat with a scheduled wake still to come is Waiting, not Done: it
+ * will start again on its own (a subagent polling CI, a /loop). A parent whose
+ * subagent is still busy is Waiting too, because that subagent reports back and
+ * wakes it. A wake that came due and never started is Done again and holds its
+ * lane out, so a dead scheduler cannot leave a lane folded forever.
+ *
  * Pure on purpose: the sidebar hands over plain data and the rules stay
  * testable without mounting a list.
  */
 import { isTrackedAgentCliToolType, type TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
-import { sessionTurnStallMs } from "../../../shared/sessionStatusPresentation";
+import { scheduledWakeState, sessionTurnStallMs } from "../../../shared/sessionStatusPresentation";
 import { canonicalInputFromSummary, sessionCanonicalUiState, type SessionFilingBucket } from "../../lib/terminalAttention";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 
@@ -30,6 +36,12 @@ type WorkRowFocus = {
   status: WorkLaneFocusStatus;
   /** True when this row alone keeps its lane out of the Working shelf. */
   holdsOut: boolean;
+  /**
+   * A scheduled wake came due and never started a turn. Unlike an ordinary
+   * finished row it holds the lane out even when nested or already seen: the
+   * work it promised is not coming on its own.
+   */
+  missedWake?: boolean;
 };
 
 const STATUS_RANK: Record<WorkLaneFocusStatus, number> = {
@@ -97,8 +109,15 @@ function workRowFocus(args: {
       return { status: "working", holdsOut: true };
     case "settled":
       return null;
+    case "ready":
+    case "idle": {
+      const wake = scheduledWakeState(args.session.nextWakeAt, args.nowMs);
+      if (wake === "pending") return { status: "waiting", holdsOut: false };
+      if (wake === "overdue") return { status: "done", holdsOut: true, missedWake: true };
+      return { status: "done", holdsOut: !args.seen };
+    }
     default:
-      // ready / idle / failed / stopped / ended: the turn is over. It holds the
+      // failed / stopped / ended: the turn is over. It holds the
       // lane out until the user has looked at it since it finished.
       return { status: "done", holdsOut: !args.seen };
   }
@@ -123,7 +142,13 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
  *
  * Nested rows (attached shells, subagents) can raise a hand and so hold their
  * lane out, but a finished nested row cannot: nobody opens a helper to mark it
- * seen, so it would pin the lane open forever.
+ * seen, so it would pin the lane open forever. A missed wake is the exception.
+ *
+ * `subagentParentBySessionId` maps each nested subagent to the top-level chat
+ * it files under. While a subagent is Working or Waiting, its finished parent
+ * is Waiting rather than Done: the subagent wakes the parent when its turn
+ * ends, so the parent's real Done is still to come. Attached shells are not in
+ * this map on purpose: a dev server left running must not keep a lane busy.
  */
 export function summarizeLaneFocus(args: {
   sessions: readonly TerminalSessionSummary[];
@@ -131,14 +156,16 @@ export function summarizeLaneFocus(args: {
   laneWaiting: boolean;
   seenAtBySessionId: Readonly<Record<string, string>>;
   nestedSessionIds: ReadonlySet<string>;
+  subagentParentBySessionId?: ReadonlyMap<string, string>;
   launching?: number;
-  /** The clock for the stall rule; the caller re-runs this when a stall deadline passes. */
+  /** The clock for the stall and wake rules; the caller re-runs this when a deadline passes. */
   nowMs?: number;
 }): WorkLaneFocus {
   const launching = args.launching ?? 0;
   let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
   let busy = launching;
   let heldOut = false;
+  const rows = new Map<string, WorkRowFocus>();
   for (const session of args.sessions) {
     const row = workRowFocus({
       session,
@@ -147,12 +174,35 @@ export function summarizeLaneFocus(args: {
       seen: isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
       nowMs: args.nowMs,
     });
-    if (!row || (row.status === "done" && args.nestedSessionIds.has(session.id))) continue;
+    if (row) rows.set(session.id, row);
+  }
+  const parentsOfBusySubagents = busySubagentParentIds(rows, args.subagentParentBySessionId);
+  for (const session of args.sessions) {
+    let row = rows.get(session.id);
+    if (!row) continue;
+    if (row.status === "done" && !row.missedWake) {
+      if (args.nestedSessionIds.has(session.id)) continue;
+      if (parentsOfBusySubagents.has(session.id)) row = { status: "waiting", holdsOut: false };
+    }
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
     if (row.holdsOut) heldOut = true;
     else if (row.status === "working" || row.status === "waiting") busy += 1;
   }
   return { status, folds: !heldOut && busy > 0 };
+}
+
+/** Top-level chats with at least one nested subagent still Working or Waiting. */
+function busySubagentParentIds(
+  rows: ReadonlyMap<string, WorkRowFocus>,
+  subagentParentBySessionId: ReadonlyMap<string, string> | undefined,
+): Set<string> {
+  const parents = new Set<string>();
+  if (!subagentParentBySessionId) return parents;
+  for (const [childId, parentId] of subagentParentBySessionId) {
+    const child = rows.get(childId);
+    if (child && (child.status === "working" || child.status === "waiting")) parents.add(parentId);
+  }
+  return parents;
 }
 
 /**
@@ -270,9 +320,30 @@ export function workFocusQueue(args: {
   foldedLaneIds: ReadonlySet<string>;
   laneWaiting: (laneId: string) => boolean;
   nestedSessionIds: ReadonlySet<string>;
+  subagentParentBySessionId?: ReadonlyMap<string, string>;
+  /** The unfiltered roster, so a subagent hidden by search still keeps its parent busy. */
+  roster?: readonly TerminalSessionSummary[];
   nowMs?: number;
 }): string[] {
   const ids: string[] = [];
+  // A parent whose subagent is still busy is not waiting for the user, so it
+  // gets no tile; the grid follows the same rule as the fold.
+  const busyParents = new Set<string>();
+  if (args.subagentParentBySessionId) {
+    const childRows = new Map<string, WorkRowFocus>();
+    for (const session of args.roster ?? args.sessions) {
+      if (!args.subagentParentBySessionId.has(session.id)) continue;
+      const row = workRowFocus({
+        session,
+        filingBucket: args.filingBuckets.get(session.id),
+        laneWaiting: args.laneWaiting(session.laneId),
+        seen: false,
+        nowMs: args.nowMs,
+      });
+      if (row) childRows.set(session.id, row);
+    }
+    for (const id of busySubagentParentIds(childRows, args.subagentParentBySessionId)) busyParents.add(id);
+  }
   for (const session of args.sessions) {
     if (args.foldedLaneIds.has(session.laneId)) continue;
     if (!isChatToolType(session.toolType) && !isTrackedAgentCliToolType(session.toolType)) continue;
@@ -289,7 +360,12 @@ export function workFocusQueue(args: {
       ids.push(session.id);
       continue;
     }
+    if (row.missedWake) {
+      ids.push(session.id);
+      continue;
+    }
     if (nested) continue;
+    if (row.status === "done" && busyParents.has(session.id)) continue;
     // A stale or stalled run is filed as working but holds its lane out: it
     // may be stuck, so the user is the one who has to look.
     if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);

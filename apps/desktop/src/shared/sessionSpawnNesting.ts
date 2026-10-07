@@ -5,6 +5,7 @@ import {
   type CanonicalSessionPhase,
 } from "./sessionCanonicalState";
 import {
+  scheduledWakeState,
   sessionStatusPresentation,
   sessionStatusShoutsLabel,
   type SessionStatusTone,
@@ -315,6 +316,38 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     nestedChildToRootParentId: index.nestedChildToRootParentId,
     excludedTopLevelIds,
   };
+}
+
+/**
+ * Does this subagent keep its parent's work open? True while it is mid-turn or
+ * parked on a scheduled wake that has not come due (`scheduledWakeState`): it
+ * reports back and wakes its parent when that turn ends, so the parent's real
+ * Done is still to come. A snoozed, settled, finished or failed child does not.
+ */
+export function subagentKeepsParentBusy(child: SpawnNestingSession, nowMs: number = Date.now()): boolean {
+  const phase = phaseOf(child, nowMs);
+  if (isSessionFiledAsSnoozed(child, phase, nowMs)) return false;
+  if (phase === "starting" || phase === "running" || phase === "stale") return true;
+  return (phase === "ready" || phase === "idle") && scheduledWakeState(child.nextWakeAt, nowMs) === "pending";
+}
+
+/**
+ * Chats with at least one nested subagent that keeps them busy, keyed by the
+ * root parent each subagent files under. The board files such a parent in
+ * Waiting rather than Done; attached shells are never subagents, so a dev
+ * server left running cannot keep a chat busy.
+ */
+export function parentsWithBusySubagents<T extends SpawnNestingSession>(
+  sessions: readonly T[],
+  nowMs: number = Date.now(),
+): Set<string> {
+  const parents = new Set<string>();
+  const byId = new Map(sessions.map((session) => [session.id, session] as const));
+  for (const [childId, parentId] of indexNestedSubagents(sessions, { nowMs }).nestedChildToRootParentId) {
+    const child = byId.get(childId);
+    if (child && subagentKeepsParentBusy(child, nowMs)) parents.add(parentId);
+  }
+  return parents;
 }
 
 export function isTopLevelWorkSession(
