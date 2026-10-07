@@ -18,10 +18,8 @@
     "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
-    "build:notch": "node ./scripts/build-attention-notch.mjs",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media",
-    "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
+    "build:mac-native": "npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
@@ -462,19 +460,8 @@
           ]
         },
         {
-          "from": "resources/native/ade-attention-notch",
-          "to": "native/ade-attention-notch"
-        },
-        {
           "from": "resources/native/ade-desktop-driver",
           "to": "native/ade-desktop-driver"
-        },
-        {
-          "from": "resources/native/ADEAttentionNotch_ADEAttentionNotch.bundle",
-          "to": "native/ADEAttentionNotch_ADEAttentionNotch.bundle",
-          "filter": [
-            "**/*"
-          ]
         }
       ]
     },

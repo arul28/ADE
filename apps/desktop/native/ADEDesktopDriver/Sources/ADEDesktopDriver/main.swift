@@ -1,9 +1,7 @@
 /// `ade-desktop-driver`: one NDJSON request per line in, one reply per line out.
 ///
-/// Transport note: the attention notch helper this package's layout mirrors uses
-/// a unix socket, because it is a long-lived UI process the app may reconnect
-/// to. This helper is the opposite — the runtime owns it, starts it, and dies
-/// with it — so stdin/stdout is the right pipe: no socket path to leak, no
+/// Transport note: the runtime owns this helper, starts it, and dies with it,
+/// so stdin/stdout is the right pipe: no socket path to leak, no
 /// stale file after a crash, and the process group cleans itself up.
 ///
 /// Three invariants hold for every line:

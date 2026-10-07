@@ -68,10 +68,6 @@ describe("settings manifest", () => {
     "agents.scheduled-work": "notifications",
     // The Activity settings now sit on Notifications, but their ids keep the
     // `activity.` namespace and their anchors are still what old deeplinks use.
-    "activity.notch-enabled": "notifications",
-    "activity.notch-reveal": "notifications",
-    "activity.notch-expanded": "notifications",
-    "activity.celebrations": "notifications",
     "activity.sounds": "notifications",
     "activity.hide-details": "notifications",
     "activity.dock-badge": "notifications",
@@ -155,8 +151,6 @@ describe("settings manifest", () => {
     // landing them anywhere else would be an invisible dead end. Reset ADE
     // used to sit inside the About card, under `#about.reset`.
     for (const [hash, expectedTab] of [
-      ["attention-notch", "notifications"],
-      ["celebrations", "notifications"],
       ["attention-sounds", "notifications"],
       ["hide-previews", "notifications"],
       ["about.reset", "general"],

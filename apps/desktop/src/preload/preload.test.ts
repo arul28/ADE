@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
 import { BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT } from "../shared/types/builtInBrowserRemote";
 
-describe("preload Attention Notch bridge", () => {
+describe("preload Activity bridge", () => {
   beforeEach(() => {
     vi.resetModules();
     delete (globalThis as any).__adeBridge;
@@ -14,7 +14,7 @@ describe("preload Attention Notch bridge", () => {
     delete (globalThis as any).__adeBridge;
   });
 
-  it("publishes typed helper state and cleans up acknowledgement listeners", async () => {
+  it("routes every Activity call to its own IPC channel", async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();
     const removeListener = vi.fn();
@@ -34,22 +34,6 @@ describe("preload Attention Notch bridge", () => {
 
     await import("./preload");
     const bridge = (globalThis as any).__adeBridge;
-    const snapshot = {
-      contractVersion: 1,
-      revision: 1,
-      generatedAt: "2026-07-28T12:00:00.000Z",
-      items: [],
-      tombstones: [],
-    };
-    const settings = {
-      enabled: true,
-      preferredDisplayId: null,
-      hideDetails: false,
-      celebrationsEnabled: true,
-      soundsEnabled: false,
-    };
-    await bridge.attentionNotch.publishSnapshot(snapshot);
-    await bridge.attentionNotch.updateSettings(settings);
     const item = { id: "agent-1" };
     await bridge.attention.getSnapshot(7, "account-stream");
     await bridge.attention.acknowledge({
@@ -63,8 +47,6 @@ describe("preload Attention Notch bridge", () => {
     await bridge.attention.putPreferences("account-a", preferences);
     await bridge.attention.openItem(item);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchPublishSnapshot, snapshot);
-    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchUpdateSettings, settings);
     expect(invoke).toHaveBeenCalledWith(IPC.attentionGetSnapshot, {
       since: 7,
       streamId: "account-stream",
@@ -91,35 +73,6 @@ describe("preload Attention Notch bridge", () => {
       expect.anything(),
     );
 
-    const callback = vi.fn();
-    const unsubscribe = bridge.attentionNotch.onAcknowledgeRequested(callback);
-    expect(on).toHaveBeenCalledWith(
-      IPC.attentionNotchAcknowledgeRequested,
-      expect.any(Function),
-    );
-    const listener = on.mock.calls.at(-1)?.[1];
-    listener({}, { itemId: "agent-1", mode: "seen" });
-    expect(callback).toHaveBeenCalledWith({ itemId: "agent-1", mode: "seen" });
-    unsubscribe();
-    expect(removeListener).toHaveBeenCalledWith(
-      IPC.attentionNotchAcknowledgeRequested,
-      listener,
-    );
-
-    const refreshCallback = vi.fn();
-    const unsubscribeRefresh = bridge.attentionNotch.onRefreshRequested(refreshCallback);
-    expect(on).toHaveBeenCalledWith(
-      IPC.attentionNotchRefreshRequested,
-      expect.any(Function),
-    );
-    const refreshListener = on.mock.calls.at(-1)?.[1];
-    refreshListener({});
-    expect(refreshCallback).toHaveBeenCalledOnce();
-    unsubscribeRefresh();
-    expect(removeListener).toHaveBeenCalledWith(
-      IPC.attentionNotchRefreshRequested,
-      refreshListener,
-    );
   });
 });
 

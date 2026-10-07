@@ -7,9 +7,8 @@ import { fileURLToPath } from "node:url";
 /**
  * Build the macOS half of the global capture helper.
  *
- * Modelled on `build-attention-notch.mjs` down to the arch list, the scratch
- * paths and the `lipo` fold — including the skip-off-platform guard, which is
- * what lets `dist:win` run this script on a Windows box without failing. The
+ * Builds both architectures in scratch paths and folds them with `lipo`. The
+ * skip-off-platform guard is what lets `dist:win` run this script on a Windows box without failing. The
  * Windows half is `build-capture-helper-win.mjs`; neither can cross-compile the
  * other, so both are wired into their own platform's dist script.
  */

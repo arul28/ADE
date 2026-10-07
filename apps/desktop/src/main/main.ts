@@ -1,5 +1,5 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -195,11 +195,6 @@ import {
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
-  AttentionNotchHelper,
-  type AttentionNotchOutput,
-} from "./services/attention/attentionNotchHelper";
-import { resolveAttentionNotchExecutablePath } from "./services/native/nativeHelperPaths";
-import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
 } from "./services/capture/captureHelper";
@@ -216,13 +211,9 @@ import {
 } from "./services/analytics/captureGestureProductAnalytics";
 
 import {
-  attentionNotchAppNavigation,
   attentionItemNavigationRequest,
-  createAttentionNotchToastDeduper,
   remoteBindingMatchesProject,
-  resolveAttentionNotchOutput,
-  type AttentionNotchResolvedOutput,
-} from "./services/attention/attentionNotchRouter";
+} from "./services/attention/attentionItemRouting";
 import { pathsEqual } from "./services/shared/pathCompare";
 import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
@@ -254,9 +245,6 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
-  AttentionNotchAcknowledgeRequest,
-  AttentionNotchSettings,
-  AttentionSnapshot,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -1303,7 +1291,7 @@ let dispatchAppNavigationForProjectRoot:
   | null = null;
 
 // Queue rather than drop when the window layer has not registered its
-// dispatcher yet. The notch, `ade://` deeplinks, and file opens can all fire
+// dispatcher yet. Activity opens, `ade://` deeplinks, and file opens can all fire
 // during launch, and a silent no-op is indistinguishable from a dead button.
 const MAX_PENDING_APP_NAVIGATION_REQUESTS = 32;
 
@@ -7490,7 +7478,6 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
-  let attentionNotchHelper: AttentionNotchHelper | null = null;
   let captureHelper: CaptureHelper | null = null;
   /**
    * The ADE window the user was last in.
@@ -7560,12 +7547,6 @@ app.whenReady().then(async () => {
         // A failed drain must never block shutdown.
       });
     }
-    try {
-      attentionNotchHelper?.dispose();
-    } catch {
-      // ignore
-    }
-    attentionNotchHelper = null;
     try {
       captureHelper?.dispose();
     } catch {
@@ -8858,8 +8839,6 @@ app.whenReady().then(async () => {
 
   installApplicationMenu();
 
-  let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
-  const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   accountAuthServiceForOwnerId = attentionAccountAuthService;
@@ -8875,36 +8854,6 @@ app.whenReady().then(async () => {
       return status.signedIn ? status.userId?.trim() || null : null;
     },
   });
-
-  const attentionWindow = async (): Promise<BrowserWindow | null> => {
-    const existing =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (existing) return existing;
-    const opened = await openAdeWindow();
-    return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
-  };
-
-  const sendAttentionNotchAcknowledge = async (
-    request: AttentionNotchAcknowledgeRequest,
-    preferredWindow?: BrowserWindow | null,
-  ): Promise<void> => {
-    const target = preferredWindow && !preferredWindow.isDestroyed()
-      ? preferredWindow
-      : await attentionWindow();
-    if (!target || target.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
-  };
-
-  const requestAttentionNotchRefresh = (force = false): void => {
-    const target =
-      BrowserWindow.getFocusedWindow()
-      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
-      ?? null;
-    if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchRefreshRequested, { force });
-  };
 
   /**
    * The live window whose remote binding satisfies `predicate`.
@@ -8942,11 +8891,11 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * The notch runs as a separate helper process, so clicking it never activates
-   * ADE. Without this the navigation lands correctly in a window the user is
-   * still not looking at, and every notch button reads as dead.
+   * Bring ADE itself in front of other apps. Window show/focus alone does not
+   * do this on macOS when the trigger came from outside ADE (a global capture
+   * chord), so the window would come forward behind the app the user is in.
    */
-  const activateAppForAttentionNotch = (): void => {
+  const activateAdeApp = (): void => {
     try {
       // `steal` is macOS-only; other platforms ignore it and rely on the
       // per-window show/focus that follows.
@@ -8993,15 +8942,8 @@ app.whenReady().then(async () => {
 
   const navigateFromAttentionItem = async (
     item: AttentionItem,
-    request: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["request"],
-    options: {
-      acknowledge: boolean;
-      /** Notch-originated navigation must bring ADE itself forward. */
-      activateApp?: boolean;
-      fallbackAction?: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["fallbackAction"];
-    },
+    request: AppNavigationRequest,
   ): Promise<void> => {
-    if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
     const localMachineKey = ipcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
@@ -9042,12 +8984,6 @@ app.whenReady().then(async () => {
     if (remoteWindow) {
       foregroundAttentionWindow(remoteWindow);
       remoteWindow.webContents.send(IPC.appNavigate, request);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          remoteWindow,
-        );
-      }
       return;
     }
 
@@ -9063,152 +8999,11 @@ app.whenReady().then(async () => {
       if (!delivered.ok) {
         throw new Error(delivered.message);
       }
-      const win = BrowserWindow.fromId(delivered.windowId);
-      if (options.acknowledge) {
-        await sendAttentionNotchAcknowledge(
-          { itemId: item.id, mode: "seen" },
-          win,
-        );
-      }
-      if (options.fallbackAction) {
-        getActiveContext().logger.info("attention.notch_action_opened_destination", {
-          itemId: item.id,
-          actionKind: options.fallbackAction.kind,
-          reason: "inline_action_not_safe_for_account_scope",
-        });
-      }
       return;
     }
 
     dispatchOrQueueAppNavigationRequest(request);
-    if (options.acknowledge) {
-      await sendAttentionNotchAcknowledge({
-        itemId: item.id,
-        mode: "seen",
-      });
-    }
-    if (options.fallbackAction) {
-      getActiveContext().logger.info("attention.notch_action_opened_destination", {
-        itemId: item.id,
-        actionKind: options.fallbackAction.kind,
-        reason: "remote_destination_not_connected",
-      });
-    }
   };
-
-  const navigateFromAttentionNotch = async (
-    resolved: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>,
-  ): Promise<void> => {
-    await navigateFromAttentionItem(resolved.item, resolved.request, {
-      acknowledge: true,
-      activateApp: true,
-      fallbackAction: resolved.fallbackAction,
-    });
-  };
-
-  const handleAttentionNotchOutput = (output: AttentionNotchOutput): void => {
-    if (output.type === "surface") {
-      getActiveContext().logger.info("attention.notch_surface", {
-        displayId: output.displayId,
-        surface: output.surface,
-      });
-      return;
-    }
-    if (output.type === "protocol_error") {
-      getActiveContext().logger.warn("attention.notch_protocol_error", {
-        message: output.message,
-      });
-      return;
-    }
-    if (output.type === "refresh") {
-      requestAttentionNotchRefresh(true);
-      return;
-    }
-    const chromeNavigation = attentionNotchAppNavigation(output);
-    if (chromeNavigation) {
-      // Activate first, then dispatch: the dispatcher shows/focuses the target
-      // window, but only app activation gets ADE in front of the notch.
-      if (chromeNavigation.activatesApp) activateAppForAttentionNotch();
-      dispatchOrQueueAppNavigationRequest(chromeNavigation.request);
-      return;
-    }
-    if (output.type === "dismiss_item") {
-      void sendAttentionNotchAcknowledge({
-        itemId: output.itemId,
-        // "seen" stops the interrupting but leaves the row in Activity; only
-        // the panel's explicit dismiss files it away. Already narrowed to one
-        // of the two by the helper reader.
-        mode: output.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: output.itemId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    if (output.type === "settings") {
-      const settings: AttentionNotchSettings = output.settings;
-      attentionNotchHelper?.updateSettings(settings);
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-        win.webContents.send(IPC.attentionNotchSettingsChanged, settings);
-      }
-      return;
-    }
-    if (output.type !== "open" && output.type !== "action") return;
-    const resolved = resolveAttentionNotchOutput(output, latestAttentionNotchSnapshot);
-    if (resolved.kind === "ignore") {
-      getActiveContext().logger.warn("attention.notch_output_ignored", {
-        itemId: output.itemId,
-        reason: resolved.reason,
-      });
-      return;
-    }
-    if (resolved.kind === "acknowledge") {
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: resolved.mode,
-      }).catch((error: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
-    }
-    void navigateFromAttentionNotch(resolved).catch((error: unknown) => {
-      getActiveContext().logger.warn("attention.notch_navigation_failed", {
-        itemId: resolved.item.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // The notch already closed the card on click, so the acknowledgement
-      // cannot ride on navigation succeeding: a failed open would leave the
-      // card gone locally with nothing filed, and the next snapshot would toast
-      // the same row again. `seen` and not `dismiss` — the work is still
-      // unhandled, it just is not news any more.
-      void sendAttentionNotchAcknowledge({
-        itemId: resolved.item.id,
-        mode: "seen",
-      }).catch((ackError: unknown) => {
-        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
-          itemId: resolved.item.id,
-          error: ackError instanceof Error ? ackError.message : String(ackError),
-        });
-      });
-    });
-  };
-
-  attentionNotchHelper = new AttentionNotchHelper({
-    executablePath: resolveAttentionNotchExecutablePath({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      appPath: app.getAppPath(),
-    }),
-    logger: getActiveContext().logger,
-    onOutput: handleAttentionNotchOutput,
-    onRefreshRequested: requestAttentionNotchRefresh,
-  });
 
   /**
    * Where a capture lands. The order is `pickCaptureGestureWindow`; what main
@@ -9273,7 +9068,7 @@ app.whenReady().then(async () => {
       // Bring ADE forward BEFORE the event: the renderer's fly-in animation is
       // pointless behind another app's window, and the whole gesture means
       // "take me to the CTO with this".
-      activateAppForAttentionNotch();
+      activateAdeApp();
       foregroundAttentionWindow(target);
       target.webContents.send(IPC.captureGestureShot, fitted);
       reportCapture("delivered");
@@ -9289,30 +9084,6 @@ app.whenReady().then(async () => {
       reportCapture("failed");
     },
   });
-  // Sleep does not always lock the machine, so resume must clear suspension
-  // without overriding the independent lock state.
-  let notchScreenLocked = false;
-  let notchSystemSuspended = false;
-  const syncNotchScreenState = () => {
-    attentionNotchHelper?.setScreenAwake(!notchScreenLocked && !notchSystemSuspended);
-  };
-  powerMonitor?.on?.("lock-screen", () => {
-    notchScreenLocked = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("unlock-screen", () => {
-    notchScreenLocked = false;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("suspend", () => {
-    notchSystemSuspended = true;
-    syncNotchScreenState();
-  });
-  powerMonitor?.on?.("resume", () => {
-    notchSystemSuspended = false;
-    syncNotchScreenState();
-  });
-
   // The account bridge is available on the welcome screen, before any project
   // context has initialized the API-key service. Bind the machine credential
   // store once here so a sign-out from that screen still purges account keys.
@@ -9416,37 +9187,8 @@ app.whenReady().then(async () => {
     retryCaptureGesture: (): CaptureGestureHealth =>
       captureHelper?.retry() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH,
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
-    publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
-      latestAttentionNotchSnapshot = snapshot;
-      attentionNotchHelper?.publishSnapshot(snapshot);
-    },
-    publishAttentionNotchToast: (toast) => {
-      if (!shouldForwardAttentionNotchToast(toast)) return;
-      attentionNotchHelper?.publishToast(toast);
-    },
-    updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
-      attentionNotchHelper?.updateSettings(settings);
-    },
-    getAttentionNotchHealth: () => attentionNotchHelper?.getHealth() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
-    retryAttentionNotch: () => attentionNotchHelper?.retry() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    },
     openAttentionItem: async (item: AttentionItem) => {
-      await navigateFromAttentionItem(
-        item,
-        attentionItemNavigationRequest(item),
-        { acknowledge: false },
-      );
+      await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

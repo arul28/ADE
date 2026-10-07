@@ -2564,8 +2564,8 @@ exists and how to use it without printing it.
 `approval_request.kind` describes the *shape* of the thing being confirmed
 (`tool_call`, `permissions`, `plan_approval`, …) and has no word for "the agent
 asked you a question". Claude's `AskUserQuestion` therefore rode the event as a
-`tool_call` approval, and every surface downstream of the transcript — push, the
-ADE Notch, the lock screen — offered **Approve / Deny** for something that wants
+`tool_call` approval, and every surface downstream of the transcript — push and
+the lock screen — offered **Approve / Deny** for something that wants
 prose. The answer branches in those surfaces were unreachable code.
 
 So the event carries an additional optional `requestKind: PendingInputKind` —

@@ -150,8 +150,8 @@ export type MacDesktopPermissions = {
 export type MacDesktopSigningState = "adhoc" | "identity" | "unknown";
 
 /**
- * Helper health, modelled on `AttentionNotchHealth` so the same settings-style
- * recovery verbs reach the UI.
+ * Helper health, in the same shape as `CaptureGestureHealth` so the same
+ * settings-style recovery verbs reach the UI.
  */
 export type MacDesktopDriverState =
   | "running"

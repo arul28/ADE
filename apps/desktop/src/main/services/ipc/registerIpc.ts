@@ -71,11 +71,7 @@ import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
-  AttentionNotchSettings,
-  AttentionNotchToast,
-  AttentionSnapshot,
 } from "../../../shared/types/attention";
-import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { buildMachineOnlySyncSnapshot } from "../sync/machineOnlySyncSnapshot";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
@@ -188,11 +184,7 @@ import {
   toShallowRecentProjectSummary,
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
-import {
-  parseAttentionNotchSettings,
-  parseAttentionNotchSnapshot,
-  parseAttentionNotchToast,
-} from "../attention/attentionNotchRouter";
+import { parseAttentionItem } from "../attention/attentionItemRouting";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import type {
@@ -1880,11 +1872,6 @@ export function registerIpc({
   getCaptureGestureHealth,
   retryCaptureGesture,
   captureGestureNow,
-  publishAttentionNotchSnapshot,
-  publishAttentionNotchToast,
-  updateAttentionNotchSettings,
-  getAttentionNotchHealth,
-  retryAttentionNotch,
   openAttentionItem,
   getCurrentAccountOwnerId,
   accountAttentionClient,
@@ -1961,11 +1948,6 @@ export function registerIpc({
   getCaptureGestureHealth?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   captureGestureNow?: () => boolean;
-  publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
-  publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
-  updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
-  getAttentionNotchHealth?: () => import("../../../shared/types").AttentionNotchHealth;
-  retryAttentionNotch?: () => import("../../../shared/types").AttentionNotchHealth;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
@@ -3485,42 +3467,6 @@ export function registerIpc({
     started: captureGestureNow?.() ?? false,
   }));
 
-  ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
-    const snapshot = parseAttentionNotchSnapshot(input);
-    if (!snapshot) throw new Error("Invalid ADE Notch snapshot.");
-    publishAttentionNotchSnapshot?.(snapshot);
-  });
-
-  ipcMain.handle(IPC.attentionNotchPublishToast, async (_event, input: unknown) => {
-    const toast = parseAttentionNotchToast(input);
-    if (!toast) throw new Error("Invalid ADE Notch toast.");
-    publishAttentionNotchToast?.(toast);
-  });
-
-  ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {
-    const settings = parseAttentionNotchSettings(input);
-    if (!settings) throw new Error("Invalid ADE Notch settings.");
-    updateAttentionNotchSettings?.(settings);
-  });
-
-  ipcMain.handle(IPC.attentionNotchGetHealth, async () =>
-    getAttentionNotchHealth?.() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    });
-
-  ipcMain.handle(IPC.attentionNotchRetry, async () =>
-    retryAttentionNotch?.() ?? getAttentionNotchHealth?.() ?? {
-      state: "unsupported",
-      title: "ADE Notch is unavailable",
-      message: "This ADE build does not include the native ambient surface.",
-      recovery: "reinstall_or_update",
-      surface: null,
-    });
-
   ipcMain.handle(
     IPC.attentionGetSnapshot,
     async (_event, input: unknown) => attentionAccountCoordinator.getSnapshot(input),
@@ -3565,21 +3511,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
-    const snapshot = parseAttentionNotchSnapshot({
-      contractVersion: ATTENTION_CONTRACT_VERSION,
-      streamId: null,
-      revision: (
-        typeof input === "object"
-        && input !== null
-        && Number.isSafeInteger((input as { revision?: unknown }).revision)
-      )
-        ? Number((input as { revision: number }).revision)
-        : 0,
-      generatedAt: new Date().toISOString(),
-      items: [input],
-      tombstones: [],
-    });
-    const item = snapshot?.items[0] ?? null;
+    const item = parseAttentionItem(input);
     if (!item) throw new Error("Invalid Activity item.");
     await openAttentionItem?.(item);
   });

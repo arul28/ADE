@@ -27,10 +27,10 @@ export { resolveCaptureHelperExecutablePath };
 /**
  * Supervisor for the native capture helper.
  *
- * Deliberately the same shape as `AttentionNotchHelper` — line cap, restart
- * budget, graceful-shutdown window, `windowsHide` — because the failure modes
- * of a supervised NDJSON child are identical and a second, subtly different
- * supervision policy in the same app is how one of them rots.
+ * Line cap, restart budget, graceful-shutdown window and `windowsHide` are the
+ * whole supervision policy for a supervised NDJSON child. Keep any other
+ * native helper on the same policy: a second, subtly different one in the same
+ * app is how one of them rots.
  *
  * One difference that is NOT cosmetic: this helper also runs on Windows, where
  * `child.kill("SIGTERM")` does not deliver a signal at all (Node maps it to

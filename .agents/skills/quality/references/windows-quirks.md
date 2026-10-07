@@ -213,7 +213,7 @@ the thing that actually cannot work, and users lose features that were fine.
 `blocked_by_capability` for screenshot, video recording, app launch, GUI
 interaction, and environment info — while App Control and proof-file ingestion
 stay available and tested. Renderer gates are equally narrow
-(`supportsIosSimulatorPlatform`, `supportsNativeNotchPlatform` in
+(`supportsIosSimulatorPlatform` in
 `renderer/lib/platform.ts`); the iOS Simulator pane is *hidden* on Windows and a
 test pins that. Note the arch trap in the same file: `navigator.platform`
 reports `Win32` on Windows-on-ARM too, so architecture must come from the

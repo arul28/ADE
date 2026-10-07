@@ -46,8 +46,6 @@ import {
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
-  type AttentionNotchAcknowledgeRequest,
-  type AttentionNotchSettings,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
@@ -6289,48 +6287,6 @@ const adeBridge = {
       ) => cb(failure);
       ipcRenderer.on(IPC.captureGestureFailed, listener);
       return () => ipcRenderer.removeListener(IPC.captureGestureFailed, listener);
-    },
-  },
-  attentionNotch: {
-    publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
-      ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
-    publishToast: async (
-      toast: import("../shared/types").AttentionNotchToast,
-    ): Promise<void> => ipcRenderer.invoke(IPC.attentionNotchPublishToast, toast),
-    updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
-      ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
-    getHealth: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
-      ipcRenderer.invoke(IPC.attentionNotchGetHealth),
-    retry: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
-      ipcRenderer.invoke(IPC.attentionNotchRetry),
-    onAcknowledgeRequested: (
-      cb: (request: AttentionNotchAcknowledgeRequest) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        request: AttentionNotchAcknowledgeRequest,
-      ) => cb(request);
-      ipcRenderer.on(IPC.attentionNotchAcknowledgeRequested, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchAcknowledgeRequested, listener);
-    },
-    onRefreshRequested: (cb: (request?: { force?: boolean }) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        request?: { force?: boolean },
-      ) => cb(request);
-      ipcRenderer.on(IPC.attentionNotchRefreshRequested, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchRefreshRequested, listener);
-    },
-    onSettingsChanged: (cb: (settings: AttentionNotchSettings) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        settings: AttentionNotchSettings,
-      ) => cb(settings);
-      ipcRenderer.on(IPC.attentionNotchSettingsChanged, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.attentionNotchSettingsChanged, listener);
     },
   },
   usage: {

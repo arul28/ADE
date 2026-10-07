@@ -279,30 +279,6 @@ async function assertBundledAdeMedia(resourcesPath, description) {
   }
 }
 
-async function assertBundledAttentionNotch(resourcesPath, description) {
-  const helperPath = path.join(resourcesPath, "native", "ade-attention-notch");
-  const resourceBundlePath = path.join(
-    resourcesPath,
-    "native",
-    "ADEAttentionNotch_ADEAttentionNotch.bundle",
-  );
-  await assertPathExists(helperPath, `native Attention Notch helper for ${description}`);
-  await assertExecutable(helperPath, `native Attention Notch helper for ${description}`);
-  await assertPathExists(
-    resourceBundlePath,
-    `native Attention Notch resource bundle for ${description}`,
-  );
-  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
-  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
-  for (const architecture of ["arm64", "x86_64"]) {
-    if (!architectures.has(architecture)) {
-      throw new Error(
-        `[release:mac] Native Attention Notch helper for ${description} is missing ${architecture}: ${helperPath}`,
-      );
-    }
-  }
-}
-
 /**
  * The capture helper is a universal Mach-O like the notch, and the arch check is
  * the point: a helper built for one arch ships happily, then fails to spawn on
@@ -528,7 +504,6 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
-  await assertBundledAttentionNotch(resourcesPath, description);
   await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
   await assertBundledAdeMedia(resourcesPath, description);

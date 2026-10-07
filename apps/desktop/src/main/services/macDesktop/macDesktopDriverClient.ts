@@ -7,8 +7,8 @@
  *   reply   `{"id":"7","ok":true,"result":{…}}` / `{"id":"7","ok":false,"error":{…}}`
  *   event   `{"event":"windows-changed", …}`
  *
- * Restart-with-backoff and the health shape are modelled on
- * `AttentionNotchHelper`, deliberately: the two helpers fail the same ways
+ * Restart-with-backoff and the health shape match `CaptureHelper`,
+ * deliberately: native helpers fail the same ways
  * (missing binary, permission refusal, a build that does not speak this
  * protocol), and the settings surfaces already know how to render that health.
  *
