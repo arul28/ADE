@@ -47,6 +47,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
     cursorAuthLogin: IPC.aiCursorAuthLogin,
+    // A provider CLI update on a paired machine runs the same install as a
+    // local one; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
+    acpProviderUpdate: IPC.aiAcpProviderUpdate,
   },
   lane: {
     create: IPC.lanesCreate,

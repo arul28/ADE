@@ -162,6 +162,22 @@ describe("runAcpProviderInstall", () => {
     expect(calls[1]).toEqual({ command: "/usr/local/bin/qwen", args: ["--version"] });
   });
 
+  it("finds the version among warning lines around it", async () => {
+    const max = ACP_PROVIDER_VERSION_POLICY.qwen.tested.max;
+    const { run } = recordingRun({
+      "--version": { status: 0, stdout: `${max}\nRun qwen --help for usage\n`, stderr: "(node:1) ExperimentalWarning: fetch is experimental\n" },
+    });
+    const result = await runAcpProviderInstall({
+      provider: "qwen",
+      installer: { kind: "npm", binaryPath: "/usr/local/bin/qwen", prefix: "/usr/local" },
+      run,
+      io: installerIo({}),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.version).toBe(max);
+    expect(result.message).toContain(max);
+  });
+
   it("asks a native Grok for the exact tested version", async () => {
     const { calls, run } = recordingRun({});
     await runAcpProviderInstall({ provider: "grok", installer: { kind: "native", binaryPath: "/g/grok" }, run, io: installerIo({}) });

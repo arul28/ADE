@@ -208,6 +208,9 @@ export function RuleBuilder({
     if (lastTriggerType.current === primaryTrigger.type) return;
     lastTriggerType.current = primaryTrigger.type;
     if (laneDirtyRef.current) return;
+    // A rule kept in one chat runs in that chat's lane; a lane default would
+    // read as if it applied when it does not.
+    if (draft.execution?.session?.chatSessionId) return;
     const t = primaryTrigger.type as string;
     if (t === "github.issue_opened" || t === "linear.issue_created") {
       patchExecution({ laneMode: "create", laneNamePreset: "issue-title" });

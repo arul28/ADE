@@ -293,6 +293,18 @@ function lastMeaningfulLine(stdout: string, stderr: string): string {
   return (lines[lines.length - 1] ?? "").slice(0, 300);
 }
 
+/**
+ * The first line that carries an `x.y.z`, stdout before stderr. A CLI can print
+ * a warning or a banner around its version, so the line is found, not assumed.
+ */
+function firstVersionBearingLine(stdout: string, stderr: string): string {
+  for (const line of `${stdout}\n${stderr}`.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (extractVersion(trimmed)) return trimmed.slice(0, 300);
+  }
+  return "";
+}
+
 /** The npm that belongs to the prefix, so the install lands where the binary lives. */
 function npmCommandFor(prefix: string, io: AcpInstallerIo): string {
   const candidates = process.platform === "win32"
@@ -348,7 +360,7 @@ export async function runAcpProviderInstall(args: {
   // succeeds and leaves this binary as it was. The binary must now report the
   // version ADE asked for.
   const version = await run(args.installer.binaryPath, ["--version"], { ...runOpts, timeout: VERSION_TIMEOUT_MS });
-  const versionLine = version.status === 0 ? lastMeaningfulLine(version.stdout, version.stderr) : "";
+  const versionLine = version.status === 0 ? firstVersionBearingLine(version.stdout, version.stderr) : "";
   if (compareVersions(versionLine, policy.tested.max) !== 0) {
     return {
       ok: false,

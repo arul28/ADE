@@ -2,8 +2,10 @@
 # Other dependencies stay manual.
 #
 # A provider bump also needs `npm run tools:manifest` in apps/ade-cli, and
-# Dependabot cannot run it. The ADE automation that picks up these PRs does
-# that step, then checks each provider live before the PR merges.
+# Dependabot cannot run it, so its PRs fail CI until someone does. Either run
+# it on the PR branch by hand, or enable an ADE automation from the
+# "Dependabot PR → its branch + agent" template that runs it and checks each
+# provider live before the PR merges.
 version: 2
 updates:
   - package-ecosystem: npm

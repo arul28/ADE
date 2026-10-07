@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
-  localRuntimeActionIpcTimeoutMs,
   localRuntimeActionTimeoutMs,
   longRunningLocalRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
@@ -37,14 +36,12 @@ describe("localRuntimeActionTimeoutMs", () => {
     }
   });
 
-  it("lets a provider CLI update finish before any caller gives up on it", () => {
-    // The install plus the version re-read run inside one action. Each budget
-    // outward must be longer, or the renderer reports a failure (and offers
-    // "Try again") while the install is still running.
-    const action = localRuntimeActionTimeoutMs("ai", "acpProviderUpdate");
+  it("lets a provider CLI update finish before the transport or the brain gives up on it", () => {
+    // The install plus the version re-read run inside one action. The remote
+    // transport must outlive it, and the brain's action outlive the transport.
+    // (The renderer's IPC budgets are pinned in ipcTimeouts.test.ts.)
     expect(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(ACP_PROVIDER_UPDATE_RUN_BUDGET_MS);
-    expect(action).toBeGreaterThan(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS);
-    expect(localRuntimeActionIpcTimeoutMs("ai", "acpProviderUpdate")).toBeGreaterThan(action);
+    expect(localRuntimeActionTimeoutMs("ai", "acpProviderUpdate")).toBeGreaterThan(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS);
   });
 
   it("leaves cheap simulator actions on the default budget", () => {

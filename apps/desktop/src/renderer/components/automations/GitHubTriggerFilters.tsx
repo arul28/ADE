@@ -5,6 +5,14 @@ import { cn } from "../ui/cn";
 import { labelCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
 
+/**
+ * One login, however it was typed: the runtime matcher ignores case, a leading
+ * `@`, and a `[bot]` suffix, so the buttons must too.
+ */
+function authorKey(login: string): string {
+  return login.trim().toLowerCase().replace(/^@/, "").replace(/\[bot\]$/, "");
+}
+
 /** Bots that open pull requests, offered as one-click author filters. */
 const BOT_AUTHORS = [
   { login: "dependabot[bot]", label: "Dependabot" },
@@ -396,13 +404,17 @@ function AuthorPicker({
       {showBots ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {BOT_AUTHORS.map((bot) => {
-            const selected = value.includes(bot.login);
+            const selected = value.some((entry) => authorKey(entry) === authorKey(bot.login));
             return (
               <button
                 key={bot.login}
                 type="button"
                 aria-pressed={selected}
-                onClick={() => onChange(selected ? value.filter((entry) => entry !== bot.login) : [...value, bot.login])}
+                onClick={() => onChange(
+                  selected
+                    ? value.filter((entry) => authorKey(entry) !== authorKey(bot.login))
+                    : [...value, bot.login],
+                )}
                 className={cn(
                   "inline-flex h-6 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors",
                   selected
@@ -451,7 +463,7 @@ function AuthorPicker({
         </datalist>
       </div>
       <ChipRow
-        items={showBots ? value.filter((entry) => !BOT_AUTHORS.some((bot) => bot.login === entry)) : value}
+        items={showBots ? value.filter((entry) => !BOT_AUTHORS.some((bot) => authorKey(bot.login) === authorKey(entry))) : value}
         onRemove={(item) => onChange(value.filter((entry) => entry !== item))}
       />
     </div>
