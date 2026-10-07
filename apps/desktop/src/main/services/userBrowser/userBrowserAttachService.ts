@@ -140,6 +140,12 @@ export type UserBrowserAttachServiceDeps = {
   logger: Logger;
   /** The runtime host's name, as the user knows it ("Arul's Mac Studio"). */
   machineName: () => string | Promise<string>;
+  /**
+   * Coarse usage analytics, called once per successful attach. Injected so
+   * this file owns the transition but cannot reach the analytics service or
+   * any id itself. Optional, so a wiring without analytics keeps working.
+   */
+  captureAttached?: (() => void) | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -150,8 +156,9 @@ function errorMessage(error: unknown): string {
 function navigableUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) throw new UserBrowserAttachError("browser open needs a URL.");
-  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
-    && !/^(localhost|127\.0\.0\.1|\[::1\]):\d/i.test(trimmed)
+  // A scheme is a word and a colon NOT followed by a port: `example.com:8080`
+  // and `localhost:5173` are hosts, `https://…` and `about:blank` are schemes.
+  const withScheme = /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(trimmed)
     ? trimmed
     : /^(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(trimmed)
       ? `http://${trimmed}`
@@ -567,6 +574,11 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
         ? []
         : ["This tab is in the background. Screenshots can fail or show an old frame until the user brings it forward."];
       deps.logger.info("user_browser.attached", { chatSessionId, browser: chosen.id });
+      try {
+        deps.captureAttached?.();
+      } catch {
+        // Analytics never fails an attach.
+      }
       return {
         attached: true,
         message: `${USER_BROWSER_ATTACHED_PREFIX} ${chosen.label} on ${host}, tab ${describeTab(tab)}`,

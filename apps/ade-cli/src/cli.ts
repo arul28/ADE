@@ -14107,6 +14107,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       kind: "execute",
       label: "browser attach",
       formatter: "browser-attach",
+      // The attachment lives in the runtime's memory; a headless one-shot
+      // runtime would drop it when this command ends.
+      needsLiveRuntime: "Browser attachment",
       // Chrome asks the user to allow the connection; the attach waits for them.
       minTimeoutMs: 90_000,
       progressNotice: "Connecting to the user's browser. If it asks to allow remote debugging, the user must click Allow.",

@@ -4324,7 +4324,9 @@ export function registerIpc({
    * agent drove. Cached per name in the main process; a miss is null, never an
    * error, because the row simply draws its glyph.
    */
-  ipcMain.handle(IPC.appGetAppIcon, async (_event, arg: { name?: unknown }): Promise<string | null> => {
+  ipcMain.handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
+    // Only ADE's own renderer may ask: the answer says whether an app bundle exists.
+    assertTrustedAppControlSender(event, IPC.appGetAppIcon);
     try {
       return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
     } catch {

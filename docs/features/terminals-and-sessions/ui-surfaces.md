@@ -1427,8 +1427,8 @@ dismissal undone by the event it caused would never stick.
   screen (the Mac Desktop, App Control or an Apple device, read through
   `useAnyFloatingPlayerShown` in `floatingPlayerSlots.ts`), the card is not
   shown and its feed is torn down. The card does not take part in the players'
-  placement, so it used to sit on top of the Mac Desktop player. A tool the
-  user floated by hand still shows.
+  placement, so stepping aside is what keeps it off a player. A tool the user
+  floated by hand still shows.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.

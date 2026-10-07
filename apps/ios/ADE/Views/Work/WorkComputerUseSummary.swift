@@ -715,8 +715,13 @@ private struct CUTargetShape {
 
 private let cuNumberPattern = #"^-?\d+(\.\d+)?$"#
 
-/// JavaScript `Math.round`: halves round up, toward +∞.
-private func cuJSRound(_ value: Double) -> Int { Int((value + 0.5).rounded(.down)) }
+/// JavaScript `Math.round` as text: halves round up, toward +∞. A value too large
+/// for `Int` prints as a Double, like JavaScript does, instead of trapping.
+private func cuJSRound(_ value: Double) -> String {
+  let rounded = (value + 0.5).rounded(.down)
+  guard rounded.isFinite, abs(rounded) < 1e15 else { return "\(rounded)" }
+  return String(Int(rounded))
+}
 
 private func cuDescribeTarget(spec: CUVerbSpec, verbKey: String, invocation: CUInvocation, parsed: CUOutput, appName: String?) -> CUTargetShape {
   var shape = CUTargetShape()

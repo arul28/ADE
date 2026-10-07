@@ -164,6 +164,7 @@ import {
   captureChatAutoResumeAnalytics,
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
+  captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
@@ -1997,6 +1998,10 @@ export async function createAdeRuntime(args: {
           logger,
           machineName: async () =>
             (await import("./services/sync/deviceRegistryService")).resolveDeviceDisplayNameSettled(),
+          captureAttached: () => captureUserBrowserAnalytics({
+            analytics: productAnalyticsService,
+            properties: { action: "user_browser", outcome: "started" },
+          }),
         }),
       };
     if (browserSurface) {

@@ -14,6 +14,10 @@ import {
   resetBuiltInBrowserActorCapabilitiesForTest,
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
+import {
+  USER_BROWSER_ROUTE_PARAM,
+  trackIssuedBrowserActorCapabilities,
+} from "./services/builtInBrowser/userBrowserRouting";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
 import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { MAC_DESKTOP_USER_CLI_HOLDER_ID } from "../../desktop/src/shared/types/macDesktop";
@@ -5816,6 +5820,75 @@ describe("adeRpcServer", () => {
     });
     expect(unbound.isError).toBe(true);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets only a live chat holding its issued capability act in the user's browser, and never trusts a caller's route stamp", async () => {
+    const fixture = createRuntime();
+    const chats: Record<string, { id: string; laneId: string; status: string }> = {
+      "chat-1": { id: "chat-1", laneId: "lane-1", status: "running" },
+      "chat-2": { id: "chat-2", laneId: "lane-1", status: "running" },
+      "chat-ended": { id: "chat-ended", laneId: "lane-1", status: "completed" },
+    };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => chats[sessionId] ?? null);
+    const tracked = trackIssuedBrowserActorCapabilities(
+      { issue: async ({ chatSessionId }) => `issued-${chatSessionId}`, revoke: async () => {} },
+      { onRevoke: () => {} },
+    );
+    await tracked.issuer.issue({ chatSessionId: "chat-1", laneId: "lane-1", projectRoot: null, tabCollection: null } as any);
+    (fixture.runtime as any).issuedBrowserActorTokens = tracked.issued;
+    // Only chat-1 is attached to the user's browser; everyone else's page
+    // commands belong to ADE's browser.
+    (fixture.runtime as any).userBrowserAttachService = {
+      routes: (chatSessionId: string | null, action: string) => chatSessionId === "chat-1" && action === "navigate",
+    };
+    const attachUserBrowser = vi.fn(async (args: unknown) => args);
+    const navigate = vi.fn(async (args: unknown) => args);
+    fixture.runtime.builtInBrowserService = { attachUserBrowser, navigate };
+
+    const callAs = async (identity: Record<string, unknown>, action: string, args: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: `agent-${String(identity.chatSessionId)}`, role: "agent", ...identity });
+      return await callTool(handler, "run_ade_action", { domain: "built_in_browser", action, args });
+    };
+
+    const refused = [
+      // The chat id alone is self-reported: without its issued capability it proves nothing.
+      await callAs({ chatSessionId: "chat-1" }, "attachUserBrowser", {}),
+      await callAs({ chatSessionId: "chat-1", browserActorToken: "issued-chat-9" }, "attachUserBrowser", {}),
+      // A routed page command is held to the same bar.
+      await callAs({ chatSessionId: "chat-1", browserActorToken: "forged" }, "navigate", { url: "https://x.test/" }),
+      // Ended and unknown chats cannot act.
+      await callAs({ chatSessionId: "chat-ended" }, "attachUserBrowser", {}),
+      await callAs({ chatSessionId: "chat-unknown" }, "attachUserBrowser", {}),
+      // A chat acts only in its own attachment.
+      await callAs({ chatSessionId: "chat-1", browserActorToken: "issued-chat-1" }, "attachUserBrowser", { chatSessionId: "chat-2" }),
+    ];
+    expect(refused.map((result) => result?.isError)).toEqual(refused.map(() => true));
+    expect(attachUserBrowser).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+
+    const attached = await callAs({ chatSessionId: "chat-1", browserActorToken: "issued-chat-1" }, "attachUserBrowser", {});
+    expect(attached?.isError).toBeUndefined();
+    expect(attachUserBrowser).toHaveBeenCalledTimes(1);
+    expect(attachUserBrowser.mock.calls[0]?.[0]).toMatchObject({ chatSessionId: "chat-1", [USER_BROWSER_ROUTE_PARAM]: true });
+
+    // chat-2 is not attached, so its page command goes to ADE's browser — and
+    // a route stamp it supplied itself must not survive the scoping.
+    const adeToken = issueBuiltInBrowserActorCapability({
+      chatSessionId: "chat-2",
+      laneId: "lane-1",
+      projectRoot: fixture.runtime.projectRoot,
+      tabCollection: null,
+    });
+    const adeBrowserCall = await callAs(
+      { chatSessionId: "chat-2", browserActorToken: adeToken },
+      "navigate",
+      { url: "https://x.test/", [USER_BROWSER_ROUTE_PARAM]: true },
+    );
+    expect(adeBrowserCall?.isError).toBeUndefined();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate.mock.calls[0]?.[0]).toMatchObject({ chatSessionId: "chat-2", url: "https://x.test/" });
+    expect((navigate.mock.calls[0]?.[0] as Record<string, unknown>)[USER_BROWSER_ROUTE_PARAM]).not.toBe(true);
   });
 
   it("notes agent browser activity only for a caller carrying a browser capability", async () => {

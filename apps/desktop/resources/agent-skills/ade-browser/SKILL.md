@@ -230,9 +230,9 @@ on <machine>, tab "<title>" (<url>)`; tell the user that machine and tab. If
 several tabs could be the one, it lists them: ask the user, then pass `--tab`.
 `--browser chrome|edge|brave|arc|helium|chromium` picks the browser.
 
-If attach says remote debugging is off, ask the user to open the page it names
-(`chrome://inspect/#remote-debugging`, or `edge://`, `brave://`) and turn it
-on. The browser then asks them once to allow the connection.
+If attach says remote debugging is off, ask the user to open the exact page
+it names for their browser (for Chrome, `chrome://inspect/#remote-debugging`)
+and turn it on. The browser then asks them once to allow the connection.
 
 While attached, this chat's `observe`, `click`, `fill`, `clear`, `type`,
 `key`, `scroll`, `hover`, `wait`, `open`, `reload`, `back`, `forward`,

@@ -60,7 +60,20 @@ Shared modules:
 - `apps/desktop/src/main/services/shared/cdpClient.ts` — the one CDP WebSocket client, shared with App Control. `session(id)` scopes commands and events to a flattened target session.
 - `apps/desktop/src/main/services/shared/cdpPageDiagnostics.ts` — the console, network and navigation tracking `observe` and `wait` read, shared with App Control. Each caller's policy (which console levels, `Log.entryAdded`, uncaught exceptions) is an explicit option.
 - `apps/desktop/src/shared/userBrowserLabels.ts` — the words attach prints (`attached:`, `detached:`, `target:`), shared by the code that prints them and the transcript that reads them back.
+- `apps/desktop/src/main/services/shared/withTimeout.ts` — a promise's value, or null once a deadline passes or it rejects; bounds the attach service's CDP waits.
 - `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends the page commands `adeRpcServer` routed to the user's browser to the attachment. It also records the browser capability the runtime had the desktop issue each chat, which `adeRpcServer` checks user-browser calls against.
+
+### Computer-use action rows in the transcript
+
+- `apps/desktop/src/shared/computerUseActionSummary.ts` — reads one shell command (`ade screen …`, `ade browser …`, `ade apple …`, also through `"$ADE_CLI_PATH"`) into a summary: verb, element hit, app, surface, effect. Returns null whenever it is unsure.
+- `apps/desktop/src/shared/computerUseActionOutput.ts` — the output half: `hit:` / `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:` errors, the user's-browser lines, `--json` results.
+- `apps/desktop/src/shared/computerUseActionPresentation.ts` — a summary in words, and a run's layout (latest in full, earlier compact, same-app folds).
+- `apps/desktop/src/shared/readRecord.ts` — the dependency-free plain-object guard these shared modules use.
+- `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` and `ChatComputerUseActions.tsx` — which transcript entries are actions, and the rows that draw them.
+- `apps/desktop/src/main/services/apps/appIcons.ts` — an app's icon by name for those rows (`ade.app.getAppIcon`, macOS only).
+- iOS: `apps/ios/ADE/Views/Work/WorkComputerUseSummary.swift` (parser port), `WorkComputerUsePresentation.swift` (words), `WorkComputerUseActions.swift` (rows).
+
+How the rows read and fold: [chat/transcript-and-turns.md](../chat/transcript-and-turns.md).
 
 ### Direct Codex Computer Use
 
@@ -348,7 +361,10 @@ on connect, and the user answers it there.
   also ends when the tab closes, the browser quits, or it sits unused for 30
   minutes; the chat's next browser command says which, and later commands go
   to ADE's browser again. Ending or deleting the chat releases it too.
-  `ade browser status` shows the attachment.
+  `ade browser detach` while an attach is still waiting on the browser's
+  prompt cancels that attach: when the browser answers, the connection is
+  closed and the chat stays on ADE's browser. Attaching again likewise
+  supersedes a waiting attach. `ade browser status` shows the attachment.
 - **Who may act in it.** Only the chat that attached. The runtime decides once
   whether a call goes to the user's browser, authorizes it for that, and the
   router obeys that decision, so an attachment that ends mid-call never sends
