@@ -182,11 +182,11 @@ describe("applyModelManifest", () => {
   it("hides a model with deprecated and moves defaults without a release", () => {
     applyModelManifest(manifest({
       defaults: { app: [{ model: "openai/gpt-5.6-sol" }], providers: { codex: [{ model: "openai/gpt-5.6-luna" }] } },
-      models: [{ id: "anthropic/claude-haiku-4-5", fields: { deprecated: true } }],
+      models: [{ id: "anthropic/claude-haiku-5-5", fields: { deprecated: true } }],
     }));
     expect(getAppDefaultModelDescriptor()?.id).toBe("openai/gpt-5.6-sol");
     expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.6-luna");
-    expect(listModelDescriptorsForProvider("claude").some((model) => model.id === "anthropic/claude-haiku-4-5")).toBe(false);
+    expect(listModelDescriptorsForProvider("claude").some((model) => model.id === "anthropic/claude-haiku-5-5")).toBe(false);
   });
 
   it("skips entries gated above this ADE version", () => {

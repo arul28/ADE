@@ -707,7 +707,7 @@ describe("modelRegistry", () => {
         "anthropic/claude-fable-5-1",
         "anthropic/claude-opus-5-5",
         "anthropic/claude-sonnet-5-5",
-        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-5-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-opus-5",
       ]);
@@ -833,6 +833,26 @@ describe("modelRegistry", () => {
       expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-5");
       expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(true);
       expect(normalizeAnthropicRuntimeAlias("claude-opus-5")?.wasAlias).toBe(false);
+    });
+
+    it("retires every Haiku 4.5 spelling onto Haiku 5.5 without touching a harness's own row", () => {
+      for (const spelling of [
+        "haiku-4.5",
+        "haiku-4-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4-5-api",
+      ]) {
+        expect(resolveModelAlias(spelling)?.id).toBe("anthropic/claude-haiku-5-5");
+      }
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-haiku-4-5")).toBe(false);
+      expect(resolveModelAlias("anthropic/claude-haiku-5-5")?.id).toBe("anthropic/claude-haiku-5-5");
+
+      // A harness's own Haiku 4.5 row keeps the model it actually serves: the
+      // runtime alias normalizer deliberately has no 4.5 branch.
+      expect(normalizeAnthropicRuntimeAlias("claude-haiku-4-5")).toBeNull();
+      expect(openCodeRegistryIdFor("anthropic", "claude-haiku-4-5")).toBe("opencode/anthropic/claude-haiku-4-5");
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {

@@ -383,7 +383,7 @@ enum ADEColor {
     "sonnet": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
     "claude-sonnet-5": ["low", "medium", "high", "max"],
-    // Claude Haiku intentionally absent — no reasoning tiers.
+    // Retired Haiku 4.5 ids canonicalize to the Haiku 5.5 tiers above.
     // OpenAI / Codex
     "openai/gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],

@@ -661,10 +661,23 @@ export function resolveTokenPriceWithSource(model: string): { price: TokenPrice;
   return { price: ZERO_PRICE, source: "fallback" };
 }
 
+/**
+ * Rates for registry rows ADE retired. A successor can bill a different price
+ * (Haiku 4.5's $1/$5 vs Haiku 5.5's $0.10/$0.50), so historical usage keeps the
+ * retired row's own rate when models.dev is unavailable instead of falling
+ * through to the cheaper successor its alias now resolves to.
+ */
+const HISTORICAL_REGISTRY_PRICES: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5": { input: 1, output: 5 },
+};
+
 function exactOrRegistryPrice(model: string): { price: TokenPrice; source: TokenPriceSource } | null {
   const exact = findDynamicPrice(model, { exactOnly: true });
   if (exact) return { price: exact, source: "list" };
-  const registryPrice = getModelListPrice(resolveAlias(canonicalPricingName(model)));
+  const pricingName = resolveAlias(canonicalPricingName(model));
+  const historical = HISTORICAL_REGISTRY_PRICES[pricingName];
+  if (historical) return { price: tokenPrice(historical.input, historical.output), source: "fallback" };
+  const registryPrice = getModelListPrice(pricingName);
   return registryPrice ? { price: tokenPrice(registryPrice.input, registryPrice.output), source: "fallback" } : null;
 }
 

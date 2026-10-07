@@ -232,6 +232,72 @@ describe("runProviderTask", () => {
     expect(child.stdin.end).toHaveBeenCalledWith("Summarize the worktree state.");
   });
 
+  it.each([
+    {
+      label: "forwards a tier the descriptor advertises",
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-haiku-5-5",
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        capabilities: { reasoning: true },
+      },
+      reasoningEffort: "high",
+      expectedEffort: "high",
+    },
+    {
+      label: "maps ultracode onto the CLI's xhigh tier",
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-fable-5-1",
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+        capabilities: { reasoning: true },
+      },
+      reasoningEffort: "ultracode",
+      expectedEffort: "xhigh",
+    },
+    {
+      label: "omits a tier the descriptor does not advertise",
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-haiku-5-5",
+        reasoningTiers: ["low", "high"],
+        capabilities: { reasoning: true },
+      },
+      reasoningEffort: "xhigh",
+      expectedEffort: null,
+    },
+    {
+      label: "omits effort entirely when the model has no reasoning",
+      descriptor: {
+        family: "anthropic",
+        isCliWrapped: true,
+        providerModelId: "claude-haiku-5-5",
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        capabilities: { reasoning: false },
+      },
+      reasoningEffort: "high",
+      expectedEffort: null,
+    },
+  ])("$label for a Claude task", async ({ descriptor, reasoningEffort, expectedEffort }) => {
+    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"READY"}' }));
+
+    await runProviderTask({
+      cwd: process.cwd(),
+      descriptor: descriptor as any,
+      prompt: "Summarize the worktree state.",
+      feature: "unit-test",
+      reasoningEffort,
+      projectConfig: {} as any,
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, argv] = spawnMock.mock.calls[0]!;
+    expect(launchArgvValueAfter(argv, "--effort")).toBe(expectedEffort);
+  });
+
   it("terminates a provider task when writing its prompt fails", async () => {
     const child = createMockProcess({ deferClose: true });
     spawnMock.mockReturnValueOnce(child);
