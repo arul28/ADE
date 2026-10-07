@@ -808,7 +808,8 @@ Runtime support files outside `services/sync/`:
   end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window and carries the bounded, token-free provider/model/preset inventory
+  window (a heartbeat whose fields are unchanged updates only `last_seen_at`,
+  one billed D1 row) and carries the bounded, token-free provider/model/preset inventory
   summary used by the Accounts page. Failed publications retry after 1, 2, 5,
   10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
@@ -1150,6 +1151,19 @@ Runtime support files outside `services/sync/`:
   and it is built only when sync is enabled — a `--no-sync` brain has no store
   at all, which is a stronger guarantee that a test runtime cannot reach the
   account than a store with its uploads turned off.
+  The background sync is a 30 s tick, but it pulls only when it must: the push
+  relay returns per-account settings and vault **change marks** on every
+  machine publish (`accountChanges`, recorded by `pushRelayClient` into
+  `accountChangeMarks.ts`). A moved mark pulls at once; otherwise a tick pulls
+  only with queued edits, after a failed or never-run sync, when marks are
+  older than 90 s (no presence heartbeat, or an older relay that sends none),
+  or every 5 min as a safety net. A skipped tick still notifies listeners
+  `ready`, so the vault's follow-up work keeps its cadence. "Already synced" is
+  bound to the account and the cache epoch, so a reset, purge, or
+  account switch always pulls again before reporting `ready`, and a failing
+  sync retries once per tick rather than on every heartbeat as well. A mark is
+  `<newest updated_at>#<rows at that instant>`, so a second write in the same
+  millisecond still moves it.
 - `apps/ade-cli/src/services/account/accountVaultStore.ts` — the machine's
   account-credential cache. It uses `account-vault.json.enc`, an atomic
   machine-key-encrypted envelope with `0600` permissions; a legacy
