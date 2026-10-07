@@ -317,7 +317,7 @@ struct AppControlCard: View {
   @State private var liveSession: AppControlLiveSession?
 
   var body: some View {
-    ADEGlassSection(title: "App Control", subtitle: subtitle) {
+    ADEKitCard(title: "App Control", hint: subtitle) {
       if let appControl {
         VStack(alignment: .leading, spacing: 10) {
           chips(appControl)

@@ -352,26 +352,15 @@ struct LanesTabView: View {
   }
 }
 
-/// The Lanes tab's "+ Lane" button, in the root top bar.
+/// The Lanes tab's add-lane button, in the root top bar: the Hub's quiet
+/// round add button.
 struct LaneAddButton: View {
   let enabled: Bool
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 5) {
-        Image(systemName: "plus")
-          .font(.system(size: 13, weight: .bold))
-        Text("Lane")
-          .font(.subheadline.weight(.semibold))
-      }
-      .foregroundStyle(.white)
-      .padding(.horizontal, 12)
-      .frame(height: 36)
-      .background(ADEColor.accent, in: Capsule(style: .continuous))
-      .glassEffect(in: .capsule)
-      .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.6))
-      .shadow(color: ADEColor.accent.opacity(0.35), radius: 8, x: 0, y: 3)
+      ADEKitCircleIcon(systemImage: "plus")
     }
     .buttonStyle(.plain)
     .opacity(enabled ? 1 : 0.55)

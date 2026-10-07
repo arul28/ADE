@@ -20,19 +20,71 @@ private func prAdaptiveColor(light: UInt32, dark: UInt32) -> Color {
   return Color(UIColor { $0.userInterfaceStyle == .dark ? ui(dark) : ui(light) })
 }
 
-/// The desktop state colors (open blue, draft amber, merged green, closed
-/// gray), darkened for the light theme.
+/// GitHub's own PR state colours (desktop `--pr-open/merged/closed`): open
+/// green, merged purple, closed red, draft neutral; GitHub's light-theme
+/// shades in light mode.
 func prStateColor(_ state: String) -> Color {
   switch state {
-  case "open": return prAdaptiveColor(light: 0x2563EB, dark: 0x60A5FA)
-  case "draft": return prAdaptiveColor(light: 0xB45309, dark: 0xFBBF24)
-  case "merged": return prAdaptiveColor(light: 0x15803D, dark: 0x4ADE80)
+  case "open": return prAdaptiveColor(light: 0x1A7F37, dark: 0x3FB950)
+  case "merged": return prAdaptiveColor(light: 0x8250DF, dark: 0xA371F7)
+  case "closed": return prAdaptiveColor(light: 0xCF222E, dark: 0xF85149)
   default: return ADEColor.textMuted
   }
 }
 
-func prDiffAddColor() -> Color { prAdaptiveColor(light: 0x15803D, dark: 0x4ADE80) }
-func prDiffDeleteColor() -> Color { prAdaptiveColor(light: 0xB91C1C, dark: 0xF87171) }
+/// GitHub's state glyph for a PR (open, draft, merged, closed).
+func prStateSymbol(_ state: String) -> String {
+  switch state {
+  case "merged": return "arrow.triangle.merge"
+  case "closed": return "xmark.circle"
+  case "draft": return "circle.dashed"
+  default: return "arrow.triangle.pull"
+  }
+}
+
+/// A PR's state as a GitHub-coloured glyph on a light wash of the same colour
+/// (desktop `.ade-home-pr-icon`).
+struct PrStateIcon: View {
+  let state: String
+  var size: CGFloat = 22
+
+  var body: some View {
+    let tint = prStateColor(state)
+    Image(systemName: prStateSymbol(state))
+      .font(.system(size: size * 0.48, weight: .semibold))
+      .foregroundStyle(tint)
+      .frame(width: size, height: size)
+      .background(
+        state == "draft" ? ADEColor.textPrimary.opacity(0.07) : tint.opacity(0.15),
+        in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+      )
+      .accessibilityLabel(state.capitalized)
+  }
+}
+
+/// A PR's state as GitHub shows it: glyph and word on a light wash of the
+/// state colour ("Open", "Draft", "Merged", "Closed").
+struct PrStatePill: View {
+  let state: String
+
+  var body: some View {
+    let tint = prStateColor(state)
+    HStack(spacing: 4) {
+      Image(systemName: prStateSymbol(state))
+        .font(.system(size: 10, weight: .semibold))
+      Text(state.isEmpty ? "Unknown" : state.capitalized)
+        .font(.system(size: 12, weight: .semibold))
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 8)
+    .frame(height: 22)
+    .background(state == "draft" ? ADEColor.textPrimary.opacity(0.07) : tint.opacity(0.14), in: Capsule())
+    .fixedSize()
+  }
+}
+
+func prDiffAddColor() -> Color { prStateColor("open") }
+func prDiffDeleteColor() -> Color { prStateColor("closed") }
 
 /// `+1,204 −380` in mono green / red.
 struct PrDiffStat: View {
@@ -128,14 +180,14 @@ struct PrLaneChip: View {
 
   var body: some View {
     if let laneName, !laneName.isEmpty {
-      ADEFlatChip(
+      ADEKitChip(
         symbol: machineName == nil ? "arrow.triangle.branch" : "desktopcomputer",
         text: laneName,
         tint: ADEColor.textSecondary
       )
       .accessibilityLabel(machineName.map { "Lane \(laneName) on \($0)" } ?? "Lane \(laneName)")
     } else if let ghostLaneName, !ghostLaneName.isEmpty {
-      ADEFlatChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
+      ADEKitChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
         .accessibilityLabel("Built in lane \(ghostLaneName), now deleted")
     }
   }
@@ -181,8 +233,13 @@ struct PrRowCard: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
+      Image(systemName: prStateSymbol(data.state))
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(prStateColor(data.state))
+        .frame(width: 16, height: 18)
+        .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 5) {
-        Text("\(Text(verbatim: "#\(data.prNumber)").font(.adeMono(13, weight: .medium)).foregroundStyle(prStateColor(data.state))) \(data.title)")
+        Text("\(Text(verbatim: "#\(data.prNumber)").font(.adeMono(13, weight: .medium)).foregroundStyle(ADEColor.textMuted)) \(data.title)")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
@@ -268,9 +325,11 @@ struct PrRowCiGlyph: View {
 
   var body: some View {
     switch indicator.glyph {
-    case let .symbol(name):
-      Image(systemName: name)
-        .foregroundStyle(indicator.color)
+    case .symbol:
+      // CI is a coloured dot (desktop `.kit-dot`); the detail has the counts.
+      ADEKitDot(color: indicator.color, size: 7)
+        .frame(width: 12, height: 12)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(indicator.title)
     case .hollowRing:
       Circle()
@@ -332,8 +391,8 @@ struct PrRowContextPreview: View {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text(verbatim: "#\(data.prNumber)")
           .font(.adeMono(13, weight: .semibold))
-          .foregroundStyle(prStateColor(data.state))
-        ADEFlatBadge(text: data.state, tint: prStateColor(data.state))
+          .foregroundStyle(ADEColor.textMuted)
+        PrStatePill(state: data.state)
         Spacer(minLength: 0)
         PrAvatar(login: data.authorLogin, isBot: data.isBot ? true : nil, size: 22)
       }

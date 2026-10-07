@@ -19,29 +19,27 @@ struct SettingsMachineRenameSheet: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           TextField("Machine name", text: $name)
+            .font(.system(size: 15))
             .textInputAutocapitalization(.words)
             .submitLabel(.done)
-            .textFieldStyle(.roundedBorder)
             .disabled(isSaving)
             .onSubmit { save(trimmedName) }
+            .padding(.horizontal, ADEKit.inset)
+            .frame(minHeight: 48)
+            .adeKitCard(padding: nil)
 
           if let errorText {
-            Text(errorText)
-              .font(.caption)
-              .foregroundStyle(ADEColor.danger)
+            ADESettingsNotice(message: errorText, tone: .crit)
           }
 
           Button("Save") { save(trimmedName) }
-            .buttonStyle(.glassProminent)
+            .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
             .disabled(isSaving || !isValidName)
-            .frame(maxWidth: .infinity)
 
           if machine.customName != nil {
             Button("Use hostname") { save(nil) }
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textSecondary)
+              .buttonStyle(ADEKitButtonStyle(wide: true))
               .disabled(isSaving)
-              .frame(maxWidth: .infinity, minHeight: 44)
           }
         }
         .padding(20)

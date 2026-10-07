@@ -156,7 +156,7 @@ struct LaneManageSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
           if !syncService.connectionState.isHostUnreachable,
             let liveActionNoticePresentation
           {
@@ -179,12 +179,10 @@ struct LaneManageSheet: View {
           laneInfoHeader
 
           if isPrimary {
-            Text("Primary lane cannot be archived or deleted.")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(12)
-              .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            Text("The primary lane cannot be archived or deleted.")
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .padding(.horizontal, 4)
             appearanceTab
           } else {
             manageTabBar
@@ -261,12 +259,7 @@ struct LaneManageSheet: View {
         dirty: snapshot.lane.status.dirty
       ) {
         if snapshot.lane.status.dirty {
-          Text("DIRTY")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.warning)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(ADEColor.warning.opacity(0.14), in: Capsule())
+          ADEKitTag(text: "Dirty", tone: .warn)
         }
       }
       metadataRow(
@@ -278,9 +271,7 @@ struct LaneManageSheet: View {
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .adeKitCard(padding: 12)
   }
 
   private func metadataRow(
@@ -320,7 +311,7 @@ struct LaneManageSheet: View {
         .padding(.top, 1)
         .accessibilityHidden(true)
       Text(value)
-        .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
+        .font(monospaced ? .adeMono(12) : .system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(lineLimit)
         .truncationMode(.middle)
@@ -339,84 +330,62 @@ struct LaneManageSheet: View {
   }
 
   private var manageTabBar: some View {
-    HStack(spacing: 4) {
+    HStack(spacing: 2) {
       ForEach(availableTabs) { tab in
         Button {
           withAnimation(.smooth(duration: 0.2)) { activeTab = tab }
         } label: {
+          let selected = activeTab == tab
           HStack(spacing: 4) {
             Image(systemName: tab.symbol)
-              .font(.system(size: 11, weight: .semibold))
+              .font(.system(size: 11, weight: .medium))
             Text(tab.title)
-              .font(.caption.weight(.semibold))
+              .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
               .lineLimit(1)
           }
-          .foregroundStyle(activeTab == tab ? tabForeground(tab) : ADEColor.textMuted)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 8)
-          .background(activeTab == tab ? tabBackground(tab) : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          // The kit segmented track; red marks only the selected Delete tab.
+          .foregroundStyle(selected ? (tab == .delete ? ADEColor.danger : ADEColor.textPrimary) : ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, minHeight: 30)
+          .background {
+            if selected {
+              ADEKitSegmentThumb()
+            }
+          }
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(activeTab == tab ? .isSelected : [])
       }
     }
-    .padding(4)
-    .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-  }
-
-  private func tabForeground(_ tab: ManageLaneTab) -> Color {
-    tab == .delete ? ADEColor.danger : ADEColor.accent
-  }
-
-  private func tabBackground(_ tab: ManageLaneTab) -> Color {
-    tab == .delete ? ADEColor.danger.opacity(0.16) : ADEColor.accent.opacity(0.16)
+    .adeKitSegmentTrack()
   }
 
   private var deleteTab: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Stops lane activity and removes what you pick below. Cannot be undone.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.danger.opacity(0.85))
+      Text("Removes what you pick. Cannot be undone.")
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
 
       if snapshot.lane.status.dirty {
-        HStack(spacing: 8) {
-          Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(ADEColor.warning)
-          Text("Uncommitted changes on this lane.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.warning)
-        }
-        .padding(10)
-        .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ADESettingsNotice(message: "Uncommitted changes on this lane.", tone: .warn)
       }
 
       deleteChecklist
 
       Toggle("Force delete", isOn: $deleteForce)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
+        .font(.system(size: 14.5))
+        .foregroundStyle(ADEColor.textPrimary)
         .tint(ADEColor.danger)
 
       Button {
         Task { await performDelete() }
       } label: {
         Label("Delete lane", systemImage: "trash")
-          .font(.subheadline.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
       }
-      .buttonStyle(.borderedProminent)
-      .tint(ADEColor.danger)
+      .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
       .disabled(!canRunLiveActions || !deleteSelection.hasAny || busyAction != nil)
     }
-    .padding(14)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.danger.opacity(0.06))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
-        )
-    )
+    .adeKitCard(padding: 14)
   }
 
   private var deleteChecklist: some View {
@@ -433,17 +402,12 @@ struct LaneManageSheet: View {
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(deleteSelection.hasAny ? ADEColor.danger : ADEColor.textMuted)
           Text("Select everything")
-            .font(.caption.weight(.semibold))
+            .font(.system(size: 13.5, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
           Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-        )
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .disabled(!canRunLiveActions || busyAction != nil)
@@ -458,7 +422,7 @@ struct LaneManageSheet: View {
           toggleDeleteTarget(.worktree, !deleteSelection.worktree)
         }
 
-        Divider().opacity(0.2)
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
 
         deleteChecklistRow(
           title: "Local branch",
@@ -470,7 +434,7 @@ struct LaneManageSheet: View {
           toggleDeleteTarget(.localBranch, !deleteSelection.localBranch)
         }
 
-        Divider().opacity(0.2)
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
 
         deleteChecklistRow(
           title: "Remote branch",
@@ -482,12 +446,8 @@ struct LaneManageSheet: View {
           toggleDeleteTarget(.remoteBranch, !deleteSelection.remoteBranch)
         }
       }
-      .padding(.leading, 12)
-      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-      )
+      .background(ADEKit.track.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
   }
 
@@ -525,15 +485,15 @@ struct LaneManageSheet: View {
           .font(.system(size: 16, weight: .semibold))
           .foregroundStyle(isSelected || isIndeterminate ? ADEColor.danger : ADEColor.textMuted)
         Image(systemName: symbol)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(isSelected ? ADEColor.danger : ADEColor.textMuted)
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(ADEColor.textMuted)
           .frame(width: 22)
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
-            .font(.caption.weight(.semibold))
+            .font(.system(size: 13.5, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
           Text(subtitle)
-            .font(monoSubtitle ? .system(.caption2, design: .monospaced) : .caption2)
+            .font(monoSubtitle ? .adeMono(11) : .system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(2)
         }
@@ -541,7 +501,7 @@ struct LaneManageSheet: View {
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
-      .background(isSelected ? ADEColor.danger.opacity(0.08) : Color.clear)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions || busyAction != nil)
@@ -549,18 +509,14 @@ struct LaneManageSheet: View {
 
   private var appearanceTab: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Lane color in tabs and stack. No git changes.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Color")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        if let name = LaneColorPalette.name(forHex: colorText) {
-          Text(name)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 6) {
+          ADEEyebrow("Color")
+          if let name = LaneColorPalette.name(forHex: colorText) {
+            Text(name)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
         }
         LaneColorSwatchPicker(
           selectedHex: colorText.isEmpty ? nil : colorText,
@@ -576,7 +532,7 @@ struct LaneManageSheet: View {
       LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText).textInputAutocapitalization(.never)
       LaneTextField("Tags (comma separated)", text: $tagsText)
 
-      LaneActionButton(title: "Save appearance", symbol: "paintpalette", tint: ADEColor.accent) {
+      ADEKitActionButton(title: "Save appearance", symbol: "paintpalette") {
         Task {
           let tags = tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
           await performAction("save appearance") {
@@ -586,12 +542,7 @@ struct LaneManageSheet: View {
       }
       .disabled(!canRunLiveActions)
     }
-    .padding(14)
-    .background(ADEColor.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
-    )
+    .adeKitCard(padding: 14)
   }
 
   @ViewBuilder
@@ -600,31 +551,19 @@ struct LaneManageSheet: View {
       EmptyView()
     } else {
       VStack(alignment: .leading, spacing: 12) {
-        Text("Parent lane is where this lane sits in the stack. Base branch is the ref ADE uses for ahead/behind. Leave it blank to use the parent lane's current branch.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-
-        Text("Runs git rebase. If rebase fails, ADE aborts and restores the previous parent and base.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.warning)
-          .padding(10)
-          .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ADEEyebrow("Parent lane")
 
         if snapshot.lane.status.dirty {
-          Text("Commit or stash changes before changing stack position.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.warning)
+          ADESettingsNotice(message: "Commit or stash changes before moving this lane.", tone: .warn)
         }
 
         if snapshot.lane.status.rebaseInProgress {
-          Text("Finish or abort the in-progress rebase before changing stack position.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.warning)
+          ADESettingsNotice(message: "Finish or abort the rebase in progress first.", tone: .warn)
         }
 
         if reparentCandidates.isEmpty {
           Text("No valid parent")
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textMuted)
         } else if reparentCandidates.count > 4 {
           ScrollView {
@@ -644,7 +583,11 @@ struct LaneManageSheet: View {
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
 
-        LaneActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap", tint: ADEColor.accent) {
+        Text("Runs git rebase; a failed rebase is rolled back.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+
+        ADEKitActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap") {
           Task {
             await performAction("reparent lane") {
               try await syncService.reparentLane(
@@ -657,12 +600,7 @@ struct LaneManageSheet: View {
         }
         .disabled(!canApplyReparent)
       }
-      .padding(14)
-      .background(Color.purple.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(Color.purple.opacity(0.22), lineWidth: 1)
-      )
+      .adeKitCard(padding: 14)
     }
   }
 
@@ -670,50 +608,43 @@ struct LaneManageSheet: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 10) {
         Image(systemName: "archivebox")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-        VStack(alignment: .leading, spacing: 4) {
+          .font(.system(size: 16, weight: .medium))
+          .foregroundStyle(ADEColor.textSecondary)
+        VStack(alignment: .leading, spacing: 3) {
           Text("Hide this lane from ADE")
-            .font(.subheadline.weight(.semibold))
+            .font(.system(size: 14.5, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("Files stay on disk until you delete them.")
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
         }
       }
 
       if snapshot.lane.archivedAt == nil {
-        LaneActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
+        ADEKitActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
           Task { await performAction("archive lane") { try await syncService.archiveLane(snapshot.lane.id) } }
         }
         .disabled(!canRunLiveActions || !canArchive)
       } else {
-        LaneActionButton(title: "Restore lane", symbol: "tray.and.arrow.up", tint: ADEColor.accent) {
+        ADEKitActionButton(title: "Restore lane", symbol: "tray.and.arrow.up") {
           Task { await performAction("restore lane") { try await syncService.unarchiveLane(snapshot.lane.id) } }
         }
         .disabled(!canRunLiveActions)
       }
     }
-    .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-    )
+    .adeKitCard(padding: 14)
   }
 
   private var reparentCandidateStack: some View {
-    LazyVStack(spacing: 8) {
-      ForEach(reparentCandidates) { lane in
-        LaneOptionButton(
-          title: lane.name,
-          subtitle: lane.laneType == "primary" ? "Primary root · \(lane.branchRef)" : lane.branchRef,
-          systemImage: lane.laneType == "primary" ? "house.fill" : "arrow.triangle.branch",
-          isSelected: selectedParentLaneId == lane.id
-        ) {
-          selectedParentLaneId = lane.id
-          baseBranchOverride = ""
-        }
+    LaneChoiceList(items: reparentCandidates) { lane in
+      LaneChoiceRow(
+        title: lane.name,
+        subtitle: normalizedPrBranchName(lane.branchRef),
+        systemImage: lane.laneType == "primary" ? "house" : "arrow.triangle.branch",
+        isSelected: selectedParentLaneId == lane.id
+      ) {
+        selectedParentLaneId = lane.id
+        baseBranchOverride = ""
       }
     }
   }
@@ -729,23 +660,14 @@ struct LaneManageSheet: View {
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
         }
-        .adeGlassCard(cornerRadius: 14, padding: 18)
+        .adeKitCard(padding: 18)
         .fixedSize()
       }
     }
   }
 
   private func manageErrorBanner(_ message: String) -> some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(ADEColor.danger)
-      Text(message)
-        .font(.caption)
-        .foregroundStyle(ADEColor.danger)
-        .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: 0)
-    }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    ADESettingsNotice(message: message, tone: .crit)
   }
 
   @MainActor

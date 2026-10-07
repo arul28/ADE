@@ -274,8 +274,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // shell in the lane to redraw state none of them draws.
     let drawsLaneGitState = showsLaneIdentity && !compact
     self.laneDirty = drawsLaneGitState && lane?.status.dirty == true
-    self.laneAhead = drawsLaneGitState ? (lane?.status.ahead ?? 0) : 0
-    self.laneBehind = drawsLaneGitState ? (lane?.status.behind ?? 0) : 0
+    // Ahead/behind arrows are not drawn on a card: they read as file-change
+    // counts and repeated the lane header. Only the dirty dot stays.
+    self.laneAhead = 0
+    self.laneBehind = 0
     self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
     // One derivation, one clock. The phase, the capsule, the dot hue and the
     // status slot all fall out of a single canonical state; reaching for the

@@ -134,8 +134,7 @@ struct LinearConnectionScreen: View {
             }
             .frame(maxWidth: .infinity)
           }
-          .buttonStyle(.glassProminent)
-          .tint(LinearBrand.primary)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, brand: LinearBrand.primary))
           .disabled(runner.isRunning || disconnecting)
         }
 
@@ -154,8 +153,7 @@ struct LinearConnectionScreen: View {
             }
             .frame(maxWidth: .infinity)
           }
-          .buttonStyle(.glass)
-          .tint(ADEColor.danger)
+          .buttonStyle(ADEKitButtonStyle(tone: .crit))
           .disabled(runner.isRunning || disconnecting)
         }
 
@@ -168,7 +166,7 @@ struct LinearConnectionScreen: View {
         }
       }
     }
-    .adeGlassCard(cornerRadius: 20, padding: 20)
+    .adeKitCard(padding: 20)
   }
 
   // MARK: Disconnected
@@ -195,7 +193,7 @@ struct LinearConnectionScreen: View {
         withAnimation { confirmation = "Connected to \(status.organizationName ?? orgName)" }
       }
     }
-    .adeGlassCard(cornerRadius: 20, padding: 20)
+    .adeKitCard(padding: 20)
   }
 
   // MARK: Derived copy
@@ -295,8 +293,7 @@ struct LinearConnectActions: View {
           }
           .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.glassProminent)
-        .tint(LinearBrand.primary)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, brand: LinearBrand.primary))
         .disabled(busy)
       }
 
@@ -316,7 +313,7 @@ struct LinearConnectActions: View {
           }
           .foregroundStyle(ADEColor.textSecondary)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(ADEKitButtonStyle())
         .disabled(busy)
       }
 
@@ -350,7 +347,7 @@ struct LinearConnectActions: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEKit.edge, lineWidth: 1))
 
       HStack {
         if let url = URL(string: "https://linear.app/settings/api") {
@@ -372,8 +369,7 @@ struct LinearConnectActions: View {
             Text("Connect").fontWeight(.semibold)
           }
         }
-        .buttonStyle(.glassProminent)
-        .tint(LinearBrand.primary)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, brand: LinearBrand.primary))
         .controlSize(.small)
         .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
       }

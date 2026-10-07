@@ -344,7 +344,7 @@ struct PrStoryRow: View {
     HStack(spacing: 8) {
       Image(systemName: symbol)
         .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(event.title.hasPrefix("Merged") ? ADEColor.accent : ADEColor.textMuted)
+        .foregroundStyle(event.title.hasPrefix("Merged") ? prStateColor("merged") : event.title.hasPrefix("Closed") ? prStateColor("closed") : ADEColor.textMuted)
         .frame(width: 20)
       Text(event.title).font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(2)
       Spacer(minLength: 6)
@@ -385,11 +385,11 @@ struct PrThreadPage: View {
             .truncationMode(.middle)
           Spacer(minLength: 6)
           if thread.isResolved {
-            ADEFlatBadge(text: "resolved", tint: ADEColor.success)
+            ADEKitTag(text: "resolved", color: ADEColor.success)
           } else if thread.isOutdated {
-            ADEFlatBadge(text: "outdated", tint: ADEColor.textMuted)
+            ADEKitTag(text: "outdated")
           } else {
-            ADEFlatBadge(text: "open", tint: ADEColor.warning)
+            ADEKitTag(text: "open", color: ADEColor.warning)
           }
         }
         .adeFlatRow(separator: .hidden)

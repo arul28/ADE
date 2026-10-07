@@ -95,12 +95,11 @@ struct ActivityDrawerSheet: View {
     }
 
     private var bucketPicker: some View {
-        Picker("Activity bucket", selection: $bucket) {
-            ForEach(ActivityBucket.allCases, id: \.self) { value in
-                Text(bucketLabel(value)).tag(value)
-            }
-        }
-        .pickerStyle(.segmented)
+        ADEKitSegmented(
+            selection: $bucket,
+            options: ActivityBucket.allCases.map { (value: $0, title: bucketLabel($0)) }
+        )
+        .accessibilityLabel("Activity bucket")
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 10)
@@ -245,7 +244,7 @@ struct ActivityDrawerSheet: View {
 
     private var truncationNote: some View {
         Text("Showing the most recent activity. Older rows stay on their machine.")
-            .font(.system(.caption2, design: .rounded))
+            .font(.system(size: 11.5))
             .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .listRowBackground(Color.clear)
@@ -259,14 +258,13 @@ struct ActivityDrawerSheet: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: filter.glyph.systemImage)
-                .font(.system(.title, design: .rounded))
-                .foregroundStyle(activityToneColor(filter.tone).opacity(0.7))
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(activityToneColor(filter.tone))
             Text("Nothing \(filter.label.lowercased())")
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
             Button("Show all states") { drawer.stateFilter = nil }
-                .font(.system(.footnote, design: .rounded).weight(.medium))
-                .foregroundStyle(ADEColor.accent)
+                .buttonStyle(ADEKitButtonStyle())
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -278,33 +276,26 @@ struct ActivityDrawerSheet: View {
         return VStack(spacing: 14) {
             Spacer()
             Image(systemName: copy.symbol)
-                .font(.system(.largeTitle, design: .rounded).weight(.regular))
+                .font(.system(size: 28, weight: .regular))
                 .foregroundStyle(copy.tint)
                 .accessibilityHidden(true)
             VStack(spacing: 5) {
                 Text(copy.title)
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(ADEColor.textPrimary)
                 Text(copy.body)
-                    .font(.system(.subheadline, design: .rounded))
+                    .font(.system(size: 13.5))
                     .foregroundStyle(ADEColor.textSecondary)
                     .multilineTextAlignment(.center)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(copy.title). \(copy.body)")
             if drawer.source == .none {
-                Button {
+                Button("Try again") {
                     Task { await accountService.refreshAttentionSnapshot() }
-                } label: {
-                    Text("Try again")
-                        .font(.system(.footnote, design: .rounded).weight(.semibold))
-                        .foregroundStyle(ADEColor.accent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(ADEColor.accent.opacity(0.14), in: Capsule())
-                        .frame(minWidth: 44, minHeight: 44)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ADEKitButtonStyle())
+                .frame(minHeight: 44)
             }
             Spacer()
             Spacer()
@@ -414,12 +405,12 @@ private struct ActivitySectionHeader: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(activityToneColor(group.tone))
             Text(group.label)
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .textCase(nil)
             Text("\(count)")
-                .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
-                .foregroundStyle(activityToneColor(group.tone))
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
                 .contentTransition(.numericText())
             Spacer(minLength: 0)
         }
@@ -468,66 +459,26 @@ struct ActivityStateStrip: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(visible) { entry in
-                Button {
-                    onSelect(entry.group)
-                } label: {
-                    ActivityStateStripItem(
-                        entry: entry,
-                        isSelected: selection == entry.group
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(entry.count) \(entry.group.label)")
-                .accessibilityAddTraits(selection == entry.group ? [.isSelected] : [])
-                .accessibilityHint(
-                    selection == entry.group
-                        ? "Double tap to show all states"
-                        : "Double tap to show only \(entry.group.label.lowercased())"
+        // The kit's count track: glyphs keep their state hue, counts stay
+        // neutral, the lit filter is raised. Tapping it again clears it.
+        ADEKitCountSegments(
+            options: visible.map { entry in
+                ADEKitCountOption(
+                    value: entry.group,
+                    symbol: entry.group.glyph.systemImage,
+                    tint: activityToneColor(entry.group.tone),
+                    count: entry.count,
+                    accessibilityLabel: "\(entry.count) \(entry.group.label)"
                 )
-            }
-        }
+            },
+            selection: selection,
+            onSelect: onSelect
+        )
+        .accessibilityHint("Double tap a state to show only it; again to show all.")
         // One rotor stop that says the whole state of the account, instead of
         // six unlabelled buttons the reader has to assemble themselves.
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent states: \(summarySentence)")
-    }
-}
-
-/// One chip in the state strip.
-///
-/// Sized and filled like a control rather than drawn as bare glyph+number on
-/// the background. The first version floated three tinted marks in dead space
-/// under the Sessions/Inbox picker with nothing tying them together, so they
-/// read as debug output rather than as the filter they are. Equal widths keep
-/// the row from reflowing as counts cross from one digit to two.
-private struct ActivityStateStripItem: View {
-    let entry: ActivityGroupCount
-    let isSelected: Bool
-
-    private var tint: Color { activityToneColor(entry.group.tone) }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: entry.group.glyph.systemImage)
-                .font(.system(size: 11, weight: .semibold))
-            Text("\(entry.count)")
-                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .contentTransition(.numericText())
-        }
-        .foregroundStyle(isSelected ? tint : tint.opacity(0.75))
-        .frame(maxWidth: .infinity)
-        .frame(height: 30)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(tint.opacity(isSelected ? 0.20 : 0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(tint.opacity(isSelected ? 0.55 : 0), lineWidth: 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -555,9 +506,9 @@ private struct ActivityRestingSummaryRow: View {
                         Image(systemName: entry.group.glyph.systemImage)
                             .font(.system(size: 11, weight: .regular))
                         Text("\(entry.count) \(entry.group.label.lowercased())")
-                            .font(.system(.footnote, design: .rounded))
+                            .font(.system(size: 13))
                     }
-                    .foregroundStyle(activityToneColor(entry.group.tone).opacity(0.85))
+                    .foregroundStyle(ADEColor.textSecondary)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down")
@@ -585,18 +536,14 @@ private struct ActivityErrorBanner: View {
                 .foregroundStyle(ADESharedTheme.warningAmber)
                 .accessibilityHidden(true)
             Text(message)
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(ADEColor.textPrimary)
+                .font(.system(size: 13))
+                .foregroundStyle(ADEColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .background(ADESharedTheme.warningAmber.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(ADESharedTheme.warningAmber.opacity(0.28), lineWidth: 0.7)
-        )
+        .background(ADESharedTheme.warningAmber.opacity(0.08), in: RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Error. \(message)")
     }
@@ -720,17 +667,9 @@ private enum ActivityActionVariant {
 
     var background: Color {
         switch self {
-        case .primary(let tint): return tint.opacity(0.18)
-        case .secondary: return ADEColor.surfaceBackground.opacity(0.72)
-        case .danger: return ADEColor.danger.opacity(0.14)
-        }
-    }
-
-    var stroke: Color {
-        switch self {
-        case .primary(let tint): return tint.opacity(0.32)
-        case .secondary: return ADEColor.glassBorder
-        case .danger: return ADEColor.danger.opacity(0.30)
+        case .primary(let tint): return tint.opacity(0.13)
+        case .secondary: return ADEKit.track
+        case .danger: return ADEColor.danger.opacity(0.11)
         }
     }
 }
@@ -749,21 +688,17 @@ private struct ActivityActionLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(.system(.caption2, design: .rounded).weight(.bold))
+                .font(.system(size: 11, weight: .semibold))
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
         }
         .foregroundStyle(variant.foreground)
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 40)
         .padding(.horizontal, 10)
-        .background(variant.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(variant.stroke, lineWidth: 0.6)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(variant.background, in: Capsule(style: .continuous))
+        .contentShape(Capsule(style: .continuous))
     }
 }

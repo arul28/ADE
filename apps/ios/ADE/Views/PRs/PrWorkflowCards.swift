@@ -37,25 +37,9 @@ struct PrMobileWorkflowCardView: View {
 
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 8) {
-        PrsEyebrowLabel(text: "INTEGRATION", tint: PrGlassPalette.warning)
+        ADEEyebrow("Integration")
         if totalCount > 0 {
-          HStack(spacing: 4) {
-            Image(systemName: "timer")
-              .font(.system(size: 10, weight: .bold))
-            Text("\(readyCount) of \(totalCount) ready")
-              .font(.system(size: 10, weight: .bold))
-          }
-          .foregroundStyle(readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 3)
-          .background(
-            Capsule(style: .continuous)
-              .fill((readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning).opacity(0.16))
-          )
-          .overlay(
-            Capsule(style: .continuous)
-              .strokeBorder((readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning).opacity(0.4), lineWidth: 0.5)
-          )
+          ADEKitTag(text: "\(readyCount) of \(totalCount) ready", tone: readyCount == totalCount ? .ok : .warn)
         }
         Spacer(minLength: 0)
       }
@@ -76,17 +60,17 @@ struct PrMobileWorkflowCardView: View {
 
     HStack(spacing: 6) {
       if let status = card.integrationStatus {
-        ADEStatusPill(text: status.uppercased(), tint: ADEColor.accent)
+        ADEKitTag(text: status, color: ADEColor.accent)
       }
       if let workflowDisplayState = card.workflowDisplayState {
-        ADEStatusPill(text: workflowDisplayState.uppercased(), tint: ADEColor.textSecondary)
+        ADEKitTag(text: workflowDisplayState)
       }
       if let cleanupState = card.cleanupState {
-        ADEStatusPill(text: cleanupState.uppercased(), tint: ADEColor.warning)
+        ADEKitTag(text: cleanupState, color: ADEColor.warning)
       }
       Spacer(minLength: 0)
       if let outcome = card.overallOutcome {
-        ADEStatusPill(text: outcome.uppercased(), tint: outcome == "clean" ? ADEColor.success : ADEColor.warning)
+        ADEKitTag(text: outcome, color: outcome == "clean" ? ADEColor.success : ADEColor.warning)
       }
     }
 
@@ -94,9 +78,9 @@ struct PrMobileWorkflowCardView: View {
       VStack(alignment: .leading, spacing: 8) {
         ForEach(lanes.prefix(6)) { lane in
           HStack(spacing: 10) {
-            ADEStatusPill(
-              text: lane.outcome.replacingOccurrences(of: "_", with: " ").uppercased(),
-              tint: lane.outcome == "clean" ? ADEColor.success : ADEColor.warning
+            ADEKitTag(
+              text: lane.outcome.replacingOccurrences(of: "_", with: " "),
+              color: lane.outcome == "clean" ? ADEColor.success : ADEColor.warning
             )
             VStack(alignment: .leading, spacing: 2) {
               Text(lane.laneName)
@@ -116,7 +100,7 @@ struct PrMobileWorkflowCardView: View {
                   Image(systemName: "wrench.and.screwdriver")
                     .frame(width: 30, height: 30)
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(ADEKitButtonStyle())
                 .accessibilityLabel("Resolve conflicts for \(lane.laneName)")
 
                 Button {
@@ -125,7 +109,7 @@ struct PrMobileWorkflowCardView: View {
                   Image(systemName: "arrow.clockwise")
                     .frame(width: 30, height: 30)
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(ADEKitButtonStyle())
                 .accessibilityLabel("Recheck \(lane.laneName)")
               }
               .disabled(!isLive)
@@ -151,8 +135,7 @@ struct PrMobileWorkflowCardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     }
 
     if let proposalId = card.proposalId {
@@ -160,13 +143,13 @@ struct PrMobileWorkflowCardView: View {
         Button(card.integrationLaneId == nil ? "Create lane" : "Refresh lane") {
           onCreateIntegrationLane(proposalId)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(ADEKitButtonStyle())
         .disabled(!isLive)
 
         Button("Delete", role: .destructive) {
           onDeleteIntegrationProposal(proposalId)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(ADEKitButtonStyle())
         .disabled(!isLive)
       }
 
@@ -177,7 +160,7 @@ struct PrMobileWorkflowCardView: View {
           } label: {
             Label("Clean up lanes", systemImage: "archivebox")
           }
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
 
           Button {
@@ -185,7 +168,7 @@ struct PrMobileWorkflowCardView: View {
           } label: {
             Label("Not now", systemImage: "clock")
           }
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
         }
       }
@@ -205,7 +188,7 @@ struct PrMobileWorkflowCardView: View {
         }
       }
       .padding(.vertical, 2)
-      .background(ADEColor.textPrimary.opacity(0.02), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .adeKitCard(padding: nil)
     }
   }
 
@@ -217,20 +200,18 @@ struct PrMobileWorkflowCardView: View {
     // opened with lane_base strategy so auto-rebase is suppressed and the
     // user has to trigger it by hand.
     let isManual = (card.rebaseMode == "manual")
-    let tintForMode: Color = isManual ? ADEColor.tintPRs : ADEColor.warning
     let pillLabel = isManual ? "manual rebase" : "rebase needed"
     let rebaseButtonLabel = isManual ? "Rebase now" : "Rebase"
 
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        PrsEyebrowLabel(text: "REBASE", tint: tintForMode)
+        ADEEyebrow("Rebase")
         if let prNumber = card.prNumber {
           Text(verbatim: "#\(prNumber)")
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(tintForMode)
+            .font(.adeMono(11, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
         }
-        ADEStatusPill(text: pillLabel, tint: tintForMode)
-        PrTagChip(label: "lane", color: PrGlassPalette.blue)
+        ADEKitTag(text: pillLabel, tone: isManual ? .neutral : .warn)
         Spacer(minLength: 0)
         if card.conflictPredicted == true {
           PrConflictBadge()
@@ -245,14 +226,6 @@ struct PrMobileWorkflowCardView: View {
           .font(.system(size: 11, weight: .medium, design: .monospaced))
           .foregroundStyle(ADEColor.textSecondary)
       }
-      // Mode-specific explainer copy.
-      Text(
-        isManual
-          ? "PR carries immutable base — drift detected. Rebase manually."
-          : "Auto-rebase pending — target has moved."
-      )
-      .font(.caption)
-      .foregroundStyle(ADEColor.textSecondary)
     }
 
     if let deferredUntil = card.deferredUntil {
@@ -261,8 +234,7 @@ struct PrMobileWorkflowCardView: View {
         .foregroundStyle(ADEColor.textMuted)
     }
 
-    // Tappable link to the new rebase screen — styled as a bold amber→orange
-    // gradient CTA per the liquid-glass spec.
+    // Opens the rebase screen.
     if let laneId = card.laneId {
       NavigationLink {
         PrRebaseScreen(
@@ -281,52 +253,27 @@ struct PrMobileWorkflowCardView: View {
       } label: {
         HStack(spacing: 8) {
           Image(systemName: "chart.bar.doc.horizontal")
-            .font(.system(size: 13, weight: .bold))
           Text("Inspect drift")
-            .font(.system(size: 14, weight: .bold))
           Spacer(minLength: 0)
           Image(systemName: "chevron.right")
-            .font(.system(size: 12, weight: .bold))
+            .font(.system(size: 12, weight: .semibold))
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [
-                  PrGlassPalette.warning,
-                  Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x06 / 255),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5)
-        )
-        .shadow(color: PrGlassPalette.warning.opacity(0.55), radius: 12, x: 0, y: 3)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(tone: .warn, wide: true))
     }
 
     HStack(spacing: 10) {
       if let laneId = card.laneId {
         Button(rebaseButtonLabel) { onRebaseLane(laneId) }
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
 
         Button("Defer") { onDeferRebase(laneId) }
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
 
         Button("Dismiss") { onDismissRebase(laneId) }
-          .buttonStyle(.glass)
-          .tint(ADEColor.textSecondary)
+          .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
       }
 
@@ -334,7 +281,7 @@ struct PrMobileWorkflowCardView: View {
 
       if let prId = card.prId {
         Button("Open PR") { onOpenPr(prId) }
-          .buttonStyle(.glass)
+          .buttonStyle(ADEKitButtonStyle())
       }
     }
   }
@@ -356,23 +303,13 @@ private extension Optional where Wrapped == String {
   }
 }
 
-/// High-contrast solid badge used when a rebase or integration would
-/// collide. Stronger visual weight than ADEStatusPill (which only tints)
-/// so a predicted conflict can't be glanced past.
+/// A predicted conflict, in the critical tone so it can't be glanced past.
 struct PrConflictBadge: View {
-  var text: String = "CONFLICT"
+  var text: String = "Conflict"
 
   var body: some View {
-    HStack(spacing: 4) {
-      Image(systemName: "exclamationmark.triangle.fill")
-      Text(text)
-    }
-    .font(.system(.caption2, design: .monospaced).weight(.bold))
-    .padding(.horizontal, 10)
-    .padding(.vertical, 5)
-    .foregroundStyle(Color.white)
-    .background(ADEColor.danger, in: Capsule())
-    .accessibilityLabel("Warning: \(text)")
+    ADEKitTag(text: text, tone: .crit)
+      .accessibilityLabel("Warning: \(text)")
   }
 }
 

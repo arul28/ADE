@@ -153,9 +153,11 @@ func settingsMachines(
     let power = syncMachinePowerReadingIsFresh(directoryOnline: machine.online, lastSeenAt: lastSeen)
       ? accountMachinePowerClause(machine.power)
       : nil
+    // A connected machine names the route its link took, not the routes the
+    // directory advertises (a relay link used to read "Local network").
     let route = key == focusedKey
       ? syncService.lastConnectedRouteKind?.label ?? machine.routeLabel
-      : machine.routeLabel
+      : key.flatMap { fleet.machine(for: $0)?.routeKind?.label } ?? machine.routeLabel
     let detail = [route, power].compactMap { $0 }.joined(separator: " · ")
     result.append(SettingsMachine(
       id: "account-\(machine.machineKey)",
@@ -222,7 +224,11 @@ struct SettingsMachineLimitPrompt: Identifiable {
 
 @MainActor
 final class SettingsMachineController: ObservableObject {
-  @Published var busyMachineId: String?
+  /// Rows with an action in flight. Per row: one machine connecting never
+  /// locks the others.
+  @Published var busyMachineIds: Set<String> = []
+  /// Rows pairing next to the primary right now; each counts toward the limit.
+  private var pairingAlongsideIds: Set<String> = []
   @Published var toast: ADEToastMessage?
   @Published var errors: [String: String] = [:]
   @Published var limitPrompt: SettingsMachineLimitPrompt?
@@ -252,14 +258,21 @@ final class SettingsMachineController: ObservableObject {
   }
 
   func connect(_ machine: SettingsMachine) {
-    guard let syncService, let fleet, busyMachineId == nil, !machine.isConnectedSet else { return }
+    guard let syncService, let fleet, !busyMachineIds.contains(machine.id), !machine.isConnectedSet else { return }
     errors[machine.id] = nil
     // With no primary attached the machine becomes primary (see
     // `performConnect`), so it does not count against the limit.
-    if syncService.primaryIsAttached, fleet.isAtLiveLimit {
+    // A pairing still in flight takes a slot too: two pairings started back to
+    // back must not both slip under the limit and silently push a machine out.
+    if syncService.primaryIsAttached, fleet.isAtLiveLimit(pending: pairingAlongsideIds.count) {
       var candidates = fleet.connectedMachinesLeastRecentFirst.map { (key: $0.machineKey, name: $0.name) }
       if machine.machineKey != nil, let primary = syncService.focusedMachineKey {
         candidates.append((key: primary, name: syncService.focusedMachineDisplayName))
+      }
+      guard !candidates.isEmpty else {
+        // Only pairings still in flight fill the limit: nothing to disconnect yet.
+        errors[machine.id] = "Wait for the machine that is pairing to finish, then connect this one."
+        return
       }
       limitPrompt = SettingsMachineLimitPrompt(target: machine, candidates: candidates)
       return
@@ -308,16 +321,36 @@ final class SettingsMachineController: ObservableObject {
       }
       return
     }
-    // Never paired on this phone: pair through the account. Pairing attaches
-    // the phone to it, so it becomes primary; the previous primary stays
-    // connected next to it.
+    // Never paired on this phone: pair through the account.
     guard let accountMachine = machine.account else { return }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
       errors[machine.id] = "Your account session ended. Sign in again, then connect."
       return
     }
-    run(machine, success: "\(machine.name) connected") {
-      await syncService.pairAccountMachineKeepingPrevious(accountMachine, authorization: authorization)
+    guard syncService.primaryIsAttached else {
+      // No primary to keep: this machine becomes the primary.
+      run(machine, success: "\(machine.name) connected") {
+        await syncService.pairAccountMachineKeepingPrevious(accountMachine, authorization: authorization)
+      }
+      return
+    }
+    // A primary is up: pair next to it, like desktop. The primary's connection
+    // is never touched, and the toast waits for the new machine's link.
+    var live = false
+    pairingAlongsideIds.insert(machine.id)
+    run(machine, successToast: { live ? "\(machine.name) connected" : "\(machine.name) paired · connecting…" }) {
+      let result = await syncService.pairAccountMachineAlongsidePrimary(accountMachine, authorization: authorization)
+      // Paired (into the connected set) or failed: no longer pending either way,
+      // so it is never counted twice while its link comes up.
+      self.pairingAlongsideIds.remove(machine.id)
+      switch result {
+      case .failure(let failure):
+        self.errors[machine.id] = failure.message
+        return false
+      case .success(let key):
+        live = await fleet.connect(machineKey: key, timeout: .seconds(15))
+        return true
+      }
     }
   }
 
@@ -367,8 +400,7 @@ final class SettingsMachineController: ObservableObject {
     guard let syncService else { return }
     syncService.forgetMachineOnThisPhone(
       machineKey: machine.machineKey,
-      hiddenIdentity: machine.hiddenIdentity,
-      isAvailableNow: machine.online
+      hiddenIdentity: machine.hiddenIdentity
     )
     toast = ADEToastMessage(text: "\(machine.name) forgotten on this phone")
     ADEHaptics.light()
@@ -385,21 +417,30 @@ final class SettingsMachineController: ObservableObject {
       }
       self.syncService?.forgetMachineOnThisPhone(
         machineKey: machine.machineKey,
-        hiddenIdentity: machine.hiddenIdentity,
-        isAvailableNow: machine.online
+        hiddenIdentity: machine.hiddenIdentity
       )
       return true
     }
   }
 
   private func run(_ machine: SettingsMachine, success: String, _ body: @escaping () async -> Bool) {
-    busyMachineId = machine.id
+    run(machine, successToast: { success }, body)
+  }
+
+  /// `successToast` is read when the action finishes, so it can describe what
+  /// actually happened (connected, or paired and still connecting).
+  private func run(
+    _ machine: SettingsMachine,
+    successToast: @escaping () -> String,
+    _ body: @escaping () async -> Bool
+  ) {
+    busyMachineIds.insert(machine.id)
     Task { @MainActor in
       let ok = await body()
-      busyMachineId = nil
+      busyMachineIds.remove(machine.id)
       if ok {
         ADEHaptics.success()
-        toast = ADEToastMessage(text: success)
+        toast = ADEToastMessage(text: successToast())
       } else {
         ADEHaptics.error()
         if errors[machine.id] == nil, let syncService {
@@ -428,32 +469,28 @@ struct SettingsMachineSections: View {
   var body: some View {
     let machines = settingsMachines(syncService: syncService, account: account, fleet: fleet, hidden: hidden)
     let sections = settingsMachineSections(machines)
-    Group {
-      Section {
-        if sections.connected.isEmpty {
-          Text("No machine connected. Connect one below, or add one with +.")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textSecondary)
-            .adeFlatRow()
-        }
-        ForEach(sections.connected) { machine in
-          row(machine)
-        }
-      } header: {
-        ADEFlatSectionHeader(
-          "Connected",
-          detail: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live"
-        ) {
-          addMenu
+    VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+      ADESettingsSection(
+        "Connected",
+        hint: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live",
+        trailing: { addMenu }
+      ) {
+        ADESettingsRows {
+          if sections.connected.isEmpty {
+            ADESettingsRow("No machine connected", hint: "Connect one below, or add one with +.")
+          }
+          ForEach(sections.connected) { machine in
+            row(machine)
+          }
         }
       }
       if !sections.available.isEmpty {
-        Section {
-          ForEach(sections.available) { machine in
-            row(machine)
+        ADESettingsSection("Available") {
+          ADESettingsRows {
+            ForEach(sections.available) { machine in
+              row(machine)
+            }
           }
-        } header: {
-          ADEFlatSectionHeader("Available")
         }
       }
     }
@@ -469,13 +506,13 @@ struct SettingsMachineSections: View {
     } label: {
       SettingsMachineRow(
         machine: machine,
-        busy: controller.busyMachineId == machine.id,
+        busy: controller.busyMachineIds.contains(machine.id),
         error: controller.errors[machine.id],
         onConnect: { controller.connect(machine) },
         onRetry: { controller.retry(machine) }
       )
     }
-    .adeFlatRow()
+    .buttonStyle(ADEKitRowButtonStyle())
   }
 
   private var addMenu: some View {
@@ -484,10 +521,12 @@ struct SettingsMachineSections: View {
       Button { presentedSheet = .discover } label: { Label("Find on this network", systemImage: "wifi") }
       Button { presentedSheet = .ssh } label: { Label("Connect over SSH", systemImage: "terminal") }
     } label: {
-      Image(systemName: "plus")
+      Label("Add", systemImage: "plus")
         .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 28, height: 22)
+        .foregroundStyle(ADEColor.textPrimary)
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(ADEKit.track, in: Capsule(style: .continuous))
     }
     .accessibilityLabel("Add machine")
   }
@@ -505,29 +544,26 @@ struct SettingsMachineRow: View {
   var body: some View {
     HStack(spacing: 12) {
       Image(systemName: machine.symbol)
-        .font(.system(size: 16, weight: .regular))
+        .font(.system(size: 16))
         .foregroundStyle(machine.isConnectedSet ? ADEColor.textPrimary : ADEColor.textMuted)
-        .frame(width: 26)
+        .frame(width: 24)
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
           Text(machine.name)
-            .font(.body.weight(.medium))
+            .font(.system(size: 15, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
           if machine.isPrimary {
-            Text("PRIMARY")
-              .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-              .tracking(0.5)
-              .foregroundStyle(ADEColor.accent)
+            ADEKitTag(text: "Primary", tone: .accent)
           }
         }
         Text(machine.subtitle)
-          .font(.caption)
+          .font(.system(size: 12.5))
           .foregroundStyle(machine.subtitleIsProblem ? ADEColor.warning : ADEColor.textSecondary)
           .lineLimit(1)
         if let error {
           Text(error)
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.danger)
             .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
@@ -535,7 +571,11 @@ struct SettingsMachineRow: View {
       }
       Spacer(minLength: 8)
       trailing
+      ADESettingsChevron()
     }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
     .opacity(machine.isConnectedSet || machine.online || machine.isPaired ? 1 : 0.62)
     .accessibilityElement(children: .combine)
   }
@@ -547,26 +587,24 @@ struct SettingsMachineRow: View {
     } else {
       switch machine.link {
       case .primary(let live, let connecting):
-        if live { ADELiveDot(isLive: true) }
+        if live { ADEKitDot(tone: .ok, size: 7) }
         else if connecting { ProgressView().controlSize(.small) }
         else { retryButton }
       case .connected(let state, let gaveUp):
         switch state {
-        case .live: ADELiveDot(isLive: true)
+        case .live: ADEKitDot(tone: .ok, size: 7)
         case .connecting: ProgressView().controlSize(.small)
         case .offline where gaveUp: retryButton
         case .needsUpdate, .needsAttention: retryButton
-        default: ADELiveDot(isLive: false)
+        default: ADEKitDot(tone: .neutral, size: 7)
         }
       case .available:
         if machine.online || machine.isPaired {
           Button("Connect", action: onConnect)
-            .font(.footnote.weight(.semibold))
-            .buttonStyle(.glass)
-            .controlSize(.small)
+            .buttonStyle(ADEKitButtonStyle())
         } else {
           Text("Offline")
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textMuted)
         }
       }
@@ -575,9 +613,7 @@ struct SettingsMachineRow: View {
 
   private var retryButton: some View {
     Button("Retry", action: onRetry)
-      .font(.footnote.weight(.semibold))
-      .buttonStyle(.glass)
-      .controlSize(.small)
+      .buttonStyle(ADEKitButtonStyle(tone: .warn))
   }
 }
 
@@ -601,7 +637,7 @@ struct SettingsMachinePage: View {
       if let machine {
         SettingsMachinePageContent(
           machine: machine,
-          busy: controller.busyMachineId == machine.id,
+          busy: controller.busyMachineIds.contains(machine.id),
           error: controller.errors[machine.id],
           actions: SettingsMachinePageActions(
             connect: { controller.connect(machine) },
@@ -688,118 +724,104 @@ struct SettingsMachinePageContent: View {
   var busy = false
   var error: String?
   var actions = SettingsMachinePageActions()
+  @State private var showsAllProjects = false
+
+  /// Long project lists collapse to the first few and one "Show all" row.
+  private static let collapsedProjectCount = 6
 
   var body: some View {
-    List {
-      Section {
-        header
-          .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
-        actionBar
-          .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
-        if let error {
-          ADEFlatInlineNotice(message: error, tint: ADEColor.danger, retry: actions.retry)
-            .adeFlatRow()
-        }
-      }
-
-      Section {
-        ForEach(statusFacts, id: \.label) { fact in
-          factRow(fact.label, fact.value)
-        }
-      } header: {
-        ADEFlatSectionHeader("Status")
-      }
-
-      Section {
-        if machine.projects.isEmpty {
-          Text(machine.isLive ? "No projects open on this machine." : "Projects show once the machine is connected.")
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textSecondary)
-            .adeFlatRow()
-        }
-        ForEach(machine.projects) { project in
-          HStack(spacing: 10) {
-            Image(systemName: "folder")
-              .font(.system(size: 13))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(width: 20)
-            Text(project.displayName)
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            Spacer(minLength: 8)
-            Text(projectSummary(project))
-              .font(.adeMono(11))
-              .foregroundStyle(ADEColor.textMuted)
+    let projects = showsAllProjects ? machine.projects : Array(machine.projects.prefix(Self.collapsedProjectCount))
+    ScrollView {
+      VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+        VStack(alignment: .leading, spacing: 14) {
+          header
+          actionBar
+          if let error {
+            ADESettingsNotice(message: error, tone: .crit, actionTitle: "Retry", action: actions.retry)
           }
-          .adeFlatRow()
         }
-      } header: {
-        ADEFlatSectionHeader("Projects", detail: machine.projects.isEmpty ? nil : "\(machine.projects.count)")
-      }
+        .adeKitCard()
 
-      if let inventory = machine.account?.inventory {
-        Section {
-          ForEach(inventory.providers, id: \.provider) { provider in
-            if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
-              NavigationLink { page(kind) } label: { accountCountRow(provider) }
-                .adeFlatRow()
-            } else {
-              accountCountRow(provider)
-                .adeFlatRow()
+        ADESettingsSection("Status") {
+          ADESettingsRows {
+            ForEach(statusFacts, id: \.label) { fact in
+              ADESettingsValueRow(title: fact.label, value: fact.value)
             }
           }
-          factRow("Presets", inventory.presets == 0 ? "Nothing custom" : "\(inventory.presets)")
-        } header: {
-          ADEFlatSectionHeader("Accounts")
         }
-      }
 
-      Section {
-        ForEach(connectionFacts, id: \.label) { fact in
-          factRow(fact.label, fact.value)
+        ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open") {
+          ADESettingsRows {
+            if machine.projects.isEmpty {
+              ADESettingsRow(machine.isLive ? "No projects open on this machine." : "Projects show once the machine is connected.")
+            }
+            ForEach(projects) { project in
+              ADESettingsRow(title: project.displayName, symbol: "folder") {
+                Text(projectSummary(project))
+                  .font(.adeMono(11))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+            if machine.projects.count > Self.collapsedProjectCount {
+              ADESettingsActionRow(title: showsAllProjects ? "Show fewer" : "Show all \(machine.projects.count)") {
+                showsAllProjects.toggle()
+              }
+            }
+          }
         }
-        if let help = offlineHelp {
-          Text(help)
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .adeFlatRow()
-        }
-      } header: {
-        ADEFlatSectionHeader("Connection")
-      }
 
-      Section {
-        if machine.isPaired {
-          Button(role: .destructive, action: actions.forget) {
-            Text("Forget on this phone")
+        if let inventory = machine.account?.inventory {
+          ADESettingsSection("AI accounts") {
+            ADESettingsRows {
+              ForEach(inventory.providers, id: \.provider) { provider in
+                if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
+                  NavigationLink { page(kind) } label: { accountCountRow(provider, link: true) }
+                    .buttonStyle(ADEKitRowButtonStyle())
+                } else {
+                  accountCountRow(provider, link: false)
+                }
+              }
+              ADESettingsValueRow(title: "Presets", value: inventory.presets == 0 ? "Nothing custom" : "\(inventory.presets)")
+            }
           }
-          .adeFlatRow()
         }
-        if let removeFromAccount = actions.removeFromAccount {
-          Button(role: .destructive, action: removeFromAccount) {
-            Text("Remove from account")
+
+        ADESettingsSection("Connection", hint: offlineHelp) {
+          ADESettingsRows {
+            ForEach(connectionFacts, id: \.label) { fact in
+              ADESettingsValueRow(title: fact.label, value: fact.value)
+            }
           }
-          .adeFlatRow()
         }
-      } header: {
-        Color.clear.frame(height: 12)
+
+        if machine.isPaired || actions.removeFromAccount != nil {
+          ADESettingsRows {
+            if machine.isPaired {
+              ADESettingsActionRow(title: "Forget on this phone", destructive: true, action: actions.forget)
+            }
+            if let removeFromAccount = actions.removeFromAccount {
+              ADESettingsActionRow(title: "Remove from account", destructive: true, action: removeFromAccount)
+            }
+          }
+        }
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 36)
     }
-    .adeFlatList()
+    .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
   private var header: some View {
-    HStack(alignment: .top, spacing: 14) {
+    HStack(alignment: .center, spacing: 14) {
       Image(systemName: machine.symbol)
-        .font(.system(size: 30, weight: .light))
+        .font(.system(size: 26, weight: .light))
         .foregroundStyle(ADEColor.textPrimary)
-        .frame(width: 44, height: 44)
+        .frame(width: 40, height: 40)
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
           Text(machine.name)
-            .font(.title3.weight(.semibold))
+            .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
           if let rename = actions.rename {
@@ -807,15 +829,16 @@ struct SettingsMachinePageContent: View {
               Image(systemName: "pencil")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(ADEColor.textMuted)
+                .adeTapTarget(visual: 20)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Rename")
           }
         }
         HStack(spacing: 6) {
-          ADELiveDot(isLive: machine.isLive)
+          ADEKitDot(tone: machine.isLive ? .ok : (machine.subtitleIsProblem ? .warn : .neutral))
           Text(stateLine)
-            .font(.footnote)
+            .font(.system(size: 12.5))
             .foregroundStyle(machine.subtitleIsProblem ? ADEColor.warning : ADEColor.textSecondary)
             .lineLimit(2)
         }
@@ -842,20 +865,17 @@ struct SettingsMachinePageContent: View {
         ProgressView().controlSize(.small)
       } else if machine.isConnectedSet {
         if machine.gaveUp || machine.subtitleIsProblem {
-          Button("Retry", action: actions.retry).buttonStyle(.glassProminent)
+          Button("Retry", action: actions.retry).buttonStyle(ADEKitButtonStyle(prominent: true))
         }
-        Button("Disconnect", action: actions.disconnect).buttonStyle(.glass)
+        Button("Disconnect", action: actions.disconnect).buttonStyle(ADEKitButtonStyle())
         if !machine.isPrimary {
-          Button("Make primary", action: actions.makePrimary).buttonStyle(.glass)
+          Button("Make primary", action: actions.makePrimary).buttonStyle(ADEKitButtonStyle())
         }
       } else {
-        Button("Connect", action: actions.connect).buttonStyle(.glassProminent)
+        Button("Connect", action: actions.connect).buttonStyle(ADEKitButtonStyle(prominent: true))
       }
       Spacer(minLength: 0)
     }
-    .font(.subheadline.weight(.semibold))
-    .controlSize(.regular)
-    .tint(ADEColor.accent)
   }
 
   private struct Fact { let label: String; let value: String }
@@ -908,30 +928,23 @@ struct SettingsMachinePageContent: View {
     return nil
   }
 
-  private func accountCountRow(_ provider: AccountMachineInventoryProvider) -> some View {
-    HStack {
+  private func accountCountRow(_ provider: AccountMachineInventoryProvider, link: Bool) -> some View {
+    HStack(spacing: 12) {
+      if let asset = providerAssetName(provider.provider) {
+        ADEProviderMark(assetName: asset, size: 18)
+          .frame(width: 22)
+      }
       Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
-        .font(.subheadline)
+        .font(.system(size: 15))
         .foregroundStyle(ADEColor.textPrimary)
       Spacer(minLength: 8)
       Text(provider.accounts == 1 ? "1 account" : "\(provider.accounts) accounts")
-        .font(.adeMono(11))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-  }
-
-  private func factRow(_ label: String, _ value: String) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(label)
-        .font(.subheadline)
+        .font(.system(size: 14))
         .foregroundStyle(ADEColor.textSecondary)
-      Spacer(minLength: 12)
-      Text(value)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textPrimary)
-        .multilineTextAlignment(.trailing)
+      if link { ADESettingsChevron() }
     }
-    .adeFlatRow()
+    .padding(.horizontal, ADEKit.inset)
+    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
   }
 
   private func projectSummary(_ project: RemoteRosterProject) -> String {

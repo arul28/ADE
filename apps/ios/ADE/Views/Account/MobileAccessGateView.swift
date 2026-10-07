@@ -31,15 +31,14 @@ struct MobileAccessGateView: View {
               .renderingMode(.original)
               .interpolation(.high)
               .aspectRatio(contentMode: .fit)
-              .frame(maxWidth: 260)
-              .frame(height: 132)
+              .frame(maxWidth: 220)
+              .frame(height: 108)
               .frame(maxWidth: .infinity)
-              .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
               .accessibilityLabel("ADE")
               .padding(.bottom, 24)
 
             Text("Your agents, anywhere.")
-              .font(.system(.title3, design: .rounded).weight(.semibold))
+              .font(.system(size: 19, weight: .semibold))
               .foregroundStyle(ADEColor.textSecondary)
               .multilineTextAlignment(.center)
 
@@ -61,12 +60,9 @@ struct MobileAccessGateView: View {
                     Text(accountSignedIn ? "View your computers" : "Sign in")
                   }
                 }
-                .font(.headline)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 15)
               }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.accent)
+              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
               .disabled(!accountConfigured || accountLoading)
 
               if !accountConfigured && !accountLoading {
@@ -157,7 +153,7 @@ struct MobileAccessGateView: View {
           .frame(maxWidth: .infinity, minHeight: geometry.size.height)
         }
         .scrollIndicators(.hidden)
-        .background(AccountAuroraBackground().ignoresSafeArea())
+        .background(ADEColor.pageBackground.ignoresSafeArea())
       }
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)

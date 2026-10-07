@@ -38,23 +38,35 @@ struct LaneFileTreeSection: View {
   @State private var collapsedPaths: Set<String>?
 
   var body: some View {
-    GlassSection(title: title, subtitle: subtitle) {
-      LazyVStack(alignment: .leading, spacing: 12) {
+    // A sub-section of the Files card: title, count, bulk actions, then the tree.
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        Text(title)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        if let subtitle {
+          Text(subtitle)
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Spacer(minLength: 0)
+      }
+      LazyVStack(alignment: .leading, spacing: 10) {
         HStack(spacing: 8) {
           if let bulkActionTitle, let onBulkAction, changes.count > 1 {
-            LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
+            ADEKitActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
               onBulkAction()
             }
             .disabled(!allowsLiveActions)
           }
           ForEach(extraBulkActions) { extra in
             if extra.isDestructive {
-              LaneHoldToConfirmButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+              ADEKitHoldButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
               .disabled(!allowsLiveActions)
             } else {
-              LaneActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+              ADEKitActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
               .disabled(!allowsLiveActions)
@@ -181,7 +193,7 @@ private struct LaneFileTreeNodeView: View {
   let secondaryActionTint: Color
 
   var body: some View {
-    let content = LazyVStack(alignment: .leading, spacing: 8) {
+    let content = LazyVStack(alignment: .leading, spacing: 2) {
       if !node.files.isEmpty {
         ForEach(node.files) { file in
           let openFilesAction: (() -> Void)? = onOpenFiles.map { handler in
@@ -224,39 +236,27 @@ private struct LaneFileTreeNodeView: View {
             secondaryActionSymbol: secondaryActionSymbol,
             secondaryActionTint: secondaryActionTint
           )
-          .padding(.top, 8)
+          .padding(.top, 2)
+          .padding(.leading, 14)
         } label: {
           HStack(spacing: 8) {
-            Image(systemName: "folder.fill")
-              .font(.system(size: 11, weight: .semibold))
-              .foregroundStyle(ADEColor.warning)
+            Image(systemName: "folder")
+              .font(.system(size: 12, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
             Text(child.name)
-              .font(.subheadline.weight(.semibold))
+              .font(.adeMono(12.5, weight: .medium))
               .foregroundStyle(ADEColor.textPrimary)
             Text("\(child.totalFileCount)")
-              .font(.caption2.weight(.semibold))
+              .font(.adeMono(11))
               .foregroundStyle(ADEColor.textMuted)
-              .padding(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
-              .background(ADEColor.surfaceBackground.opacity(0.45), in: Capsule())
             Spacer()
           }
           .contentShape(Rectangle())
         }
-        .tint(ADEColor.textSecondary)
+        .tint(ADEColor.textMuted)
       }
     }
-    if isRoot {
-      content
-        .padding(12)
-        .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 14))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
-        )
-    } else {
-      content
-    }
+    content
   }
 
   private func binding(for path: String) -> Binding<Bool> {
@@ -288,46 +288,65 @@ private struct LaneFileRow: View {
   let secondaryActionSymbol: String
   let secondaryActionTint: Color
 
+  /// One changed file: tap opens the diff, the trailing button runs the
+  /// primary action, everything else is in a plain system menu.
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 10) {
-        Circle()
-          .fill(fileKindTint(file.kind))
-          .frame(width: 6, height: 6)
-          .padding(.top, 7)
-        VStack(alignment: .leading, spacing: 2) {
+    HStack(spacing: 10) {
+      Button {
+        onDiff()
+      } label: {
+        HStack(spacing: 9) {
+          ADEKitDot(color: fileKindTint(file.kind))
           Text((file.path as NSString).lastPathComponent)
-            .font(.system(.caption, design: .monospaced))
+            .font(.adeMono(12.5))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.middle)
-          Text(file.kind.capitalized)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
+          Spacer(minLength: 4)
         }
-        Spacer()
+        .frame(minHeight: 34)
+        .contentShape(Rectangle())
       }
-      LazyVGrid(columns: actionColumns, alignment: .leading, spacing: 6) {
-        LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
+      .buttonStyle(.plain)
+      .disabled(!allowsDiffInspection)
+      .accessibilityLabel("\((file.path as NSString).lastPathComponent), \(file.kind)")
+      .accessibilityHint("Opens the diff")
+
+      Button {
+        onPrimaryAction()
+      } label: {
+        Image(systemName: primaryActionSymbol)
+          .font(.system(size: 15, weight: .regular))
+          .foregroundStyle(primaryActionTint)
+          .frame(width: 32, height: 32)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!allowsLiveActions)
+      .opacity(allowsLiveActions ? 1 : 0.45)
+      .accessibilityLabel(primaryActionTitle)
+
+      Menu {
+        Button { onDiff() } label: { Label("Diff", systemImage: "doc.text.magnifyingglass") }
           .disabled(!allowsDiffInspection)
         if let onOpenFiles {
-          LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
+          Button { onOpenFiles() } label: { Label("Open in Files", systemImage: "folder") }
         }
-        LaneActionButton(title: primaryActionTitle, symbol: primaryActionSymbol, tint: primaryActionTint) {
-          onPrimaryAction()
-        }
-        .disabled(!allowsLiveActions)
-        LaneActionButton(title: secondaryActionTitle, symbol: secondaryActionSymbol, tint: secondaryActionTint) {
-          onSecondaryAction()
+        Button { onPrimaryAction() } label: { Label(primaryActionTitle, systemImage: primaryActionSymbol) }
+          .disabled(!allowsLiveActions)
+        Button(role: .destructive) { onSecondaryAction() } label: {
+          Label(secondaryActionTitle, systemImage: secondaryActionSymbol)
         }
         .disabled(!allowsLiveActions)
+      } label: {
+        Image(systemName: "ellipsis")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 30, height: 32)
+          .contentShape(Rectangle())
       }
+      .accessibilityLabel("File actions")
     }
-    .adeGlassCard(cornerRadius: 10, padding: 10)
-  }
-
-  private var actionColumns: [GridItem] {
-    [GridItem(.adaptive(minimum: 92), spacing: 6, alignment: .leading)]
   }
 
   private func fileKindTint(_ kind: String) -> Color {
@@ -337,7 +356,7 @@ private struct LaneFileRow: View {
     case "deleted", "removed":
       return ADEColor.danger
     case "renamed", "moved":
-      return ADEColor.accent
+      return ADEColor.info
     default:
       return ADEColor.warning
     }

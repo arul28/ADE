@@ -44,6 +44,7 @@ struct CursorCloudAgentListScreen: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .safeAreaInset(edge: .top, spacing: 0) {
       CursorCloudFilterChipsBar(store: store)
     }
@@ -102,10 +103,10 @@ struct CursorCloudAgentListScreen: View {
       ForEach(0..<4, id: \.self) { _ in
         VStack(alignment: .leading, spacing: 8) {
           RoundedRectangle(cornerRadius: 4)
-            .fill(Color.white.opacity(0.08))
+            .fill(ADEKit.track)
             .frame(width: 180, height: 12)
           RoundedRectangle(cornerRadius: 4)
-            .fill(Color.white.opacity(0.05))
+            .fill(ADEKit.track)
             .frame(width: 120, height: 10)
         }
         .listRowBackground(Color.clear)
@@ -315,7 +316,7 @@ struct CursorCloudFilterChipsBar: View {
       .padding(.horizontal, 12)
       .padding(.vertical, 7)
     }
-    .background(.ultraThinMaterial)
+    .background(ADEColor.pageBackground)
   }
 
   private func chip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -325,12 +326,12 @@ struct CursorCloudFilterChipsBar: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
-          Capsule().fill(selected ? CursorCloudBrand.primary.opacity(0.25) : Color.white.opacity(0.06))
+          Capsule().fill(selected ? CursorCloudBrand.primary.opacity(0.18) : ADEKit.track)
         )
         .overlay(
           Capsule().strokeBorder(selected ? CursorCloudBrand.primaryBright.opacity(0.55) : Color.clear, lineWidth: 1)
         )
-        .foregroundStyle(selected ? CursorCloudBrand.primaryBright : Color.secondary)
+        .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
     }
     .buttonStyle(.plain)
   }

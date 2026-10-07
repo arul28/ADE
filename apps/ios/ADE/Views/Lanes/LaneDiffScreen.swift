@@ -25,11 +25,11 @@ struct LaneDiffScreen: View {
           VStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
               Text(request.title)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 14.5, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
               if let path = request.path {
                 Text(path)
-                  .font(.system(.caption, design: .monospaced))
+                  .font(.adeMono(11.5))
                   .foregroundStyle(ADEColor.textSecondary)
               }
               if let compareRef = request.compareRef, !compareRef.isEmpty {
@@ -39,40 +39,17 @@ struct LaneDiffScreen: View {
                 LaneInfoRow(label: "Against", value: compareTo, isMonospaced: true)
               }
             }
-            .adeGlassCard(cornerRadius: 12, padding: 12)
+            .adeKitCard(padding: 12)
 
             if let errorMessage {
-              HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                  .font(.system(size: 13, weight: .semibold))
-                  .foregroundStyle(ADEColor.danger)
-                Text(errorMessage)
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.danger)
-                Spacer(minLength: 0)
-              }
-              .adeGlassCard(cornerRadius: 12, padding: 12)
+              ADESettingsNotice(message: errorMessage, tone: .crit)
             }
 
             if diff != nil {
-              HStack(spacing: 8) {
-                LaneOptionButton(
-                  title: "Original",
-                  subtitle: "Base content",
-                  systemImage: "doc.text",
-                  isSelected: side == "original"
-                ) {
-                  side = "original"
-                }
-                LaneOptionButton(
-                  title: "Modified",
-                  subtitle: request.mode == "unstaged" ? "Editable content" : "Compared content",
-                  systemImage: "square.and.pencil",
-                  isSelected: side == "modified"
-                ) {
-                  side = "modified"
-                }
-              }
+              ADEKitSegmented(
+                selection: $side,
+                options: [(value: "original", title: "Original"), (value: "modified", title: "Modified")]
+              )
             }
           }
           .padding(16)
@@ -94,19 +71,17 @@ struct LaneDiffScreen: View {
               }
               Spacer(minLength: 0)
             }
-            .adeGlassCard(cornerRadius: 12, padding: 14)
+            .adeKitCard(padding: 14)
             .padding(.horizontal, 16)
           } else {
             VStack(alignment: .leading, spacing: 6) {
               HStack {
-                Text(side == "original" ? "Original" : "Modified")
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEColor.textMuted)
+                ADEEyebrow(side == "original" ? "Original" : "Modified")
                 Spacer()
                 if request.mode == "unstaged" && side == "modified" {
                   Text(canEditDiff ? "Editable" : "Reconnect to edit")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(canEditDiff ? ADEColor.accent : ADEColor.textMuted)
+                    .foregroundStyle(canEditDiff ? ADEColor.textSecondary : ADEColor.textMuted)
                 }
               }
               TextEditor(text: Binding(
@@ -119,7 +94,8 @@ struct LaneDiffScreen: View {
               ))
               .font(.system(.footnote, design: .monospaced))
               .scrollContentBackground(.hidden)
-              .adeInsetField(cornerRadius: 14, padding: 12)
+              .padding(12)
+              .adeKitCard(padding: nil)
               .disabled(side == "original" || !canEditDiff)
             }
             .padding(.horizontal, 16)
@@ -128,7 +104,6 @@ struct LaneDiffScreen: View {
         } else if isLoading {
           Spacer()
           ProgressView()
-            .tint(ADEColor.accent)
           Spacer()
         }
       }

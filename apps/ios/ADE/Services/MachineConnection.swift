@@ -73,6 +73,11 @@ final class MachineConnection {
   /// The backoff ran out: no more dials until the user retries, the app opens,
   /// the network changes, or the account shows the machine online.
   private(set) var gaveUp = false
+  /// The route the live socket took (nil while not live).
+  private(set) var liveRouteKind: SyncConnectionRouteKind?
+  private var relayReauthorizationTask: Task<Void, Never>?
+  /// Sleeping out a backoff delay between failed dials.
+  private var waitingToRetry = false
   /// Chats opened on this machine: session id -> foreign project scope.
   private var chatScopes: [String: (projectId: String, rootPath: String)] = [:]
   private var chatLastSeq: [String: Int] = [:]
@@ -130,6 +135,7 @@ final class MachineConnection {
     generation &+= 1
     runTask?.cancel()
     runTask = nil
+    waitingToRetry = false
     closeSocket(reason: reason)
     if clearAttention {
       gaveUp = false
@@ -147,6 +153,21 @@ final class MachineConnection {
     gaveUp = false
     consecutiveFailures = 0
     setPhase(.idle)
+  }
+
+  /// Something says the machine may answer now (the user tapped Connect, the
+  /// account shows it online, the network changed): a connection sleeping
+  /// out its backoff (up to 5 minutes) or one that gave up is stopped with a
+  /// fresh retry budget, so the caller's `start()` dials at once. A dial in
+  /// progress or a live link is left alone.
+  func dialSoonerIfWaiting() {
+    if gaveUp {
+      resumeAfterGivingUp()
+      return
+    }
+    guard waitingToRetry else { return }
+    consecutiveFailures = 0
+    stop(reason: "Retrying now.")
   }
 
   private var isAttentionPhase: Bool {
@@ -217,7 +238,9 @@ final class MachineConnection {
         onChange?()
         return
       }
+      waitingToRetry = true
       try? await Task.sleep(nanoseconds: delay)
+      if generation == runGeneration { waitingToRetry = false }
     }
   }
 
@@ -259,6 +282,7 @@ final class MachineConnection {
     }
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
+    liveRouteKind = syncConnectionRouteKind(result.address)
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -268,6 +292,14 @@ final class MachineConnection {
     )
     subscribeRoster()
     restoreChatSubscriptions()
+    // Over the relay the host closes this socket when the account proof in
+    // the hello expires (about a minute). Renew it like the focused
+    // connection does, or every relay-connected machine drops and redials
+    // once a minute.
+    if syncIsFullWebSocketRoute(result.address),
+       let lease = (payload["relayAuthorization"] as? [String: Any]).flatMap(SyncRelayAuthorizationLease.init) {
+      startRelayReauthorization(lease: lease, generation: generation)
+    }
     machineConnectionLog.notice(
       "fleet live machine=\(self.machineKey, privacy: .public) address=\(result.address, privacy: .public)"
     )
@@ -277,6 +309,8 @@ final class MachineConnection {
   private func closeSocket(reason: String) {
     heartbeatTask?.cancel()
     heartbeatTask = nil
+    relayReauthorizationTask?.cancel()
+    relayReauthorizationTask = nil
     for (_, task) in snapshotWatchdogs { task.cancel() }
     snapshotWatchdogs.removeAll()
     pendingSnapshotSessionIds.removeAll()
@@ -284,6 +318,7 @@ final class MachineConnection {
       socket.cancel(with: .goingAway, reason: reason.data(using: .utf8))
     }
     socket = nil
+    liveRouteKind = nil
     // The roster subscription belongs to the socket; keep the rows for the
     // offline view and ask for a fresh snapshot on the next socket.
     rosterSeq = nil
@@ -314,6 +349,12 @@ final class MachineConnection {
       do {
         message = try await task.receive()
       } catch {
+        if socket === task {
+          let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+          machineConnectionLog.notice(
+            "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
+        }
         return
       }
       guard socket === task, generation == loopGeneration else { return }
@@ -399,7 +440,7 @@ final class MachineConnection {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "chat_history", "chat_tool_result", "file_response":
+    case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "roster_snapshot":
       guard let snapshot = machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self) else { return }
@@ -558,6 +599,58 @@ final class MachineConnection {
           ])
         }
       }
+    }
+  }
+
+  // MARK: - Relay authorization
+
+  /// Keeps a relay socket's account proof fresh with the same loop the
+  /// focused connection runs (`syncRunRelayReauthorizationLoop`). When it
+  /// stops (an account change, or retries past the lease) the host closes the
+  /// socket at expiry and the run loop redials.
+  private func startRelayReauthorization(lease: SyncRelayAuthorizationLease, generation leaseGeneration: UInt64) {
+    guard let pairedDeviceId = nonEmptyTrimmed(profile.pairedDeviceId) else { return }
+    relayReauthorizationTask?.cancel()
+    // No strong self here: the loop's closures hold the connection weakly, and
+    // `closeSocket` cancels this task.
+    relayReauthorizationTask = Task { @MainActor [weak self] in
+      await syncRunRelayReauthorizationLoop(
+        lease: lease,
+        isCurrent: { [weak self] in
+          guard let self else { return false }
+          return self.generation == leaseGeneration && self.socket != nil
+        },
+        makeAttempt: { activeLease -> (requestId: String, payload: [String: Any]) in
+          (
+            requestId: UUID().uuidString,
+            payload: try await syncRelayReauthorizationPayload(deviceId: pairedDeviceId, lease: activeLease)
+          )
+        },
+        perform: { [weak self] attempt in
+          guard let self else { throw CancellationError() }
+          let raw = try await self.request(
+            type: "relay_reauthorize",
+            payload: attempt.payload,
+            requestId: attempt.requestId,
+            timeoutNanoseconds: 6_000_000_000,
+            timeoutMessage: "Relay authorization refresh timed out."
+          )
+          return try syncRelayReauthorizationLease(from: raw)
+        },
+        install: { _ in },
+        onAccountChanged: { [weak self] failure in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay account changed machine=\(self.machineKey, privacy: .public) code=\(failure.code, privacy: .public)"
+          )
+        },
+        onGiveUp: { [weak self] error in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay reauthorization gave up machine=\(self.machineKey, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
+        }
+      )
     }
   }
 

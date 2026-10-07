@@ -3,63 +3,41 @@ import SwiftUI
 struct SettingsPairingSection: View {
   let snapshot: SettingsPairingSnapshot
   @Binding var presentedSheet: SettingsPairSheetRoute?
-  @State private var showsAddMachine: Bool
   @ObservedObject private var accountService = AccountService.shared
 
   init(
     snapshot: SettingsPairingSnapshot,
-    presentedSheet: Binding<SettingsPairSheetRoute?>,
-    initiallyExpanded: Bool = false
+    presentedSheet: Binding<SettingsPairSheetRoute?>
   ) {
     self.snapshot = snapshot
     self._presentedSheet = presentedSheet
-    self._showsAddMachine = State(initialValue: initiallyExpanded)
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      DisclosureGroup(isExpanded: $showsAddMachine) {
-        VStack(spacing: 8) {
-          SettingsPairActionRow(
-            icon: "qrcode.viewfinder",
-            title: "Scan a pairing code",
-            subtitle: "Scan the code shown in ADE on your computer"
-          ) {
-            presentedSheet = .scan
-          }
-
-          SettingsPairActionRow(
-            icon: "dot.radiowaves.left.and.right",
-            title: "Find a nearby computer",
-            subtitle: discoverSubtitle
-          ) {
-            presentedSheet = .discover
-          }
-
-          SettingsPairActionRow(
-            icon: "terminal",
-            title: "Set up with SSH",
-            subtitle: "Advanced · macOS or Linux only"
-          ) {
-            presentedSheet = .ssh
-          }
+    ADESettingsSection("Add a computer", hint: awayFromComputerHelp) {
+      ADESettingsRows {
+        SettingsPairActionRow(
+          icon: "qrcode.viewfinder",
+          title: "Scan a pairing code",
+          subtitle: "The code shown in ADE on your computer"
+        ) {
+          presentedSheet = .scan
         }
-        .padding(.top, 8)
-      } label: {
-        Label("Add new machine", systemImage: "plus.circle")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        SettingsPairActionRow(
+          icon: "wifi",
+          title: "Find a nearby computer",
+          subtitle: discoverSubtitle
+        ) {
+          presentedSheet = .discover
+        }
+        SettingsPairActionRow(
+          icon: "terminal",
+          title: "Set up with SSH",
+          subtitle: "macOS or Linux"
+        ) {
+          presentedSheet = .ssh
+        }
       }
-      .tint(ADEColor.textSecondary)
-
-      Label(
-        awayFromComputerHelp,
-        systemImage: "network"
-      )
-      .font(.footnote)
-      .foregroundStyle(ADEColor.textSecondary)
-      .fixedSize(horizontal: false, vertical: true)
     }
   }
 
@@ -83,110 +61,21 @@ struct SettingsPairingSection: View {
   }
 }
 
-struct SettingsSectionHeader: View {
-  let label: String
-  let hint: String?
-
-  init(label: String, hint: String? = nil) {
-    self.label = label
-    self.hint = hint
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(ADEColor.purpleAccent.opacity(0.55))
-          .frame(width: 4, height: 4)
-        Text(label)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.purpleAccent.opacity(0.85))
-          .tracking(0.7)
-      }
-      if let hint {
-        Text(hint)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .padding(.leading, 10)
-      }
-    }
-    .padding(.horizontal, 4)
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-}
-
+/// One way to add a computer, as a settings row.
 struct SettingsPairActionRow: View {
   let icon: String
   let title: String
   let subtitle: String?
-  let shimmerSubtitle: Bool
   let action: () -> Void
-
-  init(
-    icon: String,
-    title: String,
-    subtitle: String?,
-    shimmerSubtitle: Bool = false,
-    action: @escaping () -> Void
-  ) {
-    self.icon = icon
-    self.title = title
-    self.subtitle = subtitle
-    self.shimmerSubtitle = shimmerSubtitle
-    self.action = action
-  }
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 14) {
-        Image(systemName: icon)
-          .font(.body)
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 28)
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.body.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-          if let subtitle {
-            subtitleView(subtitle)
-          }
-        }
-
-        Spacer(minLength: 8)
-
-        Image(systemName: "chevron.right")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent.opacity(0.55))
+      ADESettingsRow(title: title, hint: subtitle, symbol: icon) {
+        ADESettingsChevron()
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
-      .frame(minHeight: 60)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 12)
-          .fill(ADEColor.surfaceBackground.opacity(0.55))
-      )
-      .overlay(RoundedRectangle(cornerRadius: 12).stroke(ADEColor.border.opacity(0.45), lineWidth: 0.75))
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
     .accessibilityLabel(subtitle.map { "\(title), \($0)" } ?? title)
-  }
-
-  @ViewBuilder
-  private func subtitleView(_ text: String) -> some View {
-    if shimmerSubtitle {
-      HStack(spacing: 6) {
-        Text(text)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-        ADESkeletonView(width: 10, height: 10, cornerRadius: 5)
-      }
-    } else {
-      Text(text)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
   }
 }
 
@@ -458,48 +347,51 @@ struct DiscoverHostsSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        LazyVStack(spacing: 10) {
-          let displayedHosts = syncDiscoveredHostsForDisplay(
-            savedHosts: syncService.savedReconnectHosts,
-            liveHosts: syncService.discoveredHosts
-          )
-          let savedHosts = displayedHosts.savedHosts
-          let liveHosts = displayedHosts.liveHosts
-
+        let displayedHosts = syncDiscoveredHostsForDisplay(
+          savedHosts: syncService.savedReconnectHosts,
+          liveHosts: syncService.discoveredHosts
+        )
+        let savedHosts = displayedHosts.savedHosts
+        let liveHosts = displayedHosts.liveHosts
+        VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
           if savedHosts.isEmpty && liveHosts.isEmpty {
-            VStack(spacing: 14) {
-              ADESkeletonView(height: 56, cornerRadius: 14)
-              ADESkeletonView(height: 56, cornerRadius: 14)
-              Text("Looking for computers running ADE nearby…")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-                .padding(.top, 4)
+            ADESettingsSection(hint: "Looking for computers running ADE nearby…") {
+              ADESettingsRows {
+                ADESkeletonView(height: 20, cornerRadius: 6).padding(ADEKit.inset)
+                ADESkeletonView(height: 20, cornerRadius: 6).padding(ADEKit.inset)
+              }
             }
-            .padding(.top, 24)
           } else {
-            ForEach(savedHosts) { savedHost in
-              Button {
-                dismiss()
-                Task {
-                  await syncService.reconnect(toSavedHost: savedHost)
+            if !savedHosts.isEmpty {
+              ADESettingsSection("Saved") {
+                ADESettingsRows {
+                  ForEach(savedHosts) { savedHost in
+                    Button {
+                      dismiss()
+                      Task {
+                        await syncService.reconnect(toSavedHost: savedHost)
+                      }
+                    } label: {
+                      DiscoveredHostRow(host: savedHost, detailPrefix: "Saved", accessoryText: "Reconnect")
+                    }
+                    .buttonStyle(ADEKitRowButtonStyle())
+                  }
                 }
-              } label: {
-                DiscoveredHostRow(
-                  host: savedHost,
-                  detailPrefix: "Saved",
-                  accessoryText: "Reconnect"
-                )
               }
-              .buttonStyle(ADEScaleButtonStyle())
             }
-
-            ForEach(liveHosts) { host in
-              Button {
-                onPick(host)
-              } label: {
-                DiscoveredHostRow(host: host)
+            if !liveHosts.isEmpty {
+              ADESettingsSection("Nearby", hint: "Pick a computer, then enter its ADE PIN.") {
+                ADESettingsRows {
+                  ForEach(liveHosts) { host in
+                    Button {
+                      onPick(host)
+                    } label: {
+                      DiscoveredHostRow(host: host)
+                    }
+                    .buttonStyle(ADEKitRowButtonStyle())
+                  }
+                }
               }
-              .buttonStyle(ADEScaleButtonStyle())
             }
           }
         }
@@ -525,51 +417,33 @@ private struct DiscoveredHostRow: View {
   var accessoryText: String?
 
   var body: some View {
-    HStack(spacing: 14) {
+    HStack(spacing: 12) {
       Image(systemName: "desktopcomputer")
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.purpleAccent)
-        .frame(width: 36, height: 36)
-        .background(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(ADEColor.purpleAccent.opacity(0.14))
-        )
-
+        .font(.system(size: 16))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 24)
       VStack(alignment: .leading, spacing: 2) {
         Text(host.hostName)
-          .font(.body.weight(.medium))
+          .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
         Text(detailText)
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textSecondary)
+          .font(.adeMono(11))
+          .foregroundStyle(ADEColor.textMuted)
           .lineLimit(1)
           .truncationMode(.middle)
       }
-
       Spacer(minLength: 8)
-
       if let accessoryText {
         Text(accessoryText)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-      } else {
-        Image(systemName: "chevron.right")
           .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
+          .foregroundStyle(ADEColor.accent)
+      } else {
+        ADESettingsChevron()
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.08))
-    )
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
-    )
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
   }
 
   private var detailText: String {

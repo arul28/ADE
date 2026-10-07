@@ -16,7 +16,9 @@ struct WorkFiltersSection: View {
   @Binding var organization: WorkSessionOrganization
   /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
   var foldBusyLanes: Binding<Bool>? = nil
-  @Binding var filterOpen: Bool
+  let filterOpen: Bool
+  /// Status, lane and machine filters applied (`workActiveFilterCount`).
+  let activeFilterCount: Int
   /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
   var machineFilter: Binding<String> = .constant("")
   var machineOptions: [WorkMachineFilterOption] = []
@@ -35,12 +37,6 @@ struct WorkFiltersSection: View {
     return machineOptions + stale
   }
 
-  private var activeFilterCount: Int {
-    (selectedStatus != .all ? 1 : 0)
-      + (selectedLaneId != "all" ? 1 : 0)
-      + selectedMachines.count
-  }
-
   private var hasActiveFilters: Bool {
     activeFilterCount > 0
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -48,148 +44,193 @@ struct WorkFiltersSection: View {
 
   private var selectedLaneName: String {
     guard selectedLaneId != "all" else { return "All lanes" }
-    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+    return lanes.first(where: { $0.id == selectedLaneId }).map(laneMenuTitle) ?? "All lanes"
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the picker entry (never in a title).
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      if hasActiveFilters && !filterOpen {
-        HStack(spacing: 6) {
-          Spacer(minLength: 0)
-          clearButton
-        }
+    if filterOpen {
+      panel
+    } else if hasActiveFilters {
+      HStack(spacing: 6) {
+        Spacer(minLength: 0)
+        clearButton
       }
+    }
+  }
 
-      if filterOpen {
-        VStack(alignment: .leading, spacing: 12) {
-          filterRow("Group") {
-            Picker("Group", selection: $organization.animation(.snappy(duration: 0.18))) {
+  /// Desktop's panel (`WorkFilterPanel.tsx`): two short sections, a label on
+  /// the left and one menu button on the right of every row. "View" never
+  /// hides a chat; "Show only" does. Colour stays out of the panel.
+  private var panel: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 8) {
+        sectionLabel("View")
+        filterRow("Group by") {
+          menuButton(organization.title, active: false) {
+            Picker("Group by", selection: $organization.animation(.snappy(duration: 0.18))) {
               ForEach(WorkSessionOrganization.allCases) { option in
                 Text(option.title).tag(option)
               }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
           }
-
-          if organization == .byLane, let foldBusyLanes {
-            filterRow("Focus") {
-              // Same name as the desktop Work sidebar's Focus pill.
-              WorkFilterChip(
-                title: "Focus",
-                selected: foldBusyLanes.wrappedValue,
-                tint: ADEColor.info,
-                systemImage: "scope"
-              ) {
-                withAnimation(.snappy(duration: 0.18)) {
-                  foldBusyLanes.wrappedValue.toggle()
-                }
-              }
-              .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
+        }
+        if organization == .byLane, let foldBusyLanes {
+          filterRow("Focus") {
+            checkRow("Fold busy lanes", checked: foldBusyLanes.wrappedValue) {
+              withAnimation(.snappy(duration: 0.18)) { foldBusyLanes.wrappedValue.toggle() }
             }
+            .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
           }
+        }
+      }
 
-          Rectangle()
-            .fill(ADEColor.glassBorder)
-            .frame(height: 0.5)
-            .padding(.horizontal, -12)
-
-          filterRow("Status") {
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 6) {
-                ForEach(WorkSessionStatusFilter.allCases) { status in
-                  WorkFilterChip(
-                    title: status.title,
-                    selected: selectedStatus == status,
-                    tint: statusFilterTint(status),
-                    dot: status == .all ? nil : statusFilterTint(status)
-                  ) {
-                    withAnimation(.snappy(duration: 0.18)) {
-                      selectedStatus = status
-                    }
-                  }
-                }
-              }
-              .padding(.vertical, 1)
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          sectionLabel("Show only")
+          Spacer(minLength: 0)
+          if activeFilterCount > 0 {
+            Button("Reset") {
+              withAnimation(.snappy(duration: 0.18)) { onClear() }
             }
-            .workChipRowFade()
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .buttonStyle(.plain)
           }
-
-          if visibleMachineOptions.count > 1 {
-            filterRow("Machine") {
-              ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                  WorkFilterChip(title: "All", selected: selectedMachines.isEmpty, tint: ADEColor.accent) {
-                    withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
-                  }
-                  ForEach(visibleMachineOptions) { machine in
-                    WorkFilterChip(
-                      title: machine.name,
-                      selected: selectedMachines.contains(machine.id),
-                      tint: ADEColor.accent,
-                      systemImage: "desktopcomputer",
-                      dot: machine.isLive ? ADEColor.success : ADEColor.textMuted.opacity(0.5)
-                    ) {
-                      withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
-                    }
-                    .accessibilityLabel(machine.isLive ? machine.name : "\(machine.name), offline")
-                  }
-                }
-                .padding(.vertical, 1)
+        }
+        filterRow("Status") {
+          menuButton(selectedStatus == .all ? "Any" : selectedStatus.title, active: selectedStatus != .all) {
+            Picker("Status", selection: $selectedStatus.animation(.snappy(duration: 0.18))) {
+              ForEach(WorkSessionStatusFilter.allCases) { status in
+                Text(status == .all ? "Any" : status.title).tag(status)
               }
-              .workChipRowFade()
-            }
-          }
-
-          filterRow("Lane") {
-            Menu {
-              Picker("Lane", selection: $selectedLaneId) {
-                Text("All lanes").tag("all")
-                ForEach(lanes) { lane in
-                  Text(lane.name).tag(lane.id)
-                }
-              }
-            } label: {
-              HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.branch")
-                  .font(.system(size: 11, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-                Text(selectedLaneName)
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                  .truncationMode(.tail)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down")
-                  .font(.system(size: 9, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-              }
-              .padding(.horizontal, 10)
-              .frame(height: 30)
-              .frame(maxWidth: .infinity)
-              .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
-              .overlay(Capsule(style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
-              .contentShape(Capsule(style: .continuous))
-            }
-            .accessibilityLabel("Lane filter, \(selectedLaneName)")
-          }
-
-          if hasActiveFilters {
-            HStack {
-              Spacer(minLength: 0)
-              clearButton
             }
           }
         }
-        .padding(12)
-        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
+        if visibleMachineOptions.count > 1 {
+          filterRow("Machine") {
+            menuButton(machineSummary, active: !selectedMachines.isEmpty) {
+              ForEach(visibleMachineOptions) { machine in
+                Button {
+                  withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
+                } label: {
+                  if selectedMachines.contains(machine.id) {
+                    Label(machine.isLive ? machine.name : "\(machine.name) (offline)", systemImage: "checkmark")
+                  } else {
+                    Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+                  }
+                }
+              }
+              if !selectedMachines.isEmpty {
+                Divider()
+                Button("Show all") {
+                  withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
+                }
+              }
+            }
+          }
+        }
+        filterRow("Lane") {
+          menuButton(selectedLaneName, active: selectedLaneId != "all") {
+            Picker("Lane", selection: $selectedLaneId) {
+              Text("All lanes").tag("all")
+              ForEach(lanes) { lane in
+                Text(laneMenuTitle(lane)).tag(lane.id)
+              }
+            }
+          }
+          .accessibilityLabel("Lane filter, \(selectedLaneName)")
+        }
       }
     }
+    .padding(14)
+    .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .shadow(color: .black.opacity(0.14), radius: 20, y: 8)
+  }
+
+  private var machineSummary: String {
+    let picked = visibleMachineOptions.filter { selectedMachines.contains($0.id) }
+    if picked.isEmpty { return "Any" }
+    if picked.count <= 2 { return picked.map(\.name).joined(separator: ", ") }
+    return "\(picked.count) selected"
+  }
+
+  private func sectionLabel(_ text: String) -> some View {
+    Text(text.uppercased())
+      .font(.system(size: 10, weight: .semibold))
+      .tracking(0.8)
+      .foregroundStyle(ADEColor.textMuted)
+  }
+
+  /// One control shape for every setting: the value, then an up-down caret.
+  /// An active filter's button wears a faint accent edge, like desktop.
+  private func menuButton<Content: View>(
+    _ value: String,
+    active: Bool,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    Menu {
+      content()
+    } label: {
+      HStack(spacing: 6) {
+        Text(value)
+          .font(.footnote)
+          .foregroundStyle(value == "Any" ? ADEColor.textSecondary : ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 10)
+      .frame(height: 32)
+      .frame(maxWidth: .infinity)
+      .adeKitPill(
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous),
+        edge: active ? ADEColor.accent.opacity(0.4) : ADEKit.edge
+      )
+    }
+  }
+
+  /// A yes/no setting as a small checkbox row.
+  private func checkRow(_ title: String, checked: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 8) {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+          .fill(checked ? ADEColor.accent : Color.clear)
+          .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+              .stroke(checked ? ADEColor.accent : ADEColor.textMuted.opacity(0.5), lineWidth: 1)
+          )
+          .overlay {
+            if checked {
+              Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+            }
+          }
+          .frame(width: 16, height: 16)
+        Text(title)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+      }
+      .frame(minHeight: 32)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(checked ? .isSelected : [])
   }
 
   private var clearButton: some View {
@@ -213,9 +254,9 @@ struct WorkFiltersSection: View {
   private func filterRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
     HStack(alignment: .center, spacing: 8) {
       Text(label)
-        .font(.caption.weight(.medium))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 58, alignment: .leading)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 64, alignment: .leading)
       content()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -259,89 +300,6 @@ private extension View {
         startPoint: .leading,
         endPoint: .trailing
       )
-    )
-  }
-}
-
-struct WorkFilterChip: View {
-  let title: String
-  let selected: Bool
-  let tint: Color
-  var systemImage: String? = nil
-  /// Small leading status dot (or a machine's online dot on its icon).
-  var dot: Color? = nil
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 5) {
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: 10, weight: .semibold))
-            .overlay(alignment: .bottomTrailing) {
-              if let dot {
-                Circle().fill(dot).frame(width: 5, height: 5).offset(x: 2, y: 1)
-              }
-            }
-        } else if let dot {
-          Circle().fill(dot).frame(width: 6, height: 6)
-        }
-        Text(title)
-          .lineLimit(1)
-      }
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .frame(height: 28)
-      .background(
-        selected ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5),
-        in: Capsule(style: .continuous)
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(selected ? tint.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.6)
-      )
-      .contentShape(Capsule(style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .accessibilityAddTraits(selected ? .isSelected : [])
-  }
-}
-
-struct WorkFilterMenuLabel: View {
-  let icon: String
-  let title: String
-  let value: String
-
-  var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: icon)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        Text(value)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          // Tail, never middle. Middle truncation eats the distinguishing middle
-          // of a name and leaves two fragments that read as one mangled word.
-          .truncationMode(.tail)
-      }
-      Spacer(minLength: 0)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .frame(maxWidth: .infinity)
-    .background(ADEColor.surfaceBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
   }
 }
@@ -404,10 +362,33 @@ struct WorkSidebarSectionHeader: View {
 
           sectionIcon
 
-          Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
-            .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
-            .foregroundStyle(quietAwareLabelColor)
-            .lineLimit(1)
+          if group.isShelf, group.id != workWorkingSectionId {
+            // Snoozed and Settled: desktop's quiet shelf label, grey caps.
+            Text(group.label.uppercased())
+              .font(.system(size: 10, weight: .semibold))
+              .tracking(0.8)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          } else if group.id == workWorkingSectionId {
+            // Working keeps its colour on the label, then a hairline rule.
+            Text(group.label)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.info)
+              .lineLimit(1)
+            Rectangle()
+              .fill(ADEColor.textMuted.opacity(0.12))
+              .frame(height: 1)
+              .frame(maxWidth: .infinity)
+              .accessibilityHidden(true)
+          } else {
+            Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
+              .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+              .foregroundStyle(quietAwareLabelColor)
+              .lineLimit(1)
+            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
+              WorkRemoteLaneGlyph()
+            }
+          }
 
           // Beside the name, not in the trailing cluster: there it sat next to
           // the amber "uncommitted changes" dot and read as the same fact.
@@ -584,15 +565,23 @@ struct WorkSidebarSectionHeader: View {
         .font(.caption)
         .foregroundStyle(ADEColor.warning)
         .frame(width: 12, height: 12)
+    // The three shelves wear desktop's marks (`SessionListPane.tsx`): a
+    // dashed circle for Working, a moon for Snoozed, a hollow ring for Settled.
+    // Snoozed and Settled differ by shape, never by colour.
+    case .working:
+      Image(systemName: "circle.dashed")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.info)
+        .frame(width: 12, height: 12)
     case .snoozed:
-      Image(systemName: "moon.zzz.fill")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(group.tint)
+      Image(systemName: "moon.fill")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted.opacity(0.7))
         .frame(width: 12, height: 12)
     case .settled:
-      Image(systemName: "checkmark.circle")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(group.tint)
+      Circle()
+        .strokeBorder(ADEColor.textMuted.opacity(0.7), lineWidth: 1)
+        .frame(width: 8, height: 8)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
@@ -1933,16 +1922,24 @@ private struct WorkHeaderOverflowMenu: View {
   }
 }
 
+/// Marks a lane that lives on another machine, after its name: two machines'
+/// lanes can share a name, and the machine never goes in the title.
+struct WorkRemoteLaneGlyph: View {
+  var body: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 9, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+      .accessibilityLabel("On another machine")
+  }
+}
+
 /// A lane's rolled-up status as one dot in the board column's accent — the same
 /// accents as the status chips (`statusFilterTint`) and the desktop board.
 struct WorkLaneFocusDot: View {
   let status: WorkLaneFocusStatus
 
   var body: some View {
-    Circle()
-      .fill(color)
-      .frame(width: 6, height: 6)
-      .accessibilityHidden(true)
+    ADEKitDot(color: color)
   }
 
   private var color: Color {

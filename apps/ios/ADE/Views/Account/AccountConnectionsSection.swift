@@ -66,8 +66,7 @@ struct AccountSignInPromptCard: View {
           .font(.system(size: 16, weight: .semibold))
           .foregroundStyle(ADEColor.accent)
           .frame(width: 34, height: 34)
-          .background(ADEColor.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-          .glassEffect(in: .rect(cornerRadius: 11))
+          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
         VStack(alignment: .leading, spacing: 3) {
           Text("Continue to ADE")
@@ -83,14 +82,11 @@ struct AccountSignInPromptCard: View {
 
       Button(action: onSignIn) {
         Text("Continue")
-          .font(.subheadline.weight(.semibold))
           .frame(maxWidth: .infinity)
-          .frame(minHeight: 44)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     }
-    .adeGlassCard()
+    .adeKitCard()
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Continue to ADE to see your machines")
   }
@@ -123,7 +119,7 @@ struct AccountIdentityCard: View {
 
         Spacer(minLength: 6)
 
-        ADEGlassStatusBadge(text: identity.providerLabel, tint: identity.accent)
+        ADEKitTag(text: identity.providerLabel)
       }
 
       if let onSignOut {
@@ -137,14 +133,13 @@ struct AccountIdentityCard: View {
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity)
           .padding(.vertical, 9)
-          .background(ADEColor.recessedBackground.opacity(0.6), in: Capsule())
-          .glassEffect()
+          .background(ADEKit.track, in: Capsule())
         }
         .buttonStyle(ADEScaleButtonStyle())
         .accessibilityLabel("Sign out")
       }
     }
-    .adeGlassCard()
+    .adeKitCard()
   }
 }
 
@@ -205,8 +200,8 @@ struct AccountMachinesList: View {
     case .idle, .loading:
       if account.machines.isEmpty {
         VStack(spacing: 10) {
-          ADESkeletonView(height: 60, cornerRadius: 16)
-          ADESkeletonView(height: 60, cornerRadius: 16)
+          ADESkeletonView(height: 58, cornerRadius: ADEKit.radius)
+          ADESkeletonView(height: 58, cornerRadius: ADEKit.radius)
         }
       } else {
         machineRows
@@ -262,13 +257,7 @@ private struct AccountMachinesNote: View {
           .foregroundStyle(ADEColor.accent)
       }
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    .adeKitCard()
   }
 }
 
@@ -317,8 +306,7 @@ struct AccountMachineRow: View {
         routeHint: reachabilityText,
         online: machine.online,
         statusPill: nil,
-        affordance: isAsleep ? .wake : .connect,
-        surface: .row
+        affordance: isAsleep ? .wake : .connect
       )
     }
     .buttonStyle(ADEScaleButtonStyle())

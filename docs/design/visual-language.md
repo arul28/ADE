@@ -231,6 +231,38 @@ Visual polish must not cost CPU or GPU while ADE is idle.
 | `ModernSection` + `ModernRows` in settings | a bespoke settings layout per page |
 | Banners, toasts and dialogs from `notices.md` | a card that copies the banner look |
 
+## iOS
+
+`apps/ios/ADE/Views/Components/ADEKit.swift` is the iOS counterpart of the
+surface kit and the modern settings primitives. It is flat (no materials,
+glows, gradients or shadows), so it is cheap inside scrolling lists.
+
+| Component | Desktop counterpart |
+|---|---|
+| `adeKitCard()`, `ADEKitCard`, `ADEKitCardHead` | `.kit-card`, `.kit-card-head` (40pt head: icon, label, count, action) |
+| `ADEEyebrow`, `ADEKitStat` | `.kit-eyebrow`, `.kit-stat` |
+| `ADEKitDot`, `ADEKitTag`, `ADEKitTone` | `.kit-dot`, `.kit-tag`, `data-state` / `data-tone`; `color:` for a hue that already means something, `keepsCase: true` for a user-chosen name |
+| `ADEKitMeter`, `ADEKitLegendItem`, `ADEProviderMark` | `.kit-meter`, `.kit-legend`, `usageProviderLogo` |
+| `ADEKitSegmented`, `ADEKitSegmentThumb` + `adeKitSegmentTrack()` | `.kit-seg` (every segmented control on iOS draws its thumb and track with these) |
+| `adeKitPill()` | a menu or picker button's pill (surface, edge, capsule hit area); `adeKitPill(in:)` for another shape |
+| `ADEKitButtonStyle`, `ADEKitRowButtonStyle` | buttons and `.kit-row`; both dim when disabled (`dimsWhenDisabled: false` for a row that draws its own unavailable state) |
+| `ADEKitChip`, `ADEKitActionButton`, `ADEKitHoldButton` | small chips and capsule actions with a glyph |
+| `ADEKit.chromeFill` / `chromeEdge`, `adeKitChrome(in:)` | the quiet top-bar surface shared by every round and capsule header control |
+| `ADEKitCountSegments` | `.kit-seg` with glyph + count per option: a summary that is also a filter (Hub status counts, Activity state strip) |
+| `ADEKitCircleIcon` | `.kit-icon-btn`: the quiet round top-bar button (Hub bell, add, settings, chats) |
+| `adeKitField()` | a text field's well: the kit track, no glass |
+| `prStateColor`, `PrStateIcon`, `PrStatePill` (`PRs/PrRowCard.swift`) | `--pr-open/merged/closed`, `.ade-home-pr-icon`, `.ade-home-pr-pill` |
+| `ADESettingsPage`, `ADESettingsSection`, `ADESettingsRows`, `ADESettingsRow` (+ `ValueRow`, `Link`, `ActionRow`, `Notice`) | `ModernPage`, `ModernSection`, `ModernRows`, `ModernRow` |
+| `adeSettingsList()`, `adeSettingsListRow()`, `ADESettingsListHeader` | the same panels in a `List`, for swipe actions; both headers draw through `ADESettingsHeader` |
+
+`ADEKitButtonStyle(prominent: true, brand:)` fills a provider's own primary
+button (Linear sign-in) with its brand colour; every other primary button is
+the accent. `adeGlassCard` and `adeInsetField` remain only for the Work
+composer and chat cards; everything else uses the kit card and field.
+
+The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
+(amber at 20% left, red at 5%), the mirror of `usageLeftLevel`.
+
 ## Source map
 
 | Area | Files |

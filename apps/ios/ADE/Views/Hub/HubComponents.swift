@@ -6,6 +6,10 @@ import SwiftUI
 
 // MARK: - Top bar
 
+/// The hub's calm top bar, like desktop's: the brand mark, the machines chip
+/// (with a menu), then quiet round icon buttons that all share
+/// `ADEKitCircleIcon` with the Activity bell. Neutral glyphs; colour only on
+/// the attention badges.
 struct HubTopBar: View {
   @EnvironmentObject private var syncService: SyncService
   let onAdd: () -> Void
@@ -14,40 +18,51 @@ struct HubTopBar: View {
   var onOpenChats: () -> Void = {}
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 6) {
+      // A fixed frame: left flexible, the HStack squeezed the wordmark to a
+      // speck beside the chip.
       Image("BrandMark")
         .resizable()
         .renderingMode(.original)
         .interpolation(.high)
         .aspectRatio(contentMode: .fit)
-        .frame(height: 26)
-        .frame(maxWidth: 92, alignment: .leading)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.35), radius: 10)
+        .frame(width: 44, height: 24)
         .accessibilityLabel("ADE")
 
       HubConnectionPill()
         .layoutPriority(1)
 
+      Spacer(minLength: 0)
+
       // The hub was the one root without a bell, which made the phone's home
       // screen the only place you could not see that something needed you.
       ActivityBellButton()
 
-      HubCircularButton(systemImage: "plus", tint: ADEColor.accent, action: onAdd)
-        .accessibilityLabel("Add project")
-
-      HubCircularButton(systemImage: "gearshape", tint: ADEColor.textSecondary) {
-        syncService.settingsPresented = true
+      Button(action: onAdd) {
+        ADEKitCircleIcon(systemImage: "plus")
       }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Add project")
+
+      Button {
+        syncService.settingsPresented = true
+      } label: {
+        ADEKitCircleIcon(systemImage: "gearshape")
+      }
+      .buttonStyle(.plain)
       .accessibilityLabel("Settings")
 
       // Chats live behind a top-bar icon (right of the gear) instead of a large
       // card in the list (M13). A small badge surfaces chats awaiting input.
-      HubCircularButton(
-        systemImage: "bubble.left.and.bubble.right",
-        tint: chatsAvailable ? ADEColor.accent : ADEColor.textMuted,
-        badgeCount: chatsAvailable ? chatsAttentionCount : 0,
-        action: onOpenChats
-      )
+      Button(action: onOpenChats) {
+        ADEKitCircleIcon(
+          systemImage: "bubble.left.and.bubble.right",
+          emphasized: chatsAttentionCount > 0,
+          badge: chatsAvailable && chatsAttentionCount > 0 ? "\(chatsAttentionCount)" : nil
+        )
+        .opacity(chatsAvailable ? 1 : 0.45)
+      }
+      .buttonStyle(.plain)
       .disabled(!chatsAvailable)
       .accessibilityLabel(chatsAttentionCount > 0
         ? "Chats, \(chatsAttentionCount) awaiting input"
@@ -60,37 +75,8 @@ struct HubTopBar: View {
   }
 }
 
-private struct HubCircularButton: View {
-  let systemImage: String
-  let tint: Color
-  var badgeCount: Int = 0
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: systemImage)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(tint)
-        .frame(width: 38, height: 38)
-        .background(ADEColor.cardBackground.opacity(0.72), in: Circle())
-        .overlay(Circle().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-        .overlay(alignment: .topTrailing) {
-          if badgeCount > 0 {
-            Text("\(badgeCount)")
-              .font(.system(size: 10, weight: .bold).monospacedDigit())
-              .foregroundStyle(ADEColor.pageBackground)
-              .padding(.horizontal, 4)
-              .frame(minWidth: 15, minHeight: 15)
-              .background(ADEColor.warning, in: Capsule())
-              .offset(x: 3, y: -3)
-          }
-        }
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-/// Compact "● Machine" pill — tap opens connection settings.
+/// The machines chip: a status dot and the machine name (or "N machines"),
+/// with a plain menu that lists every machine and opens connection settings.
 struct HubConnectionPill: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
@@ -103,13 +89,13 @@ struct HubConnectionPill: View {
     return primary + machineFleet.machines.filter { $0.state == .live }.count
   }
 
-  private var tint: Color {
+  private var tone: ADEKitTone {
     let health = syncService.connectionHealth
     switch health.transport {
-    case .connected: return health.load == .strained ? ADEColor.warning : ADEColor.success
-    case .connecting: return ADEColor.warning
-    case .unreachable: return ADEColor.danger
-    case .disconnected: return ADEColor.textMuted
+    case .connected: return health.load == .strained ? .warn : .ok
+    case .connecting: return .warn
+    case .unreachable: return .crit
+    case .disconnected: return .neutral
     }
   }
 
@@ -129,21 +115,22 @@ struct HubConnectionPill: View {
     )
   }
 
-  private var label: String {
-    // Only while the primary is attached: a connect in flight or a failure
-    // names the machine it is about.
-    if syncService.connectionHealth.transport == .connected, liveMachineCount > 1 {
-      return "\(liveMachineCount) machines"
-    }
-    if let machineName {
-      return machineName
-    }
+  private var transportWord: String {
     switch syncService.connectionHealth.transport {
     case .connected: return "Connected"
     case .connecting: return "Connecting…"
     case .unreachable: return "Unreachable"
     case .disconnected: return "Offline"
     }
+  }
+
+  private var label: String {
+    // Only while the primary is attached: a connect in flight or a failure
+    // names the machine it is about.
+    if syncService.connectionHealth.transport == .connected, liveMachineCount > 1 {
+      return "\(liveMachineCount) machines"
+    }
+    return machineName ?? transportWord
   }
 
   private var connectionAccessibilityLabel: String {
@@ -163,9 +150,43 @@ struct HubConnectionPill: View {
     return syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
   }
 
+  private func fleetStateWord(_ state: MachineFleet.MachineState) -> String {
+    switch state {
+    case .live: return "Live"
+    case .connecting: return "Connecting"
+    case .offline: return "Offline"
+    case .paused: return "Paused"
+    case .inactive: return "Inactive"
+    case .needsUpdate: return "Needs update"
+    case .needsAttention: return "Needs attention"
+    }
+  }
+
   var body: some View {
-    Button {
-      syncService.settingsPresented = true
+    Menu {
+      Section("Machines") {
+        Button {
+          syncService.settingsPresented = true
+        } label: {
+          Text(syncService.focusedMachineDisplayName)
+          Text(transportWord)
+          Image(systemName: machineSymbol(machineKey: nil, name: syncService.focusedMachineDisplayName))
+        }
+        ForEach(machineFleet.machines) { machine in
+          Button {
+            syncService.settingsPresented = true
+          } label: {
+            Text(machine.name)
+            Text(fleetStateWord(machine.state))
+            Image(systemName: machineSymbol(machineKey: machine.machineKey, name: machine.name))
+          }
+        }
+      }
+      Button {
+        syncService.settingsPresented = true
+      } label: {
+        Label("Connection settings", systemImage: "gearshape")
+      }
     } label: {
       Group {
         if let switching = switchingProjectName {
@@ -174,33 +195,31 @@ struct HubConnectionPill: View {
           HStack(spacing: 6) {
             ProgressView().controlSize(.mini)
             Text("Opening \(switching)…")
-              .font(.system(.caption, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
           }
           .id("switching")
           .transition(.opacity)
         } else {
           HStack(spacing: 6) {
-            Circle().fill(tint).frame(width: 7, height: 7)
+            ADEKitDot(tone: tone, size: 7)
             Text(label)
-              .font(.system(.caption, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
           }
           .id("machine")
           .transition(.opacity)
         }
       }
-      .padding(.horizontal, 11)
-      .padding(.vertical, 8)
-      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .font(.system(size: 13, weight: .semibold))
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 9)
+      .frame(height: 34)
+      .adeKitChrome(in: Capsule())
+      .contentShape(Capsule())
     }
     .buttonStyle(.plain)
     .animation(.easeInOut(duration: 0.25), value: switchingProjectName)
     .accessibilityLabel(switchingProjectName.map { "Opening \($0)" } ?? connectionAccessibilityLabel)
-    .accessibilityHint("Opens connection settings.")
+    .accessibilityHint("Shows your machines and connection settings.")
   }
 }
 
@@ -619,22 +638,17 @@ struct HubProjectCard: View, Equatable {
   private var hasExpandableContent: Bool { !presentation.lanes.isEmpty }
 
   var body: some View {
+    // One quiet kit card per project: the project row on top, its lanes and
+    // chats indented beneath a hairline when expanded.
     VStack(alignment: .leading, spacing: 0) {
-      // Only the project itself carries the card surface + border. Drawn above
-      // the expanded rows (zIndex) with an opaque backing so the rows slide out
-      // from *behind* the card, never over it.
       header
-        .background(ADEColor.pageBackground)
-        .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(presentation.isActive ? ADEColor.accent.opacity(0.5) : ADEColor.border.opacity(0.8), lineWidth: 1)
-        )
-        .zIndex(1)
 
-      // Expanded lanes + chats hang below the card, indented and unboundaried.
       if hasExpandableContent && !isCollapsed {
-        VStack(alignment: .leading, spacing: 10) {
+        Rectangle()
+          .fill(ADEKit.rule)
+          .frame(height: 0.75)
+          .padding(.horizontal, 12)
+        VStack(alignment: .leading, spacing: 6) {
           ForEach(presentation.lanes) { lanePresentation in
             HubLaneSection(
               project: project,
@@ -651,22 +665,29 @@ struct HubProjectCard: View, Equatable {
             .equatable()
           }
         }
-        .padding(.top, 10)
-        .padding(.leading, 16)
-        .padding(.trailing, 4)
-        .zIndex(0)
+        .padding(.leading, 18)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+      }
+    }
+    .adeKitCard(padding: nil)
+    .overlay {
+      // The accent marks the one selected thing: the project open on the phone.
+      if presentation.isActive {
+        RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+          .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
       }
     }
   }
 
   private var header: some View {
-    HStack(spacing: 11) {
+    HStack(spacing: 10) {
       if hasExpandableContent {
         Button(action: onToggleCollapse) {
           Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-            .font(.system(size: 12, weight: .bold))
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
-            .frame(width: 22, height: 22)
+            .frame(width: 18, height: 28)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -675,16 +696,16 @@ struct HubProjectCard: View, Equatable {
         .accessibilityLabel(isCollapsed ? "Expand project" : "Collapse project")
       } else {
         Color.clear
-          .frame(width: 22, height: 22)
+          .frame(width: 18, height: 28)
           .accessibilityHidden(true)
       }
 
-      HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 44)
+      HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 28)
 
       // Tapping the title area opens the full project tabs.
       Button(action: onOpenProject) {
         Text(project.displayName)
-          .font(.system(.title3, design: .rounded).weight(.semibold))
+          .font(.system(size: 15.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -692,27 +713,17 @@ struct HubProjectCard: View, Equatable {
       }
       .buttonStyle(.plain)
 
-      // The lane count lives to the left of the open arrow now that the name
-      // owns the full leading run, with the state breakdown stacked above it.
+      // The state breakdown stacked over the lane count, on the trailing edge.
       VStack(alignment: .trailing, spacing: 2) {
-        // Glyph + count, not dot + sentence. The two clauses this used to spell
-        // out ran to about 22 characters beside a project name that already
-        // wanted the row, and they hard-coded their own hues — `ADEColor.success`
-        // for working, where the one-hue rule makes work in flight blue and
-        // reserves green for finished.
-        //
-        // Gated here as well as inside the summary: a stack applies its spacing
-        // around an empty child, so a project with no chats at all would carry a
-        // 2pt hole above its lane count and sit a hair lower than a busy one.
-        // Bound to a local because that gate reads it a second time, and
-        // `stateCounts` walks the whole lane tree on each ask.
+        // Gated: a stack applies its spacing around an empty child. Bound to a
+        // local because `stateCounts` walks the whole lane tree on each ask.
         let stateCounts = presentation.stateCounts
         if !stateCounts.isEmpty {
           HubStateSummary(counts: stateCounts)
         }
 
         Text(presentation.metaLine)
-          .font(.system(.caption, design: .rounded))
+          .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
           .lineLimit(1)
           .fixedSize()
@@ -720,12 +731,11 @@ struct HubProjectCard: View, Equatable {
 
       if presentation.isSwitching {
         ProgressView().controlSize(.small)
+          .frame(width: 24, height: 28)
       } else {
         Button(action: onOpenProject) {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.accent.opacity(0.8))
-            .frame(width: 30, height: 30)
+          ADESettingsChevron()
+            .frame(width: 24, height: 28)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -733,7 +743,9 @@ struct HubProjectCard: View, Equatable {
         .accessibilityHint("Opens the full project view.")
       }
     }
-    .padding(12)
+    .padding(.leading, 6)
+    .padding(.trailing, 8)
+    .padding(.vertical, 10)
     .contentShape(Rectangle())
     .contextMenu {
       Button { onOpenProject() } label: { Label("Open project", systemImage: "rectangle.stack") }
@@ -767,21 +779,21 @@ struct HubProjectIcon: View {
   let iconDataUrl: String?
   let isActive: Bool
   // The real project logo art is already a rounded-square glyph, so we render it
-  // edge-to-edge (no dark bezel) at this size. Only the folder fallback keeps a
-  // recessed backing so the SF Symbol has something to sit on.
-  var size: CGFloat = 38
+  // edge-to-edge at this size. Without one, a quiet neutral tile with a folder
+  // glyph stands in (accent only on the active project).
+  var size: CGFloat = 22
 
   var body: some View {
     if let image = projectIconImage(from: iconDataUrl) {
       Image(uiImage: image).projectIconStyle(size: size, cornerRadius: size * 0.24)
     } else {
-      RoundedRectangle(cornerRadius: size * 0.21, style: .continuous)
-        .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
+      RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+        .fill(ADEKit.track)
         .frame(width: size, height: size)
         .overlay(
           Image(systemName: "folder")
-            .font(.system(size: size * 0.4, weight: .semibold))
-            .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+            .font(.system(size: size * 0.46, weight: .regular))
+            .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textMuted)
         )
     }
   }
@@ -814,17 +826,20 @@ struct HubLaneSection: View, Equatable {
     // edge.
     VStack(alignment: .leading, spacing: 4) {
       Button(action: onToggle) {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
           Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-            .font(.system(size: 9, weight: .bold))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 10, alignment: .center)
           WorkLaneLogoMark(color: laneTint, laneIcon: laneIcon, size: 11)
             .frame(width: 13, height: 13)
           Text(lane.name)
-            .font(.system(.caption, design: .rounded).weight(.semibold))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)
+          if isWorkRemoteLaneId(lane.id) {
+            WorkRemoteLaneGlyph()
+          }
           Spacer(minLength: 6)
           // The whole trailing edge, in the same glyph+count language as the
           // project header above it. It replaced a live summary followed by a
@@ -835,7 +850,7 @@ struct HubLaneSection: View, Equatable {
             HubStateSummary(counts: stateCounts)
           }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -847,7 +862,7 @@ struct HubLaneSection: View, Equatable {
       .zIndex(1)
 
       if !isCollapsed {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
           ForEach(presentation.rows) { row in
             HubChatRow(
               row: row,
@@ -859,7 +874,7 @@ struct HubLaneSection: View, Equatable {
             .equatable()
           }
         }
-        .padding(.leading, 6)
+        .padding(.leading, 10)
         .zIndex(0)
       }
     }
@@ -894,11 +909,11 @@ struct HubChatRow: View, Equatable {
     // "who · what" then "how it is going".
     Button(action: onOpen) {
       HStack(spacing: 10) {
-        WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
+        WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal", tint: ADEColor.textSecondary, size: compact ? 15 : 17)
 
         VStack(alignment: .leading, spacing: 4) {
           Text(row.title)
-            .font(.system(.footnote, design: .rounded).weight(.medium))
+            .font(.system(size: 14))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
           // A chat still being launched into a new lane: the shared setup rail.
@@ -914,7 +929,7 @@ struct HubChatRow: View, Equatable {
         HStack(spacing: 5) {
           if let status = hubChatStateLabel(row.stateGroup) {
             Text(status)
-              .font(.system(.caption2, design: .rounded).weight(.semibold))
+              .font(.system(size: 11, weight: .medium))
               .foregroundStyle(activityToneColor(row.stateGroup.tone))
               .lineLimit(1)
           }
@@ -923,17 +938,17 @@ struct HubChatRow: View, Equatable {
 
           if let activity = row.activityLabel {
             Text(activity)
-              .font(.system(.caption2, design: .rounded))
+              .font(.adeMono(10.5))
               .foregroundStyle(ADEColor.textMuted)
           }
         }
         .fixedSize()
       }
-      .padding(.horizontal, 8)
+      .padding(.horizontal, 6)
       .padding(.vertical, compact ? 5 : 7)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
     // Always the state word, including the resting ones the row shows as a glyph
     // alone. The button overrides its children's labels, so a mark with no word
     // beside it is silent unless the word is stated here.
@@ -970,7 +985,7 @@ struct HubConnectingCard: View {
       HStack(spacing: 10) {
         ProgressView().controlSize(.small)
         Text("Connecting to your machine…")
-          .font(.system(.subheadline, design: .rounded))
+          .font(.system(size: 14))
           .foregroundStyle(ADEColor.textSecondary)
       }
       if syncService.tailscaleOffHintVisible {
@@ -985,16 +1000,16 @@ struct HubConnectingCard: View {
 struct HubEmptyProjectsCard: View {
   @EnvironmentObject private var syncService: SyncService
   var body: some View {
-    VStack(spacing: 8) {
+    VStack(spacing: 6) {
       Image(systemName: "folder.badge.plus")
-        .font(.system(size: 26))
+        .font(.system(size: 22, weight: .regular))
         .foregroundStyle(ADEColor.textMuted)
       Text("No projects on \(syncService.hostName ?? "this machine")")
-        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+        .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
       Text("Add a project to start vibecoding from your phone.")
-        .font(.system(.caption, design: .rounded))
-        .foregroundStyle(ADEColor.textMuted)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
     }
     .frame(maxWidth: .infinity)
@@ -1019,27 +1034,22 @@ struct HubNoMachineState: View {
             .renderingMode(.original)
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .frame(maxWidth: 280)
-            .frame(height: 142)
+            .frame(maxWidth: 220)
+            .frame(height: 108)
             .frame(maxWidth: .infinity)
-            .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
             .padding(.top, 88)
             .accessibilityLabel("ADE")
 
-          HStack(spacing: 8) {
-            Circle().fill(statusDotColor).frame(width: 8, height: 8)
-            Image(systemName: "desktopcomputer")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
+          HStack(spacing: 7) {
+            ADEKitDot(tone: syncService.connectionState == .error ? .crit : .neutral, size: 7)
             Text(statusText)
-              .font(.system(.footnote, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
+              .font(.system(size: 13, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
           }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 10)
-          .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
-          .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-          .padding(.top, 30)
+          .padding(.horizontal, 12)
+          .frame(height: 30)
+          .background(ADEKit.track, in: Capsule())
+          .padding(.top, 24)
 
           if syncService.tailscaleOffHintVisible {
             ADETailscaleOffHintCard()
@@ -1059,15 +1069,15 @@ struct HubNoMachineState: View {
               Button {
                 Task { await syncService.reconnectIfPossible(userInitiated: true) }
               } label: {
-                primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
+                Label("Reconnect", systemImage: "arrow.clockwise")
               }
-              .buttonStyle(.plain)
+              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
 
               Button {
                 syncService.settingsPresented = true
               } label: {
                 Text("Connection settings")
-                  .font(.system(.footnote, design: .rounded).weight(.semibold))
+                  .font(.system(size: 14, weight: .medium))
                   .foregroundStyle(ADEColor.textSecondary)
                   .frame(minHeight: 44)
                   .contentShape(Rectangle())
@@ -1077,9 +1087,9 @@ struct HubNoMachineState: View {
               Button {
                 syncService.settingsPresented = true
               } label: {
-                primaryButtonLabel(symbol: "link", title: "Connect Machine")
+                Label("Connect Machine", systemImage: "link")
               }
-              .buttonStyle(.plain)
+              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
             }
           }
           .padding(.bottom, 56)
@@ -1118,25 +1128,6 @@ struct HubNoMachineState: View {
     }
     return "No machine attached"
   }
-
-  private var statusDotColor: Color {
-    syncService.connectionState == .error ? ADEColor.danger : ADEColor.textMuted
-  }
-
-  private func primaryButtonLabel(symbol: String, title: String) -> some View {
-    HStack(spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-      Text(title)
-        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 16)
-    .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.accent.opacity(0.4), lineWidth: 1))
-  }
 }
 
 // MARK: - Created toast (after a drawer send)
@@ -1147,42 +1138,38 @@ struct HubCreatedToast: View {
   let onDismiss: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       Image(systemName: "checkmark.circle.fill")
-        .font(.system(size: 18))
+        .font(.system(size: 16))
         .foregroundStyle(ADEColor.success)
       VStack(alignment: .leading, spacing: 1) {
         Text("\(toast.isCli ? "CLI session" : "Chat") created")
-          .font(.system(.footnote, design: .rounded).weight(.semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Text("\(toast.projectName) · \(toast.laneName)")
-          .font(.system(.caption2, design: .rounded))
-          .foregroundStyle(ADEColor.textMuted)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
       }
       Spacer(minLength: 8)
-      Button(action: onOpen) {
-        Text("Open")
-          .font(.system(.footnote, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 6)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule())
-      }
-      .buttonStyle(.plain)
+      Button("Open", action: onOpen)
+        .buttonStyle(ADEKitButtonStyle())
       Button(action: onDismiss) {
         Image(systemName: "xmark")
-          .font(.system(size: 11, weight: .bold))
+          .font(.system(size: 11, weight: .semibold))
           .foregroundStyle(ADEColor.textMuted)
-          .frame(width: 26, height: 26)
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss")
     }
-    .padding(.horizontal, 14)
+    .padding(.leading, 14)
+    .padding(.trailing, 8)
     .padding(.vertical, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.96), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-    .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+    .adeKitCard(padding: nil)
+    // Floats over the list, so one soft shadow lifts it off the rows.
+    .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
   }
 }
 

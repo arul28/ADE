@@ -57,6 +57,7 @@ struct LinearIssueListScreen: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .safeAreaInset(edge: .top, spacing: 0) { LinearFilterChipsBar(store: store) }
     .searchable(text: $store.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search issues")
     .refreshable { await store.reload() }
@@ -297,8 +298,8 @@ struct LinearToggleChip: View {
       .foregroundStyle(isOn ? LinearBrand.primaryBright : ADEColor.textSecondary)
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(isOn ? LinearBrand.surface : ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
-      .overlay(Capsule().stroke(isOn ? LinearBrand.border : ADEColor.glassBorder, lineWidth: 1))
+      .background(isOn ? LinearBrand.surface : ADEKit.track, in: Capsule())
+      .overlay(Capsule().stroke(isOn ? LinearBrand.border : Color.clear, lineWidth: 1))
     }
     .buttonStyle(.plain)
   }

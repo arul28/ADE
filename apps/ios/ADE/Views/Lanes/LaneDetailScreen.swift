@@ -505,39 +505,32 @@ struct LaneDetailScreen: View {
   @ViewBuilder
   private func busyBanner(_ label: String) -> some View {
     HStack(spacing: 10) {
-      ProgressView().tint(ADEColor.accent)
+      ProgressView().controlSize(.small)
       Text(label.capitalized)
-        .font(.subheadline)
+        .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textSecondary)
       Spacer()
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
   }
 
   @ViewBuilder
   private func errorBanner(_ message: String) -> some View {
-    HStack(spacing: 10) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(ADEColor.danger)
-      Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.danger)
-      Spacer()
-    }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    ADESettingsNotice(message: message, tone: .crit)
   }
 
   @ViewBuilder
   private func copiedBanner(_ message: String) -> some View {
     HStack(spacing: 10) {
-      Image(systemName: "doc.on.doc.fill")
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.success)
       Text(message)
-        .font(.footnote)
+        .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textSecondary)
       Spacer()
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
   }
 
   @MainActor
@@ -706,8 +699,7 @@ struct LaneDetailScreen: View {
         Button(actionTitle) {
           handleNoticeAction(action)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
     }
   }

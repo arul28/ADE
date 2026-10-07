@@ -741,3 +741,43 @@ extension RemoteRosterChat {
     )
   }
 }
+
+extension RemoteRosterChat {
+  /// The provider and model this roster row already carries, as a stand-in
+  /// chat summary. A chat on another machine has no summary on this phone
+  /// until its own machine answers `chat.getSummary`; this keeps the composer's
+  /// model pill and provider colour on screen meanwhile (and when that machine
+  /// cannot answer). Its access mode is unknown, so it is marked
+  /// `rosterDerived` and the composer shows no mode for it. A row without
+  /// a provider falls back to its tool type's family, and a row without a
+  /// model shows the provider with a generic "Model" label. Nil only for a row
+  /// that names no provider at all.
+  var rosterChatSummary: AgentChatSessionSummary? {
+    guard let provider = nonEmptyTrimmed(provider) ?? workChatProviderFamilyFromToolType(toolType) else { return nil }
+    let model = nonEmptyTrimmed(model) ?? ""
+    let at = lastActivityAt ?? lifecycleUpdatedAt ?? ""
+    let summaryStatus: String
+    switch status {
+    case .running, .awaiting: summaryStatus = "active"
+    case .idle: summaryStatus = "idle"
+    case .ended, .failed: summaryStatus = "ended"
+    }
+    var payload: [String: Any] = [
+      "sessionId": id,
+      "laneId": laneId,
+      "provider": provider,
+      "model": model,
+      "status": summaryStatus,
+      "startedAt": at,
+      "lastActivityAt": at,
+    ]
+    if let title = nonEmptyTrimmed(title) { payload["title"] = title }
+    if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
+    if let identityKey { payload["identityKey"] = identityKey }
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    else { return nil }
+    summary.rosterDerived = true
+    return summary
+  }
+}

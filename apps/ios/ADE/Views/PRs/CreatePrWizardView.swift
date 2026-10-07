@@ -304,11 +304,6 @@ struct CreatePrWizardView: View {
     }
   }
 
-  private var backdrop: some View {
-    prLiquidGlassBackdrop()
-      .ignoresSafeArea()
-  }
-
   var body: some View {
     NavigationStack {
       ScrollView {
@@ -352,7 +347,7 @@ struct CreatePrWizardView: View {
         }
       }
       .scrollIndicators(.hidden)
-      .background(backdrop)
+      .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("Open pull request")
       .adeAnalyticsScreen(.pullRequestCreate)
@@ -365,6 +360,7 @@ struct CreatePrWizardView: View {
         ToolbarItem(placement: .confirmationAction) {
           submitButton
         }
+        .sharedBackgroundVisibility(.hidden)
       }
       .onAppear {
         if singleModeOnly {
@@ -476,10 +472,7 @@ struct CreatePrWizardView: View {
 
   private func branchPickerField<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(label.uppercased())
-        .font(.system(size: 10, weight: .bold))
-        .tracking(1.0)
-        .foregroundStyle(ADEColor.textSecondary)
+      ADEEyebrow(label)
       content()
     }
   }
@@ -491,10 +484,7 @@ struct CreatePrWizardView: View {
     let dirty = eligibility?.dirty ?? lane.status.dirty
 
     return VStack(alignment: .leading, spacing: 8) {
-      Text("COMPARISON")
-        .font(.system(size: 10, weight: .bold))
-        .tracking(1.0)
-        .foregroundStyle(ADEColor.textSecondary)
+      ADEEyebrow("Comparison")
       HStack(spacing: 8) {
         comparisonStat(label: "Ahead", value: "\(ahead)", tint: ADEColor.textPrimary)
         comparisonStat(label: "Behind", value: "\(behind)", tint: ADEColor.textSecondary)
@@ -510,25 +500,17 @@ struct CreatePrWizardView: View {
   private func comparisonStat(label: String, value: String, tint: Color) -> some View {
     VStack(spacing: 4) {
       Text(value)
-        .font(.system(size: 18, weight: .bold, design: .rounded))
+        .font(.adeMono(17, weight: .medium))
         .foregroundStyle(tint)
         .lineLimit(1)
         .minimumScaleFactor(0.75)
-      Text(label.uppercased())
-        .font(.system(size: 9, weight: .bold))
-        .tracking(0.8)
+      Text(label)
+        .font(.system(size: 11))
         .foregroundStyle(ADEColor.textMuted)
     }
     .frame(maxWidth: .infinity)
-    .padding(.vertical, 10)
-    .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(PrGlassPalette.ink.opacity(0.45))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-    )
+    .padding(.vertical, 9)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 
   private func targetBranchSection(title: String) -> some View {
@@ -568,21 +550,9 @@ struct CreatePrWizardView: View {
           Button {
             editPresented = true
           } label: {
-            Text("Edit")
-              .font(.system(size: 11, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .padding(.horizontal, 10)
-              .padding(.vertical, 5)
-              .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                  .fill(ADEColor.textPrimary.opacity(0.04))
-              )
-              .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                  .stroke(ADEColor.border.opacity(0.5), lineWidth: 0.5)
-              )
+            Label("Edit", systemImage: "pencil")
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitButtonStyle())
 
           Spacer(minLength: 0)
         }
@@ -607,14 +577,7 @@ struct CreatePrWizardView: View {
       .lineLimit(6)
       .padding(.horizontal, 10)
       .padding(.vertical, 8)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(ADEColor.purpleAccent.opacity(0.08))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(ADEColor.purpleAccent.opacity(0.2), lineWidth: 0.5)
-      )
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 
   // MARK: - Strategy
@@ -641,32 +604,12 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - Strategy
+  // MARK: - Stance
 
   private var stanceSection: some View {
     VStack(spacing: 0) {
       PrSectionHdr(title: "Stance")
-      HStack(spacing: 2) {
-        StanceSegment(
-          label: "Draft",
-          active: draft,
-          action: { draft = true }
-        )
-        StanceSegment(
-          label: "Ready for review",
-          active: !draft,
-          action: { draft = false }
-        )
-      }
-      .padding(3)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(PrGlassPalette.ink.opacity(0.45))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-      )
+      ADEKitSegmented(selection: $draft, options: [(value: true, title: "Draft"), (value: false, title: "Ready for review")])
       .padding(.horizontal, 16)
       .padding(.bottom, 10)
     }
@@ -733,7 +676,7 @@ struct CreatePrWizardView: View {
   private var finalReviewSection: some View {
     VStack(spacing: 0) {
       PrSectionHdr(title: "Final review") {
-        PrMonoText(text: "machine action", color: ADEColor.warning, size: 10)
+        PrMonoText(text: "machine action", color: ADEColor.textMuted, size: 10)
       }
       VStack(spacing: 0) {
         let steps = buildNextSteps()
@@ -861,7 +804,7 @@ struct CreatePrWizardView: View {
           .textInputAutocapitalization(.never)
           .padding(.horizontal, 14)
           .padding(.vertical, 12)
-          .prGlassCard(cornerRadius: 14)
+          .adeKitCard(padding: nil)
         Text("Name the integration lane that will carry the merged work.")
           .font(.system(size: 10, design: .monospaced))
           .foregroundStyle(ADEColor.textMuted)
@@ -875,7 +818,7 @@ struct CreatePrWizardView: View {
   private var integrationReviewSection: some View {
     VStack(spacing: 0) {
       PrSectionHdr(title: "Review") {
-        PrMonoText(text: "integration", color: ADEColor.purpleAccent, size: 10)
+        PrMonoText(text: "integration", color: ADEColor.textMuted, size: 10)
       }
       let count = selectedLaneIds.count
       let base = baseBranch.isEmpty ? defaultTargetBranch : baseBranch
@@ -905,31 +848,10 @@ struct CreatePrWizardView: View {
             .tint(.white)
         }
         Text(submitLabel)
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(.white)
-          .lineLimit(1)
           .fixedSize(horizontal: true, vertical: false)
       }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 7)
-      .background(
-        PrGlassPalette.accentGradient,
-        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.5)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .inset(by: 1)
-          .stroke(Color.white.opacity(0.18), lineWidth: 0.5)
-          .blendMode(.plusLighter)
-      )
-      .shadow(color: PrGlassPalette.purpleDeep.opacity(canSubmit ? 0.55 : 0), radius: 12, y: 4)
-      .opacity(canSubmit ? 1.0 : 0.45)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle(prominent: true))
     .disabled(!canSubmit)
   }
 
@@ -1020,15 +942,7 @@ struct CreatePrWizardView: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 16) {
-          // 4x5 grab handle
-          Capsule()
-            .fill(Color.white.opacity(0.25))
-            .frame(width: 40, height: 5)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 4)
-            .padding(.bottom, 6)
-
-          PrEyebrow(text: "Title")
+          ADEEyebrow("Title")
           TextField("Title", text: $title, axis: .vertical)
             .font(.system(size: 14, weight: .semibold))
             .lineLimit(1...3)
@@ -1036,22 +950,23 @@ struct CreatePrWizardView: View {
             .foregroundStyle(ADEColor.textPrimary)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .prGlassCard(cornerRadius: 14)
+            .adeKitCard(padding: nil)
 
-          PrEyebrow(text: "Body")
+          ADEEyebrow("Body")
           TextEditor(text: $bodyText)
             .font(.system(size: 12, design: .monospaced))
             .foregroundStyle(ADEColor.textPrimary)
             .frame(minHeight: 220)
             .scrollContentBackground(.hidden)
             .padding(10)
-            .prGlassCard(cornerRadius: 14)
+            .adeKitCard(padding: nil)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
         .padding(.bottom, 24)
       }
       .scrollContentBackground(.hidden)
-      .background(prLiquidGlassBackdrop().ignoresSafeArea())
+      .adeScreenBackground()
       .navigationTitle("Edit draft")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -1069,15 +984,15 @@ struct CreatePrWizardView: View {
 fileprivate struct PrRowSeparator: View {
   var body: some View {
     Rectangle()
-      .fill(ADEColor.border.opacity(0.4))
-      .frame(height: 0.5)
+      .fill(ADEKit.rule)
+      .frame(height: 0.75)
       .padding(.leading, 14)
   }
 }
 
 fileprivate extension View {
   func wizardCard() -> some View {
-    prGlassCard(cornerRadius: 18)
+    adeKitCard(padding: nil)
   }
 }
 
@@ -1119,17 +1034,6 @@ fileprivate struct StrategyRow: View {
   var body: some View {
     Button(action: onTap) {
       HStack(alignment: .top, spacing: 10) {
-        RoundedRectangle(cornerRadius: 2, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
-              startPoint: .top, endPoint: .bottom
-            )
-          )
-          .frame(width: 3)
-          .opacity(selected ? 1.0 : 0.0)
-          .shadow(color: PrGlassPalette.purple.opacity(selected ? 0.5 : 0), radius: 6)
-
         radio
         VStack(alignment: .leading, spacing: 2) {
           Text(choice.title)
@@ -1141,31 +1045,28 @@ fileprivate struct StrategyRow: View {
             .lineSpacing(2)
           Text(choice.helper)
             .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(selected ? PrGlassPalette.purple : ADEColor.textMuted)
+            .foregroundStyle(ADEColor.textMuted)
             .padding(.top, 2)
         }
         Spacer(minLength: 0)
       }
-      .padding(.leading, 10)
-      .padding(.trailing, 14)
+      .padding(.horizontal, 14)
       .padding(.vertical, 12)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
+    .accessibilityAddTraits(selected ? [.isSelected] : [])
   }
 
   private var radio: some View {
     ZStack {
       Circle()
-        .stroke(selected ? PrGlassPalette.purple : ADEColor.border, lineWidth: 1.5)
-        .frame(width: 20, height: 20)
+        .stroke(selected ? ADEColor.accent : ADEColor.border, lineWidth: 1.5)
+        .frame(width: 18, height: 18)
       if selected {
         Circle()
-          .fill(PrGlassPalette.purple)
-          .frame(width: 20, height: 20)
-        Circle()
-          .fill(PrGlassPalette.ink)
-          .frame(width: 7, height: 7)
+          .fill(ADEColor.accent)
+          .frame(width: 9, height: 9)
       }
     }
     .padding(.top, 1)
@@ -1176,42 +1077,6 @@ fileprivate struct IntegrationTargetOption: Identifiable, Equatable {
   let id: String
   let branchRef: String
   let subtitle: String
-}
-
-fileprivate struct StanceSegment: View {
-  let label: String
-  let active: Bool
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Text(label)
-        .font(.system(size: 12.5, weight: .semibold))
-        .foregroundStyle(active ? Color.white : ADEColor.textSecondary)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 9)
-        .background(
-          ZStack {
-            if active {
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(PrGlassPalette.accentGradient)
-            }
-          }
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(active ? Color.white.opacity(0.24) : Color.clear, lineWidth: 0.5)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .inset(by: 1)
-            .stroke(active ? Color.white.opacity(0.18) : Color.clear, lineWidth: 0.5)
-            .blendMode(.plusLighter)
-        )
-        .shadow(color: active ? PrGlassPalette.purpleDeep.opacity(0.5) : .clear, radius: 10, y: 3)
-    }
-    .buttonStyle(.plain)
-  }
 }
 
 fileprivate struct NextStepItem: Identifiable, Equatable {
@@ -1225,16 +1090,10 @@ fileprivate struct NextStepRow: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      ZStack {
-        Circle()
-          .fill(ADEColor.success.opacity(0.16))
-        Circle()
-          .stroke(ADEColor.success.opacity(0.3), lineWidth: 0.5)
-        Image(systemName: "checkmark")
-          .font(.system(size: 9, weight: .heavy))
-          .foregroundStyle(ADEColor.success)
-      }
-      .frame(width: 18, height: 18)
+      Image(systemName: "checkmark")
+        .font(.system(size: 10, weight: .bold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 18, height: 18)
 
       VStack(alignment: .leading, spacing: 2) {
         Text(step.label)
@@ -1264,56 +1123,36 @@ fileprivate struct ModeCard: View {
   let action: () -> Void
 
   var body: some View {
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     Button(action: action) {
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 6) {
           Image(systemName: mode.symbol)
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+            .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
           Text(mode.title)
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(selected ? Color.white : PrGlassPalette.textPrimary)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
           Spacer(minLength: 0)
-          if selected {
-            Circle()
-              .fill(PrGlassPalette.accentGradient)
-              .frame(width: 6, height: 6)
-          }
         }
         Text(mode.description)
-          .font(.system(size: 10.5))
-          .foregroundStyle(selected ? Color.white.opacity(0.82) : ADEColor.textMuted)
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 10)
+      .padding(10)
       .frame(minHeight: 72, alignment: .topLeading)
-      .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(selected ? PrGlassPalette.purpleDeep.opacity(0.42) : PrGlassPalette.ink.opacity(0.45))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(
-            selected ? Color.white.opacity(0.28) : Color.white.opacity(0.08),
-            lineWidth: 0.5
-          )
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .inset(by: 1)
-          .stroke(Color.white.opacity(selected ? 0.22 : 0), lineWidth: 0.5)
-          .blendMode(.plusLighter)
-      )
-      .shadow(color: selected ? PrGlassPalette.purpleDeep.opacity(0.55) : .clear, radius: 12, y: 3)
-      .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .background(ADEKit.surface, in: shape)
+      .overlay(shape.strokeBorder(selected ? ADEColor.accent : ADEKit.edge, lineWidth: selected ? 1.25 : 0.75))
+      .contentShape(shape)
     }
     .buttonStyle(.plain)
+    .accessibilityAddTraits(selected ? [.isSelected] : [])
   }
 }
 
@@ -1326,7 +1165,7 @@ fileprivate struct MultiLaneRow: View {
       ZStack {
         if selected {
           Circle()
-            .fill(PrGlassPalette.accentGradient)
+            .fill(ADEColor.accent)
             .frame(width: 22, height: 22)
           Image(systemName: "checkmark")
             .font(.system(size: 11, weight: .bold))

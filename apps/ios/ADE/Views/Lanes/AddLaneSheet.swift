@@ -40,14 +40,14 @@ struct AddLaneSheet: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
           if machines.count > 1 {
             machinePicker
           }
-          VStack(spacing: 12) {
+          ADESettingsSection(machines.count > 1 ? "Kind" : nil) {
+          ADESettingsRows {
           LaneCreateOptionLink(
             symbol: "plus.square.on.square",
-            symbolTint: ADEColor.accent,
             title: "New lane",
             subtitle: "Start from the primary branch"
           ) {
@@ -63,7 +63,6 @@ struct AddLaneSheet: View {
 
           LaneCreateOptionLink(
             symbol: "arrow.triangle.branch",
-            symbolTint: ADEColor.accent,
             title: "From existing branch",
             subtitle: "Import an existing git branch"
           ) {
@@ -79,7 +78,6 @@ struct AddLaneSheet: View {
 
           LaneCreateOptionLink(
             symbol: "square.stack.3d.up",
-            symbolTint: ADEColor.purpleAccent,
             title: "Child lane",
             subtitle: "Stack on top of another lane"
           ) {
@@ -95,7 +93,6 @@ struct AddLaneSheet: View {
 
           LaneCreateOptionLink(
             symbol: "cross.case",
-            symbolTint: ADEColor.warning,
             title: "Rescue unstaged",
             subtitle: "Move dirty changes into a new lane"
           ) {
@@ -112,8 +109,11 @@ struct AddLaneSheet: View {
           // Creating a lane always names its machine first.
           .disabled(selected == nil)
           .opacity(selected == nil ? 0.45 : 1)
+          }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 24)
       }
       .adeScreenBackground()
       .adeNavigationGlass()
@@ -128,54 +128,28 @@ struct AddLaneSheet: View {
   }
 
   private var machinePicker: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("MACHINE")
-        .font(.caption.weight(.semibold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
-        .padding(.horizontal, 2)
-      VStack(spacing: 0) {
+    ADESettingsSection("Machine") {
+      ADESettingsRows {
         ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
           Button {
             selectedMachineId = machine.id
           } label: {
-            HStack(spacing: 12) {
-              Image(systemName: "desktopcomputer")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(ADEColor.accent)
-                .frame(width: 28)
-              VStack(alignment: .leading, spacing: 2) {
-                Text(machine.name)
-                  .font(.subheadline.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                Text(machineChoiceSubtitle(runningCount: machine.runningCount, isLeastBusy: index == 0))
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textSecondary)
-              }
-              Spacer(minLength: 0)
+            ADESettingsRow(
+              title: machine.name,
+              hint: machineChoiceSubtitle(runningCount: machine.runningCount, isLeastBusy: index == 0),
+              symbol: "desktopcomputer"
+            ) {
               if selectedMachineId == machine.id {
                 Image(systemName: "checkmark")
-                  .font(.subheadline.weight(.semibold))
+                  .font(.system(size: 14, weight: .semibold))
                   .foregroundStyle(ADEColor.accent)
               }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitRowButtonStyle())
           .accessibilityAddTraits(selectedMachineId == machine.id ? .isSelected : [])
-          if index < machines.count - 1 {
-            Divider().padding(.leading, 54)
-          }
         }
       }
-      .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 16))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
-      )
     }
   }
 
@@ -186,9 +160,9 @@ struct AddLaneSheet: View {
   }
 }
 
+/// One way to create a lane: a kit row that pushes its form.
 private struct LaneCreateOptionLink<Destination: View>: View {
   let symbol: String
-  let symbolTint: Color
   let title: String
   let subtitle: String
   @ViewBuilder let destination: () -> Destination
@@ -197,42 +171,11 @@ private struct LaneCreateOptionLink<Destination: View>: View {
     NavigationLink {
       destination()
     } label: {
-      HStack(alignment: .center, spacing: 14) {
-        Image(systemName: symbol)
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(symbolTint)
-          .frame(width: 44, height: 44)
-          .background(symbolTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .glassEffect(in: .rect(cornerRadius: 12))
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-
-        Spacer(minLength: 0)
-
-        Image(systemName: "chevron.right")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
+      ADESettingsRow(title: title, hint: subtitle, symbol: symbol) {
+        ADESettingsChevron()
       }
-      .padding(14)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 16))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
-      )
     }
-    .buttonStyle(ADEScaleButtonStyle())
+    .buttonStyle(ADEKitRowButtonStyle())
     .accessibilityLabel("\(title). \(subtitle)")
   }
 }
-
-

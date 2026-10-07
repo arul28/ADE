@@ -107,11 +107,7 @@ struct ActivityRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            ADEColor.surfaceBackground.opacity(0.6),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .adeKitCard(padding: nil)
     }
 
     /// Lane, then the floor, then the status slot.
@@ -124,10 +120,10 @@ struct ActivityRow: View {
         HStack(spacing: 5) {
             if let lane = row.laneName, !lane.isEmpty {
                 HStack(spacing: 3) {
-                    WorkLaneLogoMark(color: ADEColor.accent, laneIcon: nil, size: 11)
+                    WorkLaneLogoMark(color: ADEColor.textSecondary, laneIcon: nil, size: 11)
                     Text(lane)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(ADEColor.accent)
+                        .foregroundStyle(ADEColor.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -151,7 +147,7 @@ struct ActivityRow: View {
 
     private var lineTwo: some View {
         Text(row.title)
-            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -204,11 +200,7 @@ struct ActivityRow: View {
             }
 
             if let assetName = row.providerMark {
-                Image(assetName)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 14, height: 14)
-                    .opacity(0.75)
+                ADEProviderMark(assetName: assetName, size: 14)
                     .fixedSize()
                     // The row's combined label names the provider in words; a
                     // nested image element would make VoiceOver say it twice.

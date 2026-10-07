@@ -20,15 +20,12 @@ func machineRowVisualState(
 /// reach: the ACCOUNT section, the settings MACHINES list, and the hub
 /// no-machine quick-connect home. It renders the common anatomy — a device icon
 /// tile, the machine name with an optional status pill, a route/status hint
-/// line, and a trailing affordance — in one of two looks selected by `surface`:
-/// `.row` (a glassy list row) or `.card` (an opaque accent-bordered card).
+/// line, and a trailing affordance — on one quiet kit card (`adeKitCard`).
 ///
 /// Callers wrap it in their own `Button` and own the tap/disabled/accessibility
 /// behavior; this view is purely the visual content so each site keeps its
 /// existing interaction semantics.
 struct MachineRowView: View {
-  enum Surface { case row, card }
-
   /// The inline pill shown next to the machine name. Omit (`nil`) for the card
   /// look, which leads with the name alone.
   enum StatusPill {
@@ -60,19 +57,16 @@ struct MachineRowView: View {
   var isAuthenticatedCurrent = false
   var statusPill: StatusPill?
   var affordance: Affordance
-  var surface: Surface = .row
-
-  private let cornerRadius: CGFloat = 16
 
   var body: some View {
-    HStack(spacing: 14) {
+    HStack(spacing: 12) {
       iconTile
 
       VStack(alignment: .leading, spacing: 3) {
         // The name gets the whole line: a status pill beside it cut long
         // names down to "MacBo…7) · ADE".
         Text(title)
-          .font(.body.weight(.medium))
+          .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           // The end of an account row names the install ("· ADE Alpha"),
@@ -85,7 +79,7 @@ struct MachineRowView: View {
               .frame(width: 7, height: 7)
           }
           Text(routeHint)
-            .font(.caption)
+            .font(.system(size: 12.5))
             .foregroundStyle(statusPill?.tint ?? ADEColor.textSecondary)
             .lineLimit(1)
         }
@@ -95,10 +89,9 @@ struct MachineRowView: View {
 
       trailing
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 13)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .modifier(MachineRowSurface(surface: surface, cornerRadius: cornerRadius))
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 12)
+    .adeKitCard(padding: nil)
   }
 
   private var visualState: MachineRowVisualState {
@@ -108,26 +101,12 @@ struct MachineRowView: View {
     )
   }
 
-  private var iconColor: Color {
-    visualState == .authenticatedCurrent ? ADEColor.success : ADEColor.textMuted
-  }
-
   private var iconTile: some View {
     Image(systemName: deviceSymbol)
-      .font(.system(size: 18, weight: .semibold))
-      .foregroundStyle(iconColor)
-      .frame(width: 38, height: 38)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(iconColor.opacity(0.14))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(
-            (visualState == .authenticatedCurrent ? ADEColor.success : ADEColor.border).opacity(0.3),
-            lineWidth: 0.6
-          )
-      )
+      .font(.system(size: 16, weight: .regular))
+      .foregroundStyle(visualState == .authenticatedCurrent ? ADEColor.success : ADEColor.textSecondary)
+      .frame(width: 34, height: 34)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
   }
 
   @ViewBuilder
@@ -139,15 +118,13 @@ struct MachineRowView: View {
       // dialled, not through a separate button.
       HStack(spacing: 4) {
         Text(affordance == .wake ? "Wake" : "Connect")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 13, weight: .semibold))
         Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .bold))
+          .font(.system(size: 10, weight: .semibold))
       }
       .foregroundStyle(ADEColor.accent)
     case .chevron:
-      Image(systemName: "chevron.right")
-        .font(.system(size: 13, weight: .bold))
-        .foregroundStyle(ADEColor.accent.opacity(0.8))
+      ADESettingsChevron()
     case .connecting:
       ProgressView().controlSize(.small)
     case .connected:
@@ -156,37 +133,6 @@ struct MachineRowView: View {
         .foregroundStyle(ADEColor.success)
     case .none:
       EmptyView()
-    }
-  }
-}
-
-private struct MachineRowSurface: ViewModifier {
-  let surface: MachineRowView.Surface
-  let cornerRadius: CGFloat
-
-  func body(content: Content) -> some View {
-    switch surface {
-    case .row:
-      content
-        .background(
-          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(ADEColor.surfaceBackground.opacity(0.5))
-        )
-        .glassEffect(in: .rect(cornerRadius: cornerRadius))
-        .overlay(
-          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.75)
-        )
-    case .card:
-      content
-        .background(
-          ADEColor.cardBackground.opacity(0.72),
-          in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .stroke(ADEColor.accent.opacity(0.28), lineWidth: 1)
-        )
     }
   }
 }

@@ -1498,18 +1498,6 @@ struct PrDetailView: View {
   }
 }
 
-// MARK: - PR surface backdrop
-//
-// Flat, theme-aware surface (desktop `--pr-surface` parity). The previous
-// stacked radial-gradient + `.plusLighter` backdrop forced expensive
-// re-compositing under every scroll frame and clashed with the app palette.
-
-@ViewBuilder
-func prLiquidGlassBackdrop() -> some View {
-  PrGlassPalette.ink
-}
-
-
 private struct PrSingleLineEditSheet: View {
   @Environment(\.dismiss) private var dismiss
   let title: String

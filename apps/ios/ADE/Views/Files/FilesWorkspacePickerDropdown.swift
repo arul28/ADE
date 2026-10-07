@@ -59,7 +59,6 @@ struct FilesWorkspacePickerDropdown: View {
   private var triggerLabel: some View {
     let workspace = selectedWorkspace
     let lane = workspace.flatMap { filesWorkspaceLaneSummary($0, lanes: lanes) }
-    let surface = filesWorkspaceTriggerSurface(workspace: workspace, lane: lane)
     let isCompact = workspace != nil
 
     return ZStack {
@@ -74,11 +73,7 @@ struct FilesWorkspacePickerDropdown: View {
     }
     .padding(.horizontal, isCompact ? 12 : 14)
     .padding(.vertical, isCompact ? 5 : 6)
-    .background(surface.background, in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(surface.border, lineWidth: 1)
-    )
+    .adeKitPill()
     .frame(maxWidth: .infinity)
   }
 
@@ -99,7 +94,7 @@ struct FilesWorkspacePickerDropdown: View {
           } else if workspace?.kind.lowercased() == "primary" {
             Image(systemName: "house.fill")
               .font(.system(size: 10, weight: .bold))
-              .foregroundStyle(ADEColor.accent)
+              .foregroundStyle(ADEColor.textSecondary)
           }
           Text(title)
             .font(.system(size: 13, weight: .semibold))
@@ -148,17 +143,6 @@ private func filesWorkspaceBranchLabel(_ workspace: FilesWorkspace) -> String {
 func filesWorkspaceLaneSummary(_ workspace: FilesWorkspace, lanes: [LaneSummary]) -> LaneSummary? {
   guard let laneId = workspace.laneId else { return nil }
   return lanes.first(where: { $0.id == laneId })
-}
-
-private func filesWorkspaceTriggerSurface(workspace: FilesWorkspace?, lane: LaneSummary?) -> (background: Color, border: Color) {
-  if let lane, let hex = lane.color?.trimmingCharacters(in: .whitespacesAndNewlines), !hex.isEmpty,
-     let tint = LaneColorPalette.color(forHex: hex) {
-    return (tint.opacity(0.12), tint.opacity(0.35))
-  }
-  if workspace?.kind.lowercased() == "primary" {
-    return (ADEColor.accent.opacity(0.08), ADEColor.accent.opacity(0.28))
-  }
-  return (Color.white.opacity(0.04), Color.white.opacity(0.08))
 }
 
 /// The workspace list as a sheet on the flat base: searchable, grouped by
@@ -239,7 +223,7 @@ private struct FilesWorkspacePickerSheet: View {
         } else {
           Image(systemName: workspace.kind.lowercased() == "primary" ? "house.fill" : "folder")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 22)
         }
         VStack(alignment: .leading, spacing: 2) {

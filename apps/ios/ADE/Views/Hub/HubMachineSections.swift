@@ -84,7 +84,6 @@ func hubMergeFleetRosters(
       for lane in remote.lanes {
         var copy = lane
         copy.id = workRemoteLaneId(machineKey: machine.machineKey, laneId: lane.id)
-        copy.name = "\(lane.name) · \(machine.name)"
         if copy.laneType == "primary" { copy.laneType = "worktree" }
         lanes.append(copy)
         merge.laneOwners[copy.id] = HubRemoteOwner(machineKey: machine.machineKey, project: ownerProject, lane: lane)

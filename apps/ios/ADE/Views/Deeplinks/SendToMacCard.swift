@@ -283,7 +283,7 @@ struct SendToMacCard: View {
     .padding(.horizontal, 20)
     .padding(.top, 22)
     .padding(.bottom, 24)
-    .background(ADEColor.surfaceBackground)
+    .background(ADEColor.pageBackground)
     .presentationDetents([.medium])
     .presentationDragIndicator(.visible)
   }
@@ -291,8 +291,8 @@ struct SendToMacCard: View {
   private var header: some View {
     VStack(spacing: 6) {
       Image(systemName: "laptopcomputer.and.arrow.down")
-        .font(.system(size: 30, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
+        .font(.system(size: 26, weight: .regular))
+        .foregroundStyle(ADEColor.textSecondary)
         .padding(.bottom, 4)
 
       Text("Open on your computer")
@@ -300,7 +300,7 @@ struct SendToMacCard: View {
         .foregroundStyle(ADEColor.textPrimary)
         .multilineTextAlignment(.center)
 
-      Text("This link works best on the desktop app. Send it to your paired computer and it'll open there.")
+      Text("Send it to your computer and it opens there.")
         .font(.system(.footnote, design: .rounded))
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
@@ -311,10 +311,10 @@ struct SendToMacCard: View {
   private var targetCard: some View {
     HStack(alignment: .top, spacing: 12) {
       Image(systemName: targetSymbol)
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
+        .font(.system(size: 16, weight: .regular))
+        .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 34, height: 34)
-        .background(ADEColor.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
       VStack(alignment: .leading, spacing: 4) {
         Text(target.headline)
@@ -328,13 +328,7 @@ struct SendToMacCard: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.border, lineWidth: 1)
-    )
+    .adeKitCard(padding: 12)
   }
 
   private var targetSymbol: String {
@@ -353,9 +347,7 @@ struct SendToMacCard: View {
 
   private var machineRow: some View {
     HStack(spacing: 10) {
-      Circle()
-        .fill(machineTint)
-        .frame(width: 8, height: 8)
+      ADEKitDot(tone: machineTone, size: 7)
       Image(systemName: "desktopcomputer")
         .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
@@ -373,9 +365,7 @@ struct SendToMacCard: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .adeKitField(padding: 10)
   }
 
   /// Display name for the paired computer. Prefers the live `hostName` published
@@ -407,12 +397,12 @@ struct SendToMacCard: View {
     }
   }
 
-  private var machineTint: Color {
+  private var machineTone: ADEKitTone {
     switch syncService.connectionState {
-    case .connected: return ADEColor.success
-    case .connecting: return ADEColor.warning
-    case .error: return ADEColor.danger
-    case .disconnected: return ADEColor.textMuted
+    case .connected: return .ok
+    case .connecting: return .warn
+    case .error: return .crit
+    case .disconnected: return .neutral
     }
   }
 
@@ -435,16 +425,9 @@ struct SendToMacCard: View {
               .font(.system(size: 14, weight: .semibold))
           }
           Text(sendButtonTitle)
-            .font(.system(.body, design: .rounded).weight(.semibold))
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 13)
-        .foregroundStyle(.white)
-        .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(isSending || sendCompleted)
 
       externalActions
@@ -459,17 +442,8 @@ struct SendToMacCard: View {
 
       Button(action: onDismiss) {
         Text(sendCompleted ? "Done" : "Cancel")
-          .font(.system(.body, design: .rounded).weight(.medium))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .foregroundStyle(ADEColor.textPrimary)
-          .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .stroke(ADEColor.border, lineWidth: 1)
-          )
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(wide: true))
     }
   }
 
@@ -500,19 +474,9 @@ struct SendToMacCard: View {
         Image(systemName: symbol)
           .font(.system(size: 14, weight: .semibold))
         Text(title)
-          .font(.system(.body, design: .rounded).weight(.medium))
-          .lineLimit(1)
       }
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 12)
-      .foregroundStyle(ADEColor.textPrimary)
-      .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.border, lineWidth: 1)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle(wide: true))
   }
 
   private var sendButtonTitle: String {
@@ -638,7 +602,7 @@ struct MachineWakeCard: View {
     .padding(.top, 24)
     .padding(.bottom, 24)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(ADEColor.surfaceBackground)
+    .background(ADEColor.pageBackground)
     .animation(ADEMotion.standard(reduceMotion: reduceMotion), value: request.stage)
   }
 
@@ -674,29 +638,15 @@ struct MachineWakeCard: View {
         syncService.resolveMachineWake(request.id, wake: false)
       } label: {
         Text(dismissTitle)
-          .font(.system(.body, design: .rounded).weight(.medium))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .foregroundStyle(ADEColor.textPrimary)
-          .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .stroke(ADEColor.border, lineWidth: 1)
-          )
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(wide: true))
 
       Button {
         syncService.resolveMachineWake(request.id, wake: true)
       } label: {
         Text(confirmTitle)
-          .font(.system(.body, design: .rounded).weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .foregroundStyle(.white)
-          .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
       }
-      .buttonStyle(.plain)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     }
   }
 
@@ -718,7 +668,7 @@ struct MachineWakeCard: View {
 
   private func tint(_ stage: SyncMachineWakeRequest.Stage) -> Color {
     switch stage {
-    case .confirm: return ADEColor.accent
+    case .confirm: return ADEColor.textSecondary
     case .waking: return ADEColor.warning
     case .failed: return ADEColor.danger
     }

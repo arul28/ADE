@@ -898,7 +898,8 @@ private struct WorkRootPreviewHarness: View {
             selectedLaneId: $selectedLaneId,
             selectedStatus: $selectedStatus,
             organization: $organization,
-            filterOpen: $filterOpen,
+            filterOpen: filterOpen,
+            activeFilterCount: (selectedStatus != .all ? 1 : 0) + (selectedLaneId != "all" ? 1 : 0),
             lanes: WorkPreviewData.rootLanes,
             onClear: clearFilters
           )

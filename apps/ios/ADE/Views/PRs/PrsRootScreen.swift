@@ -521,23 +521,30 @@ struct PRsTabView: View {
     }
     .sharedBackgroundVisibility(.hidden)
 
-    ToolbarItemGroup(placement: .topBarTrailing) {
+    ToolbarItem(placement: .topBarTrailing) {
       Button {
         searchPresented = true
       } label: {
-        Image(systemName: "magnifyingglass")
+        ADEKitCircleIcon(systemImage: "magnifyingglass")
       }
+      .buttonStyle(.plain)
       .accessibilityLabel("Search pull requests")
+    }
+    .sharedBackgroundVisibility(.hidden)
 
+    ToolbarItem(placement: .topBarTrailing) {
       Button {
         createInitialLaneId = nil
         createPresented = true
       } label: {
-        Image(systemName: "plus")
+        ADEKitCircleIcon(systemImage: "plus")
       }
+      .buttonStyle(.plain)
       .disabled(!canCreatePr)
+      .opacity(canCreatePr ? 1 : 0.45)
       .accessibilityLabel("Create pull request")
     }
+    .sharedBackgroundVisibility(.hidden)
 
     ToolbarItem(placement: .topBarTrailing) {
       ADERootToolbarControls(scopeKey: "PRs")

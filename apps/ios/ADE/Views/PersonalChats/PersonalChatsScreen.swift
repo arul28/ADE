@@ -106,14 +106,18 @@ struct PersonalChatsScreen: View {
 
   private var chatList: some View {
     ScrollView {
-      LazyVStack(spacing: 10) {
-        ForEach(visibleSessions) { summary in
+      // One kit panel, hairlines between rows.
+      LazyVStack(spacing: 0) {
+        ForEach(Array(visibleSessions.enumerated()), id: \.element.id) { index, summary in
+          if index > 0 {
+            Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 70)
+          }
           NavigationLink {
             PersonalChatDestination(summary: summary)
           } label: {
             PersonalChatRow(summary: summary)
           }
-          .buttonStyle(.plain)
+          .buttonStyle(ADEKitRowButtonStyle())
           .contextMenu {
             if summary.archivedAt == nil {
               Button {
@@ -139,6 +143,7 @@ struct PersonalChatsScreen: View {
           }
         }
       }
+      .adeKitCard(padding: nil)
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
       .padding(.horizontal, 16)
@@ -151,16 +156,16 @@ struct PersonalChatsScreen: View {
   private var emptyState: some View {
     VStack(spacing: 16) {
       ZStack {
-        Circle().fill(ADEColor.accent.opacity(0.12)).frame(width: 76, height: 76)
+        Circle().fill(ADEKit.track).frame(width: 64, height: 64)
         Image(systemName: searchText.isEmpty ? "bubble.left.and.bubble.right.fill" : "magnifyingglass")
-          .font(.system(size: 29, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 24, weight: .regular))
+          .foregroundStyle(ADEColor.textMuted)
       }
       Text(searchText.isEmpty ? "Start a conversation" : "No matching chats")
         .font(.system(.title3, design: .rounded).weight(.bold))
         .foregroundStyle(ADEColor.textPrimary)
       Text(searchText.isEmpty
-        ? "Ask a question, explore an idea, or get something done without choosing a project."
+        ? "Chats here aren't tied to a project."
         : "Try another title, model, or phrase.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
@@ -171,12 +176,10 @@ struct PersonalChatsScreen: View {
           newChatPresented = true
         } label: {
           Label("Start a chat", systemImage: "plus")
-            .font(.headline)
-            .padding(.horizontal, 18)
-            .frame(minHeight: 46)
+            .padding(.horizontal, 6)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+        .frame(maxWidth: 240)
         .disabled(!canCreateChat)
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
@@ -287,9 +290,9 @@ private struct PersonalChatRow: View {
   var body: some View {
     HStack(spacing: 13) {
       ZStack(alignment: .bottomTrailing) {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(providerTint(summary.provider).opacity(0.15))
-          .frame(width: 43, height: 43)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(ADEKit.track)
+          .frame(width: 40, height: 40)
           .overlay(
             WorkProviderBareLogo(
               provider: summary.provider,
@@ -301,7 +304,7 @@ private struct PersonalChatRow: View {
         Circle()
           .fill(workChatStatusTint(status))
           .frame(width: 9, height: 9)
-          .overlay(Circle().stroke(ADEColor.cardBackground, lineWidth: 2))
+          .overlay(Circle().stroke(ADEKit.surface, lineWidth: 2))
       }
 
       VStack(alignment: .leading, spacing: 4) {
@@ -324,7 +327,7 @@ private struct PersonalChatRow: View {
         Text(subtitle)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
+          .lineLimit(1)
         if subtitle != modelContext {
           Text(modelContext)
             .font(.caption2.weight(.medium))
@@ -333,17 +336,11 @@ private struct PersonalChatRow: View {
         }
       }
 
-      Image(systemName: "chevron.right")
-        .font(.caption.bold())
-        .foregroundStyle(ADEColor.textMuted)
+      ADESettingsChevron()
     }
-    .padding(13)
-    .background(ADEColor.cardBackground.opacity(0.66), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 15, style: .continuous)
-        .stroke(status == "awaiting-input" ? ADEColor.warning.opacity(0.4) : ADEColor.border.opacity(0.7), lineWidth: 1)
-    )
-    .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .contentShape(Rectangle())
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(accessibilityLabel)
     .accessibilityHint("Opens this chat.")

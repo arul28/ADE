@@ -1,37 +1,5 @@
 import SwiftUI
 
-// MARK: - Lane status indicator
-
-struct LaneStatusIndicator: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  let bucket: String
-  var size: CGFloat = 10
-
-  @State private var isPulsing = false
-
-  var body: some View {
-    Circle()
-      .fill(runtimeTint(bucket: bucket))
-      .frame(width: size, height: size)
-      .shadow(color: runtimeTint(bucket: bucket).opacity(isAnimating ? 0.5 : 0), radius: isAnimating ? 6 : 0)
-      .scaleEffect(isPulsing && isAnimating ? 1.3 : 1.0)
-      .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
-      .onAppear {
-        if isAnimating {
-          isPulsing = true
-        }
-      }
-      .onChange(of: isAnimating) { _, animating in
-        if !animating { isPulsing = false }
-      }
-  }
-
-  private var isAnimating: Bool {
-    (bucket == "running" || bucket == "awaiting-input") && !reduceMotion
-  }
-}
-
 // MARK: - Open chip
 
 struct LaneOpenChip: View {
@@ -50,16 +18,13 @@ struct LaneOpenChip: View {
       if isPinned {
         Image(systemName: "pin.fill")
           .font(.system(size: 8))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(EdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10))
-    .background(laneTint.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 12))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(laneTint.border, lineWidth: 0.5)
-    )
+    .padding(.horizontal, 11)
+    .frame(minHeight: 32)
+    // A quiet kit pill: the lane's colour stays on its mark and name.
+    .adeKitPill()
     .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
   }
 }
@@ -99,58 +64,14 @@ struct LaneLinearIssueBadge: View {
             .lineLimit(1)
         }
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, compact ? 7 : 9)
-      .padding(.vertical, compact ? 4 : 7)
-      .background(ADEColor.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.7)
-      )
+      .foregroundStyle(ADEColor.textSecondary)
+      .padding(.horizontal, compact ? 6 : 9)
+      .frame(minHeight: compact ? 18 : 28)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: compact ? 5 : 8, style: .continuous))
     }
     .buttonStyle(.plain)
     .disabled(issue.url?.isEmpty ?? true)
     .accessibilityLabel("\(issue.identifier): \(issue.title)")
-  }
-}
-
-// MARK: - Launch tile
-
-struct LaneLaunchTile: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(spacing: 8) {
-        Image(systemName: symbol)
-          .font(.system(size: 18, weight: .semibold))
-          .symbolRenderingMode(.hierarchical)
-        Text(title)
-          .font(.caption.weight(.medium))
-      }
-      .foregroundStyle(tint)
-      .frame(maxWidth: .infinity, minHeight: 88)
-      .padding(14)
-      .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(tint.opacity(0.14), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-    .accessibilityLabel("Launch \(title)")
-    .adeInspectable(
-      "Lanes.LaunchTile",
-      metadata: [
-        "label": "Launch \(title)",
-        "title": title,
-        "role": "button"
-      ]
-    )
   }
 }
 
@@ -173,74 +94,6 @@ struct LaneOptionButton: View {
       tint: tint,
       action: action
     )
-  }
-}
-
-// MARK: - Session card
-
-struct LaneSessionCard: View {
-  let session: TerminalSessionSummary
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text(session.title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer()
-        LaneTypeBadge(text: session.status.uppercased(), tint: session.status == "running" ? ADEColor.success : ADEColor.textSecondary)
-      }
-      if let preview = session.lastOutputPreview {
-        Text(preview)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-      }
-    }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(session.title), \(session.status)")
-    .adeInspectable(
-      "Lanes.SessionCard",
-      metadata: [
-        "label": "\(session.title), \(session.status)",
-        "sessionId": session.id,
-        "laneId": session.laneId,
-        "laneName": session.laneName,
-        "status": session.status,
-        "role": "row"
-      ]
-    )
-  }
-}
-
-// MARK: - Chat card
-
-struct LaneChatCard: View {
-  let chat: AgentChatSessionSummary
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text(chat.title ?? chat.provider.uppercased())
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer()
-        LaneTypeBadge(text: chat.status.uppercased(), tint: chat.status == "active" ? ADEColor.success : ADEColor.textSecondary)
-      }
-      Text(chat.model)
-        .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(ADEColor.textSecondary)
-      if let preview = chat.lastOutputPreview {
-        Text(preview)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-      }
-    }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(chat.title ?? chat.provider) chat, \(chat.status)")
   }
 }
 
@@ -283,15 +136,11 @@ struct LaneTextField: View {
       .textInputAutocapitalization(title.localizedCaseInsensitiveContains("path") ? .never : .sentences)
       .autocorrectionDisabled(title.localizedCaseInsensitiveContains("path"))
       .submitLabel(.done)
-      .padding(12)
+      .padding(.horizontal, 12)
       .frame(minHeight: 44, maxHeight: 56, alignment: .center)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
       .accessibilityLabel(title)
   }
 }
@@ -304,135 +153,6 @@ struct ADEScaleButtonStyle: ButtonStyle {
       .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
       .opacity(configuration.isPressed ? 0.85 : 1.0)
       .animation(.snappy(duration: 0.2), value: configuration.isPressed)
-  }
-}
-
-// MARK: - Lane list row
-
-struct LaneListRow: View, Equatable {
-  let snapshot: LaneListSnapshot
-  let isPinned: Bool
-  let isOpen: Bool
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 9)
-        .padding(.top, 5)
-
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          Text(snapshot.lane.name)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          laneTypeBadge
-          Spacer(minLength: 0)
-        }
-
-        HStack(spacing: 6) {
-          Text(snapshot.lane.branchRef)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-          if let activity = laneActivitySummary(snapshot) {
-            Circle()
-              .fill(ADEColor.border.opacity(0.6))
-              .frame(width: 3, height: 3)
-            Text(activity)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-          Spacer(minLength: 0)
-        }
-
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
-          if snapshot.lane.status.dirty {
-            LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
-          }
-          if snapshot.lane.status.ahead > 0 {
-            LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
-          }
-          if snapshot.lane.status.behind > 0 {
-            LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
-          }
-          if snapshot.runtime.sessionCount > 0 {
-            LaneMicroChip(
-              icon: runtimeSymbol(snapshot.runtime.bucket),
-              text: "\(snapshot.runtime.sessionCount)",
-              tint: runtimeTint(bucket: snapshot.runtime.bucket)
-            )
-          }
-          if snapshot.lane.childCount > 0 {
-            LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
-          }
-          if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
-            LaneMicroChip(icon: "link", text: issue.identifier, tint: ADEColor.accent)
-          } else if laneLinearIssueLinkCount(for: snapshot.lane) > 0 {
-            LaneMicroChip(icon: "link", text: "\(laneLinearIssueLinkCount(for: snapshot.lane))", tint: ADEColor.accent)
-          }
-          if isPinned {
-            LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
-          }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      }
-
-      Spacer(minLength: 8)
-
-      VStack(alignment: .trailing, spacing: 6) {
-        lanePriorityBadge(snapshot: snapshot)
-        if isOpen {
-          LaneMicroChip(icon: "rectangle.portrait.and.arrow.right", text: "open", tint: ADEColor.accent)
-        }
-      }
-
-      Image(systemName: "chevron.right")
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .adeGlassCard(cornerRadius: 14, padding: 12)
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(isOpen ? ADEColor.accent.opacity(0.35) : ADEColor.border.opacity(0.14), lineWidth: isOpen ? 1 : 0.75)
-    )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(laneRowAccessibilityLabel)
-    .adeInspectable(
-      "Lanes.Row",
-      metadata: [
-        "label": laneRowAccessibilityLabel,
-        "laneId": snapshot.lane.id,
-        "laneName": snapshot.lane.name,
-        "branchRef": snapshot.lane.branchRef,
-        "role": "row"
-      ]
-    )
-  }
-
-  @ViewBuilder
-  private var laneTypeBadge: some View {
-    if snapshot.lane.laneType == "primary" {
-      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
-    } else if snapshot.lane.archivedAt != nil {
-      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
-    } else {
-      EmptyView()
-    }
-  }
-
-  private var laneRowAccessibilityLabel: String {
-    var parts = [snapshot.lane.name, snapshot.lane.branchRef]
-    if snapshot.lane.laneType == "primary" { parts.append("primary") }
-    if snapshot.lane.archivedAt != nil { parts.append("archived") }
-    if snapshot.runtime.bucket == "running" { parts.append("running") }
-    if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
-    if snapshot.lane.status.dirty { parts.append("dirty") }
-    if isPinned { parts.append("pinned") }
-    if isOpen { parts.append("open") }
-    if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
-    if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
-    return parts.joined(separator: ", ")
   }
 }
 
@@ -472,13 +192,9 @@ struct LanePrTagChip: View {
       }
     }
     .foregroundStyle(tint)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 4)
-    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 7, style: .continuous)
-        .stroke(tint.opacity(0.28), lineWidth: 0.6)
-    )
+    .padding(.horizontal, 6)
+    .frame(minHeight: 18)
+    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     .accessibilityLabel(
       tag.stack.map {
         "\(formatLanePrBadgeLabel(tag)), GitHub Stack \($0.position) of \($0.size)"
@@ -549,17 +265,17 @@ struct LaneStackCard: View, Equatable {
     )
   }
 
-  /// Drawn like the Work list's rows (flat on the page, text first), with a
-  /// lane's own marks: the lane glyph tile in the lane's color, the lane name
-  /// in that color, the branch line below, and the lane's live chats as one
-  /// status mark on the trailing edge (the desktop lane sidebar row).
+  /// One row of the lanes panel (`.kit-row`), text first, with a lane's own
+  /// marks: the lane glyph and name in the lane's colour, the branch line
+  /// below, and the lane's live chats as one status mark on the trailing edge
+  /// (the desktop lane sidebar row).
   var body: some View {
     HStack(alignment: .center, spacing: 11) {
       laneGlyphTile
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .center, spacing: 6) {
           Text(snapshot.lane.name)
-            .font(.subheadline.weight(.semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(laneLabelColor)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -574,7 +290,7 @@ struct LaneStackCard: View, Equatable {
           if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
             Image(systemName: devicePresenceSymbol(for: devices))
               .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.accent)
+              .foregroundStyle(ADEColor.textMuted)
               .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
           }
           runtimeMark
@@ -582,21 +298,18 @@ struct LaneStackCard: View, Equatable {
         detailLine
       }
     }
-    .padding(.leading, isOpen ? 9 : 6)
-    .padding(.trailing, 8)
-    .padding(.vertical, 10)
+    .padding(.leading, ADEKit.inset)
+    .padding(.trailing, 12)
+    .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .fill(isOpen ? laneTint.accentBar.opacity(0.07) : Color.clear)
-    )
     .overlay(alignment: .leading) {
-      // An open lane (in the tray above) keeps a thin bar in its color.
+      // An open lane (in the tray above) keeps a thin bar in its colour.
       if isOpen {
         Capsule()
           .fill(laneTint.accentBar)
           .frame(width: 3)
-          .padding(.vertical, 8)
+          .padding(.vertical, 10)
+          .padding(.leading, 4)
       }
     }
     .contentShape(Rectangle())
@@ -607,13 +320,8 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var laneGlyphTile: some View {
-    WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 14)
-      .frame(width: 32, height: 32)
-      .background(laneLabelColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .stroke(laneLabelColor.opacity(0.22), lineWidth: 0.6)
-      )
+    WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 15)
+      .frame(width: 20, height: 20)
       .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
   }
 
@@ -659,7 +367,7 @@ struct LaneStackCard: View, Equatable {
         .foregroundStyle(ADEColor.textSecondary)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule(style: .continuous))
+        .background(ADEKit.track, in: Capsule(style: .continuous))
         .fixedSize()
       }
       HStack(spacing: 3) {
@@ -705,7 +413,7 @@ struct LaneStackCard: View, Equatable {
         if let linkedIssue {
           Text(linkedIssue)
             .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(ADEColor.textSecondary)
         }
       }
       .foregroundStyle(ADEColor.textMuted)
@@ -733,11 +441,11 @@ struct LaneStackCard: View, Equatable {
   @ViewBuilder
   private var laneTypeBadge: some View {
     if snapshot.lane.archivedAt != nil {
-      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+      ADEKitTag(text: "Archived")
     } else if snapshot.lane.laneType == "primary",
               snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
       // A primary lane named "Primary" already says so.
-      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
+      ADEKitTag(text: "Primary")
     } else {
       EmptyView()
     }
@@ -802,4 +510,98 @@ func laneStackCardRenderSignature(
     hasher.combine(0)
   }
   return hasher.finalize()
+}
+
+// MARK: - Form section
+
+/// A section of a Lanes sheet: the kit section title and one hint line, then
+/// its controls on one kit card (desktop `ModernSection` over a `.kit-card`).
+struct LaneFormSection<Content: View>: View {
+  let title: String
+  var subtitle: String?
+  @ViewBuilder var content: () -> Content
+
+  init(title: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+    self.title = title
+    self.subtitle = subtitle
+    self.content = content
+  }
+
+  var body: some View {
+    ADESettingsSection(title, hint: subtitle) {
+      VStack(alignment: .leading, spacing: 10) {
+        content()
+      }
+      .adeKitCard(padding: 12)
+    }
+  }
+}
+
+// MARK: - Choice rows
+
+/// One pickable row inside a Lanes form card: neutral icon, title, an
+/// optional mono detail, and the accent checkmark on the selected one.
+struct LaneChoiceRow: View {
+  let title: String
+  var subtitle: String?
+  var systemImage: String?
+  /// Mono for refs and paths; prose details pass false.
+  var monoSubtitle = true
+  let isSelected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 10) {
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 18)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 14.5, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if let subtitle, !subtitle.isEmpty {
+            Text(subtitle)
+              .font(monoSubtitle ? .adeMono(11) : .system(size: 12.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(monoSubtitle ? 1 : 2)
+              .truncationMode(.middle)
+          }
+        }
+        Spacer(minLength: 8)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+  }
+}
+
+/// Rows separated by kit hairlines, for a list inside a form card.
+struct LaneChoiceList<Item: Identifiable, Row: View>: View {
+  let items: [Item]
+  @ViewBuilder var row: (Item) -> Row
+
+  var body: some View {
+    LazyVStack(spacing: 0) {
+      ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+        if index > 0 {
+          Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+        }
+        row(item)
+      }
+    }
+  }
 }

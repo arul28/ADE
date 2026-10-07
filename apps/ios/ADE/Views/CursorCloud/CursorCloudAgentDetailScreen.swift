@@ -60,9 +60,7 @@ struct CursorCloudAgentDetailScreen: View {
               .font(.subheadline)
               .foregroundStyle(.primary.opacity(0.85))
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+          .adeKitCard()
         }
         artifactsCard
         if let message {
@@ -71,7 +69,7 @@ struct CursorCloudAgentDetailScreen: View {
             .foregroundStyle(.red)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.08)))
+            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         if let successMessage {
           Text(successMessage)
@@ -79,13 +77,14 @@ struct CursorCloudAgentDetailScreen: View {
             .foregroundStyle(.green)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.08)))
+            .background(ADEColor.success.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
       }
       .padding(16)
       .padding(.bottom, 96)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(entry.agent.name.isEmpty ? "Cloud agent" : entry.agent.name)
     .navigationBarTitleDisplayMode(.inline)
     .safeAreaInset(edge: .bottom) { actionBar }
@@ -152,9 +151,7 @@ struct CursorCloudAgentDetailScreen: View {
         }
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(14)
-    .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+    .adeKitCard()
   }
 
   @ViewBuilder
@@ -179,9 +176,7 @@ struct CursorCloudAgentDetailScreen: View {
           .buttonStyle(.bordered)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(14)
-      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+      .adeKitCard()
     }
   }
 
@@ -212,9 +207,7 @@ struct CursorCloudAgentDetailScreen: View {
           }
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(14)
-      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+      .adeKitCard()
     }
   }
 
@@ -290,7 +283,7 @@ struct CursorCloudAgentDetailScreen: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
-    .background(.ultraThinMaterial)
+    .background(ADEColor.pageBackground)
   }
 
   // MARK: Host calls

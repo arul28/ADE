@@ -172,6 +172,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   let reasoningEffort: String
   let effectiveFastMode: Bool
   let runtimeMode: String
+  /// False while the summary is a roster stand-in: its access mode is unknown.
+  let accessModeKnown: Bool
   /// Set once a Cursor chat has been promoted to a cloud agent. A cloud run
   /// refuses every inline steer, so the send capability withholds that mode.
   let cursorCloudAgentId: String?
@@ -208,6 +210,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelId = nil
       self.reasoningEffort = ""
       self.effectiveFastMode = false
+      self.accessModeKnown = false
       self.runtimeMode = ""
       self.cursorCloudAgentId = nil
       self.cursorRuntime = nil
@@ -236,6 +239,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelId = summary.modelId
     self.reasoningEffort = summary.reasoningEffort ?? ""
     self.effectiveFastMode = summary.effectiveFastMode
+    self.accessModeKnown = summary.rosterDerived != true
     self.runtimeMode = workInitialRuntimeMode(summary)
     self.cursorCloudAgentId = summary.cursorCloudAgentId
     self.cursorRuntime = summary.cursorRuntime
@@ -1062,7 +1066,7 @@ struct WorkChatSessionView: View {
     // their inline treatment in the timeline instead.
     //
     // When offline, we no longer stack "Reconnect to respond" banners here.
-    // The top-right ADEConnectionDot already signals "Offline" and the
+    // The top bar already signals "Offline" and the
     // pending cards themselves stay visible in the timeline in a read-only
     // state, so duplicating the reconnect nag at the top added noise
     // without new information.

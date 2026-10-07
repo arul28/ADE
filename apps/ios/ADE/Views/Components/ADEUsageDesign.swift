@@ -5,7 +5,7 @@ import SwiftUI
 /// surface (the Settings Usage page and the Work new-chat activity module).
 ///
 /// This is the iOS counterpart of the desktop `usageDesign.ts`: the same five
-/// type steps, the same section/card rhythm, the same pressure thresholds, and
+/// type steps, the same headroom rule, and
 /// the same "top N providers plus a merged neutral Other" chart rule, so the two
 /// products read as one.
 ///
@@ -38,30 +38,31 @@ enum ADEUsageType {
   static func microFont(_ weight: Font.Weight = .regular) -> Font { .system(size: micro, weight: weight) }
 }
 
-// MARK: - Rhythm
+// MARK: - Headroom level
 
-enum ADEUsageLayout {
-  /// Vertical rhythm between top-level bands of the page.
-  static let sectionGap: CGFloat = 32
-  /// Interior padding for cards and bands.
-  static let cardPadding: CGFloat = 24
-  /// Gap between related rows inside a single band.
-  static let rowGap: CGFloat = 12
-  static let cardCorner: CGFloat = 16
-}
-
-// MARK: - Pressure
-
-/// Thresholds shared by the pace bars and the compact Work module, so "nearly
-/// dry" means the same thing on both surfaces (and matches desktop).
+/// The one colour rule for every quota meter, read as headroom (percent LEFT):
+/// neutral (or the provider's colour) while there is room, amber at 20% left,
+/// red at 5% left. Mirrors desktop `usageLeftLevel` / `usageLeftLevelColor`.
+/// Do not invent per-surface thresholds.
 enum ADEUsagePressure {
-  static let warn: Double = 70
-  static let critical: Double = 90
+  static let warnLeft: Double = 20
+  static let critLeft: Double = 5
 
-  static func color(percent: Double, providerColor: Color) -> Color {
-    if percent > critical { return ADEColor.danger }
-    if percent > warn { return ADEColor.warning }
-    return providerColor
+  static func tone(percentLeft: Double) -> ADEKitTone {
+    if percentLeft <= critLeft { return .crit }
+    if percentLeft <= warnLeft { return .warn }
+    return .neutral
+  }
+
+  /// `fallback` while the window is healthy, else the warn/crit status colour.
+  static func color(percentLeft: Double, fallback: Color) -> Color {
+    let level = tone(percentLeft: percentLeft)
+    return level == .neutral ? fallback : level.color
+  }
+
+  /// The same rule for callers that hold percent USED.
+  static func color(percent used: Double, providerColor: Color) -> Color {
+    color(percentLeft: 100 - used, fallback: providerColor)
   }
 }
 
@@ -524,7 +525,7 @@ struct ADEUsageChartModel: Equatable {
     model.metric = resolvedMetric
 
     if !sawProviderSplit || byProvider.isEmpty {
-      // Supported fallback: one combined series, drawn in the neutral accent.
+      // Supported fallback: one combined series, drawn neutral.
       let total = combined.reduce(0, +)
       model.isCombinedFallback = true
       model.series = [
@@ -532,7 +533,7 @@ struct ADEUsageChartModel: Equatable {
           id: "__all",
           label: "All providers",
           assetName: nil,
-          color: ADEColor.purpleAccent,
+          color: ADEColor.textSecondary,
           values: combined,
           total: total
         )
