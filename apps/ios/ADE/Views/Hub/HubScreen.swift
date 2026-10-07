@@ -8,8 +8,8 @@ func hubProjectIdsCollapsedByDefault(
 
 // The all-projects hub — the mobile app's main surface once a machine is
 // connected. Lists every project on the machine, each expandable to its chats
-// grouped by lane (sourced from the live roster feed). Four compact status
-// cards filter that tree (All / Working / Needs you / Finished). Tapping a
+// grouped by lane (sourced from the live roster feed). One compact row of
+// status counts filters that tree (All / Working / Needs you / Finished). Tapping a
 // project card opens its detailed tabbed view; tapping a chat opens that chat
 // immediately (presented over the hub, so Back returns here). The bottom
 // "type to vibecode" box is the inline new-chat composer — focusing it expands
@@ -87,7 +87,7 @@ struct HubScreen: View {
   var body: some View {
     NavigationStack {
       ZStack(alignment: .top) {
-        HubBackground()
+        ADEColor.pageBackground.ignoresSafeArea()
         if openChatTarget != nil {
           HubCoverParkingSurface()
         } else if isNoMachineBlankState {
@@ -249,7 +249,7 @@ struct HubScreen: View {
           .padding(.bottom, 8)
       }
       ScrollView {
-        LazyVStack(spacing: 12) {
+        LazyVStack(spacing: 8) {
           // Keep the project catalog mounted while a switch is in flight: only
           // fall back to the connecting card when there's nothing to show yet.
           // The switching row carries its own spinner and the others disable,
@@ -800,31 +800,6 @@ enum HubLayoutStore {
   static func save(_ state: HubLayoutState, for connectionKey: String) {
     guard let data = try? JSONEncoder().encode(state) else { return }
     ADESharedContainer.defaults.set(data, forKey: defaultsKey(connectionKey))
-  }
-}
-
-// MARK: - Background
-
-private struct HubBackground: View {
-  var body: some View {
-    ZStack {
-      ADEColor.pageBackground
-      RadialGradient(
-        colors: [
-          ADEColor.purpleAccent.opacity(0.20),
-          ADEColor.purpleAccent.opacity(0.06),
-          Color.clear,
-        ],
-        center: .top,
-        startRadius: 10,
-        endRadius: 360
-      )
-      .frame(height: 420)
-      .frame(maxHeight: .infinity, alignment: .top)
-      .blur(radius: 8)
-      .allowsHitTesting(false)
-    }
-    .ignoresSafeArea()
   }
 }
 

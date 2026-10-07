@@ -374,6 +374,107 @@ struct ADEKitButtonStyle: ButtonStyle {
   }
 }
 
+/// A quiet round icon button for a top bar (`.kit-icon-btn`): a neutral glyph
+/// on a calm circle with a hairline edge. `badge` is a small flat count for the
+/// one thing that needs attention; it is the only colour.
+struct ADEKitCircleIcon: View {
+  let systemImage: String
+  /// Text colour instead of the secondary grey, for a button with news.
+  var emphasized = false
+  var badge: String?
+  var size: CGFloat = 36
+
+  var body: some View {
+    Image(systemName: systemImage)
+      .font(.system(size: 15, weight: .semibold))
+      .foregroundStyle(emphasized ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .frame(width: size, height: size)
+      .background(ADEColor.cardBackground.opacity(0.72), in: Circle())
+      .overlay(Circle().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .overlay(alignment: .topTrailing) {
+        if let badge {
+          Text(badge)
+            .font(.system(size: 10, weight: .bold).monospacedDigit())
+            .foregroundStyle(ADEColor.pageBackground)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 15, minHeight: 15)
+            .background(ADEColor.warning, in: Capsule())
+            .offset(x: 3, y: -3)
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityHidden(true)
+        }
+      }
+      .contentShape(Circle())
+  }
+}
+
+/// One option of `ADEKitCountSegments`.
+struct ADEKitCountOption<Value: Hashable>: Identifiable {
+  let value: Value
+  let symbol: String
+  /// The glyph's colour: a state hue, or nil for a neutral option.
+  var tint: Color?
+  let count: Int
+  /// A word under the count. Nil draws glyph and count on one line.
+  var title: String?
+  var accessibilityLabel: String
+
+  var id: Value { value }
+}
+
+/// A summary that is also a filter: glyph + count per option on one quiet
+/// track, the selected option raised (`.kit-seg` with counts). Colour stays on
+/// the glyphs, which carry the state.
+struct ADEKitCountSegments<Value: Hashable>: View {
+  let options: [ADEKitCountOption<Value>]
+  let selection: Value?
+  let onSelect: (Value) -> Void
+
+  var body: some View {
+    HStack(spacing: 2) {
+      ForEach(options) { option in
+        let selected = option.value == selection
+        Button {
+          onSelect(option.value)
+        } label: {
+          VStack(spacing: 1) {
+            HStack(spacing: 4) {
+              Image(systemName: option.symbol)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(option.tint ?? (selected ? ADEColor.textPrimary : ADEColor.textMuted))
+              Text("\(option.count)")
+                .font(.adeMono(13, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+                .contentTransition(.numericText())
+            }
+            if let title = option.title {
+              Text(title)
+                .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            }
+          }
+          .frame(maxWidth: .infinity, minHeight: option.title == nil ? 30 : 40)
+          .background {
+            if selected {
+              RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.accessibilityLabel)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+      }
+    }
+    .padding(2)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+  }
+}
+
 /// A full-width row that highlights while pressed (`.kit-row`).
 struct ADEKitRowButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
