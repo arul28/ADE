@@ -48,6 +48,7 @@ describe("Focus grid page math", () => {
       expect(next.capacity).toBeGreaterThanOrEqual(Math.max(1, previous.capacity));
       expect(next.capacity).toBeLessThanOrEqual(6);
       expect(next.columns).toBeGreaterThanOrEqual(previous.columns);
+      expect(next.rows).toBeGreaterThanOrEqual(previous.rows);
       previous = next;
     }
   });
