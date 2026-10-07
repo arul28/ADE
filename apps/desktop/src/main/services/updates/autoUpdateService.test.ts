@@ -661,7 +661,10 @@ describe("createAutoUpdateService", () => {
   });
 
   it("leaves a staged update untouched when the check itself fails", async () => {
-    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate();
+    let nowMs = 1_791_397_260_000;
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
+      nowMs: () => nowMs,
+    });
 
     // A feed error means "nothing new to report", not "discard the finished
     // download". electron-updater emits `error` and rejects, so cover both.
@@ -682,6 +685,11 @@ describe("createAutoUpdateService", () => {
       latestKnownVersion: "1.2.61",
       error: null,
       errorDetails: null,
+      checkFailure: {
+        kind: "network",
+        message: "net::ERR_INTERNET_DISCONNECTED",
+        at: nowMs,
+      },
     });
     expect(updater.downloadUpdate).not.toHaveBeenCalled();
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
@@ -693,6 +701,24 @@ describe("createAutoUpdateService", () => {
       "autoUpdate.ready_check_failed",
       expect.objectContaining({ readyVersion: "1.2.61" }),
     );
+
+    nowMs += 1_000;
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", { version: "1.2.61" });
+      return { updateInfo: { version: "1.2.61" } };
+    });
+
+    await service.checkForUpdates();
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      lastCheckedAt: nowMs,
+      checkFailure: null,
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
 
     service.dispose();
   });
