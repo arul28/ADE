@@ -123,6 +123,15 @@ with `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body),
 `X-Webhook-ID`, and `X-Webhook-Event: statusChange`. ADE registers the signing
 secret at `POST /cursor/register` and polls `GET /cursor/events?after=seq:N`.
 Bad signatures return 401. Optional worker secret: `CURSOR_WEBHOOK_SECRET`.
+ADE only registers and polls while a project has an enabled `cursor.*`
+automation rule. Poll auth is an indexed lookup of the bearer secret, which is
+stamped `last_polled_at` at most hourly. Unowned secrets idle for 30 days are
+swept on registration; a returning client gets a 401 and re-registers its
+stored secret.
+
+D1 reads are billed per row scanned, so every hot query must be an index seek
+(check with `EXPLAIN QUERY PLAN` against the migrations). Retention deletes run
+at most once per 10 minutes per isolate (`claimPeriodicRun`), not per webhook.
 
 Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
 
