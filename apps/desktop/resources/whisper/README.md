@@ -10,7 +10,7 @@ materialized at build/release time. The directory keeps its historical
 - `transcribe-cli` — the per-platform [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)
   CLI binary (`transcribe-cli.exe` on Windows), statically linked. On Apple
   Silicon it is built with Metal and an embedded shader library; macOS
-  universal builds are two per-arch builds merged with `lipo`.
+  builds are always universal: two per-arch builds merged with `lipo`.
 
 The speech model is **not** bundled. The app downloads
 `parakeet-ultra-Q4_K_M.gguf` (~464 MB, CC-BY-4.0) on demand into
@@ -35,8 +35,6 @@ macOS, Visual Studio Build Tools on Windows). Overrides:
 - `ADE_SPEECH_BUNDLE_MODEL=1` — also download the model here for local dev
   runs (with `ADE_SPEECH_MODEL_URL` / `ADE_SPEECH_MODEL_SHA256` for a mirror).
   Packaging excludes `*.gguf`, so it never ships in the app.
-- `ADE_SPEECH_REQUIRE_UNIVERSAL=1` — build a universal (arm64 + x86_64) macOS
-  binary; the `dist:mac:universal:*` scripts set it.
 
 Builds never use `-march=native`: x86-64 targets AVX2 (x86-64-v3), and arm64
 uses ggml's portable defaults, so a binary built on CI runs on users' CPUs.

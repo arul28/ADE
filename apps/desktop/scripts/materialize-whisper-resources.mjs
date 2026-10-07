@@ -73,9 +73,10 @@ const LEGACY_FILE_BASENAMES = [
 function transcribeBinarySpecForHost() {
   const platform = process.platform;
   const arch = process.arch;
-  const target = isUniversalDarwinBuild()
-    ? "darwin-universal"
-    : `${platform}-${arch}`;
+  // macOS always gets a universal binary (as the whisper build did): the
+  // per-arch packages are built from one materialize run, often on an
+  // Apple Silicon host, so a host-only binary would break the Intel package.
+  const target = platform === "darwin" ? "darwin-universal" : `${platform}-${arch}`;
   const exeSuffix = platform === "win32" ? ".exe" : "";
   const targetKey = target.replace(/-/g, "_").toUpperCase();
   const envKey = `ADE_TRANSCRIBE_CLI_URL_${targetKey}`;
@@ -85,14 +86,6 @@ function transcribeBinarySpecForHost() {
     process.env.ADE_TRANSCRIBE_CLI_SHA256?.trim().toLowerCase() ||
     null;
   return { target, targetKey, url, sha256, fileName: `transcribe-cli${exeSuffix}` };
-}
-
-function isUniversalDarwinBuild() {
-  if (process.platform !== "darwin") return false;
-  const lifecycle = process.env.npm_lifecycle_event ?? "";
-  return process.env.ADE_SPEECH_REQUIRE_UNIVERSAL === "1"
-    || process.env.npm_config_arch === "universal"
-    || lifecycle.includes("universal");
 }
 
 function redactUrl(rawUrl) {
