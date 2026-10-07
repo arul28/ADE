@@ -27,11 +27,14 @@
 ; check steps aside the way the default does without PowerShell.
 ; ADE_CHECK_MODE picks the pass: "probe" only reports (exit 1 = running),
 ; "stop" stops them (exit 0 = gone, 2 = still running 10s after forcing began).
+; A process query that fails is retried, never read as "nothing running"; one
+; that keeps failing past the deadline answers 2. The command is compact on
+; purpose: the expanded line has to stay under NSIS's 1024-character limit.
 ; ADE_CHECK_GRACE_SECONDS is how long "stop" only waits before it forces. An
 ; update gets 4s: electron-updater starts the installer and then quits ADE, and
 ; ADE's quit is what ends its agent and terminal children (they live outside
 ; $INSTDIR, so nothing here would). The default check waited about as long.
-!define ADE_CHECK_APP_RUNNING_COMMAND `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:ADE_CHECK_INSTDIR.TrimEnd([char]92) + [char]92; $$self = [int]$$env:ADE_CHECK_SELF_PID; $$grace = (Get-Date).AddSeconds([int]$$env:ADE_CHECK_GRACE_SECONDS); $$end = $$grace.AddSeconds(10); while ($$true) { $$p = @(Get-CimInstance Win32_Process -Filter 'ExecutablePath IS NOT NULL' | Where-Object { $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) }); if ($$p.Count -eq 0) { exit 0 }; if ($$env:ADE_CHECK_MODE -eq 'probe') { exit 1 }; if ((Get-Date) -lt $$grace) { Start-Sleep -Milliseconds 200; continue }; foreach ($$x in $$p) { Stop-Process -Id $$x.ProcessId -Force -ErrorAction SilentlyContinue }; if ((Get-Date) -gt $$end) { exit 2 }; Start-Sleep -Milliseconds 200 }"`
+!define ADE_CHECK_APP_RUNNING_COMMAND `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d=($$env:ADE_CHECK_INSTDIR.TrimEnd([char]92)+[char]92).ToLowerInvariant();$$s=[int]$$env:ADE_CHECK_SELF_PID;$$g=(Get-Date).AddSeconds([int]$$env:ADE_CHECK_GRACE_SECONDS);$$e=$$g.AddSeconds(10);while(1){try{$$p=@(Get-CimInstance Win32_Process -Filter 'ExecutablePath IS NOT NULL' -ErrorAction Stop|?{$$_.ProcessId -ne $$s -and $$_.ExecutablePath.ToLowerInvariant().StartsWith($$d)})}catch{if((Get-Date) -gt $$e){exit 2};sleep -m 200;continue};if(!$$p.Count){exit 0};if($$env:ADE_CHECK_MODE -eq 'probe'){exit 1};if((Get-Date) -lt $$g){sleep -m 200;continue};$$p|%{Stop-Process -Id $$_.ProcessId -Force -EA 0};if((Get-Date) -gt $$e){exit 2};sleep -m 200}"`
 !macro customCheckAppRunning
   System::Call 'kernel32::GetCurrentProcessId()i.r9'
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_INSTDIR", t "$INSTDIR")i'

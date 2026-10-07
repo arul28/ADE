@@ -186,11 +186,47 @@ function Get-ShortSha256([string]$Value) {
   }
 }
 
+function Get-ChannelServiceName([string]$Channel) {
+  if ($Channel -eq "stable") { "com.ade.runtime" } else { "com.ade.runtime.$Channel" }
+}
+
+function Get-ChannelLauncherPath([string]$AdeHome, [string]$Channel) {
+  Join-Path $AdeHome "runtime\brain-service-$(Get-ShortSha256 (Get-ChannelServiceName $Channel)).ps1"
+}
+
+# An update must not proceed while a supervisor for this channel still runs: it
+# lives in System32's powershell.exe, so the installer's install-folder sweep
+# never stops it, and it would start the brain again from the folder being
+# replaced. Unlike an uninstall, which finishes whatever is left running, this
+# finds every supervisor by its launcher (a missing PID record hides none),
+# stops each tree, and fails the update if one survives.
+function Stop-ChannelSupervisorsForUpdate([string]$AdeHome, [string]$Channel) {
+  $launcherPath = Get-ChannelLauncherPath $AdeHome $Channel
+  $findSupervisors = {
+    @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction Stop | Where-Object {
+      ([string]$_.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+  }
+  foreach ($supervisor in (& $findSupervisors)) {
+    & taskkill.exe /PID ([string]$supervisor.ProcessId) /T /F | Out-Null
+  }
+  # A supervisor that is already gone makes taskkill exit nonzero; whether one
+  # survived is answered below, not by that exit code.
+  $global:LASTEXITCODE = 0
+  $deadline = (Get-Date).AddSeconds(5)
+  while (($survivors = & $findSupervisors).Count -gt 0) {
+    if ((Get-Date) -gt $deadline) {
+      throw "ADE could not stop its background service for the update (PID $(($survivors | ForEach-Object { $_.ProcessId }) -join ', '))."
+    }
+    Start-Sleep -Milliseconds 200
+  }
+}
+
 function Remove-ChannelStartupWithoutPackagedCli(
   [string]$AdeHome,
   [string]$Channel
 ) {
-  $serviceName = if ($Channel -eq "stable") { "com.ade.runtime" } else { "com.ade.runtime.$Channel" }
+  $serviceName = Get-ChannelServiceName $Channel
   $baseUserName = $env:USERNAME
   if ([string]::IsNullOrWhiteSpace($baseUserName)) {
     throw "ADE could not resolve the current Windows user for startup cleanup."
@@ -202,7 +238,7 @@ function Remove-ChannelStartupWithoutPackagedCli(
   }
   $identity = "$($serviceName.ToLowerInvariant())`0$($userName.ToLowerInvariant())"
   $taskName = "ADE Runtime ($Channel-$(Get-ShortSha256 $identity))"
-  $launcherPath = Join-Path $AdeHome "runtime\brain-service-$(Get-ShortSha256 $serviceName).ps1"
+  $launcherPath = Get-ChannelLauncherPath $AdeHome $Channel
   $pidPath = "$launcherPath.pid.json"
 
   if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
@@ -311,6 +347,7 @@ if (-not $SkipServiceRemoval) {
     # to stop a supervisor that could respawn the brain from this folder. The
     # validated PowerShell path does exactly that, without starting ADE.exe as
     # Node to run the CLI, which measured 10.2s of every update.
+    Stop-ChannelSupervisorsForUpdate $channelAdeHome $normalizedPackageChannel
     Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
   } elseif ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
     $electronRunAsNodePresent = Test-Path Env:ELECTRON_RUN_AS_NODE

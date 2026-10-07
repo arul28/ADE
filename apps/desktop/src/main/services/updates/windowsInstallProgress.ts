@@ -142,7 +142,7 @@ export function startWindowsInstallProgress(args: {
       logPath: files.log,
       installerPath: args.installerPath ?? "",
     }));
-    for (const stale of [files.heartbeat, files.cancel, files.log]) fs.rmSync(stale, { force: true });
+    for (const stale of [files.heartbeat, files.focus, files.cancel, files.log]) fs.rmSync(stale, { force: true });
   } catch (error) {
     return unavailable("prepare_failed", error);
   }

@@ -67,9 +67,10 @@ rem spaces and PowerShell metacharacters remain data.
 set "ADE_CLI_PATH_TARGET=%PATH_DIR%"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($env:ADE_CLI_PATH_TARGET).TrimEnd('\'); $current=[Environment]::GetEnvironmentVariable('Path','User'); $entries=if ([string]::IsNullOrWhiteSpace($current)) { @() } else { $current -split ';' | Where-Object { $_.Trim().Length -gt 0 } }; foreach ($entry in $entries) { try { if ([System.IO.Path]::GetFullPath($entry).TrimEnd('\').ToLowerInvariant() -eq $target.ToLowerInvariant()) { exit 10 } } catch {} }; $next=if ([string]::IsNullOrWhiteSpace($current)) { $target } else { $target + ';' + $current }; [Environment]::SetEnvironmentVariable('Path',$next,'User')" >nul 2>nul
 rem Exit 10 means the directory was already on the user PATH, which is every
-rem update: nothing changed, so there is nothing to broadcast. `if errorlevel N`
-rem is "N or higher", so 10 has to be tested before 1.
-if errorlevel 10 exit /b 0
+rem update: nothing changed, so there is nothing to broadcast. Exactly 10:
+rem `if errorlevel 10` is "10 or higher", and a PowerShell that cannot start
+rem leaves 9009.
+if %ERRORLEVEL% EQU 10 exit /b 0
 if errorlevel 1 (
   echo ade install: failed to update the user PATH. Add %PATH_DIR% manually. 1>&2
   exit /b 1
