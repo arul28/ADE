@@ -128,7 +128,7 @@ export function createWindowAutoStartScheduler({
         ? resolveClaudeExecutable({ env })
         : resolveCodexExecutableFn({ env });
       const args = state.provider === "claude"
-        ? ["-p", "Reply with OK.", "--model", model, "--output-format", "text"]
+        ? ["-p", "Reply with OK.", "--model", model, "--effort", "low", "--output-format", "text"]
         : ["exec", "-m", model, "--skip-git-repo-check", "Reply with OK."];
       const invocation = resolveCliSpawnInvocation(resolved.path, args, env);
       const options: SpawnOptions = {

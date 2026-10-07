@@ -23,6 +23,7 @@ import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import {
+  claudeRuntimeEffortFlags,
   codexReasoningEffortFlags,
   resolveGrokCliModelForLaunch,
   resolveKimiCliModelForLaunch,
@@ -146,8 +147,6 @@ function strictifyJsonSchema(value: unknown, optionalProperty: boolean): unknown
 export function makeCodexCompatibleJsonSchema(schema: unknown): unknown {
   return strictifyJsonSchema(schema, false);
 }
-
-const CLAUDE_CLI_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): string {
   if (mode === "full-auto") return "bypassPermissions";
@@ -276,11 +275,8 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   if (args.jsonSchema) {
     cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
   }
-  // `--effort` takes only the API levels; Fable's `ultracode` is a settings
-  // flag, not an effort, so it keeps the CLI default here.
-  const effort = args.descriptor.capabilities?.reasoning === false ? null : resolveTaskReasoningEffort(args);
-  if (effort && CLAUDE_CLI_EFFORTS.has(effort)) {
-    cliArgs.push("--effort", effort);
+  if (args.descriptor.capabilities?.reasoning !== false) {
+    cliArgs.push(...claudeRuntimeEffortFlags(resolveTaskReasoningEffort(args)));
   }
   if (sessionId) {
     cliArgs.push("--session-id", sessionId);
