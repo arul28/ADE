@@ -19,6 +19,7 @@ import type {
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
+import { isPullRequestTriggerType } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
@@ -207,6 +208,13 @@ export function RuleBuilder({
   useEffect(() => {
     if (lastTriggerType.current === primaryTrigger.type) return;
     lastTriggerType.current = primaryTrigger.type;
+    // "The PR's branch" needs a PR trigger, and config validation rejects it
+    // on any other. Drop it whatever else is set: a rule kept in one chat
+    // hides the lane picker, so the user could not undo it there.
+    if (laneMode === "pr-branch" && !isPullRequestTriggerType(primaryTrigger.type)) {
+      patchExecution({ laneMode: "reuse" });
+      return;
+    }
     if (laneDirtyRef.current) return;
     // A rule kept in one chat runs in that chat's lane; a lane default would
     // read as if it applied when it does not.
