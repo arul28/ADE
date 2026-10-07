@@ -32,6 +32,7 @@ import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { ModernSection, SettingsTextField } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
 
@@ -155,22 +156,25 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [githubBusy, setGithubBusy] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
+  // Every read and write below goes to this page's machine: its credential
+  // store, its gh login, its App authorization.
+  const { pin } = useSettingsMachineScope();
   // The App row in the ladder below reports why the App credential is idle, and
   // only this status can tell a paused renewal from a dead authorization. Shared
   // with the install panel on this same page, which is where it is disconnected.
-  const { appAuth } = useGithubAppUserAuth();
+  const { appAuth } = useGithubAppUserAuth(pin);
 
   useEffect(() => {
     let cancelled = false;
 
     window.ade.github
-      .getStatus()
+      .getStatus(undefined, pin)
       .then((status) => {
         if (!cancelled) setGithubStatus(status);
       })
       .catch(() => {});
     window.ade.projectConfig
-      .get()
+      .get(pin)
       .then((snapshot) => {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
@@ -180,7 +184,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
@@ -192,7 +196,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     setActionError(null);
     setSaveNotice(null);
     window.ade.github
-      .setToken(token)
+      .setToken(token, pin)
       .then((status) => {
         setGithubStatus(status);
         setGithubTokenDraft("");
@@ -213,7 +217,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     setActionError(null);
     setSaveNotice(null);
     window.ade.github
-      .clearToken()
+      .clearToken(pin)
       .then((status) => {
         setGithubStatus(status);
         setShowPatSetup(false);
@@ -227,7 +231,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     setGithubBusy(true);
     setActionError(null);
     window.ade.github
-      .getStatus({ forceRefresh: true })
+      .getStatus({ forceRefresh: true }, pin)
       .then((status) => setGithubStatus(status))
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
@@ -542,7 +546,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         </ModernSection>
       ) : null}
 
-      <GitHubAppInstallPanel />
+      <GitHubAppInstallPanel pin={pin} />
 
       {credentialStates.length > 0 ? (
         <ModernSection

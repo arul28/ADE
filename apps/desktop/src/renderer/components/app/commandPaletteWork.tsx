@@ -29,6 +29,8 @@ import {
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import { promptDialog } from "../ui/dialog/confirm";
+import { chatDraftMachineId } from "../../lib/workDraft";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -372,8 +374,6 @@ export function useWorkSessionActions({
   projectRoot,
   projectBinding,
   setWorkViewState,
-  switchProjectToPath,
-  switchRemoteProject,
 }: {
   navigate: (path: string) => void;
   onOpenChange: (open: boolean) => void;
@@ -385,11 +385,6 @@ export function useWorkSessionActions({
       | Partial<WorkProjectViewState>
       | ((prev: WorkProjectViewState) => WorkProjectViewState),
   ) => void;
-  switchProjectToPath: (rootPath: string) => Promise<void>;
-  switchRemoteProject: (
-    targetId: string,
-    projectId: string,
-  ) => Promise<OpenProjectBinding>;
 }) {
   return useCallback(
     async (entry: ThreadIndexEntry, action: ThreadRowAction) => {
@@ -397,40 +392,27 @@ export function useWorkSessionActions({
       if (action === "new-chat") {
         // Persist the draft before navigation. Work can be unmounted while the
         // palette is open, so an ephemeral window event would be lost before
-        // the destination page gets a chance to consume it.
-        const destinationProjectKey = projectStateKeyForBinding(
-          binding,
-          projectRoot,
-        );
+        // the destination page gets a chance to consume it. Every thread here
+        // is this project's, on some machine: the draft names that machine and
+        // the tab stays where it is, since Work routes the new chat there.
         const currentProjectKey = projectStateKeyForBinding(
           projectBinding,
           projectRoot,
         );
-        const switching =
-          !binding || destinationProjectKey === currentProjectKey
-            ? Promise.resolve()
-            : binding.kind === "remote"
-              ? switchRemoteProject(binding.targetId, binding.projectId)
-              : switchProjectToPath(binding.rootPath);
-        try {
-          await switching;
-          setWorkViewState(destinationProjectKey, (previous) => ({
-            ...previous,
-            draftKind: "chat",
-            draftLaneId: session.laneId || null,
-            draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
-            activeItemId: null,
-            selectedItemId: null,
-            workSidebarOpen: false,
-          }));
-          navigate("/work");
-          onOpenChange(false);
-        } catch (error) {
-          console.error("[CommandPalette] new chat target switch failed", {
-            error,
-            sessionId: session.id,
-          });
-        }
+        setWorkViewState(currentProjectKey, (previous) => ({
+          ...previous,
+          draftKind: "chat",
+          draftLaneId: session.laneId || null,
+          draftMachineId: chatDraftMachineId(
+            machineIdForBinding(binding),
+            machineIdForBinding(projectBinding),
+          ),
+          activeItemId: null,
+          selectedItemId: null,
+          workSidebarOpen: false,
+        }));
+        navigate("/work");
+        onOpenChange(false);
         return;
       }
 
@@ -473,8 +455,6 @@ export function useWorkSessionActions({
       projectBinding,
       projectRoot,
       setWorkViewState,
-      switchProjectToPath,
-      switchRemoteProject,
     ],
   );
 }

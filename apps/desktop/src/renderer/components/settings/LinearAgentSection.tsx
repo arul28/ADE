@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, CircleNotch, Robot } from "@phosphor-icons/react";
-import type { AiPermissionSettings, LinearAgentOverview, ModelConfig } from "../../../shared/types";
+import type { AiPermissionSettings, LinearAgentOverview, ModelConfig, OpenProjectBinding } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -54,8 +54,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * The "ADE agent" part of the Linear card in Settings → Integrations. Installs
  * the agent in the workspace, makes this machine's delegation rules, and says
  * where delegations from teammates go.
+ *
+ * `pin` is the Settings page's machine: membership, rules and the install all
+ * belong to that machine's runtime. Null follows the tab's binding.
  */
-export function LinearAgentSection({ connected }: { connected: boolean }) {
+export function LinearAgentSection({ connected, pin = null }: { connected: boolean; pin?: OpenProjectBinding | null }) {
   const navigate = useNavigate();
   const [overview, setOverview] = useState<LinearAgentOverview | null>(null);
   const [loading, setLoading] = useState(false);
@@ -84,10 +87,10 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
     if (!cto?.getLinearAgentOverview) return;
     setLoading(true);
     try {
-      let next = await cto.getLinearAgentOverview();
+      let next = await cto.getLinearAgentOverview(pin);
       if (next.status && !next.status.me.registered && !registeredOnceRef.current) {
         registeredOnceRef.current = true;
-        next = await cto.registerLinearAgentMember().catch(() => next);
+        next = await cto.registerLinearAgentMember(undefined, pin).catch(() => next);
       }
       setOverview(next);
       setError(null);
@@ -96,7 +99,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     if (connected) void load();
@@ -108,7 +111,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       const sessionId = installSessionRef.current;
       const cto = window.ade?.cto;
       if (!sessionId || !cto?.getLinearAgentInstallSession) return;
-      void cto.getLinearAgentInstallSession(sessionId).then((session) => {
+      void cto.getLinearAgentInstallSession(sessionId, pin).then((session) => {
         if (session.status === "pending") return;
         installSessionRef.current = null;
         setInstalling(false);
@@ -117,7 +120,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       }).catch(() => {});
     }, INSTALL_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [installing, load]);
+  }, [installing, load, pin]);
 
   const handleInstall = useCallback(async () => {
     const cto = window.ade?.cto;
@@ -126,14 +129,14 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
     setError(null);
     setInstalling(true);
     try {
-      const session = await cto.startLinearAgentInstall();
+      const session = await cto.startLinearAgentInstall(pin);
       installSessionRef.current = session.sessionId;
       await openExternal(session.authUrl);
     } catch (err) {
       setInstalling(false);
       setError(err instanceof Error ? err.message : "Could not start the install.");
     }
-  }, []);
+  }, [pin]);
 
   const run = useCallback(async (key: string, work: () => Promise<LinearAgentOverview | void>) => {
     setBusy(key);
@@ -158,19 +161,19 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
     };
     await automations.saveDraft({
       draft: buildLinearAgentRuleDraft({ name: "Linear agent — delegations", trigger: "linear.agent_delegated", laneMode: "create", modelConfig, permissionConfig }),
-    });
+    }, pin);
     if (answerMentions) {
       try {
         await automations.saveDraft({
           draft: buildLinearAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
-        });
+        }, pin);
       } catch (err) {
         // Show the saved delegations rule, so a retry does not add it twice.
         await load();
         throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${err instanceof Error ? err.message : String(err)}. Add it in Automations.`);
       }
     }
-  }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, run]);
+  }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, pin, run]);
 
   const handleRemove = useCallback(async () => {
     const orgName = overview?.status?.orgName ?? "this workspace";
@@ -180,8 +183,8 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       confirmLabel: "Remove",
       destructive: true,
     });
-    if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent());
-  }, [overview?.status?.orgName, run]);
+    if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent(pin));
+  }, [overview?.status?.orgName, pin, run]);
 
   if (!connected) return null;
 
@@ -255,7 +258,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
             actions: [{
               label: busy === "member" ? "Routing…" : "Route to this account",
               variant: "secondary",
-              onClick: () => void run("member", () => ctoApi().registerLinearAgentMember({ replace: true })),
+              onClick: () => void run("member", () => ctoApi().registerLinearAgentMember({ replace: true }, pin)),
             }],
           }}
         />
@@ -387,7 +390,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
               title={status.installedByMe ? undefined : "Only the person who installed the agent can change this."}
               onChange={(event) => {
                 const mode = event.target.value === "runner" ? "runner" : "reply";
-                void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }));
+                void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, pin));
               }}
             >
               <option value="reply">Reply that they need ADE</option>

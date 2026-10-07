@@ -134,12 +134,9 @@ export function useWorkLaneContextMenu(options?: {
 } {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
-  const selectLane = useAppStore((s) => s.selectLane);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
   const [foreignMenuState, setForeignMenuState] = useState<ForeignMenuState | null>(null);
@@ -226,23 +223,19 @@ export function useWorkLaneContextMenu(options?: {
   ]);
   const openForeignLane = useCallback(() => {
     if (!foreignMenuState || !foreignMachineOnline) return;
-    const { binding, lane } = foreignMenuState;
+    const { lane, machineId } = foreignMenuState;
     close();
-    const switching = binding.kind === "remote"
-      ? switchRemoteProject(binding.targetId, binding.projectId)
-      : switchProjectToPath(binding.rootPath);
-    void switching.then(() => {
-      selectLane(lane.id);
-      void navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
-    });
+    // The Lanes list shows every machine's lanes, so the lane opens in this
+    // tab. Switching the tab to the lane's machine made it look like another
+    // project (remote border, missing icon, settings for the wrong machine).
+    void navigate(
+      `/lanes?laneId=${encodeURIComponent(lane.id)}&machineId=${encodeURIComponent(machineId)}`,
+    );
   }, [
     close,
     foreignMachineOnline,
     foreignMenuState,
     navigate,
-    selectLane,
-    switchProjectToPath,
-    switchRemoteProject,
   ]);
   const manageForeignLane = useCallback(() => {
     if (!foreignMenuState || !foreignMachineOnline) return;

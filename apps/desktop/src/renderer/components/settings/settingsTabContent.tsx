@@ -7,7 +7,6 @@ import {
   GithubLogo,
   HardDrives,
   Info,
-  Kanban,
   ShieldCheck,
   Stack,
   Timer,
@@ -24,6 +23,7 @@ import { AboutSection } from "./AboutSection";
 import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
+import { LinearMark } from "../lanes/linearBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LaneBehaviorSection } from "./LaneBehaviorSection";
@@ -290,7 +290,7 @@ const TAB_GROUPS = {
   linear: {
     title: "Linear",
     description: "Issues, and the agent that works them.",
-    icon: <Kanban size={15} weight="duotone" />,
+    icon: <LinearMark size={15} />,
     tone: "violet",
   },
   disk: {
@@ -412,11 +412,12 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", group: "templates" },
   ],
   // Connections live in the machine's credential store and are read by its
-  // runtime. Their calls follow the tab's binding (no pin yet), so they are
-  // shown for the machine the tab is bound to.
+  // runtime. Every call takes the machine's pin, so each machine's page shows
+  // and changes that machine's own GitHub and Linear connections. Browser
+  // steps (device codes, OAuth pages) still open on This computer.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "bound", title: "GitHub", group: "github" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear", group: "linear" },
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],

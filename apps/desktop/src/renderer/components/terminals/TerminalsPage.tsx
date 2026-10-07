@@ -50,6 +50,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
@@ -213,8 +214,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const refreshWork = work.refresh;
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
@@ -569,34 +568,27 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => {
-      const open = () => {
-        work.selectLane(session.laneId);
-        work.focusSession(session.id);
+      // A chat on another machine opens its lane in this tab's Lanes list,
+      // which already shows every machine's lanes. Moving the whole tab to
+      // that machine made the tab look like a different project.
+      if (binding) {
         const params = new URLSearchParams({
           laneId: session.laneId,
-          focus: "single",
-          sessionId: session.id,
+          machineId: machineIdForBinding(binding),
         });
         work.navigate(`/lanes?${params.toString()}`);
-      };
-      if (!binding) {
-        open();
         return;
       }
-      const switching = binding.kind === "remote"
-        ? switchRemoteProject(binding.targetId, binding.projectId)
-        : switchProjectToPath(binding.rootPath);
-      void switching.then(open).catch((error: unknown) => {
-        setSessionActionError(
-          error instanceof Error ? error.message : String(error),
-        );
+      work.selectLane(session.laneId);
+      work.focusSession(session.id);
+      const params = new URLSearchParams({
+        laneId: session.laneId,
+        focus: "single",
+        sessionId: session.id,
       });
+      work.navigate(`/lanes?${params.toString()}`);
     },
-    [
-      switchProjectToPath,
-      switchRemoteProject,
-      work,
-    ],
+    [work],
   );
 
   const handleGoToLaneById = useCallback(

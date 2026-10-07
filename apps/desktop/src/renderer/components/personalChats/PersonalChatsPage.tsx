@@ -60,6 +60,8 @@ import {
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
 
 type ToolPanel = "browser" | "terminal" | null;
 
@@ -712,16 +714,24 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const machineId = webMachines
     ? webMachines.machineId ?? ""
     : isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
+  // Every connected machine that has a project ADE can bind to, not only the
+  // ones with an open project tab: a tab now runs on this computer's checkout
+  // whenever it can, so other machines rarely have a tab of their own.
+  const { snapshot: remoteSnapshot } = useRemoteConnectionSnapshot(!webMachines);
   const desktopMachineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
     const options: PersonalChatsMachineOption[] = [
       { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
     ];
-    for (const tab of openRemoteProjectTabs) {
-      if (options.some((option) => option.id === tab.targetId)) continue;
-      options.push({ id: tab.targetId, name: tab.runtimeName });
+    const add = (id: string, name: string) => {
+      if (!options.some((option) => option.id === id)) options.push({ id, name });
+    };
+    for (const tab of openRemoteProjectTabs) add(tab.targetId, tab.runtimeName);
+    for (const connection of remoteSnapshot?.connections ?? []) {
+      if (connection.state !== "connected" || (connection.projects ?? []).length === 0) continue;
+      add(connection.target.id, connection.target.name || connection.target.hostname);
     }
     return options;
-  }, [openRemoteProjectTabs]);
+  }, [openRemoteProjectTabs, remoteSnapshot]);
   const machineOptions = webMachines ? webMachines.options : desktopMachineOptions;
   const selectMachine = useCallback(
     (nextMachineId: string) => {
@@ -744,8 +754,16 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         return;
       }
       const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);
-      if (!tab) return;
-      void switchRemoteProject(tab.targetId, tab.projectId).catch((reason) => {
+      const projects = remoteSnapshot?.connections
+        .find((connection) => connection.target.id === nextMachineId)?.projects ?? [];
+      const origin = cachedGitRemoteIdentity(projectBinding?.gitOriginUrl ?? null);
+      const projectId = tab?.projectId
+        ?? (origin
+          ? projects.find((entry) => cachedGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin)?.projectId
+          : undefined)
+        ?? projects[0]?.projectId;
+      if (!projectId) return;
+      void switchRemoteProject(nextMachineId, projectId).catch((reason) => {
         setError(reason instanceof Error ? reason.message : String(reason));
       });
     },
@@ -755,6 +773,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       openProjectTabRoots,
       openRemoteProjectTabs,
       projectBinding,
+      remoteSnapshot,
       switchProjectToPath,
       switchRemoteProject,
       webMachines,

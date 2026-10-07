@@ -4503,12 +4503,14 @@ const adeBridge = {
       project: ProjectInfo | null;
       binding: OpenProjectBinding | null;
       openProjectTabs: ProjectInfo[];
+      openProjectTabRoots?: string[];
     }> => {
       const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
         windowId: number | null;
         project: ProjectInfo | null;
         binding: OpenProjectBinding | null;
         openProjectTabs?: ProjectInfo[];
+        openProjectTabRoots?: string[];
       };
       rememberProjectBinding(session.binding);
       return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
@@ -11657,7 +11659,12 @@ const adeBridge = {
   github: {
     getStatus: async (opts?: {
       forceRefresh?: boolean;
-    }): Promise<GitHubStatus> => {
+    }, pin?: OpenProjectBinding | null): Promise<GitHubStatus> => {
+      // A pinned read asks that machine's runtime directly. It never reads or
+      // fills `githubStatusCache`, which holds the unpinned path's answer.
+      if (pin) {
+        return callPinnedRuntimeAction<GitHubStatus>(pin, "github", "getStatus", { args: opts ?? {} });
+      }
       if (opts?.forceRefresh) githubStatusCache.clear();
       return callProjectRuntimeActionOr(
         "github",
@@ -11694,7 +11701,10 @@ const adeBridge = {
             : githubRemoteStatusCache.get(),
       );
     },
-    setToken: async (token: string): Promise<GitHubSetTokenResult> =>
+    // The credential writes below still drop the unpinned caches when pinned: a
+    // pin can name This computer's own runtime, and a stale cached status
+    // costs one extra read where a kept one would show a removed credential.
+    setToken: async (token: string, pin?: OpenProjectBinding | null): Promise<GitHubSetTokenResult> =>
       clearAround(
         () => {
           githubStatusCache.clear();
@@ -11702,11 +11712,11 @@ const adeBridge = {
           githubAppInstallationStatusCache.clear();
         },
         () =>
-          callProjectRuntimeActionOr("github", "setToken", { arg: token }, () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "setToken", { arg: token }, () =>
             ipcRenderer.invoke(IPC.githubSetToken, { token }),
           ),
       ),
-    clearToken: async (): Promise<GitHubStatus> =>
+    clearToken: async (pin?: OpenProjectBinding | null): Promise<GitHubStatus> =>
       clearAround(
         () => {
           githubStatusCache.clear();
@@ -11714,39 +11724,45 @@ const adeBridge = {
           githubAppInstallationStatusCache.clear();
         },
         () =>
-          callProjectRuntimeActionOr("github", "clearToken", {}, () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "clearToken", {}, () =>
             ipcRenderer.invoke(IPC.githubClearToken),
           ),
       ),
-    getAppUserAuthStatus: async (): Promise<GitHubAppUserAuthStatus> =>
-      callProjectRuntimeActionOr("github", "getAppUserAuthStatus", {}, () =>
+    getAppUserAuthStatus: async (pin?: OpenProjectBinding | null): Promise<GitHubAppUserAuthStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "github", "getAppUserAuthStatus", {}, () =>
         ipcRenderer.invoke(IPC.githubGetAppUserAuthStatus),
       ),
-    startAppUserDeviceAuth: async (): Promise<GitHubAppDeviceAuthStartResult> =>
-      callProjectRuntimeActionOr("github", "startAppUserDeviceAuth", {}, () =>
+    startAppUserDeviceAuth: async (pin?: OpenProjectBinding | null): Promise<GitHubAppDeviceAuthStartResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "github", "startAppUserDeviceAuth", {}, () =>
         ipcRenderer.invoke(IPC.githubStartAppUserDeviceAuth),
       ),
-    pollAppUserDeviceAuth: async (args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> =>
+    pollAppUserDeviceAuth: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitHubAppDeviceAuthPollResult> =>
       clearAround(
         () => {
           githubAppInstallationStatusCache.clear();
         },
         () =>
-          callProjectRuntimeActionOr("github", "pollAppUserDeviceAuth", { args }, () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "pollAppUserDeviceAuth", { args }, () =>
             ipcRenderer.invoke(IPC.githubPollAppUserDeviceAuth, args),
           ),
       ),
-    clearAppUserAuth: async (): Promise<GitHubAppUserAuthStatus> =>
+    clearAppUserAuth: async (pin?: OpenProjectBinding | null): Promise<GitHubAppUserAuthStatus> =>
       clearAround(
         () => {
           githubAppInstallationStatusCache.clear();
         },
         () =>
-          callProjectRuntimeActionOr("github", "clearAppUserAuth", {}, () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "clearAppUserAuth", {}, () =>
             ipcRenderer.invoke(IPC.githubClearAppUserAuth),
           ),
       ),
-    detectRepo: async (): Promise<{ owner: string; name: string } | null> => {
+    detectRepo: async (pin?: OpenProjectBinding | null): Promise<{ owner: string; name: string } | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<{ owner: string; name: string } | null>(pin, "github", "detectRepo");
+      }
       const runtime = await callProjectRuntimeActionIfBound<{
         owner: string;
         name: string;
@@ -11775,19 +11791,29 @@ const adeBridge = {
     listRepoAutolinks: async (args: {
       owner?: string;
       name?: string;
-    } = {}): Promise<GitHubAutolink[]> =>
-      callProjectRuntimeActionOr("github", "listRepoAutolinks", { args }, () =>
+    } = {}, pin?: OpenProjectBinding | null): Promise<GitHubAutolink[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "github", "listRepoAutolinks", { args }, () =>
         ipcRenderer.invoke(IPC.githubListRepoAutolinks, args),
       ),
     getAppInstallationStatus: async (args: {
       owner?: string;
       name?: string;
       forceRefresh?: boolean;
-    } = {}): Promise<GitHubAppInstallationStatus> => {
+    } = {}, pin?: OpenProjectBinding | null): Promise<GitHubAppInstallationStatus> => {
       const cacheArgs = { owner: args.owner, name: args.name };
+      const requestArgs = args.forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
+      // Pinned reads skip the installation cache, which is keyed by repo only
+      // and holds the unpinned path's answer.
+      if (pin) {
+        return callPinnedRuntimeAction<GitHubAppInstallationStatus>(
+          pin,
+          "github",
+          "getAppInstallationStatus",
+          { args: requestArgs },
+        );
+      }
       const cacheKey = serializeIpcCacheArgs(cacheArgs);
       if (args.forceRefresh) githubAppInstallationStatusCache.clear(cacheKey);
-      const requestArgs = args.forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
       if (args.forceRefresh) {
         return callProjectRuntimeActionOr(
           "github",
@@ -11809,8 +11835,8 @@ const adeBridge = {
       keyPrefix: string;
       urlTemplate: string;
       isAlphanumeric?: boolean;
-    }): Promise<GitHubAutolink> =>
-      callProjectRuntimeActionOr("github", "createRepoAutolink", { args }, () =>
+    }, pin?: OpenProjectBinding | null): Promise<GitHubAutolink> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "github", "createRepoAutolink", { args }, () =>
         ipcRenderer.invoke(IPC.githubCreateRepoAutolink, args),
       ),
     listRepoLabels: async (args: {
@@ -12011,8 +12037,8 @@ const adeBridge = {
       callPrReadRuntimeActionOr(pin, "syncLanePr", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.prsSyncLanePr, { laneId }),
       ),
-    reconcileNow: async (): Promise<void> =>
-      callPrReadRuntimeActionOr(null, "reconcileOnFocus", { args: { force: true } }, () =>
+    reconcileNow: async (pin?: OpenProjectBinding | null): Promise<void> =>
+      callPrReadRuntimeActionOr(pin, "reconcileOnFocus", { args: { force: true } }, () =>
         ipcRenderer.invoke(IPC.prsReconcileNow),
       ),
     // Throttled focus catch-up on the lane's machine; see
@@ -13077,8 +13103,9 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "searchMemory", { args }, () =>
         ipcRenderer.invoke(IPC.ctoSearchMemory, args),
       ),
-    getLinearConnectionStatus: async (): Promise<LinearConnectionStatus> =>
-      callProjectRuntimeActionOr(
+    getLinearConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "linear_issue_tracker",
         "getConnectionStatus",
         {},
@@ -13086,7 +13113,14 @@ const adeBridge = {
       ),
     setLinearToken: async (
       args: CtoSetLinearTokenArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LinearConnectionStatus> => {
+      // Pinned: the same two runtime steps as the bound path below, both on
+      // the pinned machine — store the key, then read back its status.
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "linear_credentials", "setToken", { arg: args.token });
+        return callPinnedRuntimeAction<LinearConnectionStatus>(pin, "linear_issue_tracker", "getConnectionStatus");
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "linear_credentials",
         "setToken",
@@ -13102,7 +13136,11 @@ const adeBridge = {
       }
       return ipcRenderer.invoke(IPC.ctoSetLinearToken, args);
     },
-    clearLinearToken: async (): Promise<LinearConnectionStatus> => {
+    clearLinearToken: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> => {
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "linear_credentials", "clearToken");
+        return callPinnedRuntimeAction<LinearConnectionStatus>(pin, "linear_issue_tracker", "getConnectionStatus");
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "linear_credentials",
         "clearToken",
@@ -13143,8 +13181,9 @@ const adeBridge = {
         { arg: args.identityOverride },
         () => ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
       ),
-    getLinearProjects: async (): Promise<CtoLinearProject[]> =>
-      callProjectRuntimeActionOr(
+    getLinearProjects: async (pin?: OpenProjectBinding | null): Promise<CtoLinearProject[]> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "linear_issue_tracker",
         "listProjects",
         {},
@@ -13222,20 +13261,29 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.ctoGetLinearCustomViews),
       ),
     // ---- The ADE Linear agent (runtime-only; no project, no agent) ----
-    getLinearAgentOverview: async (): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "getOverview", {}, linearAgentUnavailable),
-    startLinearAgentInstall: async (): Promise<LinearAgentInstallStart> =>
-      callProjectRuntimeActionOr("linear_agent", "startInstall", {}, linearAgentUnavailable),
-    getLinearAgentInstallSession: async (sessionId: string): Promise<LinearAgentInstallSession> =>
-      callProjectRuntimeActionOr("linear_agent", "getInstallSession", { args: { sessionId } }, linearAgentUnavailable),
-    registerLinearAgentMember: async (args?: { replace?: boolean }): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "registerMember", { args: { replace: args?.replace === true } }, linearAgentUnavailable),
-    unregisterLinearAgentMember: async (): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "unregisterMember", {}, linearAgentUnavailable),
-    updateLinearAgentSettings: async (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "updateSettings", { args }, linearAgentUnavailable),
-    uninstallLinearAgent: async (): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "uninstall", {}, linearAgentUnavailable),
+    getLinearAgentOverview: async (pin?: OpenProjectBinding | null): Promise<LinearAgentOverview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "getOverview", {}, linearAgentUnavailable),
+    startLinearAgentInstall: async (pin?: OpenProjectBinding | null): Promise<LinearAgentInstallStart> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "startInstall", {}, linearAgentUnavailable),
+    getLinearAgentInstallSession: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LinearAgentInstallSession> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "getInstallSession", { args: { sessionId } }, linearAgentUnavailable),
+    registerLinearAgentMember: async (
+      args?: { replace?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LinearAgentOverview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "registerMember", { args: { replace: args?.replace === true } }, linearAgentUnavailable),
+    unregisterLinearAgentMember: async (pin?: OpenProjectBinding | null): Promise<LinearAgentOverview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "unregisterMember", {}, linearAgentUnavailable),
+    updateLinearAgentSettings: async (
+      args: { fallbackMode: "reply" | "runner"; runner: "self" | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LinearAgentOverview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "updateSettings", { args }, linearAgentUnavailable),
+    uninstallLinearAgent: async (pin?: OpenProjectBinding | null): Promise<LinearAgentOverview> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "uninstall", {}, linearAgentUnavailable),
     getLinearInbox: async (args?: { first?: number; includeRead?: boolean }): Promise<LinearInboxNotification[]> =>
       callProjectRuntimeActionOr("linear_issue_tracker", "listNotifications", { args: args ?? {} }, linearAgentUnavailable),
     markLinearNotification: async (args: { notificationId: string; action: "read" | "archive" }): Promise<void> =>
@@ -13276,14 +13324,16 @@ const adeBridge = {
       }
       return ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient);
     },
-    startLinearOAuth: async (): Promise<CtoStartLinearOAuthResult> =>
-      callProjectRuntimeActionOr("linear_oauth", "startSession", {}, () =>
+    startLinearOAuth: async (pin?: OpenProjectBinding | null): Promise<CtoStartLinearOAuthResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "linear_oauth", "startSession", {}, () =>
         ipcRenderer.invoke(IPC.ctoStartLinearOAuth),
       ),
     getLinearOAuthSession: async (
       args: CtoGetLinearOAuthSessionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<CtoGetLinearOAuthSessionResult> =>
-      callProjectRuntimeActionOr(
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "linear_oauth",
         "getSession",
         { arg: args.sessionId },
