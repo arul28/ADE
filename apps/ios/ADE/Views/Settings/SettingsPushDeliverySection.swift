@@ -175,7 +175,6 @@ struct SettingsPushDeliverySection: View {
             }
             .buttonStyle(ADEKitButtonStyle())
             .disabled(pushService.isRefreshingStatus || !snapshot.canRefreshRelayStatus)
-            .opacity(snapshot.canRefreshRelayStatus ? 1 : 0.45)
             .accessibilityLabel("Refresh status")
         }) {
             ADESettingsRows {

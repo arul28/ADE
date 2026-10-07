@@ -177,13 +177,13 @@ struct LaneDetailGitActionsPane: View {
   private var linkedPullRequestBadge: some View {
     if linkedPullRequests.count == 1, let pr = linkedPullRequests.first {
       Button { onOpenLinkedPullRequest(pr) } label: {
-        LaneTypeBadge(text: "PR #\(pr.githubPrNumber)", tint: lanePullRequestTint(pr.state))
+        ADEKitTag(text: "PR #\(pr.githubPrNumber)", color: lanePullRequestTint(pr.state))
       }
       .buttonStyle(.plain)
     } else if linkedPullRequests.count > 1 {
       ForEach(linkedPullRequests.prefix(3)) { pr in
         Button { onOpenLinkedPullRequest(pr) } label: {
-          LaneTypeBadge(text: "#\(pr.githubPrNumber)", tint: lanePullRequestTint(pr.state))
+          ADEKitTag(text: "#\(pr.githubPrNumber)", color: lanePullRequestTint(pr.state))
         }
         .buttonStyle(.plain)
       }
@@ -225,12 +225,10 @@ struct LaneDetailGitActionsPane: View {
         Button("Pull") { onPull(pullMode) }
           .buttonStyle(ADEKitButtonStyle(tone: shouldPull ? .warn : .neutral))
           .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
-          .opacity(shouldPull ? 1 : 0.5)
           .accessibilityHint("Pulls with \(pullMode)")
         Button(pushTitle) { onPush(false) }
           .buttonStyle(ADEKitButtonStyle(tone: shouldPush ? .ok : .neutral))
           .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
-          .opacity(shouldPush && !(syncStatus?.diverged ?? false) ? 1 : 0.5)
         moreActionsMenu
         Spacer(minLength: 0)
         Button(action: onRefresh) {
@@ -492,11 +490,11 @@ struct LaneDetailGitActionsPane: View {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(2)
             HStack(spacing: 8) {
-              LaneActionButton(title: "Apply", symbol: "tray.and.arrow.down") { onStashApply(stash.ref) }
+              ADEKitActionButton(title: "Apply", symbol: "tray.and.arrow.down") { onStashApply(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
-              LaneActionButton(title: "Pop", symbol: "tray.and.arrow.up") { onStashPop(stash.ref) }
+              ADEKitActionButton(title: "Pop", symbol: "tray.and.arrow.up") { onStashPop(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
-              LaneActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) { onStashDrop(stash.ref) }
+              ADEKitActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) { onStashDrop(stash.ref) }
                 .disabled(!canRunLiveActions || busyAction != nil)
             }
           }

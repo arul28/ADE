@@ -852,7 +852,6 @@ struct CreatePrWizardView: View {
       }
     }
     .buttonStyle(ADEKitButtonStyle(prominent: true))
-    .opacity(canSubmit ? 1.0 : 0.45)
     .disabled(!canSubmit)
   }
 

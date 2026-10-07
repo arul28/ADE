@@ -60,10 +60,7 @@ struct CursorCloudAgentDetailScreen: View {
               .font(.subheadline)
               .foregroundStyle(.primary.opacity(0.85))
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+          .adeKitCard()
         }
         artifactsCard
         if let message {
@@ -154,10 +151,7 @@ struct CursorCloudAgentDetailScreen: View {
         }
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(14)
-    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitCard()
   }
 
   @ViewBuilder
@@ -182,10 +176,7 @@ struct CursorCloudAgentDetailScreen: View {
           .buttonStyle(.bordered)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(14)
-      .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+      .adeKitCard()
     }
   }
 
@@ -216,10 +207,7 @@ struct CursorCloudAgentDetailScreen: View {
           }
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(14)
-      .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+      .adeKitCard()
     }
   }
 

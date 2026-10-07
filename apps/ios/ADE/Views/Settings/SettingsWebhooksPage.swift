@@ -158,7 +158,7 @@ struct SettingsWebhooksPage: View {
             ADESettingsRow("No webhooks yet", hint: "Make one in ADE on your computer: Automations → New → Webhook.")
               .adeSettingsListRow(insets: EdgeInsets())
           } header: {
-            ADESettingsListHeader("Webhooks", hint: "Requests that reach your automations.")
+            ADESettingsHeader("Webhooks", hint: "Requests that reach your automations.")
           }
         } else if !automations.isEmpty {
           Section {
@@ -171,7 +171,7 @@ struct SettingsWebhooksPage: View {
               .adeSettingsListRow()
             }
           } header: {
-            ADESettingsListHeader("Webhooks · \(automations.count)", hint: "Requests that reach your automations.")
+            ADESettingsHeader("Webhooks · \(automations.count)", hint: "Requests that reach your automations.")
           }
         }
       } else if errorMessage == nil {
@@ -225,7 +225,7 @@ struct WebhookAutomationRow: View {
       if let last = automation.lastDelivery {
         let outcome = WebhookPresentation.outcome(last.outcome)
         HStack(spacing: 6) {
-          Circle().fill(outcome.tint).frame(width: 6, height: 6)
+          ADEKitDot(color: outcome.tint)
           Text("\(outcome.label) · \(WebhookPresentation.relative(last.receivedAt))")
             .font(.system(size: 11.5))
             .foregroundStyle(ADEColor.textSecondary)
@@ -282,7 +282,7 @@ struct WebhookAutomationDetailPage: View {
         }
         signatureRow.adeSettingsListRow()
       } header: {
-        ADESettingsListHeader(WebhookPresentation.serviceName(automation.preset))
+        ADESettingsHeader(WebhookPresentation.serviceName(automation.preset))
       }
 
       Section {
@@ -308,7 +308,7 @@ struct WebhookAutomationDetailPage: View {
           ProgressView().frame(maxWidth: .infinity).adeSettingsListRow()
         }
       } header: {
-        ADESettingsListHeader("Deliveries", hint: "The last 20 requests.")
+        ADESettingsHeader("Deliveries", hint: "The last 20 requests.")
       }
     }
     .adeSettingsList()
@@ -499,14 +499,14 @@ private enum WebhookPreviewData {
           WebhookAutomationRow(automation: automation).adeSettingsListRow()
         }
       } header: {
-        ADESettingsListHeader("Webhooks · 2")
+        ADESettingsHeader("Webhooks · 2")
       }
       Section {
         ForEach(WebhookPreviewData.deliveries) { delivery in
           WebhookDeliveryRow(delivery: delivery).adeSettingsListRow()
         }
       } header: {
-        ADESettingsListHeader("Deliveries")
+        ADESettingsHeader("Deliveries")
       }
     }
     .adeSettingsList()

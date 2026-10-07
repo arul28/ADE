@@ -71,7 +71,6 @@ struct ADEResetCreditRows: View {
           }
           .buttonStyle(ADEKitButtonStyle())
           .disabled(spendingAccountIds.contains(account.id))
-          .opacity(spendingAccountIds.contains(account.id) ? 0.5 : 1)
           .accessibilityHint("Clears this account's limit windows now.")
         } else {
           Text("Use it on the computer.")

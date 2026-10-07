@@ -1122,9 +1122,7 @@ struct ModelPickerContentPane: View {
                 .frame(minHeight: 28)
                 .background {
                   if selected {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                      .fill(ADEKit.surface)
-                      .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                    ADEKitSegmentThumb()
                   }
                 }
                 .contentShape(Rectangle())
@@ -1133,8 +1131,7 @@ struct ModelPickerContentPane: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
-        .padding(2)
-        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .adeKitSegmentTrack()
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
       }
@@ -1655,9 +1652,7 @@ struct ModelPickerListRow: View {
               .frame(minHeight: 28)
               .background {
                 if isActiveTier {
-                  RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(ADEKit.surface)
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                  ADEKitSegmentThumb()
                 }
               }
               .contentShape(Rectangle())
@@ -1668,8 +1663,7 @@ struct ModelPickerListRow: View {
           .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
-      .padding(2)
-      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+      .adeKitSegmentTrack()
     }
   }
 

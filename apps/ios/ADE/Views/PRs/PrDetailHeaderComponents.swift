@@ -74,17 +74,17 @@ struct PrFlatDetailHeader: View {
       HStack(spacing: 6) {
         if let laneName, !laneName.isEmpty {
           Button { onOpenLane?() } label: {
-            ADEFlatChip(symbol: "arrow.triangle.branch", text: laneName, tint: ADEColor.textPrimary)
+            ADEKitChip(symbol: "arrow.triangle.branch", text: laneName, tint: ADEColor.textPrimary)
           }
           .buttonStyle(.plain)
           .disabled(onOpenLane == nil)
           .accessibilityHint("Opens the lane")
           if let machineName {
-            ADEFlatChip(symbol: "desktopcomputer", text: machineName)
+            ADEKitChip(symbol: "desktopcomputer", text: machineName)
           }
         } else {
           if let ghostLaneName, !ghostLaneName.isEmpty {
-            ADEFlatChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
+            ADEKitChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
           }
           if canCreateLane || canLinkLane {
             Menu {
@@ -95,14 +95,14 @@ struct PrFlatDetailHeader: View {
                 Button(action: onLinkLane) { Label("Link an existing lane", systemImage: "link") }
               }
             } label: {
-              ADEFlatChip(symbol: "plus", text: "Lane", tint: ADEColor.accent)
+              ADEKitChip(symbol: "plus", text: "Lane", tint: ADEColor.accent)
             }
             .accessibilityLabel("Add a lane for this PR")
           }
         }
         if let stackLabel {
           Button { onOpenStack?() } label: {
-            ADEFlatChip(symbol: "square.stack.3d.up", text: stackLabel)
+            ADEKitChip(symbol: "square.stack.3d.up", text: stackLabel)
           }
           .buttonStyle(.plain)
           .disabled(onOpenStack == nil)

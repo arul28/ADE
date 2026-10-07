@@ -344,9 +344,7 @@ struct WorkUsageActivityCarousel: View {
             .frame(maxWidth: .infinity, minHeight: 28)
             .background {
               if selected {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                  .fill(ADEKit.surface)
-                  .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                ADEKitSegmentThumb()
                   .matchedGeometryEffect(id: "usage-tab", in: tabNamespace)
               }
             }
@@ -357,8 +355,7 @@ struct WorkUsageActivityCarousel: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
     }
-    .padding(2)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .adeKitSegmentTrack()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Usage view")
   }
@@ -528,8 +525,8 @@ private struct WorkUsageTooltip: View {
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
-    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    // Kit surface and edge, sized to its text (a card would span the width).
+    .adeKitPill(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     .accessibilityElement(children: .combine)
   }
 }

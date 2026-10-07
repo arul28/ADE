@@ -348,9 +348,7 @@ struct LaneManageSheet: View {
           .frame(maxWidth: .infinity, minHeight: 30)
           .background {
             if selected {
-              RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(ADEKit.surface)
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+              ADEKitSegmentThumb()
             }
           }
           .contentShape(Rectangle())
@@ -359,8 +357,7 @@ struct LaneManageSheet: View {
         .accessibilityAddTraits(activeTab == tab ? .isSelected : [])
       }
     }
-    .padding(2)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .adeKitSegmentTrack()
   }
 
   private var deleteTab: some View {
@@ -387,7 +384,6 @@ struct LaneManageSheet: View {
       }
       .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
       .disabled(!canRunLiveActions || !deleteSelection.hasAny || busyAction != nil)
-      .opacity(!canRunLiveActions || !deleteSelection.hasAny || busyAction != nil ? 0.5 : 1)
     }
     .adeKitCard(padding: 14)
   }
@@ -536,7 +532,7 @@ struct LaneManageSheet: View {
       LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText).textInputAutocapitalization(.never)
       LaneTextField("Tags (comma separated)", text: $tagsText)
 
-      LaneActionButton(title: "Save appearance", symbol: "paintpalette") {
+      ADEKitActionButton(title: "Save appearance", symbol: "paintpalette") {
         Task {
           let tags = tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
           await performAction("save appearance") {
@@ -591,7 +587,7 @@ struct LaneManageSheet: View {
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
 
-        LaneActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap") {
+        ADEKitActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap") {
           Task {
             await performAction("reparent lane") {
               try await syncService.reparentLane(
@@ -625,12 +621,12 @@ struct LaneManageSheet: View {
       }
 
       if snapshot.lane.archivedAt == nil {
-        LaneActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
+        ADEKitActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
           Task { await performAction("archive lane") { try await syncService.archiveLane(snapshot.lane.id) } }
         }
         .disabled(!canRunLiveActions || !canArchive)
       } else {
-        LaneActionButton(title: "Restore lane", symbol: "tray.and.arrow.up") {
+        ADEKitActionButton(title: "Restore lane", symbol: "tray.and.arrow.up") {
           Task { await performAction("restore lane") { try await syncService.unarchiveLane(snapshot.lane.id) } }
         }
         .disabled(!canRunLiveActions)

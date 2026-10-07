@@ -255,7 +255,7 @@ struct ProviderAccountsScreen: View {
           .adeSettingsListRow()
         }
       } header: {
-        ADESettingsListHeader(
+        ADESettingsHeader(
           store.accounts.isEmpty ? "Accounts" : "Accounts · \(store.accounts.count)",
           hint: footerText
         )

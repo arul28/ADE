@@ -295,7 +295,6 @@ struct PrRebaseScreen: View {
     }
     .buttonStyle(ADEKitButtonStyle(prominent: prominent, wide: true))
     .disabled(isDisabled || isRunning)
-    .opacity(isDisabled ? 0.45 : 1)
   }
 
   // MARK: - Dispatch

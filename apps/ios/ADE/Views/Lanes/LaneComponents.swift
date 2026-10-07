@@ -1,20 +1,5 @@
 import SwiftUI
 
-// MARK: - Lane status indicator
-
-/// A lane's runtime state as a flat dot. No pulse: it sits in list rows.
-struct LaneStatusIndicator: View {
-  let bucket: String
-  var size: CGFloat = 10
-
-  var body: some View {
-    Circle()
-      .fill(runtimeTint(bucket: bucket))
-      .frame(width: size, height: size)
-      .accessibilityHidden(true)
-  }
-}
-
 // MARK: - Open chip
 
 struct LaneOpenChip: View {
@@ -39,8 +24,7 @@ struct LaneOpenChip: View {
     .padding(.horizontal, 11)
     .frame(minHeight: 32)
     // A quiet kit pill: the lane's colour stays on its mark and name.
-    .background(ADEKit.surface, in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitPill()
     .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
   }
 }
@@ -457,11 +441,11 @@ struct LaneStackCard: View, Equatable {
   @ViewBuilder
   private var laneTypeBadge: some View {
     if snapshot.lane.archivedAt != nil {
-      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+      ADEKitTag(text: "Archived")
     } else if snapshot.lane.laneType == "primary",
               snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
       // A primary lane named "Primary" already says so.
-      LaneTypeBadge(text: "Primary", tint: ADEColor.textSecondary)
+      ADEKitTag(text: "Primary")
     } else {
       EmptyView()
     }

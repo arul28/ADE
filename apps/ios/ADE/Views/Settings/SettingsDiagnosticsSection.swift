@@ -89,7 +89,6 @@ private struct SettingsAppUpdateRow: View {
       }
       .buttonStyle(ADEKitButtonStyle(prominent: advisor.availableVersion != nil))
       .disabled(advisor.isChecking)
-      .opacity(advisor.isChecking ? 0.55 : 1)
       .accessibilityLabel("Check for updates")
     }
     .accessibilityElement(children: .contain)

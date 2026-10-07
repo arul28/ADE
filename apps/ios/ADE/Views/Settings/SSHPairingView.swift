@@ -43,7 +43,6 @@ struct SSHPairingView: View {
         Button("Connect", action: beginPairing)
           .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           .disabled(connectDisabled)
-          .opacity(connectDisabled ? 0.5 : 1)
           .padding(.horizontal, 16)
           .padding(.vertical, 10)
           .background(ADEColor.pageBackground)

@@ -853,21 +853,6 @@ struct ADETailscaleOffHintCard: View {
   }
 }
 
-struct ADEStatusPill: View {
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    Text(text)
-      .font(.system(.caption2, design: .monospaced).weight(.semibold))
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-      .foregroundStyle(tint)
-      .accessibilityLabel("Status: \(text)")
-  }
-}
-
 private let projectIconImageCache = NSCache<NSString, UIImage>()
 
 /// Decodes a base64 `data:` URL project icon into a `UIImage`, memoised in a
@@ -935,8 +920,7 @@ struct ADEHubBackButton: View {
       .padding(.leading, 8)
       .padding(.trailing, 6)
       // The kit's quiet round top-bar chrome, like `ADEKitCircleIcon`.
-      .background(ADEColor.cardBackground.opacity(0.72), in: Capsule())
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .adeKitChrome(in: Capsule())
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
@@ -967,8 +951,7 @@ struct ADERootToolbarControls: View {
       .animation(.snappy(duration: 0.2), value: drawer.unreadCount)
       // The kit's quiet round top-bar chrome (`ADEKitCircleIcon`), so the
       // root tabs' bell matches the Hub's: calm fill, hairline, no glow.
-      .background(ADEColor.cardBackground.opacity(0.72), in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .adeKitChrome(in: Capsule(style: .continuous))
       .fixedSize(horizontal: true, vertical: false)
   }
 

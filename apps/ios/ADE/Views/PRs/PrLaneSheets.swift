@@ -107,7 +107,6 @@ struct PrAutoMapSheet: View {
       }
       .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(!createEnabled)
-      .opacity(createEnabled ? 1 : 0.45)
     }
     .task(id: selectedMachineId) {
       await runPreflight()
@@ -254,7 +253,6 @@ struct PrLaneLinkSheet: View {
         }
         .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         .disabled(!canLink || selectedLaneId.isEmpty)
-        .opacity(!canLink || selectedLaneId.isEmpty ? 0.45 : 1)
 
         Button {
           onOpenGitHub()

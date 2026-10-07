@@ -16,7 +16,9 @@ struct WorkFiltersSection: View {
   @Binding var organization: WorkSessionOrganization
   /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
   var foldBusyLanes: Binding<Bool>? = nil
-  @Binding var filterOpen: Bool
+  let filterOpen: Bool
+  /// Status, lane and machine filters applied (`workActiveFilterCount`).
+  let activeFilterCount: Int
   /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
   var machineFilter: Binding<String> = .constant("")
   var machineOptions: [WorkMachineFilterOption] = []
@@ -35,12 +37,6 @@ struct WorkFiltersSection: View {
     return machineOptions + stale
   }
 
-  private var activeFilterCount: Int {
-    (selectedStatus != .all ? 1 : 0)
-      + (selectedLaneId != "all" ? 1 : 0)
-      + selectedMachines.count
-  }
-
   private var hasActiveFilters: Bool {
     activeFilterCount > 0
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -48,7 +44,14 @@ struct WorkFiltersSection: View {
 
   private var selectedLaneName: String {
     guard selectedLaneId != "all" else { return "All lanes" }
-    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+    return lanes.first(where: { $0.id == selectedLaneId }).map(laneMenuTitle) ?? "All lanes"
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the picker entry (never in a title).
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
   }
 
   var body: some View {
@@ -138,7 +141,7 @@ struct WorkFiltersSection: View {
             Picker("Lane", selection: $selectedLaneId) {
               Text("All lanes").tag("all")
               ForEach(lanes) { lane in
-                Text(lane.name).tag(lane.id)
+                Text(laneMenuTitle(lane)).tag(lane.id)
               }
             }
           }
@@ -193,12 +196,10 @@ struct WorkFiltersSection: View {
       .padding(.horizontal, 10)
       .frame(height: 32)
       .frame(maxWidth: .infinity)
-      .background(ADEColor.textPrimary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(active ? ADEColor.accent.opacity(0.4) : ADEColor.glassBorder, lineWidth: 0.6)
+      .adeKitPill(
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous),
+        edge: active ? ADEColor.accent.opacity(0.4) : ADEKit.edge
       )
-      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
   }
 
@@ -303,89 +304,6 @@ private extension View {
   }
 }
 
-struct WorkFilterChip: View {
-  let title: String
-  let selected: Bool
-  let tint: Color
-  var systemImage: String? = nil
-  /// Small leading status dot (or a machine's online dot on its icon).
-  var dot: Color? = nil
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 5) {
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: 10, weight: .semibold))
-            .overlay(alignment: .bottomTrailing) {
-              if let dot {
-                Circle().fill(dot).frame(width: 5, height: 5).offset(x: 2, y: 1)
-              }
-            }
-        } else if let dot {
-          Circle().fill(dot).frame(width: 6, height: 6)
-        }
-        Text(title)
-          .lineLimit(1)
-      }
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .frame(height: 28)
-      .background(
-        selected ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5),
-        in: Capsule(style: .continuous)
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(selected ? tint.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.6)
-      )
-      .contentShape(Capsule(style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .accessibilityAddTraits(selected ? .isSelected : [])
-  }
-}
-
-struct WorkFilterMenuLabel: View {
-  let icon: String
-  let title: String
-  let value: String
-
-  var body: some View {
-    HStack(spacing: 7) {
-      Image(systemName: icon)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        Text(value)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          // Tail, never middle. Middle truncation eats the distinguishing middle
-          // of a name and leaves two fragments that read as one mangled word.
-          .truncationMode(.tail)
-      }
-      Spacer(minLength: 0)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .frame(maxWidth: .infinity)
-    .background(ADEColor.surfaceBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
-  }
-}
-
 /// Matches desktop `StickyGroupHeader`: chevron + semantic icon + label + count badge. Tap to
 /// collapse or expand the section body in the parent list.
 struct WorkSidebarSectionHeader: View {
@@ -467,6 +385,9 @@ struct WorkSidebarSectionHeader: View {
               .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
               .foregroundStyle(quietAwareLabelColor)
               .lineLimit(1)
+            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
+              WorkRemoteLaneGlyph()
+            }
           }
 
           // Beside the name, not in the trailing cluster: there it sat next to
@@ -2003,14 +1924,22 @@ private struct WorkHeaderOverflowMenu: View {
 
 /// A lane's rolled-up status as one dot in the board column's accent — the same
 /// accents as the status chips (`statusFilterTint`) and the desktop board.
+/// Marks a lane that lives on another machine, after its name: two machines'
+/// lanes can share a name, and the machine never goes in the title.
+struct WorkRemoteLaneGlyph: View {
+  var body: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 9, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+      .accessibilityLabel("On another machine")
+  }
+}
+
 struct WorkLaneFocusDot: View {
   let status: WorkLaneFocusStatus
 
   var body: some View {
-    Circle()
-      .fill(color)
-      .frame(width: 6, height: 6)
-      .accessibilityHidden(true)
+    ADEKitDot(color: color)
   }
 
   private var color: Color {

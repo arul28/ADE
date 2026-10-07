@@ -35,7 +35,6 @@ struct SettingsMachineRenameSheet: View {
           Button("Save") { save(trimmedName) }
             .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
             .disabled(isSaving || !isValidName)
-            .opacity(isSaving || !isValidName ? 0.5 : 1)
 
           if machine.customName != nil {
             Button("Use hostname") { save(nil) }

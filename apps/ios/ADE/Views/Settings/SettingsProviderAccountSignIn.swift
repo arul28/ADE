@@ -373,7 +373,6 @@ struct ProviderAccountSignInSheet: View {
       }
       .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .disabled(!hasCode || controller.submitting)
-      .opacity(hasCode ? 1 : 0.45)
       .padding(.top, 4)
     }
   }

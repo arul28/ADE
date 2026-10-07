@@ -373,9 +373,7 @@ struct WorkSessionTypeSwitcher: View {
           .frame(minHeight: 30)
           .background {
             if isSelected {
-              RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(ADEKit.surface)
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+              ADEKitSegmentThumb()
             }
           }
           .contentShape(Rectangle())
@@ -386,8 +384,7 @@ struct WorkSessionTypeSwitcher: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .padding(2)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .adeKitSegmentTrack()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Session type")
   }
@@ -950,8 +947,7 @@ struct WorkNewChatScreen: View {
           }
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
-          .background(ADEKit.surface, in: Capsule(style: .continuous))
-          .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+          .adeKitPill()
           .transition(.opacity)
         }
 

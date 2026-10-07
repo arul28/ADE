@@ -113,8 +113,7 @@ struct WorkNewChatMachineDropdown: View {
       }
       .padding(.horizontal, 12)
       .frame(height: 34)
-      .background(ADEKit.surface, in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+      .adeKitPill()
       .contentShape(Capsule(style: .continuous))
     }
     .accessibilityLabel("Machine")

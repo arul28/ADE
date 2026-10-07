@@ -180,14 +180,14 @@ struct PrLaneChip: View {
 
   var body: some View {
     if let laneName, !laneName.isEmpty {
-      ADEFlatChip(
+      ADEKitChip(
         symbol: machineName == nil ? "arrow.triangle.branch" : "desktopcomputer",
         text: laneName,
         tint: ADEColor.textSecondary
       )
       .accessibilityLabel(machineName.map { "Lane \(laneName) on \($0)" } ?? "Lane \(laneName)")
     } else if let ghostLaneName, !ghostLaneName.isEmpty {
-      ADEFlatChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
+      ADEKitChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
         .accessibilityLabel("Built in lane \(ghostLaneName), now deleted")
     }
   }
@@ -327,11 +327,9 @@ struct PrRowCiGlyph: View {
     switch indicator.glyph {
     case .symbol:
       // CI is a coloured dot (desktop `.kit-dot`); the detail has the counts.
-      Circle()
-        .fill(indicator.color)
-        .frame(width: 7, height: 7)
+      ADEKitDot(color: indicator.color, size: 7)
         .frame(width: 12, height: 12)
-        .accessibilityElement()
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(indicator.title)
     case .hollowRing:
       Circle()

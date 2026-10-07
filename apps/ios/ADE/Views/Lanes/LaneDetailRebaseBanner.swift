@@ -34,7 +34,6 @@ struct LaneDetailRebaseBanner: View {
         Button("Rebase", action: onViewRebase)
           .buttonStyle(ADEKitButtonStyle(tone: .warn))
           .disabled(!canRunLiveActions)
-          .opacity(canRunLiveActions ? 1.0 : 0.55)
         Button("Dismiss", action: onDismiss)
           .buttonStyle(ADEKitButtonStyle())
         Spacer(minLength: 0)

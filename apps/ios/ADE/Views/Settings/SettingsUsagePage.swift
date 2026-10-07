@@ -323,9 +323,8 @@ struct SettingsUsagePage: View {
                 if let assetName = provider.assetName {
                   ADEProviderMark(assetName: assetName, size: 15)
                 } else {
-                  Circle().fill(provider.color).frame(width: 8, height: 8)
+                  ADEKitDot(color: provider.color, size: 8)
                     .frame(width: 15)
-                    .accessibilityHidden(true)
                 }
                 Text(provider.label)
                   .font(.system(size: 14))

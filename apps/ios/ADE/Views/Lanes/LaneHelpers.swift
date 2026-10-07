@@ -5,17 +5,17 @@ import SwiftUI
 @ViewBuilder
 func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
   if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-    LaneTypeBadge(text: "Conflict", tint: ADEColor.danger)
+    ADEKitTag(text: "Conflict", color: ADEColor.danger)
   } else if snapshot.lane.status.dirty {
-    LaneTypeBadge(text: "Dirty", tint: ADEColor.warning)
+    ADEKitTag(text: "Dirty", color: ADEColor.warning)
   } else if snapshot.runtime.bucket == "running" {
-    LaneTypeBadge(text: "Running", tint: ADEColor.success)
+    ADEKitTag(text: "Running", color: ADEColor.success)
   } else if snapshot.runtime.bucket == "awaiting-input" {
-    LaneTypeBadge(text: "Activity", tint: ADEColor.warning)
+    ADEKitTag(text: "Activity", color: ADEColor.warning)
   } else if snapshot.lane.archivedAt != nil {
-    LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    ADEKitTag(text: "Archived")
   } else if let rebaseSuggestion = snapshot.rebaseSuggestion {
-    LaneTypeBadge(text: "\(rebaseSuggestion.behindCount)\u{2193}", tint: ADEColor.warning)
+    ADEKitTag(text: "\(rebaseSuggestion.behindCount)\u{2193}", color: ADEColor.warning)
   } else {
     EmptyView()
   }

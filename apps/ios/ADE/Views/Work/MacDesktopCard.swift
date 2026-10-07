@@ -59,7 +59,7 @@ struct MacDesktopCard: View {
   @ViewBuilder
   private var card: some View {
     if let macDesktop = macDesktop, macDesktop.supported {
-      ADEGlassSection(title: macDesktop.windowsDesktop == nil ? "macOS" : "Windows", subtitle: macDesktopSubtitle(macDesktop)) {
+      ADEKitCard(title: macDesktop.windowsDesktop == nil ? "macOS" : "Windows", hint: macDesktopSubtitle(macDesktop)) {
         if let display = macDesktop.display {
           VStack(alignment: .leading, spacing: 10) {
             macDesktopChips(macDesktop, display: display)
@@ -230,7 +230,7 @@ struct MacDesktopCard: View {
       if macDesktop.recording?.running == true {
         // Its own badge rather than a chip, as on the Apple card: a recording
         // in progress is the one fact here that can surprise someone.
-        ADEGlassStatusBadge(text: "Recording", tint: ADEColor.danger)
+        ADEKitTag(text: "Recording", color: ADEColor.danger)
       }
       Spacer(minLength: 0)
     }

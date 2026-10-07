@@ -164,7 +164,7 @@ struct WorkToolsSheet: View {
   @ViewBuilder
   private var lastFrameCard: some View {
     if latestObservation != nil {
-      ADEGlassSection(title: "Last frame", subtitle: latestObservation?.caption) {
+      ADEKitCard(title: "Last frame", hint: latestObservation?.caption) {
         switch frameState {
         case .image:
           if let frame {
@@ -198,7 +198,7 @@ struct WorkToolsSheet: View {
 
   @ViewBuilder
   private var browserCard: some View {
-    ADEGlassSection(title: "Browser", subtitle: browserSubtitle) {
+    ADEKitCard(title: "Browser", hint: browserSubtitle) {
       // Leads the card, above the handoff bar and the tabs: "an agent is on this
       // right now" changes how everything under it reads. One line, no count —
       // which chat it is is the desktop's business, and the phone cannot open
@@ -467,10 +467,10 @@ private struct WorkToolsTabRow: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if tab.active {
-          ADEGlassStatusBadge(text: "Active", tint: ADEColor.accent)
+          ADEKitTag(text: "Active", color: ADEColor.accent)
         }
         if tab.recording {
-          ADEGlassStatusBadge(text: "Recording", tint: ADEColor.danger)
+          ADEKitTag(text: "Recording", color: ADEColor.danger)
         }
         Spacer(minLength: 0)
       }

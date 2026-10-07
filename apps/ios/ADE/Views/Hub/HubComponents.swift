@@ -213,8 +213,7 @@ struct HubConnectionPill: View {
       .foregroundStyle(ADEColor.textPrimary)
       .padding(.horizontal, 9)
       .frame(height: 34)
-      .background(ADEColor.cardBackground.opacity(0.72), in: Capsule())
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .adeKitChrome(in: Capsule())
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
@@ -838,6 +837,9 @@ struct HubLaneSection: View, Equatable {
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)
+          if isWorkRemoteLaneId(lane.id) {
+            WorkRemoteLaneGlyph()
+          }
           Spacer(minLength: 6)
           // The whole trailing edge, in the same glyph+count language as the
           // project header above it. It replaced a live summary followed by a

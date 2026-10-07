@@ -60,17 +60,17 @@ struct PrMobileWorkflowCardView: View {
 
     HStack(spacing: 6) {
       if let status = card.integrationStatus {
-        ADEStatusPill(text: status.uppercased(), tint: ADEColor.accent)
+        ADEKitTag(text: status, color: ADEColor.accent)
       }
       if let workflowDisplayState = card.workflowDisplayState {
-        ADEStatusPill(text: workflowDisplayState.uppercased(), tint: ADEColor.textSecondary)
+        ADEKitTag(text: workflowDisplayState)
       }
       if let cleanupState = card.cleanupState {
-        ADEStatusPill(text: cleanupState.uppercased(), tint: ADEColor.warning)
+        ADEKitTag(text: cleanupState, color: ADEColor.warning)
       }
       Spacer(minLength: 0)
       if let outcome = card.overallOutcome {
-        ADEStatusPill(text: outcome.uppercased(), tint: outcome == "clean" ? ADEColor.success : ADEColor.warning)
+        ADEKitTag(text: outcome, color: outcome == "clean" ? ADEColor.success : ADEColor.warning)
       }
     }
 
@@ -78,9 +78,9 @@ struct PrMobileWorkflowCardView: View {
       VStack(alignment: .leading, spacing: 8) {
         ForEach(lanes.prefix(6)) { lane in
           HStack(spacing: 10) {
-            ADEStatusPill(
-              text: lane.outcome.replacingOccurrences(of: "_", with: " ").uppercased(),
-              tint: lane.outcome == "clean" ? ADEColor.success : ADEColor.warning
+            ADEKitTag(
+              text: lane.outcome.replacingOccurrences(of: "_", with: " "),
+              color: lane.outcome == "clean" ? ADEColor.success : ADEColor.warning
             )
             VStack(alignment: .leading, spacing: 2) {
               Text(lane.laneName)

@@ -73,8 +73,7 @@ struct FilesWorkspacePickerDropdown: View {
     }
     .padding(.horizontal, isCompact ? 12 : 14)
     .padding(.vertical, isCompact ? 5 : 6)
-    .background(ADEKit.surface, in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitPill()
     .frame(maxWidth: .infinity)
   }
 

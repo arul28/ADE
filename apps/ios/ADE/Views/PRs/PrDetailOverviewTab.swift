@@ -385,11 +385,11 @@ struct PrThreadPage: View {
             .truncationMode(.middle)
           Spacer(minLength: 6)
           if thread.isResolved {
-            ADEFlatBadge(text: "resolved", tint: ADEColor.success)
+            ADEKitTag(text: "resolved", color: ADEColor.success)
           } else if thread.isOutdated {
-            ADEFlatBadge(text: "outdated", tint: ADEColor.textMuted)
+            ADEKitTag(text: "outdated")
           } else {
-            ADEFlatBadge(text: "open", tint: ADEColor.warning)
+            ADEKitTag(text: "open", color: ADEColor.warning)
           }
         }
         .adeFlatRow(separator: .hidden)

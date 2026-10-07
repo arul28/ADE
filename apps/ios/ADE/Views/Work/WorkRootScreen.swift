@@ -130,11 +130,6 @@ struct WorkSessionRoute: Hashable {
   var openingAttachments: [AgentChatFileRef] = []
 }
 
-struct WorkDraftChatSession {
-  let summary: AgentChatSessionSummary
-  let initialMessage: String?
-}
-
 /// What re-runs the presentation rebuild. Scalars only: the list's own rows
 /// are represented by `projectionDataRevision`, which bumps whenever any of the
 /// five row sources changes, so no body evaluation compares whole arrays.
@@ -736,7 +731,8 @@ struct WorkRootListScreen: View, Equatable {
       selectedStatus: selectedStatusBinding,
       organization: sessionOrganizationBinding,
       foldBusyLanes: foldBusyLanesBinding,
-      filterOpen: $filterPanelOpen,
+      filterOpen: filterPanelOpen,
+      activeFilterCount: workActiveFilterCount,
       machineFilter: machineFilterBinding,
       machineOptions: inputs.machineFilterOptions,
       lanes: workOrderedLanes,

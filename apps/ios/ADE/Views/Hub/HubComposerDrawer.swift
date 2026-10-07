@@ -405,8 +405,7 @@ struct HubInlineComposer: View {
       .frame(minHeight: 36)
       // Floats over the list behind the scrim, so it sits on the solid kit
       // surface rather than a translucent track.
-      .background(ADEKit.surface, in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+      .adeKitPill()
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)

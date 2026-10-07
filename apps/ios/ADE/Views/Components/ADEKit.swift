@@ -32,6 +32,10 @@ enum ADEKit {
   static var fill: Color { ADEColor.textPrimary.opacity(0.42) }
   /// Pressed / hovered row (`--kit-hover`).
   static var pressed: Color { ADEColor.textPrimary.opacity(0.055) }
+  /// Top-bar chrome plane (round icon buttons, title chips).
+  static var chromeFill: Color { ADEColor.cardBackground.opacity(0.72) }
+  /// Top-bar chrome edge, drawn 1pt.
+  static var chromeEdge: Color { ADEColor.border.opacity(0.8) }
 }
 
 /// The only colours the kit adds: status and the accent on the selected thing.
@@ -54,9 +58,10 @@ enum ADEKitTone: Equatable {
 /// The box (`.kit-card`): calm surface, hairline edge, rounded corners.
 struct ADEKitCardModifier: ViewModifier {
   var padding: CGFloat?
+  var radius: CGFloat = ADEKit.radius
 
   func body(content: Content) -> some View {
-    let shape = RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
     content
       .padding(padding ?? 0)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,9 +72,10 @@ struct ADEKitCardModifier: ViewModifier {
 }
 
 extension View {
-  /// Wraps the view in the kit card. `padding: nil` keeps content flush.
-  func adeKitCard(padding: CGFloat? = ADEKit.inset) -> some View {
-    modifier(ADEKitCardModifier(padding: padding))
+  /// Wraps the view in the kit card. `padding: nil` keeps content flush;
+  /// `radius` is for small tiles (keypad keys) inside a card.
+  func adeKitCard(padding: CGFloat? = ADEKit.inset, radius: CGFloat = ADEKit.radius) -> some View {
+    modifier(ADEKitCardModifier(padding: padding, radius: radius))
   }
 }
 
@@ -78,6 +84,8 @@ struct ADEKitCard<Content: View, Action: View>: View {
   let title: String
   var symbol: String?
   var count: String?
+  /// One muted line under the head (a short status, never a paragraph).
+  var hint: String?
   var flush = false
   @ViewBuilder var action: () -> Action
   @ViewBuilder var content: () -> Content
@@ -85,6 +93,15 @@ struct ADEKitCard<Content: View, Action: View>: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       ADEKitCardHead(title: title, symbol: symbol, count: count, action: action)
+      if let hint, !hint.isEmpty {
+        Text(hint)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.top, -6)
+          .padding(.bottom, 10)
+      }
       content()
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, flush ? 0 : ADEKit.inset)
@@ -95,8 +112,8 @@ struct ADEKitCard<Content: View, Action: View>: View {
 }
 
 extension ADEKitCard where Action == EmptyView {
-  init(title: String, symbol: String? = nil, count: String? = nil, flush: Bool = false, @ViewBuilder content: @escaping () -> Content) {
-    self.init(title: title, symbol: symbol, count: count, flush: flush, action: { EmptyView() }, content: content)
+  init(title: String, symbol: String? = nil, count: String? = nil, hint: String? = nil, flush: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+    self.init(title: title, symbol: symbol, count: count, hint: hint, flush: flush, action: { EmptyView() }, content: content)
   }
 }
 
@@ -178,37 +195,68 @@ struct ADEKitStat: View {
 
 // MARK: - Status
 
-/// A 6pt status dot (`.kit-dot`).
+/// A 6pt status dot (`.kit-dot`). `color` overrides the tone for a hue that
+/// already carries meaning (a GitHub state, a webhook result).
 struct ADEKitDot: View {
   var tone: ADEKitTone = .ok
+  var color: Color? = nil
   var size: CGFloat = 6
 
   var body: some View {
     Circle()
-      .fill(tone == .neutral ? ADEColor.textMuted.opacity(0.55) : tone.color)
+      .fill(color ?? (tone == .neutral ? ADEColor.textMuted.opacity(0.55) : tone.color))
       .frame(width: size, height: size)
       .accessibilityHidden(true)
   }
 }
 
-/// A small tinted pill (`.kit-tag`): mono caps, 18pt tall.
+/// A small tinted pill (`.kit-tag`): mono caps, 18pt tall. `color` tints it
+/// with a hue that already carries meaning instead of a kit tone.
 struct ADEKitTag: View {
   let text: String
   var tone: ADEKitTone = .neutral
+  var color: Color? = nil
 
   var body: some View {
+    let tint = color ?? (tone == .neutral ? ADEColor.textSecondary : tone.color)
     Text(text.uppercased())
       .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
       .tracking(0.5)
-      .foregroundStyle(tone == .neutral ? ADEColor.textSecondary : tone.color)
+      .foregroundStyle(tint)
       .padding(.horizontal, 6)
       .frame(height: 18)
       .background(
-        (tone == .neutral ? ADEColor.textPrimary.opacity(0.07) : tone.color.opacity(0.14)),
+        (color == nil && tone == .neutral) ? ADEColor.textPrimary.opacity(0.07) : tint.opacity(0.14),
         in: RoundedRectangle(cornerRadius: 4, style: .continuous)
       )
       .lineLimit(1)
       .fixedSize()
+  }
+}
+
+/// A quiet inline chip (lane, machine, branch) on a row's detail line:
+/// sentence case, optional glyph, neutral plane.
+struct ADEKitChip: View {
+  let symbol: String?
+  let text: String
+  var tint: Color = ADEColor.textSecondary
+  var mono = false
+
+  var body: some View {
+    HStack(spacing: 4) {
+      if let symbol {
+        Image(systemName: symbol)
+          .font(.system(size: 9.5, weight: .semibold))
+      }
+      Text(text)
+        .font(mono ? .adeMono(11) : .caption)
+        .lineLimit(1)
+        .truncationMode(.middle)
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+    .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
   }
 }
 
@@ -308,9 +356,7 @@ struct ADEKitSegmented<Value: Hashable>: View {
             .frame(maxWidth: .infinity, minHeight: 30)
             .background {
               if selected {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                  .fill(ADEKit.surface)
-                  .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                ADEKitSegmentThumb()
               }
             }
             .contentShape(Rectangle())
@@ -319,33 +365,66 @@ struct ADEKitSegmented<Value: Hashable>: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
     }
-    .padding(2)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .adeKitSegmentTrack()
   }
 }
 
-/// The label of a menu-button control: current value plus an up/down chevron.
-struct ADEKitMenuLabel: View {
-  let title: String
-  var symbol: String?
+/// The raised option of a segmented track (`.kit-seg` thumb).
+struct ADEKitSegmentThumb: View {
+  var radius: CGFloat = 7
 
   var body: some View {
-    HStack(spacing: 5) {
-      if let symbol {
-        Image(systemName: symbol).font(.system(size: 11, weight: .medium))
-      }
-      Text(title)
-        .font(.system(size: 13, weight: .medium))
-        .lineLimit(1)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .foregroundStyle(ADEColor.textPrimary)
-    .padding(.horizontal, 10)
-    .frame(height: 30)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .contentShape(Rectangle())
+    let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+    shape
+      .fill(ADEKit.surface)
+      .overlay(shape.strokeBorder(ADEKit.edge, lineWidth: 0.75))
+  }
+}
+
+/// A calm pill control (menu trigger, picker): kit surface, hairline edge.
+struct ADEKitPillModifier<S: InsettableShape>: ViewModifier {
+  let shape: S
+  var edge: Color
+
+  func body(content: Content) -> some View {
+    content
+      .background(ADEKit.surface, in: shape)
+      .overlay(shape.strokeBorder(edge, lineWidth: 0.75))
+      .contentShape(shape)
+  }
+}
+
+/// The quiet chrome of a top-bar control: a translucent card plane, 1pt edge.
+struct ADEKitChromeModifier<S: InsettableShape>: ViewModifier {
+  let shape: S
+
+  func body(content: Content) -> some View {
+    content
+      .background(ADEKit.chromeFill, in: shape)
+      .overlay(shape.strokeBorder(ADEKit.chromeEdge, lineWidth: 1))
+  }
+}
+
+extension View {
+  /// The track a segmented control's options sit on.
+  func adeKitSegmentTrack(radius: CGFloat = 9) -> some View {
+    padding(2)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+  }
+
+  /// A capsule pill control.
+  func adeKitPill(edge: Color = ADEKit.edge) -> some View {
+    modifier(ADEKitPillModifier(shape: Capsule(style: .continuous), edge: edge))
+  }
+
+  /// A pill control in another shape (e.g. a rounded rect in a form grid).
+  func adeKitPill<S: InsettableShape>(in shape: S, edge: Color = ADEKit.edge) -> some View {
+    modifier(ADEKitPillModifier(shape: shape, edge: edge))
+  }
+
+  /// Top-bar chrome (`.kit-icon-btn` plane) in the given shape.
+  func adeKitChrome<S: InsettableShape>(in shape: S) -> some View {
+    modifier(ADEKitChromeModifier(shape: shape))
   }
 }
 
@@ -372,6 +451,104 @@ struct ADEKitButtonStyle: ButtonStyle {
       )
       .opacity(configuration.isPressed ? 0.7 : 1)
       .contentShape(Capsule(style: .continuous))
+      .modifier(ADEKitDisabledDim())
+  }
+}
+
+/// Custom button styles do not dim when disabled; this does, from the
+/// environment the button sets.
+private struct ADEKitDisabledDim: ViewModifier {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func body(content: Content) -> some View {
+    content.opacity(isEnabled ? 1 : 0.45)
+  }
+}
+
+/// A small capsule action with a glyph: a neutral track, or a light wash of
+/// a meaningful tint.
+struct ADEKitActionButton: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let action: () -> Void
+
+  init(title: String, symbol: String, tint: Color = ADEColor.textSecondary, action: @escaping () -> Void) {
+    self.title = title
+    self.symbol = symbol
+    self.tint = tint
+    self.action = action
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .semibold))
+        Text(title)
+          .font(.caption.weight(.medium))
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .frame(minHeight: 30)
+      // The kit pill: a neutral track, or a light wash of a meaningful tint.
+      .background(tint == ADEColor.textSecondary ? ADEKit.track : tint.opacity(0.12), in: Capsule())
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// A capsule action that runs only after a long press (destructive actions).
+struct ADEKitHoldButton: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let holdHint: String
+  let minimumDuration: Double
+  let action: () -> Void
+
+  @State private var isPressing = false
+
+  init(
+    title: String,
+    symbol: String,
+    tint: Color = ADEColor.danger,
+    holdHint: String = "Hold to confirm",
+    minimumDuration: Double = 0.5,
+    action: @escaping () -> Void
+  ) {
+    self.title = title
+    self.symbol = symbol
+    self.tint = tint
+    self.holdHint = holdHint
+    self.minimumDuration = minimumDuration
+    self.action = action
+  }
+
+  var body: some View {
+    HStack(spacing: 5) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .semibold))
+      Text(isPressing ? holdHint : title)
+        .font(.caption.weight(.medium))
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 10)
+    .frame(minHeight: 30)
+    .background((isPressing ? tint.opacity(0.2) : tint.opacity(0.12)), in: Capsule())
+    .contentShape(Capsule())
+    .onLongPressGesture(
+      minimumDuration: minimumDuration,
+      maximumDistance: 24,
+      pressing: { pressing in
+        withAnimation(.easeOut(duration: 0.15)) {
+          isPressing = pressing
+        }
+      },
+      perform: action
+    )
+    .accessibilityLabel("\(title). Hold to confirm.")
   }
 }
 
@@ -390,8 +567,7 @@ struct ADEKitCircleIcon: View {
       .font(.system(size: 15, weight: .semibold))
       .foregroundStyle(emphasized ? ADEColor.textPrimary : ADEColor.textSecondary)
       .frame(width: size, height: size)
-      .background(ADEColor.cardBackground.opacity(0.72), in: Circle())
-      .overlay(Circle().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .adeKitChrome(in: Circle())
       .overlay(alignment: .topTrailing) {
         if let badge {
           Text(badge)
@@ -459,9 +635,7 @@ struct ADEKitCountSegments<Value: Hashable>: View {
           .frame(maxWidth: .infinity, minHeight: option.title == nil ? 30 : 40)
           .background {
             if selected {
-              RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(ADEKit.surface)
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+              ADEKitSegmentThumb()
             }
           }
           .contentShape(Rectangle())
@@ -471,8 +645,7 @@ struct ADEKitCountSegments<Value: Hashable>: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
     }
-    .padding(2)
-    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .adeKitSegmentTrack()
   }
 }
 
@@ -500,6 +673,7 @@ struct ADEKitRowButtonStyle: ButtonStyle {
     configuration.label
       .contentShape(Rectangle())
       .background(configuration.isPressed ? ADEKit.pressed : Color.clear)
+      .modifier(ADEKitDisabledDim())
   }
 }
 
@@ -537,25 +711,7 @@ struct ADESettingsSection<Content: View, Trailing: View>: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       if title != nil || hint != nil {
-        HStack(alignment: .bottom, spacing: 8) {
-          VStack(alignment: .leading, spacing: 2) {
-            if let title {
-              Text(title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-            }
-            if let hint {
-              Text(hint)
-                .font(.system(size: 12.5))
-                .foregroundStyle(ADEColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-          }
-          Spacer(minLength: 8)
-          trailing()
-        }
-        .padding(.horizontal, 4)
-        .accessibilityElement(children: .contain)
+        ADESettingsHeader(title: title, hint: hint, trailing: trailing)
       }
       content()
     }
@@ -724,7 +880,6 @@ struct ADESettingsActionRow: View {
     }
     .buttonStyle(ADEKitRowButtonStyle())
     .disabled(disabled)
-    .opacity(disabled ? 0.45 : 1)
   }
 }
 
@@ -783,35 +938,43 @@ extension View {
   }
 }
 
-/// A section header for `adeSettingsList()`: title, one hint, trailing control.
-struct ADESettingsListHeader<Trailing: View>: View {
-  let title: String
+/// A settings section header: title, at most one hint line, optional trailing
+/// control. Drawn above `ADESettingsRows`, or (`inList`) as a List section header.
+struct ADESettingsHeader<Trailing: View>: View {
+  var title: String?
   var hint: String?
+  var inList = false
   @ViewBuilder var trailing: () -> Trailing
 
   var body: some View {
     HStack(alignment: .bottom, spacing: 8) {
       VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+        if let title {
+          Text(title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+        }
         if let hint {
           Text(hint)
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
       Spacer(minLength: 8)
       trailing()
     }
     .textCase(nil)
-    .padding(.leading, -6)
-    .padding(.bottom, 2)
+    .padding(.leading, inList ? -6 : 4)
+    .padding(.trailing, inList ? 0 : 4)
+    .padding(.bottom, inList ? 2 : 0)
+    .accessibilityElement(children: .contain)
   }
 }
 
-extension ADESettingsListHeader where Trailing == EmptyView {
+extension ADESettingsHeader where Trailing == EmptyView {
+  /// A List section header (`adeSettingsList()`).
   init(_ title: String, hint: String? = nil) {
-    self.init(title: title, hint: hint, trailing: { EmptyView() })
+    self.init(title: title, hint: hint, inList: true, trailing: { EmptyView() })
   }
 }

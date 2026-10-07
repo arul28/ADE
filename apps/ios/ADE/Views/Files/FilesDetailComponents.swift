@@ -246,7 +246,7 @@ struct FilesHistoryEntryCard: View {
 
         Spacer(minLength: 8)
 
-        ADEStatusPill(text: historyChangeTypeLabel(entry.changeType).uppercased(), tint: historyChangeTypeTint(entry.changeType))
+        ADEKitTag(text: historyChangeTypeLabel(entry.changeType), color: historyChangeTypeTint(entry.changeType))
       }
 
       if let previousPath = entry.previousPath, !previousPath.isEmpty, previousPath != entry.path {

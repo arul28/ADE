@@ -102,48 +102,6 @@ struct ADEFlatInlineNotice: View {
   }
 }
 
-/// A state badge such as MERGED or DRAFT: outlined caps, like the desktop.
-struct ADEFlatBadge: View {
-  let text: String
-  var tint: Color = ADEColor.accent
-
-  var body: some View {
-    Text(text.uppercased())
-      .font(.system(size: 10, weight: .semibold, design: .monospaced))
-      .tracking(0.6)
-      .foregroundStyle(tint)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 2)
-      .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-      .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).stroke(tint.opacity(0.35), lineWidth: 0.75))
-  }
-}
-
-/// A quiet inline chip (lane, machine, branch) on a row's detail line.
-struct ADEFlatChip: View {
-  let symbol: String?
-  let text: String
-  var tint: Color = ADEColor.textSecondary
-  var mono = false
-
-  var body: some View {
-    HStack(spacing: 4) {
-      if let symbol {
-        Image(systemName: symbol)
-          .font(.system(size: 9.5, weight: .semibold))
-      }
-      Text(text)
-        .font(mono ? .adeMono(11) : .caption)
-        .lineLimit(1)
-        .truncationMode(.middle)
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 6)
-    .padding(.vertical, 2)
-    .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-  }
-}
-
 /// A short action result ("Branch deleted") shown as a glass toast.
 struct ADEToastMessage: Equatable, Identifiable {
   enum Kind { case success, failure, info }

@@ -238,7 +238,6 @@ struct LaneBranchPickerSheet: View {
         }
         .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         .disabled(checkingOut || normalizedCreateName.isEmpty || branchNameValidationReason != nil)
-        .opacity(canCreateBranch ? 1 : 0.5)
       }
     }
   }
@@ -376,7 +375,7 @@ struct LaneBranchPickerSheet: View {
         if current {
           ADEKitTag(text: "Current", tone: .ok)
         } else if let owner {
-          LaneTypeBadge(text: owner, tint: ADEColor.warning)
+          ADEKitTag(text: owner, color: ADEColor.warning)
         } else if branch.profiledInCurrentLane == true {
           ADEKitTag(text: "Used here")
         }

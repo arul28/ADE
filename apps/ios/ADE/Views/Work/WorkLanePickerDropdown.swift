@@ -142,8 +142,7 @@ struct WorkLanePickerDropdown: View {
     .padding(.leading, 14)
     .padding(.trailing, 4)
     .padding(.vertical, triggerBranchLabel == nil ? 10 : 9)
-    .background(ADEKit.surface, in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitPill()
     .frame(minWidth: 180, maxWidth: 320)
   }
 
@@ -158,8 +157,7 @@ struct WorkLanePickerDropdown: View {
     .frame(height: 34)
     // Solid kit surface, as the Hub composer's destination control: the lane's
     // colour stays on its mark.
-    .background(ADEKit.surface, in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitPill()
     .frame(maxWidth: 300)
     .fixedSize(horizontal: false, vertical: true)
     .contentShape(Capsule(style: .continuous))

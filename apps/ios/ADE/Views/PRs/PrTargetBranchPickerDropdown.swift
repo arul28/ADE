@@ -90,8 +90,7 @@ struct PrTargetBranchPickerDropdown: View {
     .padding(.leading, 12)
     .padding(.trailing, 4)
     .padding(.vertical, subtitle?.isEmpty == false ? 5 : 6)
-    .background(ADEKit.surface, in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitPill()
     .frame(maxWidth: .infinity)
   }
 

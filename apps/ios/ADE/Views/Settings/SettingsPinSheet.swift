@@ -179,7 +179,6 @@ struct SettingsPinSheet: View {
         }
         .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         .disabled(!isComplete || isSubmitting)
-        .opacity(!isComplete || isSubmitting ? 0.5 : 1)
       }
     }
   }
@@ -499,8 +498,7 @@ private struct PinKeypad: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
-        .background(ADEKit.surface.opacity(isDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+        .adeKitCard(padding: nil, radius: 10)
         .accessibilityLabel("Delete digit")
       }
     }
@@ -552,8 +550,7 @@ private struct PinKeyButton: View {
     .buttonStyle(.plain)
     .disabled(isDisabled)
     .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
-        .background(ADEKit.surface.opacity(isDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .adeKitCard(padding: nil, radius: 10)
     .accessibilityLabel("Digit \(title)")
   }
 }

@@ -171,7 +171,7 @@ struct FilesTreeNodeRow: View {
           .adeMatchedGeometry(id: canTransition ? filesTransitionId(kind: "title", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
 
         if let changeStatus = node.changeStatus {
-          ADEStatusPill(text: changeStatus.uppercased(), tint: changeStatusTint(changeStatus))
+          ADEKitTag(text: changeStatus, color: changeStatusTint(changeStatus))
             .fixedSize(horizontal: true, vertical: false)
         }
 

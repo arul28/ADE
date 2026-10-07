@@ -91,6 +91,14 @@ func workParseRemoteLaneId(_ laneId: String) -> (machineKey: String, laneId: Str
   return (machineKey, plain)
 }
 
+/// The machine name of another machine's namespaced lane id, for a picker
+/// entry ("main — Studio"). Nil for a focused-machine lane or an unknown
+/// machine.
+func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOption]) -> String? {
+  guard let machineKey = workParseRemoteLaneId(laneId)?.machineKey else { return nil }
+  return options.first { $0.id == machineKey }?.name
+}
+
 /// The other machines' checkouts of the repository `identity`.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],

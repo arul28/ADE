@@ -54,19 +54,19 @@ struct LaneFileTreeSection: View {
       LazyVStack(alignment: .leading, spacing: 10) {
         HStack(spacing: 8) {
           if let bulkActionTitle, let onBulkAction, changes.count > 1 {
-            LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
+            ADEKitActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
               onBulkAction()
             }
             .disabled(!allowsLiveActions)
           }
           ForEach(extraBulkActions) { extra in
             if extra.isDestructive {
-              LaneHoldToConfirmButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+              ADEKitHoldButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
               .disabled(!allowsLiveActions)
             } else {
-              LaneActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+              ADEKitActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
               .disabled(!allowsLiveActions)
@@ -296,9 +296,7 @@ private struct LaneFileRow: View {
         onDiff()
       } label: {
         HStack(spacing: 9) {
-          Circle()
-            .fill(fileKindTint(file.kind))
-            .frame(width: 6, height: 6)
+          ADEKitDot(color: fileKindTint(file.kind))
           Text((file.path as NSString).lastPathComponent)
             .font(.adeMono(12.5))
             .foregroundStyle(ADEColor.textPrimary)
