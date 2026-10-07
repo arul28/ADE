@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.94] - 2026-10-07
+
+### Desktop
+
+- Project tabs stay on this computer's checkout; GitHub and Linear settings for every machine (#1500).
+- Updates, Repair and Reset actually bring ADE back (#1501).
+- iOS: stable fleet links, honest connect, remote chat models (#1502).
+
 ## [1.2.93] - 2026-10-06
 
 ### Desktop
@@ -2362,7 +2370,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.93...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.94...HEAD
+[1.2.94]: https://github.com/arul28/ADE/compare/v1.2.93...v1.2.94
 [1.2.93]: https://github.com/arul28/ADE/compare/v1.2.92...v1.2.93
 [1.2.92]: https://github.com/arul28/ADE/compare/v1.2.91...v1.2.92
 [1.2.91]: https://github.com/arul28/ADE/compare/v1.2.90...v1.2.91
