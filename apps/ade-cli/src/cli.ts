@@ -17997,6 +17997,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
+  // `chat handoff` keeps --machine (it names the move's destination, so it
+  // is not extracted for forwarding); a session given after it must not be
+  // read as the machine's value.
+  "--machine",
+  "--to-machine",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -23991,9 +23996,11 @@ async function runServe(
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
   if (!embedded) {
-    const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
+        // Loaded on first use, not at startup: nothing on the brain's way to
+        // answering `ade/initialize` should wait for a move nobody asked for.
+        const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
         const roster = await (await getAgentMachineBridge()).listMachines({ includeProjects: options?.includeProjects === true });
         return roster.machines.map((machine) => ({
           machineKey: machine.machineKey,

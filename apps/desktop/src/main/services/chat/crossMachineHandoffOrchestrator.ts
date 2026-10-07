@@ -43,6 +43,7 @@ import {
   isPermissionLevel,
   permissionFieldsForLevel,
   permissionLevelLabel,
+  permissionLevelRank,
   resolvePermissionLevel,
   type PermissionLevel,
 } from "../../../shared/permissionLadder";
@@ -114,6 +115,10 @@ export type CrossMachineHandoffRequest = AgentChatCrossMachineTargetConfig & {
   clone: boolean;
   /** Waited for a turn or an approval, so the person may not be watching. */
   queued?: boolean;
+  /** An agent's move: the source chat's level when the agent asked. */
+  agentSourceLevel?: string | null;
+  /** An agent's move the person approved (not one full-auto let through). */
+  approvedByPerson?: boolean;
 };
 
 export type CrossMachineHandoffSource = {
@@ -655,6 +660,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         includeChanges,
         clone: args.clone === true,
         queued: state !== "sending",
+        ...(isAgent ? { agentSourceLevel: source.permissionLevel } : {}),
       },
     };
     if (state !== "sending") {
@@ -712,7 +718,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     }
     deps.showApprovalCard(sourceSessionId, crossMachineMoveApprovalCard(persisted.record, false));
     const source = deps.getSource(sourceSessionId);
-    const next = write(sourceSessionId, persisted, { state: source?.turnActive ? "pending" : "sending" });
+    const next = write(
+      sourceSessionId,
+      { ...persisted, request: { ...persisted.request, approvedByPerson: true } },
+      { state: source?.turnActive ? "pending" : "sending" },
+    );
     if (next.record.state === "sending") void run(sourceSessionId);
     return next.record;
   };
@@ -893,6 +903,35 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         const idleBy = Date.now() + IDLE_WAIT_MS;
         while (deps.getSource(sessionId)?.turnActive && Date.now() < idleBy) {
           await new Promise((resolve) => setTimeout(resolve, IDLE_POLL_MS));
+        }
+        // An agent's move runs at the LOWER of the chat's level when it asked
+        // and its level now: the person may have lowered access while the
+        // move waited. A move full-auto let through goes back for approval
+        // once the chat is no longer full-auto.
+        if (persisted.record.requestedBy === "agent") {
+          const levelNow = deps.getSource(sessionId)?.permissionLevel ?? null;
+          const asked = persisted.request.agentSourceLevel ?? null;
+          const level = isPermissionLevel(asked) && isPermissionLevel(levelNow)
+            ? (permissionLevelRank(asked) <= permissionLevelRank(levelNow) ? asked : levelNow)
+            : (isPermissionLevel(levelNow) ? levelNow : "ask");
+          if (!persisted.request.approvedByPerson && level !== "full-auto") {
+            const waiting = write(sessionId, persisted, { state: "awaiting_approval", checkpoint: null });
+            deps.showApprovalCard(sessionId, crossMachineMoveApprovalCard(waiting.record, true));
+            deps.notifyPerson?.(sessionId, waiting.record, deps.getSource(sessionId)?.title ?? null);
+            return;
+          }
+          const applied = crossMachineAgentTargetPermissions(level, persisted.request.targetModelId);
+          persisted = write(
+            sessionId,
+            {
+              ...persisted,
+              request: {
+                ...withoutCrossMachinePermissionFields(persisted.request),
+                ...applied.fields,
+              } as CrossMachineHandoffRequest,
+            },
+            { targetPermissionLabel: applied.label },
+          );
         }
         const fresh = await deps.prepare({
           ...persisted.request,

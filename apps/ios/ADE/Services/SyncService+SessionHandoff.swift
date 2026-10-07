@@ -42,7 +42,7 @@ extension SyncService {
   /// runtime, which is why the menu offers it only on a running Claude chat.
   func setChatSessionTag(sessionId: String, tag: String) async throws {
     let action = chatActionName("chat.updateSession", sessionId: sessionId)
-    try requireInvokableRemoteAction(action)
+    try requireInvokableChatAction("chat.updateSession", sessionId: sessionId)
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendCommand(
       action: action,
@@ -52,11 +52,29 @@ extension SyncService {
     )
   }
 
+  /// The machine that owns the chat decides whether an action is available,
+  /// not the focused one: a chat on another machine routes its commands there
+  /// (`chatCommandScope`), so checking the focused machine's capabilities would
+  /// refuse a live, updated owner or offer an action the owner lacks.
+  func requireInvokableChatAction(_ projectAction: String, sessionId: String) throws {
+    guard let connection = remoteChatConnection(for: sessionId) else {
+      try requireInvokableRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+      return
+    }
+    guard connection.isLive, connection.supportsAction(projectAction) else {
+      throw NSError(
+        domain: "ADE",
+        code: 15,
+        userInfo: [NSLocalizedDescriptionKey: "This action is not available on the machine this chat runs on. Reconnect to refresh capabilities."]
+      )
+    }
+  }
+
   // MARK: Auto handoff rules
 
   /// Rules on the chat's own machine — that is where they fire.
   func listAutomationRules(forSessionId sessionId: String) async throws -> [WorkAutomationRuleSummary] {
-    try requireInvokableRemoteAction("automations.list")
+    try requireInvokableChatAction("automations.list", sessionId: sessionId)
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
       action: "automations.list",
@@ -67,7 +85,7 @@ extension SyncService {
   }
 
   func saveAutomationDraft(_ draft: [String: Any], forSessionId sessionId: String) async throws {
-    try requireInvokableRemoteAction("automations.saveDraft")
+    try requireInvokableChatAction("automations.saveDraft", sessionId: sessionId)
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendCommand(
       action: "automations.saveDraft",
@@ -81,7 +99,7 @@ extension SyncService {
   /// itself, and "Remove auto handoff" must still succeed (desktop
   /// `deleteAutomationRules`).
   func deleteAutomationRule(id: String, forSessionId sessionId: String) async throws {
-    try requireInvokableRemoteAction("automations.deleteRule")
+    try requireInvokableChatAction("automations.deleteRule", sessionId: sessionId)
     let scope = chatCommandScope(for: sessionId)
     // The brain treats an already-removed rule as success, so every error
     // here is real.
@@ -97,7 +115,7 @@ extension SyncService {
 
   func crossMachineHandoffOptions(sourceSessionId: String) async throws -> AgentChatCrossMachineHandoffOptions {
     let action = chatActionName("chat.getCrossMachineHandoffOptions", sessionId: sourceSessionId)
-    try requireInvokableRemoteAction(action)
+    try requireInvokableChatAction("chat.getCrossMachineHandoffOptions", sessionId: sourceSessionId)
     let scope = chatCommandScope(for: sourceSessionId)
     return try await sendDecodableCommand(
       action: action,
@@ -265,7 +283,7 @@ extension SyncService {
     extra: [String: Any]
   ) async throws -> AgentChatCrossMachineHandoffRecord? {
     let action = chatActionName(projectAction, sessionId: sourceSessionId)
-    try requireInvokableRemoteAction(action)
+    try requireInvokableChatAction(projectAction, sessionId: sourceSessionId)
     let scope = chatCommandScope(for: sourceSessionId)
     var args = extra
     args["sourceSessionId"] = sourceSessionId

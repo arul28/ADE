@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CROSS_MACHINE_PERMISSION_FIELDS } from "../../../shared/crossMachineHandoff";
 import type {
   AgentChatCrossMachineHandoffCapsule,
@@ -309,6 +309,25 @@ describe("cross-machine move orchestrator", () => {
       CROSS_MACHINE_PERMISSION_FIELDS.filter((field) => sent[field] !== undefined).map((field) => [field, sent[field]]),
     );
     expect(permissionFields).toEqual(fields);
+  });
+
+  it("an agent's queued move rechecks the chat's access before it is sent", async () => {
+    // Full-auto let the agent's move through without asking; then the person
+    // lowered the chat to ask while the move waited for the turn to end.
+    const h = createHarness({ permissionLevel: "full-auto", turnActive: true });
+    const queued = await h.start({ whenTurnEnds: true, targetModelId: "anthropic/claude-fable-5-1" }, "agent");
+    expect(queued.state).toBe("pending");
+    h.chat.permissionLevel = "ask";
+    h.chat.turnActive = false;
+    h.orchestrator.onTurnSettled(SESSION);
+    await vi.waitFor(() => expect(h.record()?.state).toBe("awaiting_approval"));
+    expect(h.prepared).toHaveLength(0);
+    expect(h.notified.map((record) => record.state)).toContain("awaiting_approval");
+
+    // Approved: it runs at the lower level the chat has now, never the old one.
+    h.orchestrator.resolveApproval(SESSION, queued.handoffId, true);
+    expect(await h.settled()).toMatchObject({ state: "continued", targetPermissionLabel: "ask before changes" });
+    expect(h.prepared[0]).toMatchObject({ claudePermissionMode: "default", permissionMode: "default" });
   });
 
   it("retries an unknown move by resending the stored capsule under the same id", async () => {
