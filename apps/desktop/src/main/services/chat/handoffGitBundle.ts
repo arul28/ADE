@@ -449,6 +449,18 @@ export async function applyHandoffGitBundle(args: {
             `'${branch}' on this machine has commits the handed-off work lacks. Reconcile the branches, then hand off again.`,
           );
         }
+        // "Clean" ignores ignored files, and a fast-forward overwrites one
+        // that an arriving commit adds (a later reset could not bring it
+        // back). Refuse before the branch moves.
+        const added = (await gitOut(worktreePath, ["diff", "--name-only", "--diff-filter=A", "-z", current, tip]))
+          .split("\0")
+          .filter(Boolean);
+        const collision = added.find((relPath) => fs.existsSync(path.join(worktreePath, relPath)));
+        if (collision) {
+          throw new Error(
+            `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
+          );
+        }
         await gitOut(worktreePath, ["merge", "--ff-only", "--quiet", tip]);
       }
       // The lane was clean, so a hard reset back loses nothing of the user's.

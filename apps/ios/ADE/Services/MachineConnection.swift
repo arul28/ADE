@@ -882,6 +882,9 @@ final class MachineConnection {
     else { return }
     if let seq { chatLastSeq[sessionId] = seq }
     registry.routeLive(decoded, key: key)
+    // A move's state notices also update the chat's cached summary (its card
+    // and send gate), as they do for chats on the focused machine.
+    syncService?.applyCrossMachineHandoffNoticeIfNeeded(sessionId: sessionId, rawPayload: dict)
   }
 
   /// One older page for a chat on this machine.

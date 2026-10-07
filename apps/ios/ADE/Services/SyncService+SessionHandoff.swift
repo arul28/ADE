@@ -191,6 +191,12 @@ extension SyncService {
     envelope: AgentChatEventEnvelope,
     rawPayload: [String: Any]
   ) {
+    applyCrossMachineHandoffNoticeIfNeeded(sessionId: envelope.sessionId, rawPayload: rawPayload)
+  }
+
+  /// The same fold for a chat on another machine, whose live events reach the
+  /// phone through its own `MachineConnection` rather than the focused host.
+  func applyCrossMachineHandoffNoticeIfNeeded(sessionId: String, rawPayload: [String: Any]) {
     guard let event = rawPayload["event"] as? [String: Any],
           event["type"] as? String == "system_notice",
           let status = event["status"] as? String,
@@ -200,14 +206,14 @@ extension SyncService {
     else { return }
     let raw = detail["crossMachineHandoffState"]
     if raw == nil || raw is NSNull {
-      clearCrossMachineHandoffRecord(sessionId: envelope.sessionId)
+      clearCrossMachineHandoffRecord(sessionId: sessionId)
       return
     }
     guard let object = raw as? [String: Any],
           let record = try? decode(object, as: AgentChatCrossMachineHandoffRecord.self),
           !record.handoffId.isEmpty
     else { return }
-    foldCrossMachineHandoffRecord(record, sessionId: envelope.sessionId)
+    foldCrossMachineHandoffRecord(record, sessionId: sessionId)
   }
 
   /// Folds a record an action answered with (cancel, approve, retry,

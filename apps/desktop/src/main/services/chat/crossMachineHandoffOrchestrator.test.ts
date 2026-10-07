@@ -609,6 +609,31 @@ async function packIsolated(args: Parameters<typeof packHandoffGitBundle>[0]) {
 }
 
 describe("handoff git bundle", () => {
+  it("refuses arriving commits that would overwrite an ignored file in the destination lane", async () => {
+    const { source, clone } = makeRepos();
+    fs.writeFileSync(path.join(source, ".env"), "SOURCE=1\n");
+    git(source, "add", "-f", ".env");
+    git(source, "commit", "--quiet", "-m", "track the env file");
+    const bundle = await packHandoffGitBundle({ worktreePath: source, branchRef: "feature", handoffId: "handoff:ignored-1" });
+    if (!bundle) throw new Error("an unpushed commit must pack");
+
+    const destination = clone("ignored-destination");
+    const lanePath = path.join(path.dirname(destination), "ignored-lane");
+    git(destination, "worktree", "add", "--quiet", "-b", "feature", lanePath, "origin/feature");
+    fs.writeFileSync(path.join(lanePath, ".env"), "LOCAL_SECRET=1\n");
+    const before = repoState(lanePath);
+
+    await expect(applyHandoffGitBundle({
+      projectRoot: destination,
+      handoffId: "handoff:ignored-1",
+      branchRef: "feature",
+      bundle,
+      target: { kind: "existing_worktree", worktreePath: lanePath },
+    })).rejects.toThrow(/already has '\.env'/);
+    expect(fs.readFileSync(path.join(lanePath, ".env"), "utf8")).toBe("LOCAL_SECRET=1\n");
+    expect(repoState(lanePath)).toEqual(before);
+  });
+
   it("lands one move at a time into a destination lane, so a second can't undo the first", async () => {
     const { source, clone } = makeRepos();
     const other = clone("other-source");
