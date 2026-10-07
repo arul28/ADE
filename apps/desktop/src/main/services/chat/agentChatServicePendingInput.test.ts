@@ -10,6 +10,8 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { PROJECT_SECRET_VALUE_QUESTION_ID } from "../../../shared/projectSecretRequest";
 
 describe("createAgentChatService", () => {
   describe("pending input", () => {
@@ -209,6 +211,55 @@ describe("createAgentChatService", () => {
       const result = await requestPromise;
       expect(result.decision).toBe("decline");
       expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+    });
+
+    it("saves a requested project secret before the card closes, keeps it open when the save fails, and never records the value", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const stored = new Map<string, string>();
+      let failNextSave = true;
+      const projectSecrets = {
+        list: () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
+        set: ({ name, value }: { name: string; value: string }) => {
+          if (failNextSave) {
+            failNextSave = false;
+            throw new Error("the secrets store is locked");
+          }
+          stored.set(name, value);
+          return { name } as never;
+        },
+      };
+
+      const resultPromise = requestProjectSecretFromUser(
+        { requestChatInput: service.requestChatInput, projectSecrets },
+        { chatSessionId: session.id, name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },
+      );
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      const answer = {
+        sessionId: session.id,
+        itemId: card.event.itemId,
+        decision: "accept" as const,
+        answers: { [PROJECT_SECRET_VALUE_QUESTION_ID]: ["  whsec_kept_exactly  "] },
+      };
+
+      // The first save fails: the answer is refused and the card stays open.
+      await expect(service.respondToInput(answer)).rejects.toThrow(/could not save STRIPE_KEY/);
+      expect(stored.has("STRIPE_KEY")).toBe(false);
+      expect(events.some((event) => event.event.type === "pending_input_resolved")).toBe(false);
+
+      // Answering again saves the value untrimmed and resolves the request.
+      await service.respondToInput(answer);
+      await expect(resultPromise).resolves.toEqual({ name: "STRIPE_KEY", saved: true, replaced: false });
+      expect(stored.get("STRIPE_KEY")).toBe("  whsec_kept_exactly  ");
+      expect(JSON.stringify(events)).not.toContain("whsec_kept_exactly");
     });
 
     it("replaces blank question text with the body rather than publishing an empty prompt", async () => {

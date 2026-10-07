@@ -891,7 +891,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { capturePresetAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { capturePresetAnalytics, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -6645,8 +6645,11 @@ export function registerIpc({
       projectSecrets: ctx.projectSecretService,
     });
   });
-  ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) =>
-    requireWebhookIngress().createEndpoint(arg ?? {}));
+  ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) => {
+    const endpoint = await requireWebhookIngress().createEndpoint(arg ?? {});
+    captureWebhookUrlCreatedAnalytics({ analytics: productAnalyticsService, surface: "desktop" });
+    return endpoint;
+  });
   ipcMain.handle(IPC.automationsWebhookGetEndpoint, async (_event, arg: { hookId: string }) =>
     requireWebhookIngress().getEndpoint(arg));
   ipcMain.handle(IPC.automationsWebhookRotateEndpoint, async (_event, arg: { hookId: string }) =>

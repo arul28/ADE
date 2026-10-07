@@ -506,7 +506,7 @@ export function AddProjectSecretDialog({
             }}
             className={cn(
               "rounded-lg border bg-black/20 px-2.5 py-2 font-mono text-[13px] text-fg/88 outline-none placeholder:text-fg/26",
-              nameError ? "border-amber-300/50" : cn(HAIRLINE, "focus:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)]"),
+              nameError ? "border-[color-mix(in_srgb,var(--color-warning)_50%,transparent)]" : cn(HAIRLINE, "focus:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)]"),
             )}
           />
           {nameError ? (

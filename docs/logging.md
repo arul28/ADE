@@ -274,6 +274,8 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 | `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
+| `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
+| `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -281,6 +283,18 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+Making a private webhook URL records `automations/webhook_url_created` where
+the URL is made: the desktop's IPC handler (`desktop`) or the
+`automations.webhookCreateEndpoint` / `webhookCreateAutomation` actions
+(`api`, the CLI and agents). An agent's private secret card records
+`chat/secret_requested` once, when `project_secret.request` returns or fails,
+at the brain action that owns it. Neither carries a name, URL, value, or id;
+both are rare user decisions inside the existing `ade_feature_used` 140-per-day
+and 30-per-minute ceilings, and the per-action-and-outcome dedupe holds a burst
+(an agent creating several URLs, or re-asking) to one event per outcome per
+interval. Delivery outcomes are high-frequency and stay local, in the
+per-hook delivery log.
 
 Saving a model price or "Map to" on the Usage page (desktop, web, phone or
 `ade usage prices set`) records `model_price_changed` or

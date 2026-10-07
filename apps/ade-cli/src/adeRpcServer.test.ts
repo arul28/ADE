@@ -8835,3 +8835,132 @@ describe("run_ade_action search scope", () => {
     expect(search.indexStatus).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("run_ade_action automations caller scoping", () => {
+  function automationsFixture() {
+    const fixture = createRuntime();
+    const webhooks = {
+      sendTest: vi.fn(async (_args?: Record<string, unknown>) => ({
+        ok: true,
+        status: 202,
+        responseBody: "queued",
+        deliveryId: "test-1",
+      })),
+      createEndpoint: vi.fn(async (_args?: { label?: string | null }) => ({
+        hookId: "hook-new",
+        url: "https://relay.test/hooks/hook-new",
+        route: "relay",
+        ownedHere: true,
+        setupError: null,
+      })),
+      getEndpoint: vi.fn(async () => ({
+        hookId: "hook-new",
+        url: "https://relay.test/hooks/hook-new",
+        route: "relay",
+        ownedHere: true,
+        setupError: null,
+      })),
+      retireEndpoint: vi.fn(async () => true),
+    };
+    (fixture.runtime as Record<string, unknown>).automationService = {
+      list: vi.fn(() => [{ id: "rule-1", name: "Deploy", enabled: true }]),
+    };
+    (fixture.runtime as Record<string, unknown>).automationIngressService = { webhooks };
+    (fixture.runtime as Record<string, unknown>).projectSecretService = {
+      list: vi.fn(() => ({ secrets: [] })),
+    };
+    (fixture.runtime.productAnalyticsService as Record<string, unknown>).captureInternal = vi.fn(() => ({ accepted: false }));
+    return { fixture, webhooks };
+  }
+
+  it("drops an agent's webhookSendTest config draft but passes a user client's config through", async () => {
+    await withEnv({ ADE_ENABLE_AUTOMATIONS: "1" }, async () => {
+      const { fixture, webhooks } = automationsFixture();
+      const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const userHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(agentHandler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-agent" });
+      await initialize(userHandler, { callerId: "user-1", role: "agent" });
+
+      const draft = { preset: "github", secretName: "DEPLOY_SECRET" };
+      const agentCall = await callTool(agentHandler, "run_ade_action", {
+        domain: "automations",
+        action: "webhookSendTest",
+        args: { hookId: "hook-1", body: "{}", config: draft },
+      });
+      const userCall = await callTool(userHandler, "run_ade_action", {
+        domain: "automations",
+        action: "webhookSendTest",
+        args: { hookId: "hook-2", body: "{}", config: draft },
+      });
+
+      expect(agentCall?.isError).toBeUndefined();
+      expect(userCall?.isError).toBeUndefined();
+      expect(webhooks.sendTest).toHaveBeenCalledTimes(2);
+      const agentArgs = webhooks.sendTest.mock.calls[0]![0] as Record<string, unknown>;
+      const userArgs = webhooks.sendTest.mock.calls[1]![0] as Record<string, unknown>;
+      expect(agentArgs).not.toHaveProperty("config");
+      expect(agentArgs).toEqual(expect.objectContaining({ hookId: "hook-1" }));
+      expect(userArgs).toEqual(expect.objectContaining({ hookId: "hook-2", config: draft }));
+    });
+  });
+
+  it("refuses webhookCreateAutomation from an agent naming a chat it does not own", async () => {
+    await withEnv({ ADE_ENABLE_AUTOMATIONS: "1" }, async () => {
+      const { fixture, webhooks } = automationsFixture();
+      const unboundHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const boundHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(unboundHandler, { callerId: "agent-unbound", role: "agent", runId: "run-1" });
+      await initialize(boundHandler, { callerId: "agent-bound", role: "agent", chatSessionId: "chat-X" });
+
+      const unboundDenied = await callTool(unboundHandler, "run_ade_action", {
+        domain: "automations",
+        action: "webhookCreateAutomation",
+        args: { name: "Deploy", chatSessionId: "chat-other" },
+      });
+      const boundDenied = await callTool(boundHandler, "run_ade_action", {
+        domain: "automations",
+        action: "webhookCreateAutomation",
+        args: { name: "Deploy", chatSessionId: "chat-Y" },
+      });
+
+      expect(unboundDenied?.isError).toBe(true);
+      expect(unboundDenied.error).toMatchObject({ code: JsonRpcErrorCode.policyDenied });
+      expect(boundDenied?.isError).toBe(true);
+      expect(boundDenied.error).toMatchObject({ code: JsonRpcErrorCode.policyDenied });
+      expect(webhooks.createEndpoint).not.toHaveBeenCalled();
+    });
+  });
+
+  it("resolves chatSessionId 'this' to the bound agent's own chat", async () => {
+    await withEnv({ ADE_ENABLE_AUTOMATIONS: "1" }, async () => {
+      const { fixture, webhooks } = automationsFixture();
+      const saveDraft = vi.fn(({ draft }: { draft: Record<string, any> }) => ({
+        rule: {
+          id: "rule-1",
+          name: draft.name,
+          enabled: true,
+          triggers: [{ type: "webhook", webhook: { hookId: "hook-new", preset: "generic" } }],
+        },
+        rules: [],
+      }));
+      (fixture.runtime.automationPlannerService as Record<string, unknown>).saveDraft = saveDraft;
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-bound", role: "agent", chatSessionId: "chat-X" });
+
+      const response = await callTool(handler, "run_ade_action", {
+        domain: "automations",
+        action: "webhookCreateAutomation",
+        args: { name: "Deploy", chatSessionId: "this", preset: "generic" },
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.result.hookId).toBe("hook-new");
+      expect(webhooks.createEndpoint).toHaveBeenCalledTimes(1);
+      expect(saveDraft).toHaveBeenCalledTimes(1);
+      const savedDraft = saveDraft.mock.calls[0]![0].draft;
+      expect(savedDraft.execution.session.chatSessionId).toBe("chat-X");
+      expect(savedDraft.origin).toBe("chat-menu");
+      expect(savedDraft.scope.sessionId).toBe("chat-X");
+    });
+  });
+});

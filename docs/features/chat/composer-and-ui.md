@@ -2552,6 +2552,14 @@ behind a lock glyph: "NAME saved to this project · never shown to the agent",
 "NAME · kept the existing value", or "NAME · declined". `ade.agentChat.respondToInput` redacts `answers` and
 `responseText` in IPC traces.
 
+The card is a transcript event, so it outlives its asker (a brain restart, a
+CLI process that was killed). Answering such a card saves nothing and sends
+nothing: `isQuestionShapedPendingInput` refuses to re-route any card with an
+`isSecret` question as a chat message, so the card closes with a notice naming
+the secret ("… stopped waiting, so ADE did not save it. Add it with Add
+secret… in the composer, or ask the agent again."). Each card's outcome is one
+`chat/secret_requested` product event (see [Logging](../../logging.md)).
+
 The person can add one themselves from the composer's overflow menu ("Add
 secret…"): the same fields in a `Dialog`, saved through
 `window.ade.projectSecrets.set`. On save, a note naming the secret (never its

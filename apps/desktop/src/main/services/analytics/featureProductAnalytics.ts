@@ -17,7 +17,8 @@ export type FeatureAnalyticsName =
   | "proxy"
   | "usage"
   | "chat"
-  | "work";
+  | "work"
+  | "automations";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -42,7 +43,9 @@ export type FeatureAnalyticsAction =
   | "session_continue_chat"
   | "session_copy_chat"
   | "session_continue_cli"
-  | "session_copy_cli";
+  | "session_copy_cli"
+  | "webhook_url_created"
+  | "secret_requested";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -53,7 +56,8 @@ export type FeatureAnalyticsOutcome =
   | "no_credit"
   | "already_redeemed"
   | "cancelled"
-  | "failed";
+  | "failed"
+  | "kept";
 
 /**
  * Convert provider-shaped input to the existing closed provider-family set.
@@ -232,6 +236,26 @@ export function capturePendingInputDismissedAnalytics(args: {
     action: "pending_input_dismissed",
     outcome: "completed",
   });
+}
+
+/** A private webhook URL was made (with or without its automation). */
+export function captureWebhookUrlCreatedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "webhook_url_created", outcome: "completed" });
+}
+
+/**
+ * How a private secret card an agent raised ended. Never the secret's name,
+ * its value, the reason, or the chat.
+ */
+export function captureSecretRequestedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "chat", action: "secret_requested", outcome: args.outcome });
 }
 
 /** The user moved a chat to another account of its provider. */

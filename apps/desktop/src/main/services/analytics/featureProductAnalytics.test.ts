@@ -4,7 +4,9 @@ import {
   captureChatAccountSwitchedAnalytics,
   captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
+  captureSecretRequestedAnalytics,
   captureSessionImportAnalytics,
+  captureWebhookUrlCreatedAnalytics,
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
@@ -151,5 +153,21 @@ describe("captureSessionImportAnalytics", () => {
       const properties = (entry as { properties: Record<string, unknown> }).properties;
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
     }
+  });
+});
+
+describe("webhook and secret-card analytics", () => {
+  it.each([
+    ["webhook URL", (analytics: FeatureAnalytics) => captureWebhookUrlCreatedAnalytics({ analytics, surface: "desktop" }), "automations", "webhook_url_created", "completed"],
+    ["secret saved", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "completed" }), "chat", "secret_requested", "completed"],
+    ["secret kept", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "kept" }), "chat", "secret_requested", "kept"],
+    ["secret declined", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "cancelled" }), "chat", "secret_requested", "cancelled"],
+  ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome) => {
+    const { analytics, captured } = recorder();
+    capture(analytics);
+    expect(captured).toHaveLength(1);
+    const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
+    expect(properties).toEqual({ feature, action, outcome });
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
   });
 });

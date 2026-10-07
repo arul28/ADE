@@ -2028,14 +2028,24 @@ describe("AgentChatComposer", () => {
     });
   });
 
-  it("renders the overflow entry directly when only one control survives gating", () => {
-    // A "⋯" that opens onto a single row is a menu pretending to be a button.
-    // Surfaces gate these entries independently, so on a CLI draft only one may
-    // survive — it should be reachable in one click, not two.
-    renderComposer({ turnActive: false, draft: "" });
+  it("Add secret saves the value to the project and puts only its name in the draft", async () => {
+    const set = vi.fn(async () => ({ name: "STRIPE_KEY" }));
+    const list = vi.fn(async () => ({ secrets: [] }));
+    (window as any).ade = { ...(window as any).ade, projectSecrets: { set, list } };
+    const view = renderControlledComposer({ turnActive: false, draft: "Wire up billing." });
 
-    expect(screen.queryByRole("button", { name: "More composer controls" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Add secret/ }));
+    fireEvent.change(screen.getByTestId("add-project-secret-name"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(screen.getByTestId("project-secret-value"), { target: { value: "sk_live_not_for_chat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ name: "STRIPE_KEY", value: "sk_live_not_for_chat" }));
+    await waitFor(() => expect(view.onDraftChange).toHaveBeenCalled());
+    const draft = (view.onDraftChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as string;
+    expect(draft.startsWith("Wire up billing.")).toBe(true);
+    expect(draft).toContain("STRIPE_KEY");
+    expect(draft).not.toContain("sk_live_not_for_chat");
   });
 
   it("moves focus through the overflow menu and returns it after keyboard selection", async () => {
@@ -2050,10 +2060,12 @@ describe("AgentChatComposer", () => {
     const trigger = screen.getByRole("button", { name: "More composer controls" });
     fireEvent.click(trigger);
     const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
+    const addSecret = screen.getByRole("menuitemcheckbox", { name: /Add secret/ });
     const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
     expect((issue as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(document.activeElement).toBe(appControl));
-    fireEvent.keyDown(appControl, { key: "ArrowDown" });
+    // Focus starts on the first enabled row, skipping the disabled one.
+    await waitFor(() => expect(document.activeElement).toBe(addSecret));
+    fireEvent.keyDown(addSecret, { key: "ArrowDown" });
     expect(document.activeElement).toBe(appControl);
     fireEvent.keyDown(appControl, { key: "Enter" });
     expect(onToggleAppControl).toHaveBeenCalledTimes(1);

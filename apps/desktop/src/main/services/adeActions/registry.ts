@@ -205,7 +205,11 @@ import {
 } from "../sessions/chatSessionProjection";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
-import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import {
+  captureSecretRequestedAnalytics,
+  captureWebhookUrlCreatedAnalytics,
+  providerAccountAnalyticsCapture,
+} from "../analytics/featureProductAnalytics";
 
 // The names themselves live in `./domains`, which has no imports, so consumers
 // that need only the vocabulary (the analytics policy) do not have to load this
@@ -378,7 +382,11 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       await service.pollNow();
       return service.getStatus();
     },
-    webhookCreateEndpoint: (args = {}) => requireWebhooks(runtime).createEndpoint(args),
+    webhookCreateEndpoint: async (args = {}) => {
+      const endpoint = await requireWebhooks(runtime).createEndpoint(args);
+      captureWebhookUrlCreatedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api" });
+      return endpoint;
+    },
     webhookGetEndpoint: (args) => requireWebhooks(runtime).getEndpoint(args),
     webhookRotateEndpoint: (args) => requireWebhooks(runtime).rotateEndpoint(args),
     webhookListDeliveries: (args) => requireWebhooks(runtime).listDeliveries(args),
@@ -388,6 +396,7 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     webhookCreateAutomation: async (args) => {
       const webhooks = requireWebhooks(runtime);
       const endpoint = await webhooks.createEndpoint({ label: args.name ?? null });
+      captureWebhookUrlCreatedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api" });
       const draft = buildWebhookAutomationDraft({
         ...args,
         // A chat creating the rule is its origin; "this chat" is the caller's own chat.
@@ -3611,10 +3620,21 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
     ...(projectSecretService as unknown as OpaqueService),
     ...(agentChatService
       ? {
-          request: (args?: unknown) => requestProjectSecretFromUser({
-            requestChatInput: (input) => agentChatService.requestChatInput(input),
-            projectSecrets: projectSecretService,
-          }, args),
+          request: async (args?: unknown) => {
+            const capture = (outcome: "completed" | "kept" | "cancelled" | "failed") =>
+              captureSecretRequestedAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", outcome });
+            try {
+              const result = await requestProjectSecretFromUser({
+                requestChatInput: (input) => agentChatService.requestChatInput(input),
+                projectSecrets: projectSecretService,
+              }, args);
+              capture(result.saved ? "completed" : "kept" in result && result.kept ? "kept" : "cancelled");
+              return result;
+            } catch (error) {
+              capture("failed");
+              throw error;
+            }
+          },
         }
       : {}),
   };
