@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, Bell, Wrench } from "@phosphor-icons/react";
+import { ArrowsClockwise, Bell } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
-import { useBrainRepair, type BrainRepair } from "../../hooks/useBrainRepair";
 import { dismissToast, showToast } from "./toast/toastStore";
-import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
+import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { BrainDownNotice } from "./BrainDownNotice";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
@@ -211,94 +211,51 @@ export function AutoUpdateBanner() {
     UPDATE_PROMPT_BANNER,
   );
 
-  return <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />;
+  return (
+    <>
+      <UpdateSwapNotice result={snapshot.updateTransaction ?? null} stalenessShowing={showBanner} />
+      <BrainDownNotice result={snapshot.updateTransaction ?? null} />
+    </>
+  );
 }
 
 /**
- * The Repair control as a banner action: same label, same pending state and
- * same handler as `BrainRepairButton`, drawn as the banner's own pill.
+ * Applying an update is one transaction. When the app swap itself did not
+ * land, say so; the staleness banner above already offers the retry when it
+ * shows, so this one stands down then. Every other failed step is the
+ * background service, which `BrainDownNotice` owns.
  */
-function repairAction(repair: BrainRepair): NoticeAction {
-  return {
-    label: repair.pending ? "Repairing…" : "Repair",
-    icon: <Wrench size={12} weight="bold" />,
-    variant: "secondary",
-    busy: repair.pending,
-    onClick: repair.run,
-  };
-}
-
-/**
- * What the last Repair said, under the banner text — the same lines
- * `BrainRepairButton` prints beside itself on other surfaces.
- */
-function RepairOutcome({ repair }: { repair: BrainRepair }) {
-  if (repair.error) {
-    return (
-      <>
-        <span style={{ color: "var(--color-warning)", minWidth: 0 }} title={repair.error}>
-          {`Repair didn't finish. ${repair.error.replace(/\.?\s*$/, ".")}`}
-        </span>
-        <ReportIssueButton
-          variant="ghost"
-          context={{
-            surface: "brain_repair",
-            headline: "Repair didn't finish",
-            technicalDetail: repair.error,
-          }}
-        />
-      </>
-    );
-  }
-  if (repair.notice) {
-    return (
-      <span style={{ color: repair.notice.tone === "ok" ? "var(--color-secondary-fg)" : "var(--color-warning)" }}>
-        {repair.notice.text}
-      </span>
-    );
-  }
-  return null;
-}
-
-/**
- * Applying an update is one transaction. When it half-lands — the app is new
- * but the background service is not — say which step failed and offer the same
- * Repair control every other background-service failure uses.
- */
-function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult | null }): null {
-  const [dismissed, setDismissed] = useState(false);
-  const repair = useBrainRepair();
-  const failureMessage = result && !result.ok ? result.failureMessage : null;
-
-  useEffect(() => {
-    setDismissed(false);
-  }, [failureMessage]);
+function UpdateSwapNotice({
+  result,
+  stalenessShowing,
+}: {
+  result: UpdateTransactionResult | null;
+  stalenessShowing: boolean;
+}): null {
+  const [dismissed, setDismissed] = useState<UpdateTransactionResult | null>(null);
+  const swapFailed = Boolean(
+    result && !result.ok && result.steps.find((step) => step.status === "failed")?.id === "swap",
+  );
 
   useAppBanner(
-    failureMessage && !dismissed
+    result && swapFailed && !stalenessShowing && dismissed !== result
       ? {
           id: "update-transaction-failed",
           tone: "warning",
-          title: failureMessage,
-          actions: repair.available ? [repairAction(repair)] : undefined,
-          // The message can run long and Repair grows a failure line of its
-          // own, so the outcome and Report issue sit under the text rather
-          // than crushing it.
+          icon: <ArrowsClockwise size={13} weight="bold" />,
+          title: result.failureMessage ?? "The update didn't finish installing.",
           extra: (
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 8px", fontSize: 11, lineHeight: 1.45 }}>
-              {repair.available ? <RepairOutcome repair={repair} /> : null}
-              <ReportIssueButton
-                variant="ghost"
-                context={{
-                  surface: "update_transaction",
-                  headline: failureMessage,
-                  code: "update_transaction_failed",
-                  technicalDetail: result ? JSON.stringify(result, null, 2) : null,
-                }}
-              />
-            </div>
+            <ReportIssueButton
+              variant="ghost"
+              context={{
+                surface: "update_transaction",
+                headline: result.failureMessage,
+                code: "update_swap",
+                technicalDetail: JSON.stringify(result, null, 2),
+              }}
+            />
           ),
-          dismiss: { onDismiss: () => setDismissed(true) },
+          dismiss: { onDismiss: () => setDismissed(result) },
         }
       : null,
     APP_BANNER,

@@ -53,7 +53,8 @@ const STEP_LABELS = REPAIR_STEP_LABELS;
 const BACKGROUND_BLOCKED_NEXT_ACTION =
   "Your Mac is blocking ADE. Open System Settings, go to General, then Login Items, and turn on ADE under \"Allow in the Background\".";
 
-const RESTART_AND_RETRY = "Quit ADE and open it again, then choose Try again.";
+// The recovery screen offers Restart ADE as the next rung; this only says to take it.
+const RESTART_AND_RETRY = "Restart ADE next. It starts the background service fresh.";
 
 const STEP_ORDER = REPAIR_STEP_ORDER;
 
@@ -186,7 +187,7 @@ function humanGb(bytes: number): string {
  */
 function skippedRestartCopy(installerMessage: string): string {
   if (isLocalReleaseBuildOutputError(installerMessage)) return installerMessage;
-  return "A newer version of ADE is already running. Quit ADE and open it again.";
+  return "A newer version of ADE is already running. Restart ADE to switch to it.";
 }
 
 function socketConnectOptions(socketPath: string): net.NetConnectOpts {
@@ -448,11 +449,11 @@ export class ProjectRecoveryService {
       case "install_skipped":
         throw new Error(skippedRestartCopy(outcome.detail));
       case "unreachable":
-        throw new Error("ADE didn't start again after the restart. Quit ADE and open it again.");
+        throw new Error("ADE's background service didn't start again after the restart.");
       case "background_blocked":
         throw new Error(BACKGROUND_BLOCKED_NEXT_ACTION);
       default:
-        throw new Error(outcome.detail.trim() || "ADE couldn't restart. Quit ADE and open it again.");
+        throw new Error(outcome.detail.trim() || "ADE's background service couldn't restart.");
     }
   }
 
@@ -511,6 +512,11 @@ export class ProjectRecoveryService {
         : []),
       ...(serviceStatus.serviceInstall.failureStep
         ? [`serviceInstallFailureStep=${serviceStatus.serviceInstall.failureStep}`]
+        : []),
+      // launchctl's (or the Windows installer's) own words for a failed
+      // install. Only ever in the fold: the screen names the cause in plain words.
+      ...(serviceStatus.serviceInstall.state === "failed" && serviceStatus.serviceInstall.message?.trim()
+        ? [`serviceInstallMessage=${serviceStatus.serviceInstall.message.trim()}`]
         : []),
       `database=${dbCheck.detail}`,
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),

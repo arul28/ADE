@@ -184,6 +184,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
   slice (state + `failingSinceMs` + last-leg durations), and the one-shot
   `lastWedge` recovered by the event-loop watchdog.
+  When a packaged desktop cannot start the machine service after its own
+  repair attempt, it starts an app-owned brain on the primary socket with
+  `--no-sync` if the failure is service installation or service startup. This
+  keeps local work available while phone sync is off. The desktop status reports
+  `runtimeMode: "app_fallback"` and the typed `appFallback` reason; an app banner
+  offers **Fix it**. Disk, database, and migration failures do not trigger this
+  fallback. The child exits with the desktop. Repair reinstalls the real service
+  and reconnects to it; on Linux the pool first releases its fallback child
+  because systemd only stops children it owns. A new desktop launch attempts
+  the service again before considering fallback.
   `probeMachineRuntimeIdentity()` is the side-effect-free question "what is
   answering on this machine's endpoint, exactly": a `MachineRuntimeIdentity`
   carrying version, build hash, pid, the build hash this desktop expected, and
@@ -248,15 +258,15 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   brain-independent project diagnosis and ordered repair for storage,
   database, migration, endpoint, and chat continuity failures. It also owns
   `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
-  button. Both it and `repair()`'s restart_service/verify_endpoint steps go
+  button and the brain-down notice's **Fix it**. Both it and `repair()`'s restart_service/verify_endpoint steps go
   through one `restartServiceAndWait()` sequence — install, wait up to 90 s for
   the machine endpoint to rebind, then `ping` — which reports which stage lost
   rather than the copy, because its two callers phrase the same stage
   differently (`repair()` speaks in repair steps, `restartBrain()` throws).
   `force` is more than the install flag: a forced restart is the only caller that
   actually asked for one, so an install that resolves having *skipped* is a
-  failure for it, and its message becomes "A newer ADE runtime is already
-  running — quit and reopen ADE instead." (the release-build block is passed
+  failure for it, and its message becomes "A newer version of ADE is already
+  running. Restart ADE to switch to it." (the release-build block is passed
   through verbatim, since it is already written as instructions) rather than the
   installer's log line. The two are mutually exclusive: `restartBrain()` rejects
   with "Recovery is already running." while a `repair()` is in flight, because
@@ -284,7 +294,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   wait and the real handover get a full budget **each**: when they shared one
   install-wide deadline, a young brain that died late in its wait left the
   restart with no time and its replacement was reported as a `replacement_pid`
-  failure. After `launchctl load`, `installLaunchd.ts` runs `launchctl
+  failure. The job is registered through `loadLaunchAgent`
+  (`serviceManager/common.ts`), shared with the watchdog agent: `launchctl
+  enable` (clears launchd's disabled list), `launchctl bootstrap gui/<uid>`,
+  `launchctl load -w` as the fallback for a session with no gui domain, then
+  `launchctl print` to confirm the job exists, with one retry a second later.
+  The exit code of `launchctl load` is never trusted: for a disabled job it
+  prints `Load failed: 5: Input/output error`, exits 0 and registers nothing,
+  which left two Macs unable to start ADE after an update while Repair and
+  Reset reinstalled through the same load. A job that still is not registered
+  fails with `failureStep: "launchd_register"` and launchctl's own text; the
+  status check names the disabled list, the diagnostic report reads it
+  (`launchctl print-disabled`), and `ade reset --all` re-enables every ADE label
+  on it. After registering, `installLaunchd.ts` runs `launchctl
   kickstart` (no `-k`, so a running job is untouched) whenever launchd has not
   started the job: a launchd domain in on-demand-only mode ignores `RunAtLoad`
   and `KeepAlive`, leaves the job at `runs = 0` / `pended nondemand spawn =

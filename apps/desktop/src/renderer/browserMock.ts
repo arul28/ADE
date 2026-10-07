@@ -31,8 +31,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import {
+  applyBrowserMockBrainDown,
+  browserMockBrainDownScenario,
   browserMockRecoveryScenario,
   createBrowserMockRecoveryBridges,
+  showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
 } from "./browserMockRecovery";
 import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
@@ -8622,11 +8625,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
+    updateRelaunchApp: resolved(false),
     onUpdateEvent: noop,
-    // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`).
+    // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`; see
+    // browserMockRecovery.ts for every recovery and brain-down preview URL).
     ...createBrowserMockRecoveryBridges(),
   };
+  // Brain-down banner scenarios (`?adeBrainDown=<cause>`).
+  applyBrowserMockBrainDown((window as any).ade);
   void attachBrowserRuntimeBridge();
+  if (browserMockBrainDownScenario() === "updating") {
+    // After the mock project has opened; that open clears transition errors.
+    window.setTimeout(() => {
+      void import("./state/appStore").then(({ useAppStore }) => {
+        showBrowserMockBrainDownPending(
+          (error) => useAppStore.setState({ projectTransitionError: error }),
+          MOCK_PROJECT.rootPath,
+        );
+      });
+    }, 2_500);
+  }
   if (browserMockRecoveryScenario()) {
     // After the mock project has opened; that open clears transition errors.
     window.setTimeout(() => {

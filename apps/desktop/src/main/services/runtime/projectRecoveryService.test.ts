@@ -550,7 +550,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
 
   it("explains a deliberate skip in user copy instead of the installer's log line", async () => {
     // Forcing past the skip would downgrade a newer running brain, so the
-    // remedy is to relaunch ADE — and the log line never becomes the sentence.
+    // remedy is to restart ADE — and the log line never becomes the sentence.
     const connectionPool = installStatusPool(
       "skipped",
       "Skipped ADE service install because a newer ADE brain is already running.",
@@ -563,7 +563,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     );
 
     expect(rejection.message).toBe(
-      "A newer version of ADE is already running. Quit ADE and open it again.",
+      "A newer version of ADE is already running. Restart ADE to switch to it.",
     );
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });

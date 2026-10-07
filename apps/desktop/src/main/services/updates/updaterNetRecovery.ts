@@ -1,0 +1,113 @@
+/**
+ * electron-updater fetches the feed through Chromium's `net` module, on one
+ * session it caches for the life of the process. That session can stop
+ * working while the machine is online: every request then fails with
+ * `net::ERR_FAILED` a few milliseconds after it starts, and only a relaunch
+ * used to clear it. These helpers tell that apart from a real outage by asking
+ * Node's own HTTP stack, which shares nothing with Chromium's, and hand the
+ * updater a fresh session when Node gets through.
+ */
+
+const FEED_PROBE_TIMEOUT_MS = 8_000;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "unknown");
+}
+
+/** A failure raised by Chromium's network stack (`net::ERR_*`). */
+export function isChromiumNetError(error: unknown): boolean {
+  return /\bnet::ERR_[A-Z0-9_]+/.test(errorMessage(error));
+}
+
+/** The channel file electron-updater reads for this platform. */
+export function updateFeedChannelFile(
+  platform: NodeJS.Platform,
+  arch: string = process.arch,
+): string {
+  if (platform === "darwin") return "latest-mac.yml";
+  if (platform === "linux") return arch === "x64" ? "latest-linux.yml" : `latest-linux-${arch}.yml`;
+  return "latest.yml";
+}
+
+/**
+ * The channel file's URL on the configured feed: the generic override when
+ * one is set (dev only), otherwise the GitHub release of `repository`.
+ */
+export function buildUpdateFeedProbeUrl(args: {
+  platform: NodeJS.Platform;
+  repository: string;
+  genericFeedUrl?: string | null;
+}): string | null {
+  const file = updateFeedChannelFile(args.platform);
+  const genericFeedUrl = args.genericFeedUrl?.trim().replace(/\/+$/, "");
+  if (genericFeedUrl) return `${genericFeedUrl}/${file}`;
+  const repository = args.repository.trim().replace(/^\/+|\/+$/g, "");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return null;
+  return `https://github.com/${repository}/releases/latest/download/${file}`;
+}
+
+export type UpdateFeedProbeResult = {
+  /** Any HTTP response counts: the question is whether the server answers. */
+  reachable: boolean;
+  url: string;
+  status: number | null;
+  elapsedMs: number;
+  error: string | null;
+};
+
+/** Requests the feed with Node's fetch, never Chromium's. Never rejects. */
+export async function probeUpdateFeed(url: string): Promise<UpdateFeedProbeResult> {
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: AbortSignal.timeout(FEED_PROBE_TIMEOUT_MS),
+    });
+    void response.body?.cancel().catch(() => {});
+    return { reachable: true, url, status: response.status, elapsedMs: Date.now() - startedAt, error: null };
+  } catch (error) {
+    return { reachable: false, url, status: null, elapsedMs: Date.now() - startedAt, error: errorMessage(error) };
+  }
+}
+
+type NetSessionExecutor = { cachedSession: unknown };
+
+function netSessionExecutor(updater: unknown): NetSessionExecutor | null {
+  const executor = updater && typeof updater === "object"
+    ? (updater as { httpExecutor?: unknown }).httpExecutor
+    : null;
+  return executor && typeof executor === "object" && "cachedSession" in executor
+    ? executor as NetSessionExecutor
+    : null;
+}
+
+/** True when the updater fetches through electron-updater's ElectronHttpExecutor. */
+export function canReplaceUpdaterNetSession(updater: unknown): boolean {
+  return netSessionExecutor(updater) != null;
+}
+
+/**
+ * Points the updater's executor at a new in-memory session. The executor only
+ * creates a session while `cachedSession` is null, and the feed provider holds
+ * this same executor, so the next request of every kind uses the new one. The
+ * old partition cannot be reused: `fromPartition` returns the same session for
+ * the same name.
+ */
+export function replaceUpdaterNetSession(updater: unknown, partition: string): boolean {
+  const executor = netSessionExecutor(updater);
+  if (!executor || typeof require !== "function") return false;
+  try {
+    // Resolved through require for the same reason as the native updater in
+    // autoUpdateService: tests mock "electron" as `{ app }`.
+    const electron = require("electron") as {
+      session?: { fromPartition?: (partition: string, options: { cache: boolean }) => unknown };
+    };
+    const fresh = electron.session?.fromPartition?.(partition, { cache: false });
+    if (!fresh) return false;
+    executor.cachedSession = fresh;
+    return true;
+  } catch {
+    return false;
+  }
+}

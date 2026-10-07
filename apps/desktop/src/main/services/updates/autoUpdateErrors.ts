@@ -180,6 +180,11 @@ export function classifyUpdateError(
   if (/not enough (?:free )?(?:disk )?space|insufficient (?:disk )?(?:space|capacity)/.test(message)) {
     return { kind: "insufficient_space", phase };
   }
+  // Chromium net failures (`net::ERR_FAILED`, `net::ERR_INTERNET_DISCONNECTED`)
+  // name no word the pattern below can see, so they used to land in `unknown`.
+  if (/\bnet::err_[a-z0-9_]+/.test(message)) {
+    return { kind: "network", phase };
+  }
   if (/signature|code requirement|notariz/.test(message)) {
     return { kind: "signature", phase: "verification" };
   }

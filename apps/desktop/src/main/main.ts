@@ -2997,6 +2997,9 @@ app.whenReady().then(async () => {
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    // The remedy for a wedged updater session. Same quit warnings as any quit,
+    // so running agents are never ended without the user seeing them.
+    relaunchApp: () => requestQuitAfterWarnings(null, "relaunch"),
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
     productAnalyticsService,
     releaseRepository: packagedReleaseRepository,
@@ -3082,9 +3085,10 @@ app.whenReady().then(async () => {
         {
           surface: request.surface,
           headline: request.headline ?? null,
-          code: request.failureCode,
+          code: request.code ?? request.failureCode,
           technicalDetail: request.technicalDetail ?? null,
           projectRoot,
+          extraNotes: request.extraNotes,
         },
       );
       return { report: result.report, filePath: result.filePath, installId: result.installId };
@@ -8039,11 +8043,12 @@ app.whenReady().then(async () => {
   const confirmQuitWarning = (
     ownerWindow?: BrowserWindow | null,
     impact: UpdateInstallImpact | null = null,
+    relaunch = false,
   ): boolean => {
     const phoneDetail = describeConnectedPhones(impact);
     return showWindowCloseWarning(ownerWindow, {
-      buttons: ["Keep ADE open", "Quit ADE"],
-      title: "Quit ADE?",
+      buttons: ["Keep ADE open", relaunch ? "Restart ADE" : "Quit ADE"],
+      title: relaunch ? "Restart ADE?" : "Quit ADE?",
       message: "Save your work before closing ADE.",
       detail: [
         "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
@@ -8067,7 +8072,7 @@ app.whenReady().then(async () => {
 
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
-    reason: "before_quit" | "window_close",
+    reason: "before_quit" | "window_close" | "relaunch",
   ): void => {
     if (shutdownRequested || quitConfirmationInFlight) return;
     quitConfirmationInFlight = true;
@@ -8075,7 +8080,10 @@ app.whenReady().then(async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
         const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact)) return;
+        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return;
+        // Registered only once the user has agreed, so a cancelled restart
+        // cannot turn a later plain quit into a relaunch. app.exit honors it.
+        if (reason === "relaunch") app.relaunch();
         requestAppShutdown({ reason, exitCode: 0 });
       } finally {
         quitConfirmationInFlight = false;

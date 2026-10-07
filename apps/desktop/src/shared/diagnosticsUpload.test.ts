@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL } from "./accountDirectory";
 import {
-  describeDiagnosticUploadFailure,
   diagnosticsUploadUrl,
   MAX_DIAGNOSTIC_UPLOAD_BYTES,
   resolveDiagnosticsUploadBaseUrl,
@@ -211,13 +210,5 @@ describe("uploadDiagnosticReport", () => {
     expect(diagnosticsUploadUrl("https://x.dev")).toBe("https://x.dev/diagnostics/upload");
     expect(diagnosticsUploadUrl("https://x.dev///")).toBe("https://x.dev/diagnostics/upload");
     expect(diagnosticsUploadUrl("  https://x.dev  ")).toBe("https://x.dev/diagnostics/upload");
-  });
-
-  it("explains failures without a status code or a file path", () => {
-    for (const reason of ["too_large", "rate_limited", "unavailable", "rejected", "network"] as const) {
-      const sentence = describeDiagnosticUploadFailure(reason);
-      expect(sentence.length).toBeGreaterThan(0);
-      expect(sentence).not.toMatch(/\d{3}|http|\//);
-    }
   });
 });

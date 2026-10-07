@@ -34,8 +34,10 @@ export type ServiceManagerResult = {
    * `background_item_blocked` is macOS refusing to start the agent because
    * ADE is switched off under Login Items → "Allow in the Background"; no
    * restart can fix that, only the person at the keyboard can.
+   * `launchd_register` is launchd refusing to register the job at all; the
+   * message carries launchctl's own error.
    */
-  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked";
+  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked" | "launchd_register";
   /**
    * The service is registered and its brain process is alive, but it had not
    * answered on the socket when the install's wait budget ran out. That is a
@@ -958,6 +960,63 @@ function streamToText(value: string | Buffer | null | undefined): string {
 
 export function serviceManagerResultText(result: ServiceManagerProcessResult): string {
   return streamToText(result.stderr) || streamToText(result.stdout);
+}
+
+/** Whether launchd has the job registered in the gui or user domain. */
+export function isLaunchAgentRegistered(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  const uid = currentUid();
+  return [`gui/${uid}`, `user/${uid}`].some(
+    (domain) => run("launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0,
+  );
+}
+
+/** Whether the job is on launchd's disabled list for the gui domain. */
+export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  const answer = run("launchctl", ["print-disabled", `gui/${currentUid()}`], { encoding: "utf8" });
+  if (answer.status !== 0) return false;
+  const line = (typeof answer.stdout === "string" ? answer.stdout : answer.stdout?.toString("utf8") ?? "")
+    .split("\n")
+    .find((entry) => entry.includes(`"${label}"`));
+  // Older macOS prints `=> true` for a disabled job; newer prints `=> disabled`.
+  return line != null && /=>\s*(disabled|true)\b/.test(line);
+}
+
+export type LaunchAgentLoadResult = { ok: true } | { ok: false; detail: string };
+
+/**
+ * Registers a LaunchAgent with launchd and confirms that it is registered.
+ *
+ * Never trust `launchctl load`'s exit code. For a job on launchd's disabled
+ * list (the "Allow in the Background" switch turned off once, or an old
+ * `unload -w`), `load` prints `Load failed: 5: Input/output error`, exits 0
+ * and registers nothing. The kickstart that follows then fails with "Could not
+ * find service". Two real Macs ended up there after an update, and Repair and
+ * Reset both reinstalled through this same load, so neither could fix it.
+ *
+ * So: clear the disabled override, `bootstrap` into the gui domain (which
+ * reports its errors), fall back to `load -w` where there is no gui domain
+ * (an ssh session), and then ask launchd whether the job exists.
+ */
+export function loadLaunchAgent(
+  servicePath: string,
+  label: string,
+  run: ServiceManagerSpawnSync = spawnSync,
+): LaunchAgentLoadResult {
+  const uid = currentUid();
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    run("launchctl", ["enable", `${domain}/${label}`], { stdio: "ignore" });
+  }
+  const bootstrap = run("launchctl", ["bootstrap", `gui/${uid}`, servicePath], { encoding: "utf8" });
+  if (isLaunchAgentRegistered(label, run)) return { ok: true };
+  const bootstrapText = serviceManagerResultText(bootstrap)
+    || `launchctl bootstrap exited with status ${bootstrap.status ?? "unknown"}.`;
+  const load = run("launchctl", ["load", "-w", servicePath], { encoding: "utf8" });
+  if (isLaunchAgentRegistered(label, run)) return { ok: true };
+  const loadText = serviceManagerResultText(load);
+  return {
+    ok: false,
+    detail: loadText ? `${bootstrapText} launchctl load: ${loadText}` : bootstrapText,
+  };
 }
 
 /**

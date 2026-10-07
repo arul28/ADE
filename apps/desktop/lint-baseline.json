@@ -1,10 +1,6 @@
 {
   "version": 1,
   "files": {
-    "apps/desktop/src/renderer/components/app/AutoUpdateErrorDialog.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/app/CommandPalette.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

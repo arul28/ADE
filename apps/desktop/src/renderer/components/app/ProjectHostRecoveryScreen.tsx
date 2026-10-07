@@ -107,8 +107,9 @@ export function ProjectHostRecoveryScreen() {
         <ErrorSurfaceCard
           tone={recovering ? "neutral" : "warning"}
           icon={recovering
-            ? <CircleNotch size={16} weight="bold" className="animate-spin" />
-            : <Warning size={16} weight="bold" />}
+            ? <CircleNotch size={14} weight="bold" className="animate-spin" />
+            : <Warning size={14} weight="bold" />}
+          status={recovering ? "Fixing" : "Needs a fix"}
           headline={recovering ? "Fixing the connection…" : snapshot.headline}
           body={recovering ? undefined : snapshot.body}
         >

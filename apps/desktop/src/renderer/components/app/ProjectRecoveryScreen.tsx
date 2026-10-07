@@ -1,12 +1,5 @@
-import {
-  ArrowLeft,
-  CheckCircle,
-  CircleNotch,
-  MinusCircle,
-  WarningCircle,
-  XCircle,
-} from "@phosphor-icons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, CircleNotch } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   RECOVERY_COPY,
@@ -15,20 +8,24 @@ import {
   toAdeRecoveryErrorCode,
   type ProjectRecoveryDiagnosis,
   type ProjectRepairReport,
+  type RepairStepId,
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { useAppStore } from "../../state/appStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import {
-  ERROR_GHOST_BUTTON,
+  ERROR_BODY,
   ERROR_HEADLINE,
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
   ErrorSurfaceCard,
   TechnicalDetailsFold,
+  type ErrorSurfaceTone,
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { ResetAdeButton } from "./ResetAdeDialog";
+import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -53,14 +50,39 @@ type DiagnosisState = ProjectRecoveryDiagnosis["state"];
  */
 const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set(["brain_starting", "background_blocked"]);
 
-/** The last step after any fix that did not work: the way out that always works. */
-const RESET_STEP =
-  "Still stuck? Choose Reset ADE. It removes everything ADE put on this computer and sets it up fresh. Your code stays.";
-
-/** Two failed fixes in a row: another try is unlikely to help, so Reset leads. */
+/** Without Restart ADE, two failed fixes in a row hand the lead to Reset. */
 const FAILURES_BEFORE_RESET_LEADS = 2;
 
 type Phase = "diagnosing" | "idle" | "repairing" | "success" | "failure";
+
+/**
+ * The escalation ladder, one short line per rung saying what it does. Every
+ * state ends on the same three rungs, so nobody reaches a screen whose last
+ * word is "quit and reopen ADE": Fix it → Restart ADE → Reset ADE → Report.
+ */
+const RUNG_HINT = {
+  fix: "Restarts ADE's background service and checks this project.",
+  settings: "Opens Login Items in System Settings.",
+  retry: "Opens the project again.",
+  restart: "Quits and reopens ADE.",
+  reset: "Removes everything ADE put on this computer. Your code stays.",
+  report: "Sends ADE what went wrong and gives you a reference.",
+} as const;
+
+/**
+ * What a failed fix says, by the step that stopped it. The cause in plain
+ * words; the step's raw detail stays in the technical fold.
+ */
+const FAILED_STEP_HEADLINE: Record<RepairStepId, string> = {
+  check_space: "There still isn't enough free space",
+  stop_service: "Another copy of ADE is in the way",
+  validate_database: "This project's ADE data is damaged",
+  resolve_migrations: "ADE couldn't finish an interrupted save",
+  restart_service: "ADE's background service still won't start",
+  verify_endpoint: "ADE's background service isn't answering",
+  verify_project_rpc: "ADE started, but this project didn't open",
+  reconcile_chats: "ADE started, but couldn't check the chats",
+};
 
 /**
  * The "now doing" line names the next step from the shared ordered list.
@@ -76,51 +98,64 @@ function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+function projectLabel(rootPath: string | null): string {
+  if (!rootPath) return "ADE";
+  const segments = rootPath.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] ?? rootPath;
+}
+
+const SPINNER = (
+  <CircleNotch size={12} weight="bold" aria-hidden="true" className="shrink-0 animate-spin text-(color:--kit-text-3)" />
+);
+
 function StepRow({ step }: { step: RepairStepResult }) {
-  const icon =
-    step.status === "ok" ? (
-      <CheckCircle size={16} weight="fill" className="mt-px shrink-0 text-emerald-400/90" />
-    ) : step.status === "failed" ? (
-      <XCircle size={16} weight="fill" className="mt-px shrink-0 text-red-400/90" />
-    ) : (
-      <MinusCircle size={16} weight="regular" className="mt-px shrink-0 text-fg/35" />
-    );
   return (
-    <li
-      className={
-        "flex items-start gap-2 text-[12.5px] leading-snug " +
-        (step.status === "failed" ? "text-fg/90" : "text-fg/70")
-      }
-    >
-      {icon}
-      <span className={step.status === "failed" ? "font-medium" : undefined}>{step.label}</span>
+    <li className="flex items-center gap-2.5 text-[12.5px] leading-snug">
+      <span className="flex w-3 shrink-0 justify-center">
+        <span
+          className="kit-dot"
+          data-state={step.status === "ok" ? "ok" : step.status === "failed" ? "crit" : undefined}
+          aria-hidden="true"
+        />
+      </span>
+      <span
+        className={
+          step.status === "failed"
+            ? "font-medium text-fg"
+            : step.status === "skipped"
+              ? "text-(color:--kit-text-3)"
+              : "text-(color:--kit-text-2)"
+        }
+      >
+        {step.label}
+      </span>
     </li>
   );
 }
 
 /** Numbered, because these are done in order. */
-function DoTheseSteps({ title, steps }: { title: string; steps: readonly string[] }) {
+function DoTheseSteps({ steps }: { steps: readonly string[] }) {
   return (
-    <div className="mt-5 text-[12.5px] leading-relaxed text-fg/65">
-      <p className="font-medium text-fg/85">{title}</p>
-      <ol className="mt-1.5 flex list-decimal flex-col gap-1 pl-5 marker:text-fg/35">
-        {steps.map((step) => (
-          <li key={step}>{step}</li>
-        ))}
-      </ol>
-    </div>
+    <ol className="mt-4 flex list-decimal flex-col gap-1 pl-5 text-[12.5px] leading-relaxed text-(color:--kit-text-2) marker:text-(color:--kit-text-3)">
+      {steps.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ol>
   );
 }
 
-function WatchingNote({ children }: { children: string }) {
+/** One rung: its control on the left, what it does on the right. */
+function Rung({ control, hint, failed = false }: { control: ReactNode; hint: string; failed?: boolean }) {
   return (
-    <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-border/60 bg-fg/[0.02] px-4 py-3 text-[12.5px] leading-relaxed text-fg/65">
-      <span
-        aria-hidden="true"
-        className="mt-1 h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
-      />
-      <span>{children}</span>
-    </div>
+    <li className="contents">
+      <span className="flex items-center gap-2">{control}</span>
+      <span className="flex min-w-0 items-center gap-2 text-[12px] leading-snug text-(color:--kit-text-2)">
+        <span className="min-w-0">{hint}</span>
+        {failed ? (
+          <span className="kit-tag shrink-0" data-tone="crit">Didn&apos;t work</span>
+        ) : null}
+      </span>
+    </li>
   );
 }
 
@@ -129,6 +164,7 @@ export function ProjectRecoveryScreen() {
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const theme = useAppStore((s) => s.theme);
 
   const rootPath = projectTransitionError?.rootPath ?? null;
   const code = toAdeRecoveryErrorCode(projectTransitionError?.code) ?? "unknown";
@@ -140,8 +176,13 @@ export function ProjectRecoveryScreen() {
   // Steps pushed by the main process while the repair is still running. The
   // final report replaces them; until then they are what the user watches.
   const [liveSteps, setLiveSteps] = useState<RepairStepResult[]>([]);
+  // A thrown repair's raw message. Only ever shown inside the technical fold.
   const [repairError, setRepairError] = useState<string | null>(null);
   const [failedFixes, setFailedFixes] = useState(0);
+  // Read once: Restart ADE ends this renderer, so a stamp from before the
+  // relaunch is how the screen knows that rung was already climbed.
+  const [restartedRecently] = useState(() => restartedAdeRecently());
+  const [restartFailed, setRestartFailed] = useState(false);
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -183,8 +224,22 @@ export function ProjectRecoveryScreen() {
       const timer = window.setTimeout(() => {
         if (report.ok) {
           setPhase("success");
+        } else if (report.failureCode === "background_item_blocked") {
+          // The fix ran into the switch only the person can flip. That is the
+          // blocked flow — Open System Settings, then watch — not a failure to
+          // climb past with Restart or Reset.
+          setDiagnosis((prev) => ({
+            ...(prev ?? {
+              technicalDetail: "",
+              headline: RECOVERY_COPY.background_blocked.headline,
+              body: RECOVERY_COPY.background_blocked.body,
+            }),
+            state: "background_blocked",
+            code: "background_item_blocked",
+            canAutoRepair: false,
+          }));
+          setPhase("idle");
         } else {
-          setRepairError(report.nextAction ?? null);
           setFailedFixes((count) => count + 1);
           setPhase("failure");
         }
@@ -256,6 +311,7 @@ export function ProjectRecoveryScreen() {
           if (result.state === "healthy") {
             if (reopenStartedRef.current) return;
             reopenStartedRef.current = true;
+            clearRestartStamp();
             void switchProjectToPath(rootPath).catch(() => {
               // The open failed for a new reason; the store has replaced the
               // transition error and the diagnose effect above re-runs.
@@ -287,6 +343,7 @@ export function ProjectRecoveryScreen() {
   useEffect(() => {
     if (phase !== "success" || !rootPath || reopenStartedRef.current) return;
     reopenStartedRef.current = true;
+    clearRestartStamp();
     const timer = window.setTimeout(() => {
       void switchProjectToPath(rootPath);
     }, REOPEN_DELAY_MS);
@@ -308,6 +365,13 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath, switchProjectToPath]);
 
+  const onRestart = useCallback(() => {
+    setRestartFailed(false);
+    void restartAde().then((started) => {
+      if (!started) setRestartFailed(true);
+    });
+  }, []);
+
   // One verdict for the whole screen. With a live diagnosis it is the main
   // process's; without one it is what the main process would have said about
   // the stored code, via the shared mapping. The words come from the shared
@@ -320,15 +384,21 @@ export function ProjectRecoveryScreen() {
   const idle = phase === "idle" || phase === "diagnosing";
   const starting = idle && state === "brain_starting";
   const backgroundBlocked = idle && state === "background_blocked";
+  const isRepairing = phase === "repairing";
   const isSuccess = phase === "success";
   const isFailure = phase === "failure";
   const repairOffered = canAutoRepair && !starting;
   const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
+  const restartAvailable = canRestartAde();
+  // Report issue renders nothing on a preload without the diagnostics bridge;
+  // its hint must not be left standing alone.
+  const reportAvailable = typeof window.ade?.diagnostics?.openIssue === "function";
 
   const technicalText = [
     diagnosis?.technicalDetail,
     projectTransitionError?.detail,
     projectTransitionError?.message,
+    repairError ? `repairError: ${repairError}` : null,
     report?.failureCode ? `failureCode: ${report.failureCode}` : null,
     report?.steps.length
       ? report.steps
@@ -341,81 +411,94 @@ export function ProjectRecoveryScreen() {
     .join("\n");
 
   const visibleSteps = report
-    ? report.steps.slice(0, phase === "repairing" ? revealed : undefined)
+    ? report.steps.slice(0, isRepairing ? revealed : undefined)
     : liveSteps;
   // What the fix is doing right now: the step after the last finished one.
-  const activeStepLabel = phase === "repairing" && !report
+  const activeStepLabel = isRepairing && !report
     ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
     : null;
 
-  const heroHeadline = isFailure ? "That didn't fix it" : copy.headline;
-  const heroBody = isFailure ? "ADE tried, but the problem is still there. Nothing was removed." : copy.body;
-  const resetLeads = isFailure && failedFixes >= FAILURES_BEFORE_RESET_LEADS;
-  const failureSteps = [
-    repairError ?? "Choose Try again. A second try fixes most of these.",
-    RESET_STEP,
-  ];
+  const failedStep = report?.steps.find((step) => step.status === "failed")?.id ?? null;
+  const heroHeadline = isFailure
+    ? (failedStep ? FAILED_STEP_HEADLINE[failedStep] : "That didn't fix it")
+    : copy.headline;
+  const heroBody = isFailure
+    ? (report?.nextAction ?? "ADE tried, but the problem is still there. Nothing was removed.")
+    : copy.body;
 
-  // Exactly one filled button: the thing to do next.
-  let primary: { label: string; onClick: () => void } | null = null;
-  if (resetLeads) primary = null;
-  else if (backgroundBlocked) primary = { label: "Open System Settings", onClick: openBackgroundSettings };
-  else if (repairOffered) primary = { label: isFailure ? "Try again" : "Fix it", onClick: () => void runRepair() };
-  else if (rootPath && !starting) primary = { label: "Try again", onClick: reopenProject };
+  // Which rung leads, i.e. gets the one filled button. A failed fix climbs to
+  // Restart ADE; a fix that fails again after a restart climbs to Reset. With
+  // no way to restart from here, two failed fixes in a row hand it to Reset.
+  const resetLeads = isFailure && (restartAvailable
+    ? restartedRecently
+    : failedFixes >= FAILURES_BEFORE_RESET_LEADS);
+  const restartLeads = isFailure && !resetLeads && restartAvailable;
+  const firstRungLeads = !resetLeads && !restartLeads;
+
+  // The state's own first rung: what fixes this particular problem.
+  let firstRung: { label: string; hint: string; onClick: () => void } | null = null;
+  if (backgroundBlocked) {
+    firstRung = { label: "Open System Settings", hint: RUNG_HINT.settings, onClick: openBackgroundSettings };
+  } else if (repairOffered) {
+    firstRung = { label: isFailure ? "Try again" : "Fix it", hint: RUNG_HINT.fix, onClick: () => void runRepair() };
+  } else if (rootPath && !starting) {
+    firstRung = { label: "Try again", hint: RUNG_HINT.retry, onClick: reopenProject };
+  }
+
+  const tone: ErrorSurfaceTone = isSuccess ? "success" : starting || isRepairing ? "neutral" : isFailure ? "error" : "warning";
+  const status = isSuccess
+    ? "Fixed"
+    : isRepairing
+      ? "Fixing"
+      : starting
+        ? "Starting"
+        : backgroundBlocked
+          ? "Waiting for you"
+          : isFailure
+            ? "Still broken"
+            : canAutoRepair ? "Needs a fix" : "Needs you";
 
   return (
     <div
-      className="absolute inset-0 z-30 overflow-y-auto bg-bg/98 text-fg backdrop-blur-sm"
+      className="absolute inset-0 z-30 overflow-y-auto text-fg"
       role="region"
       aria-label="Project recovery"
     >
+      {/* The same window-wide scene as the top bar and the home page: the
+          card floats over it instead of over an opaque slab. */}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
+        <WorkToolPickerBackdrop theme={theme} field="window" />
+      </div>
       {/* Centred, but as a min-height row rather than `items-center` on the
           scroller: a card taller than the window would otherwise have its top
           — Back included — clipped above the scroll origin. */}
       <div className="flex min-h-full items-center justify-center px-6 py-10">
-      <div className="w-full max-w-[560px]">
-        <button
-          type="button"
-          onClick={clearProjectTransitionError}
-          className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/85"
-        >
-          <ArrowLeft size={13} weight="bold" />
-          Back
-        </button>
-
+      <div className="w-full max-w-[540px]">
         <ErrorSurfaceCard
-          tone={isSuccess ? "success" : starting ? "neutral" : "warning"}
-          icon={
-            isSuccess ? (
-              <CheckCircle size={18} weight="fill" aria-hidden="true" />
-            ) : starting ? (
-              // Nothing is broken while ADE boots; a warning badge here is the
-              // "broken ADE" report this state exists to avoid.
-              <CircleNotch size={17} weight="bold" aria-hidden="true" className="animate-spin" />
-            ) : (
-              <WarningCircle size={18} weight="fill" aria-hidden="true" />
-            )
-          }
+          tone={tone}
+          label={projectLabel(rootPath)}
+          status={status}
+          action={(
+            <button type="button" onClick={clearProjectTransitionError} className="kit-card-head-action">
+              <ArrowLeft size={12} weight="bold" />
+              Back
+            </button>
+          )}
           headline={heroHeadline}
           body={heroBody}
-          hero={
-            isSuccess
-              ? <SuccessCard report={report} onOpenWork={() => navigate("/work")} />
-              : undefined
-          }
+          hero={isSuccess ? <SuccessCard report={report} onOpenWork={() => navigate("/work")} /> : undefined}
         >
+          {/* What the person does themselves, in order. Only real chores. */}
+          {!isSuccess && !isRepairing && !isFailure && !starting && copy.steps ? (
+            <DoTheseSteps steps={copy.steps} />
+          ) : null}
 
           {/* Fix progress, or the checklist of a fix that did not work. */}
-          {(phase === "repairing" || isFailure) && (report || phase === "repairing") ? (
-            <div className="mt-5 rounded-xl border border-amber-400/12 bg-amber-400/[0.04] px-4 py-3.5">
-              {phase === "repairing" ? (
-                <div className="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-amber-100/80">
-                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                    <span
-                      aria-hidden="true"
-                      className="h-3 w-3 animate-spin rounded-full border border-amber-200/30 border-t-amber-300"
-                    />
-                  </span>
+          {isRepairing || (isFailure && report) ? (
+            <div className="mt-4 rounded-[var(--radius-md)] border border-(color:--kit-panel-edge) bg-(color:--kit-panel-bg) px-3.5 py-3">
+              {isRepairing ? (
+                <div className="mb-2 flex items-center gap-2.5 text-[12.5px] font-medium text-fg">
+                  <span className="flex w-3 justify-center">{SPINNER}</span>
                   {activeStepLabel ? `${activeStepLabel}…` : "Fixing…"}
                 </div>
               ) : null}
@@ -429,83 +512,106 @@ export function ProjectRecoveryScreen() {
             </div>
           ) : null}
 
-          {/* Someone else is doing the work: say who, so nobody hunts for a button. */}
-          {starting ? (
-            <WatchingNote>Waiting for ADE… You can leave this screen. The project opens by itself.</WatchingNote>
-          ) : null}
+          {/* The ladder. Hidden while a fix runs and once it worked. */}
+          {!isRepairing && !isSuccess ? (
+            <>
+              <ul className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2.5">
+                {starting ? (
+                  // Someone else is doing the work: say who, so nobody hunts for a button.
+                  <Rung
+                    control={<span className="flex h-[30px] items-center gap-2 text-[12.5px] font-medium">{SPINNER}Waiting for ADE…</span>}
+                    hint="You can leave this screen; nothing needs fixing yet."
+                  />
+                ) : null}
+                {firstRung ? (
+                  <Rung
+                    control={(
+                      <>
+                        <button
+                          type="button"
+                          onClick={firstRung.onClick}
+                          className={firstRungLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}
+                        >
+                          {firstRung.label}
+                        </button>
+                      </>
+                    )}
+                    hint={firstRung.hint}
+                    failed={isFailure && repairOffered}
+                  />
+                ) : null}
+                {storageRelevant && !isFailure ? (
+                  <Rung
+                    control={(
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Clearing the error first exits the recovery takeover;
+                          // while it is set this screen keeps rendering and the
+                          // route change alone would never reveal Settings.
+                          clearProjectTransitionError();
+                          navigate(settingsRouteFor("storage.usage"));
+                        }}
+                        className={ERROR_SECONDARY_BUTTON}
+                      >
+                        See what uses space
+                      </button>
+                    )}
+                    hint="Opens ADE's storage settings."
+                  />
+                ) : null}
+                {restartAvailable ? (
+                  <Rung
+                    control={(
+                      <button type="button" onClick={onRestart} className={restartLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}>
+                        Restart ADE
+                      </button>
+                    )}
+                    hint={restartFailed ? "ADE couldn't restart itself. Quit it from the menu, then open it again." : RUNG_HINT.restart}
+                    failed={isFailure && restartedRecently}
+                  />
+                ) : null}
+                <Rung
+                  control={<ResetAdeButton label="Reset ADE…" className={resetLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON} />}
+                  hint={RUNG_HINT.reset}
+                />
+              </ul>
 
-          {/* What the person does, in order. One list at a time. */}
-          {!isSuccess && phase !== "repairing" && !starting ? (
-            isFailure ? (
-              <DoTheseSteps title="What to do now" steps={failureSteps} />
-            ) : copy.steps ? (
-              <DoTheseSteps title="What to do" steps={copy.steps} />
-            ) : null
-          ) : null}
+              {backgroundBlocked ? (
+                <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
+                  {SPINNER}
+                  Watching for the change. ADE continues as soon as your Mac allows it.
+                </p>
+              ) : null}
 
-          {phase !== "repairing" && !isSuccess && (primary || resetLeads || storageRelevant || (rootPath && repairOffered)) ? (
-            <div className="mt-5 flex flex-wrap items-center gap-2">
-              {resetLeads ? <ResetAdeButton className={ERROR_PRIMARY_BUTTON} label="Reset ADE…" /> : null}
-              {primary ? (
-                <button type="button" onClick={primary.onClick} className={ERROR_PRIMARY_BUTTON}>
-                  {primary.label}
-                </button>
+              {reportAvailable ? (
+                <>
+                  <hr className="kit-rule" style={{ marginTop: 18 }} />
+                  {/* The last rung: when nothing above worked, tell ADE. The hint
+                      steps aside once the button reports its own result. */}
+                  <div className="group/report mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <ReportIssueButton
+                      variant="ghost"
+                      showDisclosure={false}
+                      context={{
+                        surface: "project_recovery",
+                        headline: heroHeadline,
+                        code,
+                        technicalDetail: technicalText,
+                        projectRoot: rootPath,
+                      }}
+                    />
+                    <span className="text-[12px] text-(color:--kit-text-3) group-has-[[role=status]]/report:hidden">
+                      {RUNG_HINT.report}
+                    </span>
+                  </div>
+                </>
               ) : null}
-              {resetLeads && repairOffered ? (
-                <button type="button" onClick={() => void runRepair()} className={ERROR_SECONDARY_BUTTON}>
-                  Try again
-                </button>
-              ) : null}
-              {storageRelevant ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Clearing the error first exits the recovery takeover;
-                    // while it is set this screen keeps rendering and the
-                    // route change alone would never reveal Settings.
-                    clearProjectTransitionError();
-                    navigate(settingsRouteFor("storage.usage"));
-                  }}
-                  className={ERROR_SECONDARY_BUTTON}
-                >
-                  See what uses space
-                </button>
-              ) : null}
-              {rootPath && repairOffered && !starting ? (
-                <button type="button" onClick={reopenProject} className={ERROR_GHOST_BUTTON}>
-                  Open anyway
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          {backgroundBlocked ? (
-            <WatchingNote>Watching for the change. ADE continues as soon as your Mac allows it.</WatchingNote>
+            </>
           ) : null}
         </ErrorSurfaceCard>
 
-        {/* The ways out that are about ADE, not this project. */}
-        {phase !== "repairing" && !isSuccess ? (
-          <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-            {resetLeads ? null : (
-              <>
-                <span className="text-[12px] text-fg/45">Still stuck?</span>
-                <ResetAdeButton />
-              </>
-            )}
-            <ReportIssueButton
-              variant="ghost"
-              context={{
-                surface: "project_recovery",
-                headline: heroHeadline,
-                code,
-                technicalDetail: technicalText,
-                projectRoot: rootPath,
-              }}
-            />
-          </div>
-        ) : null}
-
-        <TechnicalDetailsFold text={technicalText} className="mt-4" />
+        <TechnicalDetailsFold text={technicalText} className="mt-3" />
       </div>
       </div>
     </div>
@@ -526,7 +632,7 @@ function SuccessCard({
   return (
     <>
       <h1 className={ERROR_HEADLINE}>Fixed. Opening the project…</h1>
-      <ul className="mt-3 flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-fg/60">
+      <ul className={ERROR_BODY + " mt-2 flex flex-col gap-1"}>
         {report?.dbHealthy === false ? <li>This project&apos;s ADE data was repaired.</li> : null}
         {resumedNormally != null && total ? (
           <li>{pluralize(resumedNormally, "chat")} picked up where {resumedNormally === 1 ? "it" : "they"} left off.</li>
@@ -537,13 +643,13 @@ function SuccessCard({
             <button
               type="button"
               onClick={onOpenWork}
-              className="font-medium text-amber-300/90 underline decoration-amber-300/30 underline-offset-2 transition-colors hover:text-amber-200"
+              className="font-medium text-fg underline decoration-(color:--kit-text-3) underline-offset-2 transition-colors hover:decoration-fg"
             >
               open Work
             </button>
           </li>
         ) : null}
-        <li className="text-fg/45">No files were removed.</li>
+        <li className="text-(color:--kit-text-3)">No files were removed.</li>
       </ul>
     </>
   );

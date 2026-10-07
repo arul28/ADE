@@ -6,6 +6,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   currentUid,
   type AdeServiceCommand,
+  loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
   type ServiceManagerSpawnSync,
 } from "./common";
@@ -208,15 +209,14 @@ export function installLaunchdWatchdogAgent(deps: {
       fs.writeFileSync(servicePath, plist, "utf8");
     }
     // Reload unconditionally: an unchanged plist can still be unloaded (after a
-    // logout, a manual `launchctl unload`, or a failed previous install), and
-    // `load` on an already-loaded agent is a no-op error we ignore.
+    // logout, a manual `launchctl unload`, or a failed previous install).
     run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-    const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
-    if (load.status !== 0) {
+    const load = loadLaunchAgent(servicePath, resolveWatchdogServiceName(runtimeServiceName), run);
+    if (!load.ok) {
       return {
         installed: false,
         path: servicePath,
-        message: "The ADE watchdog agent could not be loaded.",
+        message: `The ADE watchdog agent could not be loaded. ${load.detail}`,
       };
     }
     return {

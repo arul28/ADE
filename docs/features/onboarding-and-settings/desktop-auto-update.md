@@ -144,7 +144,8 @@ labels this value as an estimate rather than an exact installer requirement.
 | Capacity preflight | Synchronous ADE check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
-| Network | Rejected check/download or updater `error` event | `network` | Retry; incomplete cache may be cleared |
+| Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
+| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed, and a fresh session did not help | `network_stuck` at phase `check`; the dialog offers Restart ADE | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
@@ -156,6 +157,26 @@ watchdog, while the native Squirrel handoff has a separate five-minute watchdog
 so loopback transfer and staging are not mistaken for a stalled quit. Handoff
 timeouts retain the pending-install marker because Squirrel may still complete;
 an explicit updater error clears it.
+
+## Wedged updater session
+
+electron-updater fetches through Chromium's `net` on one session it caches for
+the life of the process. That session can stop working while the machine is
+online: every check then fails with `net::ERR_FAILED` a few milliseconds after
+it starts, before any request leaves the machine, until ADE is relaunched.
+
+When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
+Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
+configured feed (`updaterNetRecovery.ts`). If Node gets no answer either, the
+failure is a real outage: `network`, "ADE can't reach the update server". If
+Node gets through, the updater gets a fresh in-memory session
+(`electron-updater-recovered-<n>`) and the check runs once more. Each step logs
+`autoUpdate.net_wedge_detected`, then `autoUpdate.net_wedge_recovered` or
+`autoUpdate.net_wedge_unrecovered`, with the probe result. Still failing ends in
+`network_stuck`, whose remedy is Restart ADE (`IPC.updateRelaunchApp`, through
+the normal quit warnings). One retry per check; after a fresh session fails,
+background checks stop making new ones until a check succeeds, while a user's
+Check again may try one more.
 
 ## Quit deadline during the native handoff
 
@@ -394,19 +415,25 @@ one installer per connect attempt.
 
 The typed result rides the existing `AutoUpdateSnapshot` over
 `IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
-failure names the step in plain words and `AutoUpdateBanner` renders that one
-line beside the shared **Repair** control and a **Report issue** button (the
-notice wraps rather than truncating, since the message can run long and Repair
-grows a failure line of its own). Its colours are the app shell's amber strip:
-the notice used to be written for a light surface, which on ADE's near-black
-shell rendered as brown text with an all-but-invisible dismiss.
+failure names the step in plain words. A failed `swap` is a warning banner in
+`AutoUpdateBanner` (it stands down while the staleness banner already offers
+the retry). Every other failed step means the background service is down, and
+`BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
+service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
+**Report issue** under the text — see
+[the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
+A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
+is part of the same notice ("Finishing the update"), never a second banner.
 
 | Step | Line |
 | --- | --- |
-| `swap` | The update didn't finish installing — ADE is still on the old version. |
-| `service` | Updated the app, but the background service couldn't be set up — click Repair. |
-| `restart` | Updated the app, but the background service didn't restart — click Repair. |
-| `health` | Updated the app, but the background service isn't answering — click Repair. |
+| `swap` | The update didn't finish installing. ADE is still on the old version. |
+| `service` | ADE's background service didn't start after the update |
+| `restart` | ADE's background service didn't restart after the update |
+| `health` | ADE's background service isn't responding after the update |
+
+When the live service status says macOS's "Allow in the Background" is off,
+the notice says that instead of the step's line.
 
 The first failure stops the sequence; later steps are recorded `skipped`. A
 dependency that throws becomes a `failed` step, never an unhandled rejection.

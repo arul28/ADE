@@ -671,9 +671,11 @@ describe("createAutoUpdateService", () => {
       throw new Error("net::ERR_INTERNET_DISCONNECTED");
     });
 
-    service.checkForUpdates();
+    // The check's own catch owns a Chromium net failure, so await the check
+    // rather than the updater call before reading what it logged.
+    await service.checkForUpdates();
 
-    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.61",

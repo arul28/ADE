@@ -2,13 +2,9 @@ import { useCallback, useRef, useState } from "react";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
+  DiagnosticsManualSendResult,
 } from "../../../shared/types/diagnostics";
-import {
-  describeDiagnosticUploadFailure,
-  resolveDiagnosticsUploadBaseUrl,
-  uploadDiagnosticReport,
-  type DiagnosticUploadResult,
-} from "../../../shared/diagnosticsUpload";
+import { describeManualSendFailure } from "../../../shared/diagnosticsUpload";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   ERROR_DISCLOSURE_CARET,
@@ -32,17 +28,17 @@ const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
 };
 
 /**
- * Every error screen's escape hatch: collect a redacted diagnostic report,
- * put it on the clipboard and on disk, and open a prefilled GitHub issue —
- * then optionally hand that exact report straight to ADE.
+ * Every error screen's escape hatch: build a redacted diagnostic report about
+ * this screen and send it to ADE, with a GitHub issue as the fallback.
  *
- * The send runs here rather than in the main process because the diagnostics
- * preload bridge exposes only `openIssue`; the renderer already holds the
- * finished, redacted report that call returns, so it posts those same bytes.
- * One consequence, deliberate: the renderer has no access to the account token
- * (it lives in the brain's credential store), so a desktop upload is anonymous
- * and identified only by the install id the report already carries.
- * `ade report-issue --send` reads the store directly and does send a token.
+ * The send happens in the main process (`diagnostics.sendManual` with this
+ * screen's context): the renderer's CSP does not allow a request to the account
+ * directory, and main already owns the report builder, the redaction and the
+ * per-device daily budget. The GitHub issue opens only when the person asks
+ * for it, through `openIssue`, which also puts the report on the clipboard.
+ *
+ * A preload without `sendManual` gets the older behaviour: open the GitHub
+ * issue with the report copied.
  *
  * Deliberately self-contained — one import and one element per host screen —
  * so the error surfaces can be redesigned without untangling it.
@@ -64,75 +60,72 @@ export function ReportIssueButton({
    */
   showDisclosure?: boolean;
 }) {
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<DiagnosticReportPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState<DiagnosticUploadResult | null>(null);
+  const [sent, setSent] = useState<DiagnosticsManualSendResult | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [issue, setIssue] = useState<DiagnosticReportPayload | null>(null);
+  const [issueFailed, setIssueFailed] = useState(false);
   const { copy, copied } = useCopyToClipboard();
   /**
-   * Which report the upload result belongs to. "Report issue" stays live while
-   * a send is in flight, so a user who reports twice can have the first
-   * upload's reply land after the second report exists — and a reference that
-   * points at the older report is worse than none.
+   * Which press a reply belongs to. "Open GitHub issue" can still be in flight
+   * when the person reports again, and its answer must not land under the
+   * newer report's result line.
    */
-  const reportGenerationRef = useRef(0);
+  const generationRef = useRef(0);
 
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
+  const canSend = Boolean(bridge?.sendManual);
 
-  const run = useCallback(async () => {
-    if (!bridge?.openIssue || pending) return;
-    reportGenerationRef.current += 1;
-    setPending(true);
-    setError(null);
-    setSent(null);
+  const openIssue = useCallback(async () => {
+    if (!bridge?.openIssue || opening) return;
+    const generation = generationRef.current;
+    setOpening(true);
+    setIssueFailed(false);
     try {
       const payload = await bridge.openIssue(context);
-      setResult(payload);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setResult(null);
+      if (generationRef.current === generation) setIssue(payload);
+    } catch {
+      if (generationRef.current === generation) {
+        setIssue(null);
+        setIssueFailed(true);
+      }
     } finally {
-      setPending(false);
+      setOpening(false);
     }
-  }, [bridge, context, pending]);
+  }, [bridge, context, opening]);
 
   const send = useCallback(async () => {
-    if (!result || sending) return;
-    const generation = reportGenerationRef.current;
+    if (!bridge?.sendManual || sending) return;
+    generationRef.current += 1;
     setSending(true);
+    setSent(null);
+    setIssue(null);
+    setIssueFailed(false);
     try {
-      const outcome = await uploadDiagnosticReport({
-        // The very bytes the clipboard holds. Redaction already happened in
-        // the main process; nothing here reshapes the report.
-        report: result.report,
-        // "unknown" is the report's stand-in for "analytics is switched off";
-        // sending it as an install id would attach a value that matches nothing.
-        installId: result.installId === "unknown" ? null : result.installId,
-        // Resolved here rather than inside the upload: the CLI resolves its own
-        // origin the way the brain does, so the client itself takes a base URL
-        // its caller already decided on.
-        baseUrl: resolveDiagnosticsUploadBaseUrl(
-          typeof import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL === "string"
-            ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
-            : null,
-        ),
-      });
-      if (reportGenerationRef.current !== generation) return;
-      setSent(outcome);
+      setSent(await bridge.sendManual(context));
+    } catch {
+      setSent({ ok: false, reason: "failed" });
     } finally {
-      // Cleared unconditionally: `sending` is the only thing keeping a second
-      // upload out, so a stale reply that left it set would strand the newer
-      // report with a permanently disabled Send.
       setSending(false);
     }
-  }, [result, sending]);
+  }, [bridge, context, sending]);
+
+  const run = useCallback(async () => {
+    if (canSend) {
+      await send();
+      return;
+    }
+    generationRef.current += 1;
+    setIssue(null);
+    await openIssue();
+  }, [canSend, openIssue, send]);
 
   // An older preload has no diagnostics bridge; offering a dead button is
   // worse than offering nothing on a screen that is already failing.
   if (!bridge?.openIssue) return null;
 
   const isGhost = variant === "ghost";
+  const sentReport = sent?.ok ? sent.report : undefined;
   const disclosed = showDisclosure ?? !isGhost;
 
   return (
@@ -141,66 +134,94 @@ export function ReportIssueButton({
         <button
           type="button"
           onClick={() => void run()}
-          disabled={pending}
+          disabled={sending || (!canSend && opening)}
           className={VARIANT_CLASS[variant]}
           title={
             disclosed
               ? undefined
-              : "Collects your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed."
+              : `${canSend ? "Sends ADE" : "Collects"} your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed.`
           }
         >
-          {pending ? "Preparing report…" : "Report issue"}
+          {sending ? "Sending report…" : !canSend && opening ? "Preparing report…" : "Report issue"}
         </button>
 
-        {result ? (
+        {sent || issue || issueFailed ? (
           <span
             className={
-              (isGhost ? "text-[11px] " : "text-[12px] ") + "text-fg/60"
+              (isGhost ? "text-[11px] " : "text-[12px] ")
+              + (sent && !sent.ok ? "text-amber-300/90" : "text-fg/60")
             }
             role="status"
           >
-            {result.copied
-              ? "Report copied — paste it into the GitHub issue that just opened."
-              : "Report saved — copy it below and paste it into the GitHub issue."}{" "}
-            <button
-              type="button"
-              onClick={() => void copy(result.report)}
-              className={REPORT_LINK_BUTTON}
-            >
-              {copied ? "Copied" : "Copy again"}
-            </button>
-            {sent?.ok ? null : (
+            {sent
+              ? sent.ok
+                ? `Sent to ADE — reference ${sent.reference}`
+                : describeManualSendFailure(sent)
+              : null}
+            {sentReport ? (
               <>
                 {" · "}
+                <button
+                  type="button"
+                  onClick={() => void copy(sentReport)}
+                  className={REPORT_LINK_BUTTON}
+                >
+                  {copied ? "Copied" : "Copy report"}
+                </button>
+              </>
+            ) : null}
+            {sent && !sent.ok && (sent.reason === "failed" || sent.reason === "unavailable") ? (
+              <>
+                {" "}
                 <button
                   type="button"
                   onClick={() => void send()}
                   disabled={sending}
                   className={REPORT_LINK_BUTTON}
                 >
-                  {sending ? "Sending…" : sent ? "Try sending again" : "Send to ADE"}
+                  Try again
                 </button>
               </>
-            )}
-            {sent
-              ? (
-                <span className={sent.ok ? "text-fg/60" : "text-amber-300/90"}>
-                  {" "}
-                  {sent.ok
-                    ? `Sent — reference ${sent.reference}`
-                    : describeDiagnosticUploadFailure(sent.reason)}
-                </span>
-              )
-              : null}
-          </span>
-        ) : null}
-
-        {error ? (
-          <span
-            className={(isGhost ? "text-[11px] " : "text-[12px] ") + "text-amber-300/90"}
-            role="status"
-          >
-            ADE couldn't prepare the report. Try again in a moment.
+            ) : null}
+            {sent ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => void openIssue()}
+                  disabled={opening}
+                  className={REPORT_LINK_BUTTON}
+                >
+                  {opening ? "Opening…" : "Open GitHub issue"}
+                </button>
+              </>
+            ) : null}
+            {issue ? (
+              <span className="text-fg/60">
+                {sent ? " " : null}
+                {issue.copied
+                  ? "Report copied — paste it into the GitHub issue that just opened."
+                  : "Report saved — copy it and paste it into the GitHub issue."}
+                {sent ? null : (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() => void copy(issue.report)}
+                      className={REPORT_LINK_BUTTON}
+                    >
+                      {copied ? "Copied" : "Copy again"}
+                    </button>
+                  </>
+                )}
+              </span>
+            ) : null}
+            {issueFailed ? (
+              <span className="text-amber-300/90">
+                {sent ? " " : null}
+                ADE couldn't prepare the report. Try again in a moment.
+              </span>
+            ) : null}
           </span>
         ) : null}
       </span>
@@ -237,8 +258,9 @@ export function ReportIssueButton({
             }
           >
             File paths, your name, email addresses and any sign-in codes are removed
-            before the report is created. Nothing leaves this computer unless you post
-            the issue or choose "Send to ADE".
+            before the report is created. {canSend
+              ? "Pressing Report issue sends the report to ADE. Nothing else leaves this computer unless you open the GitHub issue."
+              : "Nothing leaves this computer unless you post the GitHub issue."}
           </p>
         </details>
       ) : null}

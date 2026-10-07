@@ -65,6 +65,7 @@ wall of utilities.
 | `.kit-seg` | A segmented control. Buttons use `aria-pressed`, `aria-selected` or `aria-checked`. `data-case="sentence"` for non-mono labels. |
 | `.kit-legend` | A chart legend item: swatch `<i>`, label, value `<b>`. |
 | `.kit-icon-btn` | A borderless square icon button. |
+| `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. |
 | `.kit-rule` | A 1px divider. |
 
 Variables worth knowing: `--kit-text-2` and `--kit-text-3` (secondary and

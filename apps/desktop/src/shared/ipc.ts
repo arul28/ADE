@@ -1151,6 +1151,7 @@ export const IPC = {
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateCancelAutoApply: "ade.update.cancelAutoApply",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
+  updateRelaunchApp: "ade.update.relaunchApp",
   updateEvent: "ade.update.event",
   transcriptionTranscribe: "ade.transcription.transcribe",
   transcriptionStatus: "ade.transcription.status",

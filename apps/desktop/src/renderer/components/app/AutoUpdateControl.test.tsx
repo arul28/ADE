@@ -247,10 +247,10 @@ describe("AutoUpdateControl", () => {
     expect(screen.getByText("/Applications/ADE.app/Contents/MacOS/ADE")).toBeTruthy();
     expect(screen.getByText(/downloaded update was kept/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Close update error details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close Not enough space to update" })).toBeTruthy();
   });
 
-  it("retries from the error dialog and clears the persistent warning on progress", async () => {
+  it("retries from the error dialog, keeps it open while checking, and clears the warning on progress", async () => {
     const mock = installAdeMock({ snapshot: diskSpaceErrorSnapshot });
 
     render(<AutoUpdateControl />);
@@ -264,11 +264,21 @@ describe("AutoUpdateControl", () => {
       version: "1.3.0",
     });
 
+    // The retry's outcome lands back in the dialog, so "checking" keeps it open.
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Not enough space to update" })).toBeNull();
+    });
+    expect(screen.getByRole("dialog", { name: "Not enough space to update" })).toBeTruthy();
+    expect(screen.getByText("Checking for updates")).toBeTruthy();
+
+    mock.emitUpdate({
+      ...idleSnapshot,
+      status: "downloading",
+      version: "1.3.0",
+    });
+    await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Not enough space to update" })).toBeNull();
     });
-    expect(screen.getByText("Checking for updates")).toBeTruthy();
   });
 
   it("opens and closes update recovery details with the keyboard", async () => {

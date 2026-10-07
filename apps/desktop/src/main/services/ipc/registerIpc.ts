@@ -5059,14 +5059,11 @@ export function registerIpc({
   });
 
   /**
-   * Assembles the redacted diagnostic report for whichever error screen asked.
-   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
-   * without a recovery service must never stop someone from filing an issue,
-   * so every optional input degrades to "unknown" rather than throwing.
+   * The error screen's context, as main will use it. The payload crosses the
+   * trust boundary, so every field is type-checked and length-capped, and the
+   * project root is only ever one main itself recognises.
    */
-  const buildDiagnosticsReport = async (
-    arg: DiagnosticReportRequestPayload | undefined,
-  ) => {
+  const readDiagnosticReportContext = (arg: DiagnosticReportRequestPayload | undefined) => {
     const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
     const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
     const resolvedRoot = requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null;
@@ -5076,9 +5073,27 @@ export function registerIpc({
     // report about this failure. Reporting stays possible either way — the
     // report degrades to machine-level state and says so.
     const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
-    const projectRoot = rootWasRejected
-      ? null
-      : resolvedRoot ?? openProjectRootOrNull();
+    return {
+      surface,
+      headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+      code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
+      technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
+      projectRoot: rootWasRejected ? null : resolvedRoot ?? openProjectRootOrNull(),
+      extraNotes: rootWasRejected
+        ? ["requested project root was not recognised; machine-level state only"]
+        : undefined,
+    };
+  };
+
+  /**
+   * Assembles the redacted diagnostic report for whichever error screen asked.
+   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
+   * without a recovery service must never stop someone from filing an issue,
+   * so every optional input degrades to "unknown" rather than throwing.
+   */
+  const buildDiagnosticsReport = async (
+    arg: DiagnosticReportRequestPayload | undefined,
+  ) => {
     return await collectDiagnosticReport(
       {
         appVersion: app.getVersion(),
@@ -5094,16 +5109,7 @@ export function registerIpc({
           ? (root: string) => projectRecoveryService.diagnose(root)
           : undefined,
       },
-      {
-        surface,
-        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
-        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
-        technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
-        projectRoot,
-        extraNotes: rootWasRejected
-          ? ["requested project root was not recognised; machine-level state only"]
-          : undefined,
-      },
+      readDiagnosticReportContext(arg),
     );
   };
 
@@ -5175,22 +5181,26 @@ export function registerIpc({
   );
 
   /**
-   * "Send a report to ADE" from the Diagnostics sharing settings section.
+   * "Send a report to ADE" from the Diagnostics sharing settings section, and
+   * "Report issue" on an error screen.
    *
-   * Takes no argument on purpose. Every other report carries a surface and a
-   * context from the screen that failed; this one is about nothing in
-   * particular, so main names the surface itself (`settings_manual`) and uses
-   * the project it already has open. A renderer choosing either would be a
-   * renderer choosing whose logs go in the report.
+   * Settings passes no argument: that report is about nothing in particular,
+   * so main names the surface itself (`settings_manual`). An error screen
+   * passes its context, read exactly as `openIssue` reads it — same caps, and
+   * a project root only when main recognises it — so the report it sends is
+   * about the screen the person is looking at, and a renderer still cannot
+   * choose an arbitrary folder's logs.
    *
-   * `null` rather than a throw when the service is absent (a runtime mode
-   * without it): the caller renders "unavailable right now", which is true,
-   * instead of an exception it would have to translate.
+   * A `failed` answer rather than a throw when the service is absent (a
+   * runtime mode without it): the caller renders a plain sentence instead of
+   * an exception it would have to translate.
    */
   ipcMain.handle(
     IPC.diagnosticsSendManual,
-    async (): Promise<DiagnosticsManualSendResult> =>
-      (await autoDiagnosticsService?.sendManual()) ?? { ok: false, reason: "failed" },
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<DiagnosticsManualSendResult> => {
+      const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
+      return (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
+    },
   );
 
   const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
@@ -13393,10 +13403,12 @@ export function registerIpc({
     return await service.fixSystemSleep();
   });
 
-  ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    // Only reachable from the Settings button. Every entry point now runs the
-    // same check, so `userInitiated` only labels the log line.
-    void getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
+  ipcMain.handle(IPC.updateCheckForUpdates, async () => {
+    // Settings and the update-error dialog's Check again. Settles once the
+    // check (and any download it started) is over, so the caller can show the
+    // outcome; it never rejects. `userInitiated` lets a check that hits a
+    // wedged updater session try a fresh one again.
+    await getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
   ipcMain.handle(IPC.updateGetState, () => {
@@ -13440,6 +13452,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateDismissInstalledNotice, () => {
     getCtx().autoUpdateService?.dismissInstalledNotice();
+  });
+
+  ipcMain.handle(IPC.updateRelaunchApp, (): boolean => {
+    return getCtx().autoUpdateService?.requestRelaunch() ?? false;
   });
 
   return {

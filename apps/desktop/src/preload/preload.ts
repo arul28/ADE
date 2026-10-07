@@ -4953,8 +4953,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual),
+    sendManual: (context?: DiagnosticReportRequestPayload): Promise<DiagnosticsManualSendResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsSendManual, context),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>
       ipcRenderer.invoke(IPC.diagnosticsGetSharing),
     setSharing: (enabled: boolean): Promise<DiagnosticsSharingStatus> =>
@@ -13354,6 +13354,8 @@ const adeBridge = {
     ipcRenderer.invoke(IPC.updateCancelAutoApply),
   updateDismissInstalledNotice: () =>
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
+  updateRelaunchApp: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.updateRelaunchApp),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

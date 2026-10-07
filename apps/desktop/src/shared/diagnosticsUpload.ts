@@ -2,17 +2,18 @@ import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   resolveTrustedAccountDirectoryBaseUrl,
 } from "./accountDirectory";
+import type { DiagnosticsManualSendResult } from "./types/diagnostics";
 
 /**
  * "Send to ADE": posts an already-redacted diagnostic report to the account
  * directory Worker's `POST /diagnostics/upload`.
  *
  * ONE home for the upload, shared by every surface that offers it — the desktop
- * renderer's "Report issue" button, the desktop main process, and
+ * main process (Settings and every "Report issue" button send through it) and
  * `ade report-issue --send`. It lives under `apps/desktop/src/shared` because
- * that is the only directory all three can import: Vite's dev server refuses to
- * serve files outside `apps/desktop`, so the renderer cannot reach the CLI's
- * tree, while the CLI already imports from here.
+ * that is the only directory both can import, and the renderer reads its
+ * failure copy from here too. The renderer never uploads itself: its CSP's
+ * `connect-src` does not include the account directory.
  *
  * Deliberately free of Node built-ins and of `import.meta`, so the identical
  * module loads in the renderer bundle, in the main process, and in the CLI.
@@ -25,8 +26,7 @@ import {
  *
  * Surface-specific concerns stay with their surface: the CLI reads an account
  * token out of the machine's credential store in `sendDiagnosticReport`, and
- * the renderer has none (access tokens live in the brain's store and are not
- * exposed over the preload bridge), so desktop uploads are anonymous.
+ * the desktop main process sends none, so desktop uploads are anonymous.
  */
 
 export const DIAGNOSTICS_UPLOAD_PATH = "/diagnostics/upload";
@@ -117,7 +117,7 @@ export type DiagnosticUploadRequest = {
   appVersion?: string | null;
   /**
    * Clerk access token, when a caller has one. `ade report-issue --send` reads
-   * the machine's credential store and does send one; the renderer cannot and
+   * the machine's credential store and does send one; the desktop does not and
    * uploads anonymously against the install id the report already carries.
    */
   token?: string | null;
@@ -230,23 +230,39 @@ export async function uploadDiagnosticReport(
 }
 
 /**
- * One short, non-technical sentence per outcome. The person reading this is
- * already looking at an error screen; a status code is not help.
+ * One short sentence per manual-send outcome, and never a status code. Shared
+ * by Settings' "Send a report to ADE" and every error screen's "Report issue",
+ * which both send through the main process.
+ *
+ * The two refusals a person can act on differently are deliberately worded
+ * differently: `rate_limited` is the account directory saying THIS computer has
+ * stored its allowance today, `unavailable` is it saying it is not taking
+ * reports from anyone right now. The route answers those as two distinct 429
+ * bodies precisely so a client can tell them apart, and telling someone to come
+ * back tomorrow when the truth is "ADE is full" would waste their time.
  *
  * The CLI words its own line differently (`describeDiagnosticUpload` in
  * `apps/ade-cli/src/commands/reportIssue.ts`) because it prints a terminal line
- * rather than a sentence under a button; the reasons themselves are this
- * module's, and there is only one table of them.
+ * rather than a sentence under a button.
  */
-export function describeDiagnosticUploadFailure(reason: DiagnosticUploadFailure): string {
-  switch (reason) {
+export function describeManualSendFailure(result: Extract<DiagnosticsManualSendResult, { ok: false }>): string {
+  switch (result.reason) {
+    case "local_limit":
+      return `You've already sent ${result.limit ?? 5} reports from this computer today. Try again tomorrow.`;
     case "rate_limited":
-      return "You've already sent a few reports today. Try again tomorrow.";
-    case "too_large":
-      return "This report is too big to send. Copy it and post it on GitHub instead.";
+      return "You've already sent several reports today. Try again tomorrow.";
     case "unavailable":
-      return "ADE can't take reports right now. Copy it and post it on GitHub instead.";
+      return "ADE isn't accepting reports right now. Try again later.";
+    case "too_large":
+      // Two situations, and only one of them leaves the user something to do.
+      // The local copy is written before the upload is attempted, so it usually
+      // exists — but when it could not be written the main process answers
+      // without a path, and telling someone to open a file that is not there
+      // sends them looking for it. The offer is made only when it is real.
+      return result.reportPath
+        ? "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue."
+        : "This report is too big to send, and ADE couldn't save a copy on this computer.";
     default:
-      return "ADE couldn't send the report. Copy it and post it on GitHub instead.";
+      return "ADE couldn't send the report. Check your connection and try again.";
   }
 }
