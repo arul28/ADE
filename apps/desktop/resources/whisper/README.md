@@ -53,6 +53,7 @@ from `process.resourcesPath/whisper` (packaged) or `apps/desktop/resources/whisp
 (dev).
 
 **Updater note:** because the full application bundle is delivered on every
-auto-update, the binary reaches EXISTING installs automatically. Users who had
-the old whisper model see the speech model as not installed after updating and
-download the new one once; the old `ggml-base.en.bin` is deleted when it does.
+auto-update, the binary reaches EXISTING installs automatically. On the first
+launch after updating, ADE deletes the old `ggml-base.en.bin` (and any partial
+download), so dictation shows the speech model as not installed until the user
+downloads the new one once.
