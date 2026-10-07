@@ -6,7 +6,7 @@ import SwiftUI
 /// "here are your machines" step so a fresh login lands directly on connect.
 ///
 /// Structurally close to ClerkKit's `AuthView` (identifier-first, then a
-/// dedicated code step) but rendered entirely with ADE's glass primitives.
+/// dedicated code step) but rendered entirely with ADE's kit primitives.
 struct AccountSignInView: View {
   /// Invoked when the user taps Connect on a machine in the first-run step. The
   /// presenter dismisses and routes into the existing pairing/connect flow.
@@ -161,7 +161,7 @@ struct AccountSignInView: View {
             .focused($focusedField, equals: .email)
             .onSubmit { Task { await continueWithEmail() } }
         }
-        .adeInsetField()
+        .adeKitField()
 
         primaryButton(
           title: "Continue with email",
@@ -227,7 +227,7 @@ struct AccountSignInView: View {
           .font(.system(.title3, design: .monospaced).weight(.semibold))
           .focused($focusedField, equals: .code)
       }
-      .adeInsetField()
+      .adeKitField()
 
       primaryButton(
         title: "Verify code",
@@ -392,7 +392,7 @@ struct AccountSignInView: View {
   }
 }
 
-/// A provider sign-in button (Apple / Google / GitHub) styled as a glass row
+/// A provider sign-in button (Apple / Google / GitHub) styled as a kit row
 /// with a leading brand glyph, matching the design system.
 struct AccountProviderButton: View {
   enum Glyph { case none, google }

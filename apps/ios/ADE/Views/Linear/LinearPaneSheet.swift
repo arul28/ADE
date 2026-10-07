@@ -110,7 +110,7 @@ struct LinearPaneSheet: View {
           ADEHaptics.success()
           justConnectedOrg = status.organizationName
         }
-        .adeGlassCard(cornerRadius: 20, padding: 20)
+        .adeKitCard(padding: 20)
 
         if let justConnectedOrg {
           Label("Connected to \(justConnectedOrg)", systemImage: "checkmark.circle.fill")

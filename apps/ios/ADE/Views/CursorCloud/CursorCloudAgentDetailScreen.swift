@@ -290,7 +290,7 @@ struct CursorCloudAgentDetailScreen: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
-    .background(.ultraThinMaterial)
+    .background(ADEColor.pageBackground)
   }
 
   // MARK: Host calls

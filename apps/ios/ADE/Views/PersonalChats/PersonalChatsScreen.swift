@@ -171,12 +171,10 @@ struct PersonalChatsScreen: View {
           newChatPresented = true
         } label: {
           Label("Start a chat", systemImage: "plus")
-            .font(.headline)
-            .padding(.horizontal, 18)
-            .frame(minHeight: 46)
+            .padding(.horizontal, 6)
         }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+        .frame(maxWidth: 240)
         .disabled(!canCreateChat)
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."

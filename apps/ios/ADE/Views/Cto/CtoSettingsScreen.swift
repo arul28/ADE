@@ -145,13 +145,13 @@ struct CtoSettingsScreen: View {
       } label: {
         HStack(spacing: 10) {
           Image(systemName: "desktopcomputer")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(ADEColor.ctoAccent)
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(ADEColor.textSecondary)
           VStack(alignment: .leading, spacing: 2) {
             Text(currentName)
               .font(.system(size: 13.5, weight: .semibold))
               .foregroundStyle(ADEColor.textPrimary)
-            Text("The CTO's memory and thread live here, for every device.")
+            Text("Memory and thread live here")
               .font(.caption)
               .foregroundStyle(ADEColor.textMuted)
           }
@@ -226,13 +226,10 @@ struct CtoSettingsScreen: View {
       } label: {
         HStack(spacing: 12) {
           Image(systemName: "cpu")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.ctoAccent)
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 32, height: 32)
-            .background(
-              ADEColor.ctoAccent.opacity(0.12),
-              in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-            )
+            .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
           VStack(alignment: .leading, spacing: 2) {
             Text(prettyWorkChatModelName(currentModelId))
@@ -355,8 +352,9 @@ struct CtoSettingsScreen: View {
   private var linearSubtitle: String {
     guard let linearStatus else { return "Manage in ADE" }
     if linearStatus.connected {
-      if let name = linearStatus.viewerName, !name.isEmpty { return "Connected · \(name)" }
-      return "Connected"
+      // The trailing status already says "Connected".
+      if let name = linearStatus.viewerName, !name.isEmpty { return name }
+      return "Linear workspace"
     }
     if let message = linearStatus.message, !message.isEmpty { return message }
     return "Not connected"
@@ -663,11 +661,7 @@ private struct CtoMemoryCard: View {
       }
       .frame(maxHeight: 180)
       .padding(10)
-      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
   }
 }
@@ -696,16 +690,8 @@ private struct IdentityCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {
         ZStack {
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [ADEColor.ctoAccent.opacity(0.35), ADEColor.accentDeep.opacity(0.55)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
+          RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(ADEKit.track)
           // The mark, not a letter: the same drawing as the desktop rail and
           // the tab icon, and it does not change when the CTO is renamed.
           Image("CtoMark")
@@ -730,15 +716,8 @@ private struct IdentityCard: View {
 
         Spacer(minLength: 8)
 
-        Button(action: onEdit) {
-          Text("Edit")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.ctoAccent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(ADEColor.ctoAccent.opacity(0.14), in: Capsule())
-        }
-        .buttonStyle(.plain)
+        Button("Edit", action: onEdit)
+          .buttonStyle(ADEKitButtonStyle())
       }
 
       Text(summaryText)
@@ -747,11 +726,7 @@ private struct IdentityCard: View {
         .lineSpacing(2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
     .adeListCard()
   }
@@ -780,14 +755,15 @@ private struct IntegrationRow: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(ADEColor.glassBackground)
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        Text(String(name.prefix(1)))
-          .font(.system(size: 11, weight: .heavy))
-          .foregroundStyle(ADEColor.textSecondary)
+      Group {
+        if name == "Linear" {
+          LinearMark(size: 16)
+            .foregroundStyle(LinearBrand.primary)
+        } else {
+          Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
       }
       .frame(width: 26, height: 26)
 
@@ -802,10 +778,12 @@ private struct IntegrationRow: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      ADEStatusPill(
-        text: connected ? "connected" : "off",
-        tint: connected ? ADEColor.success : ADEColor.textSecondary
-      )
+      HStack(spacing: 5) {
+        ADEKitDot(tone: connected ? .ok : .neutral)
+        Text(connected ? "Connected" : "Off")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)

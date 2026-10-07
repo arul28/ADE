@@ -315,7 +315,7 @@ struct CursorCloudFilterChipsBar: View {
       .padding(.horizontal, 12)
       .padding(.vertical, 7)
     }
-    .background(.ultraThinMaterial)
+    .background(ADEColor.pageBackground)
   }
 
   private func chip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
