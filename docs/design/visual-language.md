@@ -244,6 +244,8 @@ glows, gradients or shadows), so it is cheap inside scrolling lists.
 | `ADEKitDot`, `ADEKitTag`, `ADEKitTone` | `.kit-dot`, `.kit-tag`, `data-state` / `data-tone` |
 | `ADEKitMeter`, `ADEKitLegendItem`, `ADEProviderMark` | `.kit-meter`, `.kit-legend`, `usageProviderLogo` |
 | `ADEKitSegmented`, `ADEKitMenuLabel`, `ADEKitButtonStyle`, `ADEKitRowButtonStyle` | `.kit-seg`, menu buttons, `.kit-row` |
+| `ADEKitCountSegments` | `.kit-seg` with glyph + count per option: a summary that is also a filter (Hub status counts, Activity state strip) |
+| `ADEKitCircleIcon` | `.kit-icon-btn`: the quiet round top-bar button (Hub bell, add, settings, chats) |
 | `ADESettingsPage`, `ADESettingsSection`, `ADESettingsRows`, `ADESettingsRow` (+ `ValueRow`, `Link`, `ActionRow`, `Notice`) | `ModernPage`, `ModernSection`, `ModernRows`, `ModernRow` |
 | `adeSettingsList()`, `adeSettingsListRow()`, `ADESettingsListHeader` | the same panels in a `List`, for swipe actions |
 
