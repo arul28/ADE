@@ -1,12 +1,15 @@
 import SwiftUI
 
-/// The hub's status counts: All / Working / Needs you / Finished on one quiet
-/// kit track (`ADEKitCountSegments`). Default is All; tapping another filters
-/// the project tree without leaving Hub. The glyphs keep the Activity table's
-/// hues (meaning); counts and labels stay neutral.
+/// The five chips: All · Needs you · Working · Waiting · Done, on one quiet kit
+/// track (`ADEKitCountSegments`). The Hub filters its project tree with it and
+/// the Activity drawer filters its Sessions list, so both read the same four
+/// states. The glyphs keep the column hues (meaning); counts and labels stay
+/// neutral.
 struct HubRosterFilterBar: View {
   let counts: [HubRosterFilter: Int]
   @Binding var selection: HubRosterFilter
+  var accessibilityTitle = "Chat filters"
+  var accessibilityHintText = "Shows matching chats from every project."
 
   var body: some View {
     ADEKitCountSegments(
@@ -31,8 +34,8 @@ struct HubRosterFilterBar: View {
       }
     }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Chat filters")
-    .accessibilityHint("Shows matching chats from every project.")
+    .accessibilityLabel(accessibilityTitle)
+    .accessibilityHint(accessibilityHintText)
     .sensoryFeedback(.selection, trigger: selection)
   }
 }
@@ -58,5 +61,15 @@ struct HubRosterFilterEmptyState: View {
     .frame(maxWidth: .infinity)
     .padding(.vertical, 28)
     .padding(.horizontal, 16)
+  }
+}
+
+extension HubRosterFilter {
+  /// All gets the total; each column gets its own count.
+  static func counts(from columns: [ActivityBoardColumn: Int]) -> [HubRosterFilter: Int] {
+    Dictionary(uniqueKeysWithValues: allCases.map { filter in
+      guard let column = filter.column else { return (filter, columns.values.reduce(0, +)) }
+      return (filter, columns[column, default: 0])
+    })
   }
 }

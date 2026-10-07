@@ -244,6 +244,10 @@ struct RemoteRosterLane: Codable, Equatable, Identifiable {
   var icon: String?
   var laneType: String?
   var branchRef: String?
+  /// Why a running chat in this lane waits rather than works: the lane's open
+  /// PR has CI running (`ci`) or a review requested (`review`). Older hosts
+  /// omit it.
+  var prWaitingReason: String? = nil
 }
 
 struct RemoteRosterProject: Codable, Equatable, Identifiable {

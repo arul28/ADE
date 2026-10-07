@@ -212,6 +212,132 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
     }
 }
 
+/// The one state model every Activity surface counts by: the Work board's four
+/// columns. The Hub, the Activity drawer, the widgets and the Live Activity all
+/// group agent items with `activityBoardColumn(_:)`, so "2 need you" means the
+/// same rows on the phone as on the desktop.
+///
+/// The iOS mirror of `activityBoardColumn` in
+/// `apps/desktop/src/shared/attention/activityBoardColumn.ts`, pinned by
+/// `activityBoardColumn.cases.json` beside it.
+public enum ActivityBoardColumn: String, Codable, Hashable, Sendable, CaseIterable {
+    case needsYou
+    case working
+    case waiting
+    case done
+
+    /// Snake-case slug on the wire (`boardColumn`, `ade://activity?state=`).
+    /// Kept apart from `rawValue` so a Swift rename cannot change a payload.
+    public var wireValue: String {
+        switch self {
+        case .needsYou: return "needs_you"
+        case .working: return "working"
+        case .waiting: return "waiting"
+        case .done: return "done"
+        }
+    }
+
+    public init?(wireValue: String?) {
+        switch wireValue?.lowercased() {
+        case "needs_you": self = .needsYou
+        case "working": self = .working
+        case "waiting": self = .waiting
+        case "done": self = .done
+        default: return nil
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .needsYou: return "Needs you"
+        case .working: return "Working"
+        case .waiting: return "Waiting"
+        case .done: return "Done"
+        }
+    }
+
+    /// Amber for your move, blue for work in flight, neutral for a wait on
+    /// someone else, emerald for finished. A failure is Needs you and keeps its
+    /// own red mark on the row, not on the column.
+    public var tone: ActivityTone {
+        switch self {
+        case .needsYou: return .amber
+        case .working: return .blue
+        case .waiting: return .neutral
+        case .done: return .emerald
+        }
+    }
+
+    /// SF Symbol for the column's count tile.
+    public var systemImage: String {
+        switch self {
+        case .needsYou: return "exclamationmark.circle.fill"
+        case .working: return "circle.dashed"
+        case .waiting: return "pause.circle"
+        case .done: return "checkmark.circle.fill"
+        }
+    }
+}
+
+/// Why a Waiting item waits.
+public enum ActivityWaitingReason: String, Codable, Hashable, Sendable {
+    case snoozed
+    case ci
+    case review
+
+    public init?(wireValue: String?) {
+        guard let wireValue, let value = ActivityWaitingReason(rawValue: wireValue.lowercased()) else {
+            return nil
+        }
+        self = value
+    }
+
+    public var label: String {
+        switch self {
+        case .snoozed: return "Snoozed"
+        case .ci: return "CI running"
+        case .review: return "Review requested"
+        }
+    }
+}
+
+/// The column an Activity item counts in, or nil for a pull request (those are
+/// notifications, not agents, and are never counted).
+///
+/// Trusts a valid published `boardColumn`; otherwise derives one from the phase
+/// for an older brain. The fallback never answers Waiting, because an older
+/// brain cannot say why a row waits.
+public func activityBoardColumn(_ item: AccountAttentionItem) -> ActivityBoardColumn? {
+    guard item.kind == .agent else { return nil }
+    if let published = ActivityBoardColumn(wireValue: item.boardColumn) { return published }
+    switch item.phase {
+    case .needsYou, .failed: return .needsYou
+    default: break
+    }
+    if item.tier == .idle { return .done }
+    switch item.phase {
+    case .starting, .running, .stale: return .working
+    default: return .done
+    }
+}
+
+/// Why a Waiting item waits, or nil for every other column.
+public func activityWaitingReason(_ item: AccountAttentionItem) -> ActivityWaitingReason? {
+    guard activityBoardColumn(item) == .waiting else { return nil }
+    return ActivityWaitingReason(wireValue: item.waitingReason)
+}
+
+/// Agent items per column, all four keys present. Pull requests are not counted.
+public func countActivityBoardColumns<S: Sequence>(
+    _ items: S
+) -> [ActivityBoardColumn: Int] where S.Element == AccountAttentionItem {
+    var counts = Dictionary(uniqueKeysWithValues: ActivityBoardColumn.allCases.map { ($0, 0) })
+    for item in items {
+        if let column = activityBoardColumn(item) { counts[column, default: 0] += 1 }
+    }
+    return counts
+}
+
 /// Which of the three priority bands a row belongs to. Mirrors desktop's
 /// `activityPriority.ts`: needs-you first, then work in flight, then outcomes.
 public enum ActivityBand: String, Codable, Hashable, Sendable, CaseIterable {
@@ -497,6 +623,10 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let band: ActivityBand
     /// Counting bucket for the strip / widget header / island compact leading.
     public let stateGroup: ActivityStateGroup
+    /// The Work-board column this row counts in; nil for a pull request.
+    public let boardColumn: ActivityBoardColumn?
+    /// Why the row waits, when it sits in Waiting and the publisher said why.
+    public let waitingReason: ActivityWaitingReason?
     /// Anchor for the elapsed ticker. `statusSince` when the publisher supplies
     /// it (immutable for the life of a phase); `occurredAt` otherwise, which is
     /// approximate but never wrong enough to mislead.
@@ -535,10 +665,24 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let inlineActionsAllowed: Bool
 
     public init(item: AccountAttentionItem, inlineActionsAllowed: Bool = false) {
-        let presentation = ActivityPhaseVocabulary.presentation(
-            for: item.phase,
-            chatActivityMode: item.chatActivityMode
-        )
+        let column = activityBoardColumn(item)
+        let reason = activityWaitingReason(item)
+        // A Waiting row says why it waits instead of its phase: a snoozed row
+        // arrives as `stale` and a row waiting on CI as `running`, and neither
+        // word is what the reader needs.
+        let presentation = column == .waiting
+            ? ActivityPhasePresentation(
+                label: reason?.label ?? ActivityBoardColumn.waiting.label,
+                tone: .neutral,
+                glyph: .waiting,
+                showsElapsed: false,
+                prominent: false,
+                active: false
+            )
+            : ActivityPhaseVocabulary.presentation(
+                for: item.phase,
+                chatActivityMode: item.chatActivityMode
+            )
 
         id = item.id
         title = Self.nonEmpty(item.title) ?? "Untitled session"
@@ -555,6 +699,8 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
         // canonical idle rule (idle → the tail) once, for every surface.
         band = ActivityPhaseVocabulary.band(for: item)
         stateGroup = ActivityPhaseVocabulary.stateGroup(for: item)
+        boardColumn = column
+        waitingReason = reason
         elapsedSince = item.statusSince ?? item.occurredAt
         statusNote = Self.nonEmpty(item.preview)
             ?? Self.nonEmpty(item.detail)

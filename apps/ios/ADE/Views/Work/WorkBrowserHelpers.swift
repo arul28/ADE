@@ -160,17 +160,16 @@ func workSessionWaitingReason(
 ///   yet. The Needs-you chip used to select them anyway, which is precisely the
 ///   "finished, go look" / "blocked, go act" conflation the emerald/amber split
 ///   exists to kill.
-/// - `.failed` files under **Done** rather than with the amber band. It is an
-///   outcome, and both the chip and the old "Ended" header already read it that
-///   way; `ActivityBand` folds breakage in with needs-you for drawer *sorting*,
-///   which is a different question from which column a finished run belongs to.
+/// - `.failed` files under **Needs you**, as on the desktop board and every
+///   Activity surface: a failed turn is the user's move until they settle the
+///   session or send a new turn. The row keeps its own red Failed mark.
 /// - `.stale` stays in **Working**: the process is still alive, and "how long
 ///   has it been quiet" is a fact about work in flight.
 func workStatusFilterPartition(phase: CanonicalSessionPhase) -> WorkSessionStatusFilter {
   switch phase {
-  case .needsYou: return .needsYou
+  case .needsYou, .failed: return .needsYou
   case .starting, .running, .stale: return .working
-  case .ready, .idle, .failed, .stopped, .ended, .settled: return .done
+  case .ready, .idle, .stopped, .ended, .settled: return .done
   }
 }
 

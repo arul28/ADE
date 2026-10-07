@@ -148,7 +148,18 @@ final class DeepLinkRouter {
         .queryItems?
         .first { $0.name == "state" }?
         .value
-        .flatMap { ActivityStateGroup(wireValue: $0) }
+        .flatMap { value in
+          // A Live Activity or widget from an older build links to one of the
+          // six old groups; land it on the column that group now files under.
+          ActivityBoardColumn(wireValue: value)
+            ?? ActivityStateGroup(wireValue: value).map { group in
+              switch group {
+              case .needsYou, .failed: return .needsYou
+              case .planning, .working: return .working
+              case .idle, .done: return .done
+              }
+            }
+        }
       SyncService.shared?.attentionDrawer.stateFilter = requestedState
       SyncService.shared?.attentionDrawerPresented = true
       NotificationCenter.default.post(

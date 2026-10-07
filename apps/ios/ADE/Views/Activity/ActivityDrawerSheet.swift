@@ -4,8 +4,9 @@ import SwiftUI
 /// Account-wide Activity, in two buckets: Sessions and Inbox.
 ///
 /// Sessions is every agent across every signed-in machine, sectioned by the
-/// six canonical states in priority order, with a glyph strip above that both
-/// summarises them and filters to one. Inbox is the traffic that wants an
+/// Work board's four columns (Needs you, Working, Waiting, Done) with Done
+/// folded away, under the same five chips the Hub uses (All plus the four
+/// columns) that both summarise them and filter to one. Inbox is the traffic that wants an
 /// acknowledgement — pull requests, CI, and outcomes nobody has looked at.
 /// Rows carry a swipe to dismiss or mark seen, and the row itself is the tap
 /// target: the per-row "Open" button this sheet used to draw was most of its
@@ -26,15 +27,15 @@ struct ActivityDrawerSheet: View {
         NavigationStack {
             VStack(spacing: 0) {
                 bucketPicker
-                if bucket == .sessions, !drawer.stripCounts.isEmpty {
-                    ActivityStateStrip(
-                        counts: drawer.stripCounts,
-                        selection: drawer.stateFilter,
-                        onSelect: { group in
-                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
-                                drawer.stateFilter = drawer.stateFilter == group ? nil : group
-                            }
-                        }
+                if bucket == .sessions, !drawer.sessions.isEmpty {
+                    HubRosterFilterBar(
+                        counts: HubRosterFilter.counts(from: drawer.columnCounts),
+                        selection: Binding(
+                            get: { HubRosterFilter(column: drawer.stateFilter) },
+                            set: { drawer.stateFilter = $0.column }
+                        ),
+                        accessibilityTitle: "Agent states",
+                        accessibilityHintText: "Shows only the sessions in that state."
                     )
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
@@ -152,14 +153,22 @@ struct ActivityDrawerSheet: View {
                     // that repeats the same word and the same number is the
                     // third time the reader is told the same thing.
                     if drawer.stateFilter == nil {
-                        ActivitySectionHeader(group: section.group, count: section.count)
+                        ActivitySectionHeader(
+                            column: section.column,
+                            count: section.count,
+                            onCollapse: section.column == .done ? {
+                                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+                                    drawer.doneExpanded = false
+                                }
+                            } : nil
+                        )
                     }
                 }
             }
-            if let resting = drawer.restingSummary {
-                ActivityRestingSummaryRow(counts: resting) {
+            if let doneCount = drawer.collapsedDoneCount {
+                ActivityCollapsedDoneRow(count: doneCount) {
                     withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                        drawer.restingExpanded = true
+                        drawer.doneExpanded = true
                     }
                 }
                 .listRowBackground(Color.clear)
@@ -254,10 +263,10 @@ struct ActivityDrawerSheet: View {
 
     /// Three genuinely different empty states: nothing to reach, nothing to do,
     /// and nothing new. They used to be one grey placeholder.
-    private func filteredEmptyState(_ filter: ActivityStateGroup) -> some View {
+    private func filteredEmptyState(_ filter: ActivityBoardColumn) -> some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: filter.glyph.systemImage)
+            Image(systemName: filter.systemImage)
                 .font(.system(size: 24, weight: .regular))
                 .foregroundStyle(activityToneColor(filter.tone))
             Text("Nothing \(filter.label.lowercased())")
@@ -392,19 +401,20 @@ struct ActivityDrawerSheet: View {
 
 // MARK: - Section header
 
-/// A state heading. Takes the group rather than a hand-written tint, so the
-/// heading, the strip above it and the glyph on every row beneath it are all
-/// reading the same table.
+/// A column heading. Takes the column rather than a hand-written tint, so the
+/// heading, the chips above it and the counts on every other surface read the
+/// same table. The Done heading carries a control that folds it away again.
 private struct ActivitySectionHeader: View {
-    let group: ActivityStateGroup
+    let column: ActivityBoardColumn
     let count: Int
+    var onCollapse: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: group.glyph.systemImage)
+            Image(systemName: column.systemImage)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(activityToneColor(group.tone))
-            Text(group.label)
+                .foregroundStyle(activityToneColor(column.tone))
+            Text(column.label)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .textCase(nil)
@@ -413,103 +423,45 @@ private struct ActivitySectionHeader: View {
                 .foregroundStyle(ADEColor.textMuted)
                 .contentTransition(.numericText())
             Spacer(minLength: 0)
+            if let onCollapse {
+                Button(action: onCollapse) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ADEColor.textMuted)
+                        .frame(minWidth: 44, minHeight: 28, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide done sessions")
+            }
         }
         .padding(.vertical, 2)
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(group.label), \(count)")
+        .accessibilityLabel("\(column.label), \(count)")
     }
 }
 
-// MARK: - State strip
+// MARK: - Collapsed Done
 
-/// The six-state summary, which is also the filter.
-///
-/// One control doing both jobs is the point: a separate row of filter chips
-/// would repeat the same six words and counts directly beneath the same six
-/// glyphs, in a sheet whose whole problem was that it was too tall. Tapping a
-/// lit glyph clears the filter.
-///
-/// Single-select on purpose — see `ActivityDrawerModel.stateFilter`.
-struct ActivityStateStrip: View {
-    let counts: [ActivityGroupCount]
-    let selection: ActivityStateGroup?
-    let onSelect: (ActivityStateGroup) -> Void
-
-    /// At accessibility text sizes six glyph+count pairs stop fitting on one
-    /// line, and a strip that wraps to two lines reads as a list rather than a
-    /// summary. The live bands are the ones worth keeping.
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    private var visible: [ActivityGroupCount] {
-        guard dynamicTypeSize.isAccessibilitySize else { return counts }
-        let capped = Array(counts.prefix(3))
-        guard let selection, !capped.contains(where: { $0.group == selection }) else {
-            return capped
-        }
-        guard let selected = counts.first(where: { $0.group == selection }) else {
-            return capped
-        }
-        return Array(capped.dropLast()) + [selected]
-    }
-
-    private var summarySentence: String {
-        counts.map { "\($0.count) \($0.group.label.lowercased())" }
-            .joined(separator: ", ")
-    }
-
-    var body: some View {
-        // The kit's count track: glyphs keep their state hue, counts stay
-        // neutral, the lit filter is raised. Tapping it again clears it.
-        ADEKitCountSegments(
-            options: visible.map { entry in
-                ADEKitCountOption(
-                    value: entry.group,
-                    symbol: entry.group.glyph.systemImage,
-                    tint: activityToneColor(entry.group.tone),
-                    count: entry.count,
-                    accessibilityLabel: "\(entry.count) \(entry.group.label)"
-                )
-            },
-            selection: selection,
-            onSelect: onSelect
-        )
-        .accessibilityHint("Double tap a state to show only it; again to show all.")
-        // One rotor stop that says the whole state of the account, instead of
-        // six unlabelled buttons the reader has to assemble themselves.
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agent states: \(summarySentence)")
-    }
-}
-
-// MARK: - Resting summary
-
-/// The collapsed stand-in for idle + done: "◷ 6 idle · ✓ 10 done".
-///
-/// These two bands are most of a real account's feed and none of its urgency.
-/// Rendering them inline is what made the sheet a wall of finished work with
-/// the live rows lost somewhere above it.
-private struct ActivityRestingSummaryRow: View {
-    let counts: [ActivityGroupCount]
+/// The folded Done section: "✓ Done 12 ⌄". Done is most of a real account's
+/// feed and none of its urgency, so it stays closed until the reader opens it.
+private struct ActivityCollapsedDoneRow: View {
+    let count: Int
     let expand: () -> Void
-
-    private var sentence: String {
-        counts.map { "\($0.count) \($0.group.label.lowercased())" }
-            .joined(separator: ", ")
-    }
 
     var body: some View {
         Button(action: expand) {
-            HStack(spacing: 10) {
-                ForEach(counts) { entry in
-                    HStack(spacing: 4) {
-                        Image(systemName: entry.group.glyph.systemImage)
-                            .font(.system(size: 11, weight: .regular))
-                        Text("\(entry.count) \(entry.group.label.lowercased())")
-                            .font(.system(size: 13))
-                    }
-                    .foregroundStyle(ADEColor.textSecondary)
-                }
+            HStack(spacing: 7) {
+                Image(systemName: ActivityBoardColumn.done.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(activityToneColor(ActivityBoardColumn.done.tone))
+                Text(ActivityBoardColumn.done.label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                Text("\(count)")
+                    .font(.adeMono(11))
+                    .foregroundStyle(ADEColor.textMuted)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
@@ -519,7 +471,7 @@ private struct ActivityRestingSummaryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Resting sessions: \(sentence)")
+        .accessibilityLabel("Done, \(count)")
         .accessibilityHint("Double tap to show them")
     }
 }

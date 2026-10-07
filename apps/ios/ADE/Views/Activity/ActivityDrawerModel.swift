@@ -46,31 +46,17 @@ public enum ActivityListEntry: Identifiable, Hashable, Sendable {
     }
 }
 
-/// One heading's worth of rows.
-///
-/// Keyed by `ActivityStateGroup`, not by the three-case `ActivityBand` it used
-/// to use. The band folds failure into "needs you" and everything resting into
-/// "done", so a drawer sectioned by it showed ten unrelated rows under one
-/// heading — the state the Activity sheet was in when this was rewritten. The
-/// state group is the vocabulary every other surface counts by, so sectioning
-/// by it also means the headings and the glyph strip can never disagree.
+/// One heading's worth of rows, keyed by the Work board's column — the four
+/// states the Hub, the widgets and the Live Activity count by, so the headings
+/// and the filter chips can never disagree with them.
 public struct ActivitySection: Identifiable, Hashable, Sendable {
-    public let group: ActivityStateGroup
+    public let column: ActivityBoardColumn
     public let rows: [ActivityRowPresentation]
     public let entries: [ActivityListEntry]
 
-    public var id: String { group.rawValue }
-    public var title: String { group.label }
+    public var id: String { column.rawValue }
+    public var title: String { column.label }
     public var count: Int { rows.count }
-}
-
-/// A nonzero state bucket for the drawer's glyph strip. Same shape the widget
-/// and the island use, so all three read from one tally.
-public struct ActivityGroupCount: Identifiable, Hashable, Sendable {
-    public let group: ActivityStateGroup
-    public let count: Int
-
-    public var id: String { group.rawValue }
 }
 
 /// Source of truth for the in-app Activity drawer.
@@ -85,7 +71,7 @@ public struct ActivityGroupCount: Identifiable, Hashable, Sendable {
 /// user state, not naming.
 @MainActor
 public final class ActivityDrawerModel: ObservableObject {
-    /// Agent-kind rows, priority-flat: needs you → working → done.
+    /// Agent-kind rows, priority-flat.
     @Published public private(set) var sessions: [ActivityRowPresentation] = []
     /// PR/CI traffic plus outcomes nobody has looked at yet.
     @Published public private(set) var inbox: [ActivityRowPresentation] = []
@@ -93,13 +79,12 @@ public final class ActivityDrawerModel: ObservableObject {
     @Published public private(set) var machines: [AccountAttentionMachine] = []
     @Published public private(set) var unreadCount: Int = 0
     @Published public private(set) var source: ActivitySource = .none
-    /// Which single state the reader has narrowed to, or nil for all of them.
-    /// Deliberately single-select: the glyph strip is the control, and a strip
-    /// where several glyphs can be lit reads as a status display that has gone
-    /// wrong rather than as a filter that is on.
-    @Published public var stateFilter: ActivityStateGroup?
-    /// Whether the resting bands (idle, done) are rendered inline.
-    @Published public var restingExpanded: Bool = false
+    /// Which single column the reader has narrowed to, or nil for All.
+    @Published public var stateFilter: ActivityBoardColumn?
+    /// Whether the Done section is open. Collapsed by default: on a real
+    /// account Done is most of the list, and showing it inline buried the rows
+    /// that want a human.
+    @Published public var doneExpanded: Bool = false
     /// The relay capped the account feed. Surfaced so the drawer can say so
     /// rather than quietly showing a partial list.
     @Published public private(set) var itemsTruncated: Bool = false
@@ -365,65 +350,39 @@ public final class ActivityDrawerModel: ObservableObject {
 
     // MARK: - Derived views
 
-    /// One count per nonzero state group, in priority order — the drawer's
-    /// glyph strip, and the thing the filter chips are built from. Computed
-    /// from the UNFILTERED session list on purpose: a filter that hides its own
-    /// counts cannot be turned off again.
-    public var groupCounts: [ActivityGroupCount] {
-        var tally: [ActivityStateGroup: Int] = [:]
-        for row in sessions { tally[row.stateGroup, default: 0] += 1 }
-        return ActivityStateGroup.allCases
-            .sorted { $0.rank < $1.rank }
-            .compactMap { group in
-                guard let count = tally[group], count > 0 else { return nil }
-                return ActivityGroupCount(group: group, count: count)
-            }
-    }
-
-    /// What the strip renders: the nonzero groups, plus the selected one even
-    /// when it has emptied out.
-    ///
-    /// Without that second clause, filtering to "needs you" and then answering
-    /// the last question removes the only lit chip from the strip — leaving the
-    /// reader in a filtered empty state with no visible control to leave it.
-    public var stripCounts: [ActivityGroupCount] {
-        let counts = groupCounts
-        guard let stateFilter, !counts.contains(where: { $0.group == stateFilter }) else {
-            return counts
+    /// Sessions per column, all four present. Computed from the UNFILTERED
+    /// session list on purpose: a filter that hides its own counts cannot be
+    /// turned off again.
+    public var columnCounts: [ActivityBoardColumn: Int] {
+        var tally = Dictionary(uniqueKeysWithValues: ActivityBoardColumn.allCases.map { ($0, 0) })
+        for row in sessions {
+            if let column = row.boardColumn { tally[column, default: 0] += 1 }
         }
-        return (counts + [ActivityGroupCount(group: stateFilter, count: 0)])
-            .sorted { $0.group.rank < $1.group.rank }
+        return tally
     }
 
-    /// Sessions grouped by state, each carrying its offline-machine dividers.
-    ///
-    /// When a state filter is on, only that section is returned. When it is
-    /// off, the two resting bands collapse into one summary line unless the
-    /// reader has expanded them — on a real account idle and done are most of
-    /// the list, and letting them render inline is what buried the two rows
-    /// that actually wanted a human.
+    /// Sessions grouped by column in board order, each carrying its
+    /// offline-machine dividers. With a filter on, only that column. Done
+    /// returns no rows while it is collapsed; `collapsedDoneCount` stands in.
     public var sessionSections: [ActivitySection] {
-        let ordered = ActivityStateGroup.allCases.sorted { $0.rank < $1.rank }
-        let visible = ordered.filter { group in
-            guard let stateFilter else {
-                return !group.isResting || restingExpanded
-            }
-            return group == stateFilter
+        let visible = ActivityBoardColumn.allCases.filter { column in
+            guard let stateFilter else { return column != .done || doneExpanded }
+            return column == stateFilter
         }
-        return visible.compactMap { group in
-            let rows = sessions.filter { $0.stateGroup == group }
+        return visible.compactMap { column in
+            let rows = sessions.filter { $0.boardColumn == column }
             guard !rows.isEmpty else { return nil }
-            return ActivitySection(group: group, rows: rows, entries: Self.entries(for: rows))
+            return ActivitySection(column: column, rows: rows, entries: Self.entries(for: rows))
         }
     }
 
-    /// The collapsed stand-in for the resting bands: "6 idle · 10 done".
-    /// `nil` when there is nothing resting, or when the reader has expanded
-    /// them, or while a filter is on (a filter already picked a single band).
-    public var restingSummary: [ActivityGroupCount]? {
-        guard stateFilter == nil, !restingExpanded else { return nil }
-        let resting = groupCounts.filter { $0.group.isResting }
-        return resting.isEmpty ? nil : resting
+    /// How many Done rows the collapsed Done heading stands for. Nil when
+    /// there are none, when Done is open, or while a filter is on (a filter to
+    /// Done shows the rows themselves).
+    public var collapsedDoneCount: Int? {
+        guard stateFilter == nil, !doneExpanded else { return nil }
+        let count = columnCounts[.done, default: 0]
+        return count > 0 ? count : nil
     }
 
     public var inboxEntries: [ActivityListEntry] {

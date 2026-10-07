@@ -310,6 +310,51 @@ final class ActivityRowPresentationTests: XCTestCase {
         }
     }
 
+    /// The four-column pin. `activityBoardColumn.cases.json` encodes the rule
+    /// from `activityBoardColumn` in
+    /// `apps/desktop/src/shared/attention/activityBoardColumn.ts`; the
+    /// TypeScript, relay and Swift mappers all run the same cases.
+    private struct BoardColumnCase: Decodable {
+        let name: String
+        let kind: String
+        let phase: String
+        let tier: String?
+        let boardColumn: String?
+        let expected: String?
+    }
+
+    private struct BoardColumnFixture: Decodable {
+        let cases: [BoardColumnCase]
+    }
+
+    func testBoardColumnMatchesTheSharedConformanceFixture() throws {
+        let data = try Data(contentsOf: Self.boardColumnFixtureURL)
+        let fixture = try JSONDecoder().decode(BoardColumnFixture.self, from: data)
+        XCTAssertFalse(fixture.cases.isEmpty)
+
+        for testCase in fixture.cases {
+            let item = makeAttentionItem(
+                phase: AccountAttentionPhase(rawValue: testCase.phase)
+                    ?? .unrecognized(testCase.phase),
+                kind: AccountAttentionItemKind(rawValue: testCase.kind)
+                    ?? .unrecognized(testCase.kind),
+                activityTier: testCase.tier,
+                boardColumn: testCase.boardColumn
+            )
+            let expected = try testCase.expected.map {
+                try XCTUnwrap(ActivityBoardColumn(wireValue: $0), "unknown column \($0)")
+            }
+
+            XCTAssertEqual(activityBoardColumn(item), expected, testCase.name)
+        }
+    }
+
+    private static let boardColumnFixtureURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // ADETests
+        .deletingLastPathComponent()   // ios
+        .deletingLastPathComponent()   // apps
+        .appendingPathComponent("desktop/src/shared/attention/activityBoardColumn.cases.json")
+
     // MARK: - Cross-surface parity
 
     /// The Live Activity used to carry its own copy of the hue/glyph/word
@@ -606,6 +651,7 @@ fileprivate func makeAttentionItem(
     kind: AccountAttentionItemKind = .agent,
     activityTier: String? = nil,
     chatActivityMode: AccountChatActivityMode? = nil,
+    boardColumn: String? = nil,
     statusSince: Date? = nil,
     occurredAt: Date = Date(),
     machine: AccountAttentionMachine? = nil,
@@ -627,6 +673,7 @@ fileprivate func makeAttentionItem(
         phase: phase,
         activityTier: activityTier,
         chatActivityMode: chatActivityMode,
+        boardColumn: boardColumn,
         statusSince: statusSince,
         machine: machine ?? AccountAttentionMachine(
             machineKey: "studio",
