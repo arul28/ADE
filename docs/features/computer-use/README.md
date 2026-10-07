@@ -61,7 +61,7 @@ Shared modules:
 - `apps/desktop/src/main/services/shared/cdpPageDiagnostics.ts` — the console, network and navigation tracking `observe` and `wait` read, shared with App Control. Each caller's policy (which console levels, `Log.entryAdded`, uncaught exceptions) is an explicit option.
 - `apps/desktop/src/shared/userBrowserLabels.ts` — the words attach prints (`attached:`, `detached:`, `target:`), shared by the code that prints them and the transcript that reads them back.
 - `apps/desktop/src/main/services/shared/withTimeout.ts` — a promise's value, or null once a deadline passes or it rejects; bounds the attach service's CDP waits.
-- `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends the page commands `adeRpcServer` routed to the user's browser to the attachment. It also records the browser capability the runtime had the desktop issue each chat, which `adeRpcServer` checks user-browser calls against.
+- `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends the page commands `adeRpcServer` routed to the user's browser to the attachment.
 
 ### Computer-use action rows in the transcript
 
@@ -160,7 +160,7 @@ for a reviewer. Only an explicit proof call writes a record:
   skip both checks. A CLI capture counts as ADE's only when the RPC server's
   capture registry still holds the file with the same hash. See [Already-filed bytes and older videos](../proof.md#already-filed-bytes-and-older-videos).
 - **Browser use is visible to the human, automatically.** Every
-  capability-validated `ade browser …` command marks the calling chat as using
+  `ade browser …` command from a chat marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the
   Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
   Nothing is asked of the agent — there is no "announce it" instruction to
@@ -369,15 +369,12 @@ on connect, and the user answers it there.
   whether a call goes to the user's browser, authorizes it for that, and the
   router obeys that decision, so an attachment that ends mid-call never sends
   the call to ADE's browser unchecked. A user-browser call must come from a
-  chat of this project that has not ended, may name only its own chat, and —
-  when a desktop was attached as the chat launched, so ADE issued the chat a
-  browser capability (`ADE_BROWSER_ACTOR_TOKEN`) — must present that
-  capability, the same proof ADE's own browser asks for. Anything else is
-  refused (`run_ade_action:built_in_browser.observe is not permitted for this
-  caller: …`). The limit: a chat launched with no desktop attached has no
-  capability, and its id is self-reported, so another process running as the
-  same OS user (which can already read that chat's environment) could act as
-  it.
+  chat of this project that has not ended, and may name only its own chat.
+  Anything else is refused (`run_ade_action:built_in_browser.observe is not
+  permitted for this caller: …`). As with ADE's own browser, the chat id is a
+  label the caller reports, not a token: another process running as the same
+  OS user could act as the chat, and could equally read its environment.
+  When the chat ends or is deleted, its attachment is released.
 
 ## Mac Desktop and Windows Desktop
 
@@ -490,7 +487,7 @@ How each surface decides the effect:
   than `about:blank` and other unsupported protocols stay blocked; site
   permission requests (camera, notifications, …) still use their own
   per-site prompt; a login handoff still hands control to the person;
-  the actor capability still binds each command to its chat and lane; tab
+  the runtime still tags each command with its chat and lane; tab
   leases still stop one chat from driving another chat's tab; and reaching a
   remote machine's port through a tunnel still needs its own yes.
 - **Mac Desktop.** The "before" is the observation the target was resolved

@@ -85,6 +85,7 @@ import {
 } from "../../../shared/remoteLoopbackUrl";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
 import {
   commitTunnelApproval,
@@ -203,6 +204,8 @@ type ChatBuiltInBrowserPanelProps = {
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
+  /** "Attach to chat" on a tab. Absent where there is no chat to attach to. */
+  onAttachTab?: (tab: BrowserTabMentionTarget) => void;
   runtimePin?: OpenProjectBinding | null;
   /**
    * Lane whose tabs lead the strip, and the group a tab opened from this pane
@@ -308,6 +311,7 @@ export function ChatBuiltInBrowserPanel({
   onAddContext,
   onAddAttachment,
   onInsertDraft,
+  onAttachTab,
   runtimePin = null,
   groupLaneId = null,
 }: ChatBuiltInBrowserPanelProps) {
@@ -1298,6 +1302,39 @@ export function ChatBuiltInBrowserPanel({
     return true;
   }, [handleCloseTab]);
 
+  /**
+   * "Attach to chat": hand the chat a tab's id, title and URL so its agent can
+   * claim it. The URL is the one the human sees — the remote origin behind a
+   * tunnel — which is what an agent on that machine can make sense of.
+   */
+  const handleAttachTab = useCallback((tabId: string) => {
+    const tab = statusRef.current?.tabs.find((candidate) => candidate.id === tabId);
+    if (!onAttachTab || !tab) return;
+    try {
+      onAttachTab({
+        tabId: tab.id,
+        title: tab.title?.trim() || null,
+        url: tunnelAwareUrl(tab.url ?? "", tabTunnelsRef.current[tab.id] ?? null) || null,
+      });
+    } catch (error) {
+      setMessage({ tone: "error", text: errorMessage(error) });
+      return;
+    }
+    // Attaching is handing the tab over: move its lease to this chat (or drop
+    // it, for a draft), so another chat's lease cannot refuse the claim.
+    void getBrowserApi()?.handTabToChat?.(withBrowserScope({
+      tabId: tab.id,
+      chatSessionId: sessionId ?? null,
+      laneId: contextLaneId ?? null,
+    })).catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
+  const handleAttachActiveTab = useCallback(() => {
+    const tabId = statusRef.current?.activeTabId ?? null;
+    if (tabId) handleAttachTab(tabId);
+  }, [handleAttachTab]);
+
   const handleHandBack = useCallback((endedBy: "human" | "auto-offer") => {
     void runBusy("hand-back", async () => {
       const api = requireBrowserApi();
@@ -1305,8 +1342,8 @@ export function ChatBuiltInBrowserPanel({
         throw new Error("This ADE build does not support handing the browser back.");
       }
       // Deliberately un-pinned. The handed-off tab is THIS Electron process's
-      // own WebContentsView; the daemon round trip cannot reach it, and the
-      // bridge refuses a user client for having no chat capability. Preload
+      // own WebContentsView, which the daemon round trip cannot reach, and
+      // hand-back is the person's move, not on the bridge at all. Preload
       // routes this one call straight to local IPC.
       await api.endHandoff(withBrowserScope({ endedBy }));
       setHandoffOfferSilencedOrigin(null);
@@ -2791,6 +2828,7 @@ export function ChatBuiltInBrowserPanel({
           onSwitchTab={handleSwitchTab}
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
+          onAttachTab={onAttachTab ? handleAttachTab : undefined}
         />
 
         {pendingApproval ? (
@@ -2843,6 +2881,7 @@ export function ChatBuiltInBrowserPanel({
               onOpenFind={openFind}
               onNewTab={handleNewTab}
               onCloseTab={hasTab ? handleCloseActiveTab : null}
+              onAttachTab={hasTab && onAttachTab ? handleAttachActiveTab : null}
               devToolsOpen={devToolsOpen}
               onToggleDevTools={handleToggleDevTools}
               networkLogging={networkLogging}

@@ -11,6 +11,7 @@
 // Everything is injected so the module is testable without Electron, and so the
 // desktop main process and the `ade` runtime share one implementation.
 
+import { maskBrowserTabMentions } from "../../../shared/browserTabMention";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
@@ -497,8 +498,9 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
    * chips the user typed.
    */
   const expandChatMentionsForSend = async (text: string): Promise<string> => {
-    const targets = collectChatMentionTargets(text);
-    const modelBlocks = renderModelMentionBlocks(text);
+    const userText = maskBrowserTabMentions(text);
+    const targets = collectChatMentionTargets(userText);
+    const modelBlocks = renderModelMentionBlocks(userText);
     if (!targets.length && !modelBlocks.length) return text;
     const details = await resolveChatMentionDetails(targets);
     const blocks = targets.map((target) => {

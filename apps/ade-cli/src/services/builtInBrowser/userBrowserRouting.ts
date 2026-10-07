@@ -1,9 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
-
-import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import type { UserBrowserAttachService } from "../../../../desktop/src/main/services/userBrowser/userBrowserAttachService";
 import {
-  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_ATTACH_USER_BROWSER_METHOD,
   BUILT_IN_BROWSER_DETACH_USER_BROWSER_METHOD,
   USER_BROWSER_RUNTIME_METHODS,
@@ -36,75 +32,14 @@ function takeRoute(input: unknown): { toUserBrowser: boolean; args: unknown } {
 }
 
 /**
- * The args the user's browser sees: no routing decision, and never ADE's
- * browser capability. A call nobody authorized for the user's browser is
- * refused rather than served.
+ * The args the user's browser sees: no routing decision. A call nobody
+ * authorized for the user's browser is refused rather than served.
  */
 function userBrowserArgs(input: unknown): Record<string, unknown> {
   const { toUserBrowser, args } = takeRoute(input ?? {});
   if (!toUserBrowser) throw new Error("This call was not authorized for the user's browser.");
   if (!args || typeof args !== "object" || Array.isArray(args)) return {};
-  const { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: _capability, ...rest } = args as Record<string, unknown>;
-  return rest;
-}
-
-/**
- * The browser actor capability this runtime had the desktop issue each chat,
- * so a user-browser call can be checked here — the user's browser never
- * reaches the desktop bridge, which is where ADE's own browser checks it.
- */
-export type IssuedBrowserActorTokens = {
-  /** The capability last issued for the chat, or null when none was (no desktop at launch). */
-  tokenFor: (chatSessionId: string) => string | null;
-  /** True when `presented` is exactly the capability issued for the chat. */
-  matches: (chatSessionId: string, presented: string | null) => boolean;
-};
-
-/**
- * Wrap the runtime's capability issuer so it remembers what it issued, and so
- * revoking a chat's capability — which every chat end and delete does, for
- * chats and agent terminals alike — also releases what the chat holds here.
- */
-export function trackIssuedBrowserActorCapabilities(
-  issuer: BrowserActorCapabilityIssuer,
-  hooks: { onRevoke: (chatSessionId: string) => void },
-): { issuer: BrowserActorCapabilityIssuer; issued: IssuedBrowserActorTokens } {
-  const tokens = new Map<string, string>();
-  const tracked: BrowserActorCapabilityIssuer = {
-    issue: async (capability) => {
-      const chatSessionId = capability.chatSessionId.trim();
-      // A failed re-issue throws before touching the map: the chat stays held
-      // to the capability it was last issued. Forgetting it would let any
-      // caller naming the chat act in the user's browser without one.
-      const token = (await issuer.issue(capability))?.trim() || null;
-      // The desktop keeps one token per chat: a new one replaces the last.
-      if (token) tokens.set(chatSessionId, token);
-      else tokens.delete(chatSessionId);
-      return token;
-    },
-    revoke: async (chatSessionId) => {
-      const normalized = chatSessionId.trim();
-      tokens.delete(normalized);
-      try {
-        hooks.onRevoke(normalized);
-      } finally {
-        await issuer.revoke(chatSessionId);
-      }
-    },
-  };
-  return {
-    issuer: tracked,
-    issued: {
-      tokenFor: (chatSessionId) => tokens.get(chatSessionId.trim()) ?? null,
-      matches: (chatSessionId, presented) => {
-        const expected = tokens.get(chatSessionId.trim());
-        if (!expected || !presented) return false;
-        const left = Buffer.from(expected);
-        const right = Buffer.from(presented.trim());
-        return left.length === right.length && timingSafeEqual(left, right);
-      },
-    },
-  };
+  return args as Record<string, unknown>;
 }
 
 /**
@@ -134,9 +69,8 @@ export function withUserBrowserAttachment(
           userBrowser.detach(userBrowserArgs(input) as Parameters<UserBrowserAttachService["detach"]>[0]);
       }
       const inner = Reflect.get(target, property, receiver) as unknown;
-      // Only browser actions route. The capability lifecycle, the runtime
-      // status mirror and `dispose` carry a chat id too, and must always reach
-      // the bridge.
+      // Only browser actions route. The runtime status mirror and `dispose`
+      // must always reach the bridge.
       if (
         typeof property !== "string"
         || typeof inner !== "function"

@@ -9,11 +9,6 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
-import {
-  localBrowserActorCapabilityIssuer,
-  type BrowserActorCapabilityIssuer,
-  type BuiltInBrowserActorCapability,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -594,42 +589,23 @@ function withInteractiveTerminalColorEnv(
   return next;
 }
 
-async function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
+function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
   spawnLineage?: PtyCreateArgs["spawnLineage"];
-  issueBrowserActorToken: (
-    capability: BuiltInBrowserActorCapability,
-  ) => Promise<string | null>;
-}): Promise<NodeJS.ProcessEnv> {
+}): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_LANE_ID: args.laneId,
   };
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
-  const browserActorToken = terminalOwnerSessionId
-    ? await args.issueBrowserActorToken({
-      chatSessionId: terminalOwnerSessionId,
-      laneId: args.laneId,
-      projectRoot: args.projectRoot,
-      tabCollection: null,
-    })
-    : null;
   if (terminalOwnerSessionId) {
     next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
   } else {
     delete next.ADE_CHAT_SESSION_ID;
-  }
-  // No owner, or no reachable issuer (headless machine / desktop closed): the
-  // terminal launches without a browser capability rather than inheriting the
-  // host process's, and `ade browser` reports the bridge is not running.
-  if (browserActorToken) {
-    next.ADE_BROWSER_ACTOR_TOKEN = browserActorToken;
-  } else {
-    delete next.ADE_BROWSER_ACTOR_TOKEN;
   }
   if (args.spawnLineage) {
     next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
@@ -1379,8 +1355,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   // Every member of `TerminalToolType`. The `satisfies` binding is the point:
   // a tool type added to the union but missed here silently normalises to
   // "other", which strips the session of every tracked-CLI behaviour — turn
-  // markers, resume capture, the disk-pressure gate, and the browser-actor
-  // capability revoke — with nothing to show for it.
+  // markers, resume capture and the disk-pressure gate — with nothing to show
+  // for it.
   const allowed = [
     "shell",
     "claude",
@@ -2411,7 +2387,7 @@ export function createPtyService({
   onSessionRuntimeSignal,
   onSessionUserInput,
   diskPressureMonitor,
-  browserActorCapabilityIssuer,
+  releaseChatBrowser,
   loadPty,
   disposePtyBackend
 }: {
@@ -2449,37 +2425,13 @@ export function createPtyService({
   onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
-   * Who mints a terminal's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
-   * capability registry and is the only process that can validate against it,
-   * so the runtime daemon passes an issuer backed by the desktop bridge.
+   * A tracked agent CLI with no owning chat ended: let go of anything it held
+   * outside ADE (the brain detaches its `ade browser attach`).
    */
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
+  releaseChatBrowser?: ((chatSessionId: string) => void) | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
-  const browserActorCapabilities =
-    browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
-  const issueBrowserActorToken = async (
-    capability: BuiltInBrowserActorCapability,
-  ): Promise<string | null> => {
-    try {
-      return (await browserActorCapabilities.issue(capability))?.trim() || null;
-    } catch (error) {
-      logger.warn("pty.browser_actor_capability_issue_failed", {
-        sessionId: capability.chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  };
-  const revokeBrowserActorToken = (chatSessionId: string): void => {
-    void browserActorCapabilities.revoke(chatSessionId).catch((error: unknown) => {
-      logger.warn("pty.browser_actor_capability_revoke_failed", {
-        sessionId: chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
@@ -4532,7 +4484,7 @@ export function createPtyService({
     devServerRegistry.forgetSession(entry.sessionId);
     sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-      revokeBrowserActorToken(entry.sessionId);
+      releaseChatBrowser?.(entry.sessionId);
     }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
@@ -6323,13 +6275,12 @@ export function createPtyService({
               spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
             }
           : null);
-      const contextLaunchEnv = await withAdeTerminalContextEnv(baseLaunchEnv, {
+      const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
-        issueBrowserActorToken,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -8498,7 +8449,7 @@ export function createPtyService({
         sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
         if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
-          revokeBrowserActorToken(sessionId);
+          releaseChatBrowser?.(sessionId);
         }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
@@ -8547,7 +8498,7 @@ export function createPtyService({
       devServerRegistry.forgetSession(entry.sessionId);
       sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-        revokeBrowserActorToken(entry.sessionId);
+        releaseChatBrowser?.(entry.sessionId);
       }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);

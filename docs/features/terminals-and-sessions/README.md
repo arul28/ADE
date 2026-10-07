@@ -2720,15 +2720,9 @@ sibling, so `ade terminal read --chat-session <id>` always resolves a
 sensible target for attached-session agents. Every PTY launched through
 `ptyService.create` runs through `withAdeTerminalContextEnv` which
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
-session-owned) `ADE_CHAT_SESSION_ID` plus an opaque
-`ADE_BROWSER_ACTOR_TOKEN` into the spawn env. The browser capability is
-minted by Electron and bound in Electron memory to that owner
-chat/lane/project; a daemon-hosted terminal requests it over the desktop bridge
-and launches without one when no desktop is running. The runtime rejects
-missing tokens and strips caller routing; Electron validates the token against
-the registry that issued it before restoring its scope on the authenticated
-bridge. The
-remaining identity variables are how a
+session-owned) `ADE_CHAT_SESSION_ID` into the spawn env. There is no
+browser token: `ade browser` from any terminal works, and the chat id only
+tags which chat owns the tabs it opens. These identity variables are how a
 plain shell that the user types `ade --socket terminal read --chat-session
 "$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's
 terminal even though no agent runtime spawned it. The headless ADE

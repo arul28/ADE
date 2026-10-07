@@ -1,6 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import { DESKTOP_CLIENT_NAMES } from "../../desktop/src/shared/runtimeClientNames";
 import {
   PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
   PROJECT_ICON_TYPE_ERROR,
@@ -336,12 +335,6 @@ export type MultiProjectRpcHandlerOptions = {
    * pretending to have restarted something.
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
-  /**
-   * The desktop bridge token the machine's own desktop app announced on
-   * `ade/initialize`. Machine scope keeps the latest one so "Update & restart"
-   * can ask that app to install its own update (see `desktopAppUpdateBridge`).
-   */
-  onDesktopBridgeAuthToken?: (authToken: string) => void;
   /**
    * Backs `machine.reportPowerTransition`: the desktop's OS-level pre-suspend
    * beat, forwarded into the brain.
@@ -1833,17 +1826,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ade/initialize") {
       initializedParams = params;
-      const clientInfo = params.clientInfo && typeof params.clientInfo === "object"
-        ? params.clientInfo as Record<string, unknown>
-        : {};
-      const clientName = typeof params.clientName === "string" ? params.clientName : clientInfo.name;
-      if (
-        clientName === DESKTOP_CLIENT_NAMES.local
-        && typeof params.desktopBridgeAuthToken === "string"
-        && params.desktopBridgeAuthToken.trim()
-      ) {
-        options.onDesktopBridgeAuthToken?.(params.desktopBridgeAuthToken.trim());
-      }
       return {
         protocolVersion:
           typeof params.protocolVersion === "string"

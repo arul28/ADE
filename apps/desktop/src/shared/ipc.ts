@@ -620,6 +620,7 @@ export const IPC = {
   builtInBrowserNavigate: "ade.builtInBrowser.navigate",
   builtInBrowserCreateTab: "ade.builtInBrowser.createTab",
   builtInBrowserSwitchTab: "ade.builtInBrowser.switchTab",
+  builtInBrowserHandTabToChat: "ade.builtInBrowser.handTabToChat",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",

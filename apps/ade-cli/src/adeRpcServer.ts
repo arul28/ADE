@@ -129,11 +129,7 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
-import {
-  BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
-  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
-} from "./services/builtInBrowser/desktopBridgeMethods";
-import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD } from "./services/builtInBrowser/desktopBridgeMethods";
 import { USER_BROWSER_ROUTE_PARAM, isUserBrowserRuntimeMethod } from "./services/builtInBrowser/userBrowserRouting";
 import {
   ctoCallerInitializeParams,
@@ -248,7 +244,8 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
-  browserActorToken: string | null;
+  /** The caller's chat is a personal (project-less) chat — its `ADE_CHAT_SCOPE`. */
+  personalChat: boolean;
 };
 
 type SessionState = {
@@ -3510,54 +3507,17 @@ function scopeSearchAdeActionArgs(
   return unscopedArgs;
 }
 
-/**
- * A browser call's args pinned to the calling chat: caller routing (lane,
- * project, tab collection) and `force` stripped, the user-browser route set
- * as given, and the chat's actor capability attached when it has one.
- */
-function callerScopedBrowserArgs(
-  browserArgs: Record<string, unknown>,
-  callerChatSessionId: string | null,
-  browserActorToken: string | null,
-  userBrowserRoute: true | undefined,
-): Record<string, unknown> {
-  return {
-    ...browserArgs,
-    chatSessionId: callerChatSessionId,
-    laneId: undefined,
-    projectRoot: undefined,
-    tabCollection: undefined,
-    force: false,
-    [USER_BROWSER_ROUTE_PARAM]: userBrowserRoute,
-    ...(browserActorToken
-      ? { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: browserActorToken }
-      : {}),
-  };
-}
-
 function scopeBuiltInBrowserAdeActionArgs(
+  runtime: AdeRuntime,
   session: SessionState,
   action: string,
   browserArgs: Record<string, unknown>,
 ): Record<string, unknown> {
-  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
-  const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  // Headless machines cannot mint an actor capability: the issuer asks the
-  // desktop bridge for one, and on a box running only `ade serve` that socket
-  // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches the forwarder's `route`, so the whole remote
-  // forwarding path (publish `built_in_browser_remote_request`, wait for a
-  // pinned desktop to ack) is unreachable. Only the three "put this URL on a
-  // screen" methods are exempt — they are exactly the forwardable set. This is
-  // not a privilege grant: if a desktop IS attached here, `desktopBridgeServer`
-  // still refuses a capability-less call, so the authority stays on the side
-  // that owns the browser.
-  const forwardableWithoutCapability =
-    !browserActorToken
-    && Boolean(callerChatSessionId)
-    && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(action);
-  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability)) {
+  // Anything on this machine may drive the browser, exactly like Mac Desktop:
+  // the brain's socket is owner-only, so a local caller is already the user.
+  // Only a call arriving from another machine's brain is refused here.
+  if (isRemoteBrainCallerClientName(session.clientName)) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -3567,20 +3527,29 @@ function scopeBuiltInBrowserAdeActionArgs(
   ) {
     builtInBrowserAccessDenied(method);
   }
-  const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
-  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    builtInBrowserAccessDenied(method);
+  // A chat acts as itself and nobody else: its tabs, its lane, and — for a
+  // personal chat — the personal collection. The chat id is a label for tab
+  // ownership, not a lock. A chatless caller (the user's own terminal) owns no
+  // tab and keeps the lane it asked for.
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const { chatSessionId: _callerSupplied, ...rest } = browserArgs;
+  // Only the user-browser scoping below may route a call to the user's browser.
+  const scoped = { ...rest, projectRoot: undefined, force: false, [USER_BROWSER_ROUTE_PARAM]: undefined };
+  if (!callerChatSessionId) {
+    return { ...scoped, chatSessionId: undefined, laneId: asOptionalTrimmedString(rest.laneId) ?? undefined, tabCollection: undefined };
   }
-  if (browserArgs.force === true) {
-    builtInBrowserAccessDenied(method);
+  // A personal chat's call is routed to whatever runtime its scratch directory
+  // resolves to, which does not know the chat; its own `ADE_CHAT_SCOPE` claim
+  // is what says it is personal, trusted like its chat id.
+  if (session.identity.personalChat) {
+    return { ...scoped, chatSessionId: callerChatSessionId, laneId: undefined, tabCollection: "personal" };
   }
-
-  // The capability registry intentionally lives only in Electron, where chat
-  // and terminal launches issue and revoke tokens. The separate runtime strips
-  // caller routing and carries the opaque token over its authenticated bridge;
-  // desktopBridgeServer performs the authoritative lookup and scope restore.
-  // Only the user-browser scoping below may route a call there.
-  return callerScopedBrowserArgs(browserArgs, callerChatSessionId, browserActorToken, undefined);
+  return {
+    ...scoped,
+    chatSessionId: callerChatSessionId,
+    laneId: resolveChatSessionLaneId(runtime, session) ?? undefined,
+    tabCollection: undefined,
+  };
 }
 
 /** Session statuses of a chat that can still act; the rest mean it ended. */
@@ -3589,21 +3558,14 @@ const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached"]);
 /**
  * Authorize a call that acts in the user's own browser (`attach` / `detach`,
  * or a page command from a chat attached to it). It never reaches ADE's
- * browser or the desktop bridge, so the desktop cannot check it; this does,
- * to the same bar wherever this runtime can:
+ * browser or the desktop bridge, so it is checked here:
  *
  * - the chat must be one this project knows, and not ended;
- * - when this runtime had the desktop issue the chat a browser actor
- *   capability (a desktop was attached at launch), the caller must present
- *   exactly that capability — the same proof ADE's own browser asks for;
  * - a caller may only name its own chat, and never `force`.
  *
- * LIMIT: with no desktop attached when the chat launched there is no
- * capability, and the chat id is the one the caller reports — so another
- * process running as the same OS user, which can already read that chat's
- * environment, could still act as it. A chat launched with a capability is
- * held to it; one launched without is held to being a live chat of this
- * project.
+ * The chat id is the one the caller reports, like every browser call: a
+ * process running as the same OS user can already read that chat's
+ * environment, so a token would add nothing it could not also read.
  */
 function scopeUserBrowserAdeActionArgs(
   runtime: AdeRuntime,
@@ -3631,17 +3593,15 @@ function scopeUserBrowserAdeActionArgs(
   if (!LIVE_CHAT_SESSION_STATUSES.has(String(chat.status))) {
     scopeAccessDenied(`chat ${callerChatSessionId} has ended`, method);
   }
-  const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
-  const issued = runtime.issuedBrowserActorTokens ?? null;
-  if (issued?.tokenFor(callerChatSessionId) && !issued.matches(callerChatSessionId, browserActorToken)) {
-    scopeAccessDenied(
-      "this caller does not hold the browser capability ADE issued that chat. Run the command from the chat's own shell",
-      method,
-    );
-  }
-  // The capability is carried only for `getStatus`, whose ADE-browser half
-  // the desktop checks.
-  return callerScopedBrowserArgs(browserArgs, callerChatSessionId, browserActorToken, true);
+  return {
+    ...browserArgs,
+    chatSessionId: callerChatSessionId,
+    laneId: undefined,
+    projectRoot: undefined,
+    tabCollection: undefined,
+    force: false,
+    [USER_BROWSER_ROUTE_PARAM]: true,
+  };
 }
 
 /**
@@ -5010,10 +4970,6 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const resolvedRunId = envIdentity.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envIdentity.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envIdentity.attemptId ?? asOptionalTrimmedString(identity.attemptId);
-  // Browser actor capabilities belong to the connecting CLI process. The
-  // long-lived runtime daemon must never lend an inherited token to another
-  // client, even if it was accidentally launched from an agent-owned shell.
-  const browserActorToken = asOptionalTrimmedString(identity.browserActorToken);
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !resolvedRunId
@@ -5029,7 +4985,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
-    browserActorToken,
+    personalChat: identity.chatScope === "personal",
   };
 }
 
@@ -5882,10 +5838,8 @@ async function runTool(args: {
       // Not a browser action. This machine has no desktop attached, so a
       // `browser open` here was published to whichever desktop holds a remote
       // pin on this lane; this is that desktop saying it took it. It reaches
-      // nothing on this machine and grants nothing, so it cannot be gated on a
-      // browser actor capability — the desktop's capability lives on its own
-      // machine, not here. Still user-clients-only: an agent must not be able
-      // to forge the outcome its own CLI is about to print.
+      // nothing on this machine and grants nothing. User-clients-only: an agent
+      // must not be able to forge the outcome its own CLI is about to print.
       if (!isUserClient) {
         builtInBrowserAccessDenied(`run_ade_action:${domain}.${action}`);
       }
@@ -6002,7 +5956,7 @@ async function runTool(args: {
       const browserArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       scopedObjectArgs = userBrowserCall
         ? scopeUserBrowserAdeActionArgs(runtime, session, action, browserArgs)
-        : scopeBuiltInBrowserAdeActionArgs(session, action, browserArgs);
+        : scopeBuiltInBrowserAdeActionArgs(runtime, session, action, browserArgs);
       // The allowlist and the scoping above are both behind us, so reaching this
       // line means a real, exposed browser action is about to run. The desktop
       // records presence itself (it is the only side that sees tabs close and
@@ -6018,21 +5972,14 @@ async function runTool(args: {
       // is what opened the window, so one failure inside a busy agent's stream
       // cannot retract presence the rest of that stream still justifies.
       //
-      // Only for a caller carrying a browser actor capability. The one caller
-      // the scoping lets through without one is the remote-forwarding carve-out
-      // — a chat on a headless box publishing "put this URL on a screen" to a
-      // desktop somewhere else — which drives no browser here and must not make
-      // this machine's Work-tools mirror claim an agent picked one up. (A user
-      // client cannot reach this branch at all: the scoping denies a caller with
-      // no chat session, and a session carrying one is not a user client.)
-      // Acting in the user's own browser is not ADE's browser in use either.
-      const bearsBrowserCapability = !userBrowserCall && Boolean(
-        asOptionalTrimmedString(session.identity.browserActorToken),
-      );
-      if (bearsBrowserCapability) {
+      // Only for a chat: presence says which chat is browsing, and a chatless
+      // caller (the user's own terminal) is not an agent. Acting in the user's
+      // own browser is not ADE's browser in use either.
+      const presenceChatSessionId = userBrowserCall ? null : asOptionalTrimmedString(scopedObjectArgs.chatSessionId);
+      if (presenceChatSessionId) {
         const presenceArgs = {
-          laneId: resolveChatSessionLaneId(runtime, session),
-          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+          laneId: asOptionalTrimmedString(scopedObjectArgs.laneId),
+          chatSessionId: presenceChatSessionId,
         };
         const opened = runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs)
           ?? null;
@@ -7288,15 +7235,14 @@ async function runTool(args: {
     const browser = getAdeActionDomainServices(runtime).built_in_browser as
       | { noteDemoStep?: (args: Record<string, unknown>) => unknown }
       | undefined;
-    // The desktop bridge accepts a call only with the chat's browser
-    // capability, and it scopes the step to that chat's lane itself. A caller
-    // without one (a plain terminal) has no browser recording to caption.
-    const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
+    // Browser recordings belong to a chat; a caller without one (a plain
+    // terminal) has no browser recording to caption.
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-    if (typeof browser?.noteDemoStep === "function" && browserActorToken && callerChatSessionId) {
+    if (typeof browser?.noteDemoStep === "function" && callerChatSessionId) {
       try {
+        const scoped = scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text });
         const reply = await Promise.race([
-          Promise.resolve(browser.noteDemoStep(scopeBuiltInBrowserAdeActionArgs(session, "noteDemoStep", { text }))),
+          Promise.resolve(browser.noteDemoStep(scoped)),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
         ]);
         const extra = reply && typeof reply === "object" ? (reply as { noted?: unknown }).noted : null;
@@ -8201,7 +8147,7 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
-      browserActorToken: null,
+      personalChat: false,
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -8244,19 +8190,7 @@ export function createAdeRpcRequestHandler(args: {
         ?? asOptionalTrimmedString(clientInfo.name)
         ?? "unknown";
       session.identity = parseInitializeIdentity(runtime, params);
-      const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
-      if (
-        session.clientName === DESKTOP_CLIENT_NAMES.local
-        && desktopBridgeAuthToken
-        && runtime.configureBuiltInBrowserDesktopBridgeAuth
-      ) {
-        const configured = await runtime.configureBuiltInBrowserDesktopBridgeAuth(desktopBridgeAuthToken);
-        if (!configured) {
-          runtime.logger.warn("built_in_browser_bridge.runtime_auth_rejected", {
-            clientName: session.clientName,
-          });
-        }
-      }
+      if (session.clientName === DESKTOP_CLIENT_NAMES.local) runtime.noteDesktopAppConnected?.();
       return {
         protocolVersion: session.protocolVersion,
         runtimeInfo: {

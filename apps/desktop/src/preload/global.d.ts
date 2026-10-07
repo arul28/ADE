@@ -3348,6 +3348,8 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** "Attach to chat": move a tab's lease to one chat (or drop it). Optional for older preloads. */
+        handTabToChat?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,

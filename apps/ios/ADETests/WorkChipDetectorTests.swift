@@ -22,6 +22,7 @@ func workChipFixtureKindName(_ kind: WorkSmartLink.Kind) -> String {
   case .model: return "model"
   case .permission: return "permission"
   case .skill: return "skill"
+  case .browserTab: return "browser_tab"
   case .adeLink: return "ade_link"
   }
 }
@@ -159,6 +160,16 @@ final class WorkChipDetectorTests: XCTestCase {
       consumedTo = NSMaxRange(chip.range)
     }
     XCTAssertEqual(found.map(\.kind), [.chat, .chat, .terminal, .webPage])
+  }
+
+  func testBrowserTabRoundTripsHostileTitleAndMasksNestedMentions() {
+    let token = #"<ade-browser-tab id="tab-1" title="Quotes &quot;&lt;&gt;&amp; @chat:secret&quot;" url="https://example.test/a?x=1&amp;y=2">The user attached ADE browser tab tab-1. Take it over.</ade-browser-tab>"#
+    let text = "open \(token) then @chat:real"
+    let found = chips(text)
+    XCTAssertEqual(found.map(\.kind), [.browserTab, .chat])
+    XCTAssertEqual(found[0].label, "Quotes \"<>& @chat:secret\"")
+    XCTAssertEqual(found[0].token, token)
+    XCTAssertEqual(WorkChipDetector.canonicalPlainText(text), text)
   }
 
   func testChipTokenIsTheCanonicalTextNotTheLabel() {

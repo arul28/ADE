@@ -20,7 +20,6 @@ describe("buildPiWorkerEnvironment", () => {
           apiKey: "$CUSTOM_PI_KEY",
           headers: {
             "X-Endpoint-Token": "${CUSTOM_PI_HEADER}",
-            "X-ADE-Token": "$ADE_BROWSER_ACTOR_TOKEN",
             // An escaped dollar is literal text, not an environment requirement.
             "X-Literal": "$$NOT_AN_ENV",
           },
@@ -32,13 +31,11 @@ describe("buildPiWorkerEnvironment", () => {
       PATH: "/bin",
       CUSTOM_PI_KEY: "key",
       CUSTOM_PI_HEADER: "header",
-      ADE_BROWSER_ACTOR_TOKEN: "must-not-cross",
       ADE_CHAT_SESSION_ID: "chat-1",
       NOT_AN_ENV: "secret",
     }, root);
 
     expect(env).toMatchObject({ PATH: "/bin", CUSTOM_PI_KEY: "key", CUSTOM_PI_HEADER: "header" });
-    expect(env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
     expect(env).not.toHaveProperty("ADE_CHAT_SESSION_ID");
     expect(env).not.toHaveProperty("NOT_AN_ENV");
   });
@@ -67,7 +64,6 @@ describe("buildPiWorkerEnvironment", () => {
       ADE_RPC_SOCKET_PATH: "/other/rpc.sock",
       ADE_RPC_URL: "/other/url.sock",
       ADE_ACTIVITY_SESSION_ID: "terminal-row",
-      ADE_BROWSER_ACTOR_TOKEN: "browser-token",
       ADE_PARENT_CHAT_SESSION_ID: "parent-chat",
       ADE_PROJECT_ROOT: "/project",
     }, undefined, {
@@ -86,7 +82,6 @@ describe("buildPiWorkerEnvironment", () => {
       ADE_RUNTIME_SOCKET_PATH: "/runtime/ade.sock",
     });
     expect(env).not.toHaveProperty("ADE_ACTIVITY_SESSION_ID");
-    expect(env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
     expect(env).not.toHaveProperty("ADE_PARENT_CHAT_SESSION_ID");
     expect(env).not.toHaveProperty("ADE_PROJECT_ROOT");
   });

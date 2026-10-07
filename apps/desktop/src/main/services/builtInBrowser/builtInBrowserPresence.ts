@@ -16,8 +16,8 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  * has moved on; the only trustworthy evidence that an agent is driving the
  * browser is the browser being driven. So presence is a side effect of the
  * calls themselves: `desktopBridgeServer` touches this registry for every
- * capability-validated `built_in_browser.*` command, keyed by the chat session
- * the capability was minted for.
+ * `built_in_browser.*` command that carries a chat, keyed by the chat session
+ * the runtime tagged it with.
  *
  * Three rules follow from that, and all three are here rather than at the call
  * sites:
@@ -43,8 +43,7 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  *   state is that the agent has stepped back, and a globe still pulsing beside
  *   the chat would contradict the one banner asking the person to act.
  *
- * Deliberately in-memory and process-local, like the actor capabilities it is
- * keyed by. Presence is a statement about a live process; a replicated row
+ * Deliberately in-memory and process-local. Presence is a statement about a live process; a replicated row
  * would outlive the Electron main that meant it and leave a phone claiming an
  * agent is browsing on a Mac that has quit.
  *
@@ -83,7 +82,7 @@ export type BuiltInBrowserAgentPresenceTracker = {
    *
    * The stamp is a counter rather than a clock because the clock is not fine
    * enough to tell two touches apart: parallel `ade browser` calls from one
-   * chat share an actor token and routinely land in the same millisecond, and
+   * chat routinely land in the same millisecond, and
    * a `lastActivityAt` guard would then let a failing call retract a live
    * agent. The counter is tracker-wide and never reused, so a sequence cannot
    * accidentally match a record that was cleared and re-created meanwhile.
@@ -378,9 +377,8 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
 /**
  * The process-wide tracker.
  *
- * Module-scoped for the same reason the actor capability registry is: the two
- * writers are the desktop bridge (which validates the capability) and the
- * browser service (which sees tabs close and recordings end), and they must not
+ * Module-scoped because the two writers are the desktop bridge and the browser
+ * service (which sees tabs close and recordings end), and they must not
  * be able to disagree about who is browsing. Tests build their own with
  * {@link createBuiltInBrowserAgentPresenceTracker}.
  */

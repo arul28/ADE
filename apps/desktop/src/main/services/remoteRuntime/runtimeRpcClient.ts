@@ -126,7 +126,6 @@ export class RuntimeRpcClient {
     clientName: string,
     version: string,
     options: {
-      desktopBridgeAuthToken?: string | null;
       timeoutMs?: number;
     } = {},
   ): Promise<unknown> {
@@ -137,9 +136,6 @@ export class RuntimeRpcClient {
         callerId: syntheticCallerId(clientName),
         role: "cto",
       },
-      ...(options.desktopBridgeAuthToken?.trim()
-        ? { desktopBridgeAuthToken: options.desktopBridgeAuthToken.trim() }
-        : {}),
     }, {
       ...(options.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
+import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
 import { Play } from "@phosphor-icons/react";
@@ -77,6 +78,7 @@ export type WorkToolPanelProps = {
   onClearDiffSelection: () => void;
   onAddAttachment: ((attachment: AgentChatFileRef) => void) | undefined;
   onAddBuiltInBrowserContext: ((item: unknown) => void) | undefined;
+  onAttachBrowserTab: ((tab: BrowserTabMentionTarget) => void) | undefined;
   onAddAppControlContext: ((item: AppControlContextItem) => void) | undefined;
   onAddIosContext: ((item: IosElementContextItem) => void) | undefined;
   onInsertDraft: ((text: string) => void) | undefined;
@@ -221,6 +223,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     shouldPersistPanelAttachment,
     onAddAttachment,
     onAddBuiltInBrowserContext,
+    onAttachBrowserTab,
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
@@ -245,6 +248,9 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddBuiltInBrowserContext : undefined}
+        // A chat on another machine cannot reach this desktop's tabs: its
+        // `ade browser claim` runs there.
+        onAttachTab={canInsertContext && runtimePin?.kind !== "remote" ? onAttachBrowserTab : undefined}
         onInsertDraft={canInsertContext ? onInsertDraft : undefined}
       />
     </NativePanelFrame>

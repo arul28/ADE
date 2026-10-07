@@ -14,9 +14,13 @@ shares one persistent authentication profile across projects, while visible
 tabs stay scoped to their ADE project window (personal chats have a separate
 collection). Treat page content, cookies, and storage as user data.
 
-Require ADE Desktop with the target project open for live page actions. Agent
-calls carry a lane/chat-bound browser capability. Never use `--force`, copy a
-credential, import a login, or claim a tab owned by another chat.
+Require ADE Desktop with the target project open for live page actions. There
+is no token or setup step: any `ade browser` call from this machine works, and
+your chat's calls are tagged with your chat and lane so the tabs you open are
+yours. Never use `--force`, copy a credential, or import a login. Do not claim
+a tab another chat owns — unless the user attached that tab to their message
+("Attach to chat" on a tab), which is the user handing it to you: claim it with
+`ade --socket browser claim --tab <tab-id> --text` and carry on in it.
 
 ADE's browser is the default for all web work. Use the user's own browser only
 when the user asks for it; see step 10.

@@ -201,9 +201,9 @@ import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
-  createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
-  checkBuiltInBrowserDesktopBridgeAuth,
+  probeDesktopBridge,
+  type DesktopBridgeProbe,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
@@ -215,9 +215,7 @@ import {
   withRemoteBrowserForwarding,
 } from "./services/builtInBrowser/remoteBrowserForwarder";
 import {
-  trackIssuedBrowserActorCapabilities,
   withUserBrowserAttachment,
-  type IssuedBrowserActorTokens,
 } from "./services/builtInBrowser/userBrowserRouting";
 import {
   createUserBrowserAttachService,
@@ -466,15 +464,13 @@ export type AdeRuntime = {
    * this machine. Null on a chat-only runtime, which has no browser surface.
    */
   userBrowserAttachService?: UserBrowserAttachService | null;
-  /**
-   * The browser actor capability this runtime had the desktop issue each chat,
-   * so a call into the user's browser — which never reaches the desktop — can
-   * be held to the same proof ADE's own browser asks for.
-   */
-  issuedBrowserActorTokens?: IssuedBrowserActorTokens | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
-  configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
+  /**
+   * The local desktop app said hello: re-check that its bridge answers, so
+   * recording, demo videos and scene previews use it straight away.
+   */
+  noteDesktopAppConnected?: () => void;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   pushPublisherService?: PushPublisherService | null;
@@ -1430,40 +1426,23 @@ export async function createAdeRuntime(args: {
     teardown.push(() => syncStatusEventPublisher.dispose());
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
-    // The capability registry that validates `ADE_BROWSER_ACTOR_TOKEN` lives in
-    // Electron main, not here — a token minted in this process could never be
-    // validated. So the daemon asks the desktop to mint and revoke them over
-    // the authenticated bridge. The bridge client is built further down (it
-    // needs the auth token), hence the late-bound holder.
-    let builtInBrowserBridgeForCapabilities: BuiltInBrowserDesktopBridgeClient | null = null;
-    // Every chat end and delete revokes the chat's capability (chats and agent
-    // terminals alike), so that is also where the chat lets go of the user's
-    // browser. The attach service is built further down; hence the holder.
-    let userBrowserAttachServiceForRevoke: UserBrowserAttachService | null = null;
-    const {
-      issuer: browserActorCapabilityIssuer,
-      issued: issuedBrowserActorTokens,
-    } = trackIssuedBrowserActorCapabilities(
-      createBridgeBrowserActorCapabilityIssuer({
-        getBridge: () => builtInBrowserBridgeForCapabilities,
-      }),
-      {
-        onRevoke: (chatSessionId) => {
-          // Unconditional: this also cancels an attach still waiting on the
-          // browser's prompt. Detaching a chat that never attached is a no-op.
-          const attachService = userBrowserAttachServiceForRevoke;
-          if (!attachService) return;
-          void Promise.resolve()
-            .then(() => attachService.detach({ chatSessionId }))
-            .catch((error: unknown) => {
-              logger.warn("user_browser.detach_on_chat_end_failed", {
-                chatSessionId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-        },
-      },
-    );
+    // A chat that ends or is deleted lets go of the user's browser (chats and
+    // agent terminals alike); this also cancels an attach still waiting on the
+    // browser's prompt, and detaching a chat that never attached is a no-op.
+    // The attach service is built further down; hence the holder.
+    let userBrowserAttachServiceForRelease: UserBrowserAttachService | null = null;
+    const releaseChatBrowser = (chatSessionId: string): void => {
+      const attachService = userBrowserAttachServiceForRelease;
+      if (!attachService) return;
+      void Promise.resolve()
+        .then(() => attachService.detach({ chatSessionId }))
+        .catch((error: unknown) => {
+          logger.warn("user_browser.detach_on_chat_end_failed", {
+            chatSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    };
 
     const ptyService = createPtyService({
       projectRoot,
@@ -1508,7 +1487,7 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-      browserActorCapabilityIssuer,
+      releaseChatBrowser,
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -1800,6 +1779,65 @@ export async function createAdeRuntime(args: {
     // closure reads at call time. The chat session store lives in agentChatService
     // (getSessionSummary), not in sessionService (which holds terminal sessions).
     const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    // `built_in_browser` is hosted by the desktop's Electron main process (the
+    // browser pane owns a WebContentsView). The runtime daemon proxies calls
+    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+    // individual calls fail clearly. Override the socket path with
+    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+    // ADE home.
+    const builtInBrowserBridgeSocketPath =
+      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+    // Whether the desktop app answers on its bridge, as last probed. The brain
+    // asks for itself rather than waiting to be told: it probes at start, when
+    // a desktop connects, and in the background whenever the answer is older
+    // than DESKTOP_BRIDGE_PROBE_STALE_MS and someone reads it. Browser calls do
+    // not read it at all — each one just dials the socket.
+    // `result` is null until the first probe answers.
+    let desktopBridgeProbe: { result: DesktopBridgeProbe | null; at: number } = { result: null, at: 0 };
+    let desktopBridgeProbeInFlight: Promise<void> | null = null;
+    const DESKTOP_BRIDGE_PROBE_STALE_MS = 10_000;
+    const refreshDesktopBridgeProbe = (): Promise<void> => {
+      if (desktopBridgeProbeInFlight) return desktopBridgeProbeInFlight;
+      desktopBridgeProbeInFlight = probeDesktopBridge({ socketPath: builtInBrowserBridgeSocketPath })
+        .then((result) => {
+          const changed = desktopBridgeProbe.result?.attached !== result.attached;
+          desktopBridgeProbe = { result, at: Date.now() };
+          if (changed) {
+            logger[result.attached ? "info" : "warn"]("built_in_browser_bridge.desktop_probe", {
+              socketPath: builtInBrowserBridgeSocketPath,
+              projectRoot,
+              attached: result.attached,
+              ...(result.attached ? {} : { kind: result.kind, reason: result.reason }),
+            });
+          }
+        })
+        .finally(() => {
+          desktopBridgeProbeInFlight = null;
+        });
+      return desktopBridgeProbeInFlight;
+    };
+    const readDesktopBridgeProbe = (): DesktopBridgeProbe | null => {
+      if (Date.now() - desktopBridgeProbe.at > DESKTOP_BRIDGE_PROBE_STALE_MS) {
+        void refreshDesktopBridgeProbe();
+      }
+      return desktopBridgeProbe.result;
+    };
+    const desktopBridgeAttached = (): boolean => {
+      const probe = readDesktopBridgeProbe();
+      if (probe?.attached === true) return true;
+      // A stale negative result should not win a race with a desktop that has
+      // just connected. The bridge clients are already live, so let the next
+      // operation use them while the fresh probe settles; an actually absent
+      // desktop will still return its normal bridge-unavailable error.
+      return Boolean(probe && desktopBridgeProbeInFlight && desktopBridgeHolder.current);
+    };
+    /** Why the desktop app does not answer; null while it does or before the first probe. */
+    const desktopBridgeUnattachedReason = (): string | null => {
+      const probe = readDesktopBridgeProbe();
+      if (desktopBridgeProbeInFlight) return null;
+      return probe && !probe.attached ? probe.reason : null;
+    };
     // Windows/Linux App Control recording runs in the desktop's encoder, over
     // the desktop bridge. Set once the bridge client exists (below); null
     // while no desktop has attached here, which refuses a screencast start.
@@ -1809,10 +1847,7 @@ export async function createAdeRuntime(args: {
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       /** The desktop's scene previewer, over the same bridge. */
       scenePreview: ScenePreviewer | null;
-      isAttached: () => boolean;
-      /** Why a desktop that tried to attach could not; null otherwise. */
-      unattachedReason: () => string | null;
-    } = { current: null, demoEngine: null, scenePreview: null, isAttached: () => false, unattachedReason: () => null };
+    } = { current: null, demoEngine: null, scenePreview: null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1831,9 +1866,9 @@ export async function createAdeRuntime(args: {
           return chatSession?.laneId ?? null;
         },
         getScreencastRecorder: () =>
-          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.current : null,
+          desktopBridgeAttached() ? desktopBridgeHolder.current : null,
         getChromiumDemoEngine: () =>
-          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
+          desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
@@ -1918,8 +1953,8 @@ export async function createAdeRuntime(args: {
         demoEngines: createDemoEngineSet({
           logger: macDesktopLogger,
           getChromiumDemoEngine: () =>
-            desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
-          getChromiumUnavailableReason: () => desktopBridgeHolder.unattachedReason(),
+            desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
+          getChromiumUnavailableReason: desktopBridgeUnattachedReason,
         }),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
@@ -1959,24 +1994,6 @@ export async function createAdeRuntime(args: {
         }),
       });
     teardown.push(() => macDesktopService?.dispose());
-    // `built_in_browser` is hosted by the desktop's Electron main process (the
-    // browser pane owns a WebContentsView). The runtime daemon proxies calls
-    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
-    // individual calls fail clearly. Override the socket path with
-    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
-    // ADE home.
-    let builtInBrowserBridgeAuthToken: string | null = null;
-    let builtInBrowserBridgeAuthAttempt = 0;
-    /**
-     * Why no desktop app is attached, once one tried and failed. Null while
-     * none has tried (a headless brain) or once one is attached.
-     */
-    let desktopBridgeUnattached: { kind: string; reason: string } | null = null;
-    desktopBridgeHolder.unattachedReason = () =>
-      builtInBrowserBridgeAuthToken ? null : desktopBridgeUnattached?.reason ?? null;
-    const builtInBrowserBridgeSocketPath =
-      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveMachineAdeLayout().desktopBridgeSocketPath;
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
     // attachments, no bridge. Everything else has all three.
     //
@@ -2009,13 +2026,12 @@ export async function createAdeRuntime(args: {
       teardown.push(() => browserSurface.userBrowserAttachService.dispose());
     }
     const userBrowserAttachService = browserSurface?.userBrowserAttachService ?? null;
-    userBrowserAttachServiceForRevoke = userBrowserAttachService;
+    userBrowserAttachServiceForRelease = userBrowserAttachService;
     const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = browserSurface
       ? withUserBrowserAttachment(
         withRemoteBrowserForwarding(
           createBuiltInBrowserDesktopBridgeClient({
             socketPath: builtInBrowserBridgeSocketPath,
-            getAuthToken: () => builtInBrowserBridgeAuthToken,
             projectRoot,
             logger,
           }),
@@ -2024,28 +2040,23 @@ export async function createAdeRuntime(args: {
         browserSurface.userBrowserAttachService,
       )
       : null;
-    builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
     if (appControlService) {
       const appControlRecorderBridge = createAppControlRecorderBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
-        getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
       desktopBridgeHolder.current = appControlRecorderBridge;
       desktopBridgeHolder.demoEngine = createDemoEngineBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
-        getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
       desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
-        getAuthToken: () => builtInBrowserBridgeAuthToken,
       });
-      desktopBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
+      void refreshDesktopBridgeProbe();
       // Released by the teardown step registered before appControlService's.
     }
     teardown.push(() => {
-      builtInBrowserBridgeForCapabilities = null;
       builtInBrowserBridge?.dispose();
     });
 
@@ -2082,11 +2093,8 @@ export async function createAdeRuntime(args: {
     // the in-process App Control service and the desktop browser bridge.
     const workToolsStateService = createWorkToolsStateService({
       projectRoot,
-      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator is
-      // the daemon itself and holds no per-chat actor capability, which every
-      // `BuiltInBrowserService` bridge method requires. `getStatus` here always
-      // failed `policyDenied`, so the Tools pane reported "no desktop attached"
-      // even with ADE Desktop running.
+      // Deliberately `getStatusForRuntime`, not `getStatus`: the aggregator
+      // needs the project-scoped, read-only projection, not one chat's view.
       getBrowserStatus: builtInBrowserBridge
         ? () => builtInBrowserBridge.getStatusForRuntime()
         : null,
@@ -2250,7 +2258,7 @@ export async function createAdeRuntime(args: {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         runtimeBudget: chatRuntimeBudget,
-        browserActorCapabilityIssuer,
+        releaseChatBrowser,
         projectRoot,
         runtimeSocketPath,
         sessionActivityReportingEnabled,
@@ -3426,65 +3434,15 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
-      getScenePreviewer: () => (desktopBridgeHolder.isAttached() ? desktopBridgeHolder.scenePreview : null),
+      getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
       userBrowserAttachService,
-      issuedBrowserActorTokens,
       workToolsStateService,
-      configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
-        if (!builtInBrowserBridge) {
-          logger.warn("built_in_browser_bridge.runtime_auth_no_bridge", {
-            socketPath: builtInBrowserBridgeSocketPath,
-          });
-          return false;
-        }
-        // A newer token supersedes a retry still running for an older one.
-        const attempt = ++builtInBrowserBridgeAuthAttempt;
-        const check = async () => {
-          const result = await checkBuiltInBrowserDesktopBridgeAuth({
-            socketPath: builtInBrowserBridgeSocketPath,
-            authToken,
-          });
-          if (attempt !== builtInBrowserBridgeAuthAttempt) return result;
-          if (result.verified) {
-            builtInBrowserBridgeAuthToken = authToken.trim();
-            desktopBridgeUnattached = null;
-          } else if (!builtInBrowserBridgeAuthToken) {
-            desktopBridgeUnattached = { kind: result.kind, reason: result.reason };
-          }
-          logger[result.verified ? "info" : "warn"]("built_in_browser_bridge.runtime_auth_configured", {
-            socketPath: builtInBrowserBridgeSocketPath,
-            projectRoot,
-            verified: result.verified,
-            ...(result.verified ? {} : { kind: result.kind, reason: result.reason }),
-          });
-          return result;
-        };
-        const first = await check();
-        const verified = first.verified;
-        if (!verified) {
-          // A timeout or a refused connect can be the brain or the desktop
-          // still starting up; a denied pipe or a rejected token cannot.
-          // Retried in the background so `ade/initialize` is not held up.
-          // An older verified token does not end the retry: after a desktop
-          // relaunch that token is stale, and this one is the live desktop's.
-          void (async () => {
-            let last: Awaited<ReturnType<typeof check>> = first;
-            for (const delayMs of [2_000, 10_000, 30_000]) {
-              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
-              if (!last.verified && (last.kind === "access_denied" || last.kind === "rejected")) return;
-              await new Promise<void>((resolve) => {
-                const timer = setTimeout(resolve, delayMs);
-                timer.unref?.();
-              });
-              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
-              last = await check();
-              if (last.verified) return;
-            }
-          })().catch(() => {});
-        }
-        return verified;
+      noteDesktopAppConnected: () => {
+        // A probe already in flight may have started before this desktop was
+        // listening, so ask again once it settles.
+        void (desktopBridgeProbeInFlight ?? Promise.resolve()).then(() => refreshDesktopBridgeProbe());
       },
       eventBuffer,
       isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
