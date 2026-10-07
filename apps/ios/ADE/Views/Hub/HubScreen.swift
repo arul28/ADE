@@ -119,6 +119,14 @@ struct HubScreen: View {
     // A project the machine refused to open says why, instead of the tap
     // looking like it hung on the hub.
     .adeToast($projectOpenFailureToast)
+    // A tap from outside the app that could not land where it pointed lands
+    // here and says why ("Arul's Mac Studio is offline.").
+    .onChange(of: syncService.hubNotice, initial: true) { _, notice in
+      guard let notice else { return }
+      openChatTarget = nil
+      projectOpenFailureToast = ADEToastMessage(text: notice.message, kind: .info)
+      syncService.hubNotice = nil
+    }
     .onChange(of: syncService.projectOpenFailure) { _, failure in
       guard let failure else { return }
       projectOpenFailureToast = ADEToastMessage(

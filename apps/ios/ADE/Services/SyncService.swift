@@ -3221,6 +3221,12 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+/// One notice for the Hub. The id lets the same words show twice in a row.
+struct HubNotice: Equatable, Identifiable {
+  let id = UUID()
+  let message: String
+}
+
 enum WorkSessionNavigationDestination: Equatable {
   case activeWork
   case hub
@@ -4269,7 +4275,13 @@ final class SyncService: ObservableObject {
   /// host confirms that a Cursor API key/OAuth credential is available.
   @Published private(set) var cursorCloudConnectionStatus: CursorCloudConnectionStatus?
   @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
-  @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
+  @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest? {
+    didSet { armWorkSessionNavigationWatchdog() }
+  }
+  /// A short line the Hub shows once: why a tap landed on the Hub instead of
+  /// where it pointed. The Hub consumes it and sets it back to nil.
+  @Published var hubNotice: HubNotice?
+  var workSessionNavigationWatchdog: Task<Void, Never>?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
@@ -4867,6 +4879,72 @@ final class SyncService: ObservableObject {
   func closeProjectHub() {
     guard activeProjectId != nil else { return }
     projectHubPresented = false
+  }
+
+  // MARK: - Taps that cannot land
+
+  /// How long a session link from outside the app (a push, a widget, the Live
+  /// Activity, a deep link) may stay unresolved before the phone stops waiting
+  /// and says why.
+  static let workSessionNavigationTimeout: TimeInterval = 10
+
+  /// Every tap must land somewhere visible. When one cannot reach where it
+  /// pointed, drop the pending request, close the drawer, show the Hub, and
+  /// tell the user why in one line.
+  func landOnHub(notice: String) {
+    if requestedWorkSessionNavigation != nil {
+      requestedWorkSessionNavigation = nil
+    }
+    attentionDrawerPresented = false
+    showProjectHub()
+    hubNotice = HubNotice(message: notice)
+  }
+
+  /// Starts (or stops) the timer for the current session request. Only an
+  /// external request is timed: an in-app producer is already on its machine.
+  func armWorkSessionNavigationWatchdog() {
+    workSessionNavigationWatchdog?.cancel()
+    workSessionNavigationWatchdog = nil
+    guard let request = requestedWorkSessionNavigation, request.origin == .external else { return }
+    workSessionNavigationWatchdog = Task { @MainActor [weak self] in
+      var deadline = Date().addingTimeInterval(Self.workSessionNavigationTimeout)
+      while true {
+        let wait = deadline.timeIntervalSinceNow
+        if wait > 0 {
+          try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+        guard !Task.isCancelled, let self,
+              self.requestedWorkSessionNavigation?.id == request.id else { return }
+        // Never pull the Wake & open prompt away from someone reading it. Wait
+        // for their answer, then give the open a fresh window to finish.
+        guard self.pendingMachineWake != nil else { break }
+        while self.pendingMachineWake != nil {
+          try? await Task.sleep(nanoseconds: 500_000_000)
+          if Task.isCancelled { return }
+        }
+        deadline = Date().addingTimeInterval(Self.workSessionNavigationTimeout)
+      }
+      self?.landOnHub(notice: self?.unresolvedNavigationNotice(for: request) ?? "ADE could not open that chat.")
+    }
+  }
+
+  /// Why a session request did not open, naming the machine when one is known:
+  /// "Arul's Mac Studio is offline."
+  func unresolvedNavigationNotice(for request: WorkSessionNavigationRequest) -> String {
+    let machineKey = navigationMachineKey(
+      rawMachineKey: request.accountMachineKey,
+      sessionId: request.ownerResolutionSessionId
+    )
+    guard let machineKey,
+          let machine = AccountService.shared.machines.first(where: { $0.machineKey == machineKey })
+    else {
+      return "ADE could not open that chat."
+    }
+    let name = machine.displayName
+    if accountMachineIsCurrent(machineKey) {
+      return "ADE could not find that chat on \(name)."
+    }
+    return machine.online ? "ADE could not reach \(name)." : "\(name) is offline."
   }
 
   func applyIncomingProjectHostSnapshot(_ snapshot: SyncHostReadinessSnapshot?, retriesExhausted: Bool = false) {

@@ -190,6 +190,20 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .retryPrChecks: mapped = .retryPrChecks
     }
     guard let sync = SyncService.shared else { return }
+    // An account push names the machine that asked. Approve or deny THAT
+    // machine's request, never whichever host happens to be focused: connect to
+    // it first, and send nothing if it cannot be reached.
+    if let machineKey = (payload["accountMachineKey"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !machineKey.isEmpty,
+      !sync.accountMachineIsCurrent(machineKey) {
+      guard await sync.ensureAccountMachineForNavigation(machineKey) else {
+        let name = AccountService.shared.machines
+          .first { $0.machineKey == machineKey }?.displayName ?? "That computer"
+        sync.landOnHub(notice: "\(name) is not reachable. Nothing was sent.")
+        return
+      }
+    }
     // A notification action or Live Activity button can background-launch the
     // app before the sync socket is up; these commands are not queueable
     // (approving a stale item later would be wrong), so give the socket a
