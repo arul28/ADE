@@ -3905,7 +3905,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     // inside an expander <button> the moment the first tool entry lands. That
     // swap remounts the timer <span>, so a timer that captured the element once
     // would keep writing into the detached node and freeze on screen at "0s"
-    // while "taking longer than usual" still appears — the reported bug.
+    // instead of ticking — the reported bug.
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-17T10:00:00.000Z"));
     try {
