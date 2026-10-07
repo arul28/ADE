@@ -793,9 +793,9 @@ apps/ios/
 │   │   │                            #   collapsible local-lane offer, description),
 │   │   │                            # PrGitHubDescriptionParser (safe embedded
 │   │   │                            #   HTML → Markdown/native disclosures),
-│   │   │                            # PrMergeGateCard (PrGlassPalette tokens),
-│   │   │                            # PrHelpers, PrModels, PrRowCard,
-│   │   │                            # PrListRowModifier,
+│   │   │                            # PrMergeGateCard,
+│   │   │                            # PrHelpers, PrModels, PrRowCard (GitHub
+│   │   │                            #   state colours: prStateColor/PrStatePill),
 │   │   │                            # PrWorkflowCards, PrStackSheet,
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
@@ -3897,16 +3897,13 @@ contexts in `checksMissingRequired` render as dimmed ghost rows in the check
 list, matching desktop. See
 [pull-requests](../pull-requests/README.md#checks-rollup-what-counts-as-a-pass).
 
-**Palette.** The PR surfaces use `PrGlassPalette` (in `PrMergeGateCard.swift`)
-and `PrsGlass` (in `PrListRowModifier.swift`), which are now flat and
-adaptive light/dark and map to the desktop CSS tokens: `ink` =
-`--pr-surface` (rgb 15,16,16 in dark / 245,243,240 in light), `threadCard` =
-`--pr-thread-card` (rgb 23,23,24 dark), `panelCard` = `--pr-panel-card` (rgb
-24,23,43 dark, faint violet). `prGlassCard` is a flat fill + hairline border
-+ small drop shadow (no materials, blur, or blend modes), and
-`prLiquidGlassBackdrop()` is a flat surface color (`PrGlassPalette.ink`) —
-the previous stacked radial-gradient / `.plusLighter` backdrop was dropped
-because it forced expensive re-compositing under every scroll frame.
+**Palette.** The PR surfaces use the iOS surface kit (`ADEKit.swift`, see
+[visual language](../../design/visual-language.md#ios)): kit cards, rows and
+buttons on the page background, no materials, blur or glow. State colour is
+GitHub's own (open `#3fb950`, merged `#a371f7`, closed `#f85149`) through
+`prStateColor`, `PrStateIcon` and `PrStatePill` in `PrRowCard.swift`; CI is a
+coloured dot. Only controls that float over content (the next-step bar, the
+reply box, file-diff navigation) keep a glass surface.
 
 **Freshness.** `PrDetailView` re-fetches its action sidecars (review threads,
 activity feed, action runs, deployments, capabilities) on a task keyed by both
@@ -4089,9 +4086,9 @@ the stats and shows update guidance.
   `WorkModelPickerSheet` pointing at the paired machine, not a catalog block.
   Anything that widens what the host puts in this payload has to be weighed
   against the phone decoding and rendering all of it.
-- **Long model lists must be lazy on the phone.** `WorkNewChatSheet`'s model
-  section uses a `LazyVStack`: each row materializes two `RoundedRectangle`s and a
-  `.glassEffect` layer, and an eager `VStack` builds every one synchronously the
+- **Long model lists must be lazy on the phone.** The model picker
+  (`WorkModelPickerSheet`) lists models in a `LazyVStack`: an eager `VStack`
+  builds every row synchronously the
   moment a provider is picked. This stays load-bearing even with the host scoped
   to connected providers — a single connected provider such as `openrouter` or
   `github-copilot` still lists hundreds of models.

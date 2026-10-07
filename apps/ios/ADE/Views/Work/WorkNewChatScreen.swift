@@ -633,8 +633,7 @@ enum WorkNewChatHeaderTier: Int, Comparable {
   }
 }
 
-/// Full-screen "Start a new conversation" composer that replaces the modal
-/// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
+/// Full-screen "Start a new conversation" composer. Mirrors the desktop welcome screen: big ADE word-mark,
 /// one-line tagline, a minimal workspace pill users can change inline, and a
 /// prominent composer anchored at the bottom. Sending fires the host create
 /// call and immediately pushes the new session route on top of the current

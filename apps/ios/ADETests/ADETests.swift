@@ -9519,6 +9519,80 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(roundTripped.remoteDbVersionBySite?["b00e9b92c864a27958669c1595fcb2c3"], 4_120)
   }
 
+  /// A rebuilt profile (each hello, each project switch) keeps the machine's
+  /// per-project cursors, or every switch replays the project's whole history;
+  /// but never another machine's cursors.
+  func testRebuiltProfileCarriesOnlyTheSameMachinesProjectCursors() {
+    func profile(identity: String?, bySite: [String: Int]?) -> HostConnectionProfile {
+      var value = HostConnectionProfile(
+        hostIdentity: identity,
+        port: 8787,
+        authKind: "paired",
+        pairedDeviceId: "phone",
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: identity,
+        lastSuccessfulAddress: "192.168.1.2",
+        savedAddressCandidates: [],
+        discoveredLanAddresses: [],
+        tailscaleAddress: nil
+      )
+      value.remoteDbVersionBySite = bySite
+      return value
+    }
+    let cursors = ["site-a": 4_120, "site-b": 77]
+    let studio = profile(identity: "Studio-ID", bySite: cursors)
+
+    XCTAssertEqual(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: "studio-id"), cursors)
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: "windows-id"))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: studio, helloHostIdentity: nil))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: profile(identity: nil, bySite: cursors), helloHostIdentity: "studio-id"))
+    XCTAssertNil(syncCarriedRemoteDbVersionBySite(from: nil, helloHostIdentity: "studio-id"))
+  }
+
+  /// A chat on another machine renders its composer from its roster row: the
+  /// provider and model are real, the access mode is unknown and not shown.
+  func testRosterChatSummaryNamesProviderAndModelButNoAccessMode() throws {
+    var chat = RemoteRosterChat(id: "chat-1", laneId: "lane-1", status: .running)
+    chat.provider = "claude"
+    chat.model = "claude-sonnet-5"
+    chat.title = "Fix the bug"
+    let summary = try XCTUnwrap(chat.rosterChatSummary)
+    XCTAssertEqual(summary.provider, "claude")
+    XCTAssertEqual(summary.model, "claude-sonnet-5")
+    XCTAssertEqual(summary.status, "active")
+    let context = WorkChatSummaryRenderContext(summary)
+    XCTAssertTrue(context.isAvailable)
+    XCTAssertFalse(context.accessModeKnown, "A stand-in summary must not claim an access mode.")
+
+    var toolOnly = RemoteRosterChat(id: "chat-2", laneId: "lane-1", status: .idle)
+    toolOnly.toolType = "codex-chat"
+    let fallback = try XCTUnwrap(toolOnly.rosterChatSummary)
+    XCTAssertEqual(fallback.provider, "codex")
+    XCTAssertEqual(fallback.model, "")
+
+    XCTAssertNil(RemoteRosterChat(id: "chat-3", laneId: "lane-1", status: .idle).rosterChatSummary)
+  }
+
+  /// Forgetting a machine hides it only while the account shows it offline: a
+  /// desktop that never sleeps used to stay hidden for good.
+  @MainActor
+  func testHiddenMachineReturnsWhenTheAccountShowsItOnline() {
+    let store = HiddenMachineStore.shared
+    store.setAccountScope("test-\(UUID().uuidString)")
+    defer { store.setAccountScope(nil) }
+
+    store.hide(identity: "windows-id")
+    store.hide(identity: "laptop-id")
+    XCTAssertTrue(store.isHidden(identity: "WINDOWS-ID"))
+
+    store.reconcile(accountMachines: [(identity: "windows-id", online: true), (identity: "laptop-id", online: false)])
+    XCTAssertFalse(store.isHidden(identity: "windows-id"))
+    XCTAssertTrue(store.isHidden(identity: "laptop-id"), "An offline machine stays hidden.")
+
+    store.reconcile(accountMachines: [(identity: "laptop-id", online: true)])
+    XCTAssertFalse(store.isHidden(identity: "laptop-id"))
+  }
+
   func testDatabaseBootstrapAcceptsDesktopPromptStashChanges() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
