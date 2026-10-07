@@ -26,6 +26,9 @@
  * - A retry resends the stored capsule only while it still matches the chat.
  *   A stale `failed` move is prepared again under a new handoffId; a stale
  *   `unknown` one is refused, because the first capsule may already have landed.
+ *   Only a real mismatch (`CrossMachineSourceStaleError`) is stale: when the
+ *   check itself fails, a retry changes nothing and a restart parks the move
+ *   as `unknown`, keeping its capsule.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -154,7 +157,7 @@ export type CrossMachineHandoffOrchestratorDeps = {
   /** Every chat with a persisted move, for the startup sweep. */
   listPersisted: () => Array<{ sessionId: string; value: CrossMachineHandoffPersisted }>;
   inspectSource: (sessionId: string) => Promise<CrossMachineSourceInspection>;
-  /** False once the chat is deleted: a move on it is no longer written. */
+  /** False once the chat is deleted: its move is cleared (row and outbox), not written or announced. */
   chatExists?: (sessionId: string) => boolean;
   /** User message ids and steer ids already in the chat; only newer ones cancel a queued move. */
   listUserMessageIds: (sessionId: string) => string[];
@@ -255,14 +258,30 @@ export function crossMachineAgentTargetPermissions(
   const provider = resolveProviderGroupForModel(descriptor);
   // The source reads an unreadable posture as `ask` (sessionPermissionLevel).
   const level: PermissionLevel = isPermissionLevel(sourceLevel) ? sourceLevel : "ask";
-  const applied = resolvePermissionLevel(
+  let applied = resolvePermissionLevel(
     level,
     provider === "opencode" ? "opencode" : provider === "cursor" ? "cursor" : undefined,
   ).level;
+  // Kimi refuses auto-edit at launch and Copilot quietly runs it as ask; both
+  // step down to ask so the label says what the chat will actually do.
+  if (applied === "auto-edit" && ACP_PROVIDERS_WITHOUT_AUTO_EDIT.has(provider)) applied = "ask";
   // interactionMode is the session's own field, not a move field.
   const { interactionMode: _interaction, ...fields } = permissionFieldsForLevel(provider, applied);
-  return { fields, label: permissionLevelLabel(applied) };
+  // The generic word for the same level too: a destination that doesn't read
+  // the provider's own field (an older ADE, or a provider that maps from the
+  // generic one) must not fall back to the source chat's broader setting.
+  return { fields: { ...fields, permissionMode: GENERIC_PERMISSION_MODE_BY_LEVEL[applied] }, label: permissionLevelLabel(applied) };
 }
+
+const ACP_PROVIDERS_WITHOUT_AUTO_EDIT: ReadonlySet<string> = new Set(["kimi", "copilot"]);
+
+/** ADE's generic composer word for each level (mirrors permissionLadder's own table). */
+const GENERIC_PERMISSION_MODE_BY_LEVEL: Record<PermissionLevel, "plan" | "default" | "edit" | "full-auto"> = {
+  plan: "plan",
+  ask: "default",
+  "auto-edit": "edit",
+  "full-auto": "full-auto",
+};
 
 /** A first lane import plus provider start over a slow link. */
 const ACCEPT_TIMEOUT_MS = 180_000;
@@ -294,11 +313,42 @@ function unwrapActionResult(value: unknown): unknown {
   return current;
 }
 
+/**
+ * The chat no longer matches a prepared capsule (branch, commit, origin, files,
+ * model, or newer chat activity). Only these mismatches mean "stale"; any
+ * other failure of the source check (git unreachable, a blocker, a corrupt
+ * capsule) says nothing about whether the capsule still describes the chat.
+ */
+export class CrossMachineSourceStaleError extends Error {
+  readonly code = "source_stale" as const;
+}
+
+export function isCrossMachineSourceStaleError(error: unknown): boolean {
+  return error instanceof CrossMachineSourceStaleError
+    || (error instanceof Error && (error as { code?: unknown }).code === "source_stale");
+}
+
 /** The chat changed after a capsule that may have landed was sent. */
 class StaleCapsuleError extends Error {
   constructor(machineName: string) {
     super(
       `This chat changed after the move was sent. Open ${machineName} to check whether it arrived; if it didn't, dismiss this move and start a new one.`,
+    );
+  }
+}
+
+/** After a restart the source check itself failed, so the stored capsule was neither resent nor dropped. */
+class UncheckedCapsuleError extends Error {
+  constructor(reason: string) {
+    super(`ADE couldn't check this chat after a restart: ${reason.replace(/[.\s]+$/, "")}. Retry when it's reachable.`);
+  }
+}
+
+/** The destination answered acceptance in a shape ADE can't read; it may hold the chat. */
+class UnreadableAcceptError extends Error {
+  constructor(machineName: string) {
+    super(
+      `${machineName} answered without the new chat. It may already be there; open ${machineName} to check, then retry or dismiss this move.`,
     );
   }
 }
@@ -335,11 +385,24 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       request: persisted.request,
       record: { ...persisted.record, ...patch, updatedAt: now() },
     };
-    // A chat deleted mid-move has nowhere to keep its move; writing would
-    // leave an orphan row the startup sweep keeps resuming.
-    if (deps.chatExists && !deps.chatExists(sessionId)) return next;
+    // A chat deleted mid-move has nowhere to keep its move: clear its row and
+    // its capsule, or the startup sweep would keep finding (and resuming) it.
+    if (!chatExists(sessionId)) {
+      forgetMove(sessionId, [persisted.record.handoffId, next.record.handoffId]);
+      return next;
+    }
     deps.writePersisted(sessionId, next);
     return next;
+  };
+
+  const chatExists = (sessionId: string): boolean => !deps.chatExists || deps.chatExists(sessionId);
+
+  /** Drop a deleted chat's move: its row and every capsule it could resend. */
+  const forgetMove = (sessionId: string, handoffIds: string[]): void => {
+    deps.writePersisted(sessionId, null);
+    for (const handoffId of new Set(handoffIds)) deps.outbox.remove(handoffId);
+    knownUserMessages.delete(sessionId);
+    deps.logger.info("agent_chat.cross_machine_handoff_chat_gone", { sessionId, handoffIds: [...new Set(handoffIds)] });
   };
 
   const end = (
@@ -351,6 +414,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   ): AgentChatCrossMachineHandoffRecord => {
     const next = write(sessionId, persisted, { state, reason });
     knownUserMessages.delete(sessionId);
+    // A deleted chat: `write` already dropped the move and its capsule, and
+    // there is no transcript to note it in and no chat to tell anyone about.
+    if (!chatExists(sessionId)) return next.record;
     // Keep the sent capsule only while the destination may hold this move:
     // a retry then resends it and the destination reconciles.
     if (state !== "unknown" && !options.acceptanceStarted) deps.outbox.remove(next.record.handoffId);
@@ -799,9 +865,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         // that changed since is not resent and not re-prepared either.
         try {
           await validateStored(sessionId, persisted, prepared);
-        } catch {
+        } catch (error) {
           acceptanceStarted = true;
-          throw new StaleCapsuleError(persisted.record.targetMachineName);
+          if (isCrossMachineSourceStaleError(error)) throw new StaleCapsuleError(persisted.record.targetMachineName);
+          // The check itself failed (git, the lane): nothing is known about the
+          // chat, so nothing is resent. Keep the capsule for a retry.
+          throw new UncheckedCapsuleError(errorText(error));
         }
       }
       if (prepared) {
@@ -849,7 +918,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       try {
         accepted = decodeAcceptCrossMachineHandoffResult(unwrapActionResult(response.result));
       } catch {
-        throw new Error(`${persisted.record.targetMachineName} answered without the new chat.`);
+        // The destination answered, but not in a shape ADE can read: it may
+        // have made the lane and chat. Keep the capsule; a retry reconciles.
+        throw new UnreadableAcceptError(persisted.record.targetMachineName);
       }
       persisted = checkpoint(sessionId, persisted, "accepted", {
         targetLaneId: accepted.laneId,
@@ -896,12 +967,16 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         reusedLane: accepted.reusedLane,
         reusedSession: accepted.reusedSession,
       });
-      if (persisted.record.requestedBy === "agent" || persisted.request.queued) {
+      if ((persisted.record.requestedBy === "agent" || persisted.request.queued) && chatExists(sessionId)) {
         deps.notifyPerson?.(sessionId, persisted.record, deps.getSource(sessionId)?.title ?? null);
       }
     } catch (error) {
       const current = deps.readPersisted(sessionId) ?? persisted;
-      if (error instanceof StaleCapsuleError) {
+      if (
+        error instanceof StaleCapsuleError
+        || error instanceof UncheckedCapsuleError
+        || error instanceof UnreadableAcceptError
+      ) {
         end(sessionId, current, "unknown", error.message, { acceptanceStarted: true });
         return;
       }
@@ -949,15 +1024,22 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     let patch: Partial<AgentChatCrossMachineHandoffRecord> = {};
     if (stored) {
       let stale = false;
+      let checkError: unknown = null;
       try {
         await validateStored(sourceSessionId, persisted, stored);
-      } catch {
-        stale = true;
+      } catch (error) {
+        if (isCrossMachineSourceStaleError(error)) stale = true;
+        else checkError = error;
       }
       // The check awaited: take the record as it is now.
       const latest = deps.readPersisted(sourceSessionId);
       if (!latest || latest.record.handoffId !== oldId || latest.record.state !== persisted.record.state) {
         return latest?.record ?? persisted.record;
+      }
+      // The check itself failed: whether the capsule still matches is
+      // unknown, so neither resend it nor prepare a new one. Nothing changes.
+      if (checkError) {
+        throw new Error(`Couldn't check the chat before retrying: ${errorText(checkError)}`);
       }
       if (stale && persisted.record.state === "unknown") {
         throw new StaleCapsuleError(persisted.record.targetMachineName);
@@ -1027,6 +1109,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   const sweep = (): void => {
     if (!deps.transport()) return;
     for (const { sessionId, value } of deps.listPersisted()) {
+      // A chat deleted while its move was saved: drop the move, never run it.
+      if (!chatExists(sessionId)) {
+        forgetMove(sessionId, [value.record.handoffId]);
+        continue;
+      }
       if (value.record.state === "sending") {
         void run(sessionId);
       } else if (value.record.state === "pending" && !deps.getSource(sessionId)?.turnActive) {

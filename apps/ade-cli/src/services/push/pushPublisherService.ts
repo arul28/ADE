@@ -1867,7 +1867,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const failed = readOutcomeCount(result, "failed");
       const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
-        pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+        // Only what this publish carried goes back. Alerts the account
+        // Activity already published, or that had no phone to reach, were not
+        // sent here; requeueing them would publish them again next flush.
+        const attemptedAlerts = new Set<PendingAlert>();
+        for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
+        pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();

@@ -49,8 +49,8 @@ session summary as `crossMachineHandoff`. Live clients also get a live-only
 | `pending` | Waiting for the current turn to end. Any newer user message cancels it, because new instructions win. |
 | `sending` | In flight. `checkpoint` names the last step passed: `prepared`, `destination_ready`, `accepted`, `marked`. |
 | `continued` | The destination chat started. The source stays usable (see below). |
-| `failed` | A step failed before the destination accepted. `reason` says which. |
-| `unknown` | The destination may have accepted but the answer was lost. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
+| `failed` | A step failed, or the destination refused the capsule. `reason` says which. A destination that fails after it already created the lane can leave that lane behind; ADE does not delete it, and a later move to that machine reports it as a blocker there rather than silently making a second chat. |
+| `unknown` | The destination may have accepted but ADE can't tell: the answer was lost, the answer came back without the new lane and chat, or a restart couldn't check the chat before resending. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
 | `cancelled` | The person kept it here, denied the agent, sent a new message, or dismissed an `unknown` move. |
 
 The record is written before each step runs. The moment acceptance is about
@@ -67,7 +67,14 @@ branch, commit, working tree (for a move with changes), origin and model, and
 no chat activity since it was prepared. The move's own durable notes don't
 count as activity: a `system_notice` whose status starts with
 `cross_machine_handoff_` (a failed attempt's notice) and the approval card
-(`cross-machine-move-approval:<handoffId>`). When the capsule is stale:
+(`cross-machine-move-approval:<handoffId>`). Only these mismatches count as
+stale (`CrossMachineSourceStaleError`, code `source_stale`). When the check
+itself fails (git unreachable, a source blocker, a corrupt capsule), nothing
+is known about the capsule, so nothing changes: a retry answers "Couldn't
+check the chat before retrying: <reason>" and leaves the record and outbox as
+they were, and a restart ends a `sending` move `unknown` ("ADE couldn't check
+this chat after a restart: <reason>. Retry when it's reachable.") with its
+outbox kept. When the capsule is stale:
 
 - a `failed` move (the destination refused it, so nothing landed) drops the
   outbox and prepares again under a **new** `handoffId`, keeping `continuedOn`
@@ -91,8 +98,10 @@ On startup the brain sweeps the `kv` prefix: a `sending` move resumes (the
 destination transaction is idempotent by `handoffId`), and a `pending` move
 whose turn already ended starts. Only a brain with a transport sweeps (an
 embedded guest has none), so a runtime never fails a move it cannot run.
-Deleting a chat clears its move, and a step that finishes after the chat was
-deleted writes nothing. A brain that loses its transport mid-move ends it
+Deleting a chat clears its move: a step that finishes after the chat was
+deleted clears the `kv` row and the outbox instead of writing, posts no
+transcript notice and no phone notification, and the startup sweep drops moves
+whose chat no longer exists without running them. A brain that loses its transport mid-move ends it
 `failed` but keeps the outbox when acceptance may have started.
 
 A move counts as lost only when the request may have reached the destination:
@@ -123,8 +132,15 @@ because an agent's shell looks the same as a person's terminal.
   provider with `permissionFieldsForLevel`. A provider that can't express the
   level steps down the ladder (`resolvePermissionLevel`), never up, so a Claude
   chat at "ask before changes" moving to Codex runs there at Codex's
-  ask-level sandbox and approval policy. The record's `targetPermissionLabel`
-  names the level actually applied, and the approval card says it.
+  ask-level sandbox and approval policy. Kimi and Copilot can't run
+  auto-accept edits, so it steps down to ask there. The generic
+  `permissionMode` for the same level always travels too, so a destination
+  that ignores the provider's own field can't fall back to the source's
+  broader one. An ACP model's `acpPermissionMode` rides the capsule's
+  `target` (validated against the five ACP modes) into the new chat; the
+  machine-local `acpConfigSnapshot` never does. The record's
+  `targetPermissionLabel` names the level actually applied, and the approval
+  card says it.
   `adeRpcServer` and automation rules only force `requestedBy: "agent"`.
 - **Approval.** An agent-requested move on a chat whose permission level is not
   `full-auto` waits in `awaiting_approval`, with a transcript card recording

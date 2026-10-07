@@ -737,6 +737,7 @@ import {
 } from "./handoffGitBundle";
 import {
   CROSS_MACHINE_MOVE_APPROVAL_CARD_PREFIX,
+  CrossMachineSourceStaleError,
   createCrossMachineHandoffOrchestrator,
   describeCrossMachineBlockers,
   type CrossMachineHandoffOrchestrator,
@@ -41336,6 +41337,7 @@ export function createAgentChatService(args: {
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     opencodePermissionMode: requestedOpenCodePermissionModeArg,
+    acpPermissionMode: requestedAcpPermissionModeArg,
     instanceId: requestedInstanceId,
     presetId: requestedPresetId,
     credentialId: requestedCredentialId,
@@ -41818,10 +41820,19 @@ export function createAgentChatService(args: {
           permissionMode: effectivePermissionMode ?? chatConfig.piPermissionMode,
         };
       }
+      // An ACP chat's own mode outranks the generic one it would otherwise be
+      // read from; inside this object so the ceiling below clamps it too.
+      const requestedAcpPermissionMode = !permissionsPinned
+        && isAcpChatProvider(effectiveProvider)
+        && requestedAcpPermissionModeArg
+        && ACP_PERMISSION_MODES.includes(requestedAcpPermissionModeArg)
+        ? requestedAcpPermissionModeArg
+        : undefined;
       return {
         opencodePermissionMode: requestedOpenCodePermissionMode
           ?? legacyPermissionModeToOpenCodePermissionMode(effectivePermissionMode)
           ?? chatConfig.opencodePermissionMode,
+        ...(requestedAcpPermissionMode ? { acpPermissionMode: requestedAcpPermissionMode } : {}),
       };
       })();
       // A spawned chat never runs with more freedom than the chat that spawned
@@ -42722,6 +42733,16 @@ export function createAgentChatService(args: {
     if (capsule.target.cursorModeId != null) {
       assertPortableText(capsule.target.cursorModeId, 200, "target Cursor mode");
     }
+    if (
+      capsule.target.acpPermissionMode != null
+      && !ACP_PERMISSION_MODES.includes(capsule.target.acpPermissionMode)
+    ) {
+      throw new Error("The handoff capsule has an invalid target permission mode.");
+    }
+    // Machine-local ACP agent configuration, like Cursor's, stays on its machine.
+    if (capsule.target.acpConfigSnapshot != null) {
+      throw new Error("Machine-local ACP configuration cannot be included in a handoff capsule.");
+    }
     const artifactLists = [capsule.artifacts?.fileChanges, capsule.artifacts?.commands, capsule.artifacts?.errors];
     if (artifactLists.some((entries) =>
       !Array.isArray(entries)
@@ -43229,6 +43250,10 @@ export function createAgentChatService(args: {
     const targetOpenCodePermissionMode = args.opencodePermissionMode || managed.session.opencodePermissionMode;
     const targetDroidPermissionMode = args.droidPermissionMode || managed.session.droidPermissionMode;
     const targetPermissionMode = args.permissionMode || managed.session.permissionMode;
+    // An ACP chat reads its own mode before the generic one, so the source's
+    // latched mode only travels when the caller didn't choose a generic one.
+    const targetAcpPermissionMode = args.acpPermissionMode
+      || (args.permissionMode ? undefined : managed.session.acpPermissionMode);
     const targetCursorModeId = args.cursorModeId !== undefined
       ? args.cursorModeId
       : managed.session.cursorModeId;
@@ -43258,6 +43283,7 @@ export function createAgentChatService(args: {
         ...(targetOpenCodePermissionMode ? { opencodePermissionMode: targetOpenCodePermissionMode } : {}),
         ...(targetDroidPermissionMode ? { droidPermissionMode: targetDroidPermissionMode } : {}),
         ...(targetPermissionMode ? { permissionMode: targetPermissionMode } : {}),
+        ...(targetAcpPermissionMode ? { acpPermissionMode: targetAcpPermissionMode } : {}),
         ...(targetCursorModeId !== undefined ? { cursorModeId: targetCursorModeId } : {}),
         // Cursor config values are machine-local and may contain private
         // runtime configuration. The destination resolves its own settings.
@@ -43324,7 +43350,7 @@ export function createAgentChatService(args: {
       managed.session.provider !== args.capsule.source.provider
       || managed.session.model !== args.capsule.source.model
     ) {
-      throw new Error("The source chat model changed after the handoff was prepared. Review the handoff again.");
+      throw new CrossMachineSourceStaleError("The source chat model changed after the handoff was prepared. Review the handoff again.");
     }
     const gitBundle = args.capsule.gitBundle;
     // The move's own choice: one that asked for changes but had none to carry
@@ -43336,7 +43362,7 @@ export function createAgentChatService(args: {
       || current.headSha !== args.capsule.source.headSha
       || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(args.capsule.source.originUrl)
     ) {
-      throw new Error("The source branch changed after the handoff was prepared. Run the checks again before sending.");
+      throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
     if (includeChanges) {
       // Re-pack-free check: the working tree must still be what travels (the
@@ -43354,9 +43380,10 @@ export function createAgentChatService(args: {
           changedMessage,
         );
       } catch {
-        throw new Error(changedMessage);
+        // Reading failed: that says nothing about whether the files changed.
+        throw new Error("ADE couldn't read the source lane's files to compare them with the prepared handoff.");
       }
-      if (!currentTree || currentTree !== preparedTree) throw new Error(changedMessage);
+      if (!currentTree || currentTree !== preparedTree) throw new CrossMachineSourceStaleError(changedMessage);
       if (!gitBundle && current.remoteHeadSha !== current.headSha) {
         throw new Error("Publish this branch so origin has the current commit, then hand off again.");
       }
@@ -43386,7 +43413,7 @@ export function createAgentChatService(args: {
       return true;
     });
     if (hasNewChatActivity) {
-      throw new Error("The source chat changed after the handoff brief was prepared. Go back and prepare a fresh handoff.");
+      throw new CrossMachineSourceStaleError("The source chat changed after the handoff brief was prepared. Go back and prepare a fresh handoff.");
     }
   };
 
@@ -44135,6 +44162,7 @@ export function createAgentChatService(args: {
         opencodePermissionMode: capsule.target.opencodePermissionMode,
         droidPermissionMode: capsule.target.droidPermissionMode,
         permissionMode: capsule.target.permissionMode,
+        acpPermissionMode: capsule.target.acpPermissionMode,
         cursorModeId: capsule.target.cursorModeId,
         cursorConfigValues: capsule.target.cursorConfigValues,
         surface: "work",

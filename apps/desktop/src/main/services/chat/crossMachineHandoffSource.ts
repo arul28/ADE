@@ -126,7 +126,10 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
         fixHint: null,
       });
     }
-    const branchRef = await gitText(["symbolic-ref", "--short", "HEAD"]);
+    // The full ref, stripped here: `--short` turns a branch that shares its
+    // name with a tag into `heads/<name>`, which no other machine has.
+    const headRef = await gitText(["symbolic-ref", "--quiet", "HEAD"]);
+    const branchRef = headRef?.startsWith("refs/heads/") ? headRef.slice("refs/heads/".length) || null : null;
     const headSha = await gitText(["rev-parse", "HEAD"]);
     const status = await deps.runGit(["status", "--porcelain=v1"], { cwd, timeoutMs: 15_000 });
     if (status.exitCode !== 0) {

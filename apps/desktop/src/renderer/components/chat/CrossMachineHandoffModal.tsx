@@ -430,6 +430,18 @@ export function CrossMachineHandoffModal({
     "Updating the branch…",
     (pin) => window.ade.git.pull({ laneId: sourceLaneId }, pin),
   ), [runBranchFix, sourceLaneId]);
+  /**
+   * A move whose answer was lost blocks new ones; the same Retry and Dismiss
+   * as the banner, on the chat's own brain, then the options again.
+   */
+  const retryUnknownMove = useCallback(() => runBranchFix(
+    "Retrying the move…",
+    (pin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId }, pin),
+  ), [runBranchFix, sourceSessionId]);
+  const dismissUnknownMove = useCallback(() => runBranchFix(
+    "Dismissing the move…",
+    (pin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId }, pin),
+  ), [runBranchFix, sourceSessionId]);
 
   if (!open) return null;
 
@@ -448,6 +460,10 @@ export function CrossMachineHandoffModal({
     }
     if (blocker.id === "behind") {
       fixes.push({ label: "Update branch", onFix: () => void updateBranch(), busy: busyNow });
+    }
+    if (blocker.id === "move_unknown") {
+      fixes.push({ label: "Retry", onFix: () => void retryUnknownMove(), busy: busyNow });
+      fixes.push({ label: "Dismiss", onFix: () => void dismissUnknownMove(), busy: busyNow });
     }
     if (blocker.clearedByIncludeChanges) fixes.push(bringAlong);
     return fixes;

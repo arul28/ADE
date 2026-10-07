@@ -127,7 +127,8 @@ struct WorkSessionHandoffMenu: View {
           }
         }
       } else {
-        if move.state == .unknown, crossMachineRetryAvailable {
+        // Failed moves retry too, like the card above the composer and desktop.
+        if move.state == .unknown || move.state == .failed, crossMachineRetryAvailable {
           Button {
             onHandoff(session, .retryMove)
           } label: {

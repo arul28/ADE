@@ -8994,7 +8994,7 @@ export function AgentChatPane({
   /**
    * Applies a chat's move record from wherever it came (a live event, an
    * action's answer). They arrive in any order, so a late older record never
-   * replaces a newer one.
+   * replaces a newer one; an explicit null clears it.
    */
   const applyCrossMachineHandoffRecord = useCallback((
     sessionId: string,
@@ -9005,7 +9005,9 @@ export function AgentChatPane({
       const next = prev.map((session) => {
         if (session.sessionId !== sessionId) return session;
         const current = session.crossMachineHandoff ?? null;
-        const kept = pickNewerCrossMachineHandoffRecord(current, record);
+        // An explicit null is the brain clearing the move (dismissed, or its
+        // chat's move dropped); only a real record competes on recency.
+        const kept = record === null ? null : pickNewerCrossMachineHandoffRecord(current, record);
         if (kept === current) return session;
         changed = true;
         return { ...session, crossMachineHandoff: kept };
