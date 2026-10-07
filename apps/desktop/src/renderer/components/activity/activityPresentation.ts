@@ -25,9 +25,8 @@ import {
 } from "../../../shared/sessionStatusPresentation";
 
 /**
- * The tone vocabulary itself moved to `shared/types/attention.ts` — the native
- * notch protocol carries it on the wire, so the main process has to name it
- * too. Its meanings, and the reason `violet` and `cyan` exist at all, are
+ * The tone vocabulary itself lives in `shared/types/attention.ts`, beside the
+ * item contract that carries it. Its meanings, and the reason `violet` and `cyan` exist at all, are
  * documented there. Exactly one phase in this module is amber: `needs_you`.
  */
 export type { AttentionTone };

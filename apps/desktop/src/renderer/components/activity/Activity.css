@@ -588,7 +588,7 @@ button.activity-pane-freshness {
 }
 
 /* The glyph, not a dot: a dot repeats the hue, a glyph says what the hue
-   means. One vocabulary with the notch strip and the iOS rows. */
+   means. One vocabulary with the iOS rows. */
 .activity-section-glyph {
   display: inline-flex;
   flex-shrink: 0;
