@@ -425,6 +425,20 @@ function launchdSpawnLogPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan {
   };
 }
 
+/**
+ * The job's line in launchd's disabled list. A disabled job is one `launchctl
+ * load` quietly refuses (exit 0, nothing registered), so a report that shows
+ * the job "not present" needs this line to say why.
+ */
+function launchdDisabledEntry(serviceName: string, run: DiagnosticCommandRunner): DiagnosticLogTail {
+  const domain = `gui/${currentUid()}`;
+  const display = `launchctl print-disabled ${domain}`;
+  const answer = run("launchctl", ["print-disabled", domain]);
+  if (!answer || answer.status !== 0) return { label: "launchd disabled list", path: display, error: "(could not be read)" };
+  const line = answer.stdout.split("\n").find((entry) => entry.includes(`"${serviceName}"`));
+  return { label: "launchd disabled list", path: display, text: line?.trim() || "(not listed)" };
+}
+
 const LAUNCHD_ON_DEMAND_ONLY_PATTERN = /on-demand-only mode/i;
 
 /**
@@ -572,6 +586,7 @@ function collectServiceDefinition(args: {
       readCommandOutput("launchd job", print.display, print.command, print.args, args.run, {
         maxBytes: SERVICE_DEFINITION_MAX_BYTES,
       }),
+      launchdDisabledEntry(serviceName, args.run),
       backgroundItemAnswer && backgroundItemAnswer.status === 0
         ? {
           label: "Background Items",

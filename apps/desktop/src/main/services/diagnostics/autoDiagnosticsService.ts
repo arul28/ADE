@@ -58,7 +58,14 @@ export type AutoDiagnosticsRequest = {
   projectRoot?: string | null;
   headline?: string | null;
   technicalDetail?: string | null;
+  /** The screen's own error code, when it differs from `failureCode`. */
+  code?: string | null;
+  /** Lines appended to the report's notes, e.g. a project root that was dropped. */
+  extraNotes?: readonly string[];
 };
+
+/** What an error screen's "Report issue" adds to a manual send. Already validated by main. */
+export type ManualDiagnosticsContext = Omit<AutoDiagnosticsRequest, "failureCode">;
 
 export type { AutoDiagnosticsOutcome, AutoDiagnosticsSentNotice };
 
@@ -98,8 +105,10 @@ export type AutoDiagnosticsService = {
   /**
    * One report, because a person asked for it. Never throws and never rejects;
    * every outcome comes back named so the surface can say what happened.
+   * Without a context it is Settings' "Send a report to ADE" (`settings_manual`);
+   * with one it is an error screen's "Report issue", about that screen.
    */
-  sendManual: () => Promise<DiagnosticsManualSendResult>;
+  sendManual: (context?: ManualDiagnosticsContext) => Promise<DiagnosticsManualSendResult>;
   isEnabled: () => boolean;
   setEnabled: (enabled: boolean) => boolean;
   getStatus: () => {
@@ -164,7 +173,8 @@ export function createAutoDiagnosticsService(
   };
 
   /**
-   * "Send a report to ADE", pressed by hand in Settings.
+   * "Send a report to ADE", pressed by hand in Settings — or "Report issue" on
+   * an error screen, which passes that screen's context.
    *
    * Same collector, same redaction, same uploader as every other send — the
    * only thing that differs is who decided and what happens afterwards.
@@ -183,7 +193,7 @@ export function createAutoDiagnosticsService(
    * wrong here. A user watching a button has to be told the answer, and telling
    * them twice — inline and again in a toast — is worse than once.
    */
-  const sendManual = async (): Promise<DiagnosticsManualSendResult> => {
+  const sendManual = async (context?: ManualDiagnosticsContext): Promise<DiagnosticsManualSendResult> => {
     // A collection already running is not a budget event: nothing is claimed,
     // so a retry a moment later costs the user nothing.
     if (inFlight) return { ok: false, reason: "failed" };
@@ -206,8 +216,8 @@ export function createAutoDiagnosticsService(
       let built: AutoDiagnosticsReport;
       try {
         built = await deps.buildReport({
+          ...(context ?? { surface: "settings_manual" }),
           failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE,
-          surface: "settings_manual",
         });
       } catch (error) {
         deps.logger?.warn?.("diagnostics.manual_send_build_failed", {
@@ -278,11 +288,11 @@ export function createAutoDiagnosticsService(
               : result.reason === "too_large"
                 ? "too_large"
                 : "failed";
-        return { ok: false, reason, ...(reportPath ? { reportPath } : {}) };
+        return { ok: false, reason, report: built.report, ...(reportPath ? { reportPath } : {}) };
       }
 
       deps.logger?.info?.("diagnostics.manual_sent", { reference: result.reference });
-      return { ok: true, reference: result.reference, reportPath: reportPath ?? "" };
+      return { ok: true, reference: result.reference, reportPath: reportPath ?? "", report: built.report };
     } finally {
       inFlight = false;
     }

@@ -117,9 +117,13 @@ export type RecoveryState = ProjectRecoveryDiagnosis["state"];
 /**
  * What the person reads for each recovery state: the one table both the main
  * process and the recovery screen use, so they can never say different
- * things. Written for someone who has never heard of ADE's internals — no
- * "service", "brain", "socket" or "endpoint". `steps` is what the person does
- * themselves, and only states with a real chore have it.
+ * things. `headline` names the actual cause in plain words; `body` is the one
+ * hint line under it. The one internal part it names is "ADE's background
+ * service" — what Activity Monitor and Task Manager show people anyway —
+ * never "brain", "socket", "endpoint" or "launchd". What Fix it, Restart ADE
+ * and Reset ADE do is said once, by the recovery screen's ladder, not here.
+ * `steps` is what the person does themselves, and only states with a real
+ * chore have it.
  */
 export const RECOVERY_COPY: Record<RecoveryState, {
   headline: string;
@@ -152,7 +156,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   db_repair_needed: {
     headline: "This project needs a quick fix",
-    body: "ADE was interrupted while it was saving. Fix it finishes the job. Your files and chats stay where they are.",
+    body: "ADE was interrupted while it was saving. Fix it finishes the job.",
     canAutoRepair: true,
   },
   storage_unreadable: {
@@ -165,33 +169,32 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     ],
   },
   brain_not_installed: {
-    headline: "ADE isn't fully set up",
-    body: "A part of ADE that runs in the background is missing. Fix it sets it up again.",
+    headline: "ADE's background service is missing",
+    body: "Nothing in ADE can run until it's set up again. Your work is safe.",
     canAutoRepair: true,
   },
   brain_crash_looping: {
-    headline: "ADE keeps stopping",
-    body: "A part of ADE that runs in the background keeps stopping. Fix it starts it again.",
+    headline: "ADE's background service keeps stopping",
+    body: "It stopped several times in a row. Your work is safe.",
     canAutoRepair: true,
   },
   brain_not_running: {
-    headline: "ADE didn't start",
-    body: "A part of ADE that runs in the background is set up, but it didn't start. Fix it starts it.",
+    headline: "ADE's background service didn't start",
+    body: "It's set up, but it isn't running. Your work is safe.",
     canAutoRepair: true,
   },
   background_blocked: {
-    headline: "Your Mac is blocking ADE",
-    body: "ADE needs permission to run in the background, and that permission is turned off in System Settings.",
+    headline: "macOS isn't letting ADE's background service run",
+    body: "ADE is switched off under \"Allow in the Background\" in System Settings.",
     canAutoRepair: false,
     steps: [
       "Choose Open System Settings.",
       "Under \"Allow in the Background\", turn on ADE. On some Macs it shows under the name of ADE's developer instead.",
-      "Come back here. ADE continues by itself.",
     ],
   },
   socket_stale_no_owner: {
     headline: "ADE didn't close properly last time",
-    body: "Fix it cleans up and starts ADE again.",
+    body: "Something left over from the last run is in the way. Your work is safe.",
     canAutoRepair: true,
   },
   socket_owned_by_other: {
@@ -210,7 +213,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   unknown_failure: {
     headline: "ADE couldn't open this project",
-    body: "Fix it restarts ADE and checks this project. Your files and chats stay where they are.",
+    body: "Your files and chats stay where they are.",
     canAutoRepair: true,
   },
 };

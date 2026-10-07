@@ -48,6 +48,7 @@ import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunch
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
+import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
@@ -979,6 +980,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
       <BrainRecoveryNotice />
+      <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
           currentProjectRoot={currentProjectRoot}

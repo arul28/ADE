@@ -1,13 +1,9 @@
 import React from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowSquareOut, ArrowsClockwise, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AutoUpdatePhase, AutoUpdateSnapshot } from "../../../shared/types";
-import { Button } from "../ui/Button";
-import { cn } from "../ui/cn";
-
-function versionLabel(version: string | null): string {
-  return version ? `v${version}` : "the latest update";
-}
+import { Dialog, type DialogAction } from "../ui/dialog";
+import { TechnicalDetailsFold } from "./errorSurfaceKit";
+import { canRestartAde, restartAde } from "./restartAde";
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "Not available";
@@ -23,6 +19,7 @@ function formatBytes(bytes: number | null): string {
 
 function phaseLabel(phase: AutoUpdatePhase | null | undefined): string {
   switch (phase) {
+    case "check": return "Checking for updates";
     case "download": return "Download";
     case "staging": return "Staging";
     case "verification": return "Verification";
@@ -36,8 +33,29 @@ export function isAutoUpdateDiskSpaceError(snapshot: AutoUpdateSnapshot): boolea
   return kind === "insufficient_space" || kind === "disk_full" || kind === "quota";
 }
 
+/** The feed request failed: nothing was downloaded or installed. */
+export function isAutoUpdateCheckError(snapshot: AutoUpdateSnapshot): boolean {
+  return snapshot.errorDetails?.phase === "check";
+}
+
+/** Short name for the failure, shared by the top-bar pill and this dialog's title. */
+export function autoUpdateErrorTitle(snapshot: AutoUpdateSnapshot): string {
+  if (isAutoUpdateDiskSpaceError(snapshot)) return "Not enough space to update";
+  if (isAutoUpdateCheckError(snapshot)) return "ADE couldn't check for updates";
+  return "ADE update failed";
+}
+
 function updateErrorExplanation(snapshot: AutoUpdateSnapshot): string {
   const kind = snapshot.errorDetails?.kind;
+  const checking = isAutoUpdateCheckError(snapshot);
+  if (kind === "network_stuck") {
+    return "Your internet connection works, but ADE's connection to the update server is stuck. Restarting ADE clears it.";
+  }
+  if (kind === "network") {
+    return checking
+      ? "ADE can't reach the update server. Check your connection, then choose Check again."
+      : "ADE lost its connection to the update server before the download finished.";
+  }
   if (kind === "insufficient_space" || kind === "disk_full") {
     return "ADE does not have enough free space on the affected volume to safely download, stage, and replace the app.";
   }
@@ -45,11 +63,84 @@ function updateErrorExplanation(snapshot: AutoUpdateSnapshot): string {
     return "This release is too large for the macOS updater to install safely, so ADE stopped before it could crash. Download the latest version from the ADE website instead.";
   }
   if (kind === "quota") return "The account or volume quota was reached while ADE was updating.";
-  if (kind === "network") return "ADE could not reach or finish downloading the update from the release server.";
   if (kind === "signature" || kind === "verification") return "ADE could not verify that the downloaded update is complete and trusted.";
   if (kind === "permission") return "ADE could not write to the update cache or replace the installed application.";
   if (kind === "installer") return "The updater could not complete the installer handoff or quit and relaunch ADE.";
-  return snapshot.errorDetails?.message ?? snapshot.error ?? "ADE could not complete the update.";
+  return checking
+    ? "ADE didn't get an answer from the update server."
+    : "ADE could not complete the update.";
+}
+
+function recoverySteps(snapshot: AutoUpdateSnapshot): string[] {
+  const kind = snapshot.errorDetails?.kind;
+  if (kind === "network_stuck") {
+    return [
+      "Choose Restart ADE. If agents are running, ADE asks before it quits.",
+      "ADE reopens and checks for updates on its own.",
+    ];
+  }
+  if (kind === "network") {
+    return ["Check your internet connection, VPN, or proxy.", "Choose Check again."];
+  }
+  if (isAutoUpdateDiskSpaceError(snapshot)) {
+    return ["Free space on the affected volume, including Trash if needed.", "Return here and choose Check again."];
+  }
+  if (kind === "permission") {
+    return [
+      "Make sure your account can write to the folder ADE is installed in and to its update cache.",
+      "Choose Check again.",
+    ];
+  }
+  if (kind === "signature" || kind === "verification") {
+    return [
+      "Choose Check again. ADE downloads a fresh copy of the update.",
+      "If it fails again, install the latest version from the ADE website.",
+    ];
+  }
+  if (kind === "artifact_too_large") {
+    return ["Download the latest version from the ADE website and install it over this one."];
+  }
+  if (kind === "installer") {
+    return [
+      "Choose Check again to retry the install.",
+      "If it fails again, quit ADE and install the latest version from the ADE website.",
+    ];
+  }
+  return ["Choose Check again.", "If it keeps failing, restart ADE."];
+}
+
+function formatRetryTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+const DETAIL_LIST_STYLE: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "auto 1fr",
+  columnGap: 16,
+  rowGap: 6,
+  margin: 0,
+  fontSize: 12,
+};
+const DETAIL_TERM_STYLE: React.CSSProperties = { color: "var(--color-muted-fg)" };
+const DETAIL_VALUE_STYLE: React.CSSProperties = {
+  margin: 0,
+  textAlign: "right",
+  color: "var(--color-fg)",
+  overflowWrap: "anywhere",
+};
+const DETAIL_MONO_STYLE: React.CSSProperties = {
+  ...DETAIL_VALUE_STYLE,
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+};
+
+function DetailRow({ term, mono, children }: { term: string; mono?: boolean; children: React.ReactNode }) {
+  return (
+    <>
+      <dt style={DETAIL_TERM_STYLE}>{term}</dt>
+      <dd style={mono ? DETAIL_MONO_STYLE : DETAIL_VALUE_STYLE}>{children}</dd>
+    </>
+  );
 }
 
 type AutoUpdateErrorDialogProps = {
@@ -58,6 +149,8 @@ type AutoUpdateErrorDialogProps = {
   retrying: boolean;
   onOpenChange: (open: boolean) => void;
   onRetry: () => void;
+  /** When the last Check again from this dialog finished, if it ended in this error. */
+  lastRetryAt?: number | null;
 };
 
 export function AutoUpdateErrorDialog({
@@ -66,130 +159,96 @@ export function AutoUpdateErrorDialog({
   retrying,
   onOpenChange,
   onRetry,
+  lastRetryAt = null,
 }: AutoUpdateErrorDialogProps) {
-  const isDiskSpaceError = isAutoUpdateDiskSpaceError(snapshot);
+  const details = snapshot.errorDetails;
   const releaseNotesUrl = snapshot.releaseNotesUrl;
+  const stuck = details?.kind === "network_stuck";
+  const technicalDetail = details?.message ?? snapshot.error;
+  const title = autoUpdateErrorTitle(snapshot);
+
+  const checkAgain: DialogAction = {
+    label: retrying ? "Checking…" : "Check again",
+    icon: <ArrowsClockwise size={12} weight="bold" />,
+    busy: retrying,
+    onClick: onRetry,
+  };
+  const actions: DialogAction[] = stuck && canRestartAde()
+    ? [
+        { ...checkAgain, variant: "secondary" },
+        {
+          label: "Restart ADE",
+          icon: <ArrowClockwise size={12} weight="bold" />,
+          variant: "solid",
+          autoFocus: true,
+          // The same rung as every recovery surface: records the restart and
+          // knows when this window cannot relaunch.
+          onClick: () => void restartAde(),
+        },
+      ]
+    : [
+        ...(releaseNotesUrl
+          ? [{
+              label: "Changelog",
+              icon: <ArrowSquareOut size={12} weight="bold" />,
+              variant: "secondary" as const,
+              onClick: () => void window.ade.app.openExternal(releaseNotesUrl),
+            }]
+          : []),
+        { ...checkAgain, variant: "solid" },
+      ];
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/55 backdrop-blur-sm" />
-        <div className="pointer-events-none fixed inset-0 z-[121] grid place-items-center p-4">
-          <Dialog.Content
-            className={cn(
-              "pointer-events-auto relative w-[min(92vw,460px)] overflow-hidden rounded-xl",
-              "border border-amber-200/20 bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/55 outline-none",
-            )}
-          >
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber-300/70 to-transparent" />
-            <div className="p-5 sm:p-6">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex min-w-0 gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-300/25 bg-amber-400/10 text-amber-200">
-                    <WarningCircle size={20} weight="fill" aria-hidden="true" />
-                  </div>
-                  <div>
-                    <Dialog.Title className="text-sm font-semibold text-fg">
-                      {isDiskSpaceError ? "Not enough space to update" : "ADE update failed"}
-                    </Dialog.Title>
-                    <Dialog.Description className="mt-1 text-xs leading-5 text-muted-fg">
-                      {updateErrorExplanation(snapshot)}
-                    </Dialog.Description>
-                  </div>
-                </div>
-                <Dialog.Close asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-fg/[0.06] hover:text-fg"
-                    aria-label="Close update error details"
-                  >
-                    <X size={14} weight="bold" />
-                  </button>
-                </Dialog.Close>
-              </div>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title}
+      description={updateErrorExplanation(snapshot)}
+      tone="warning"
+      icon={<WarningCircle size={16} weight="fill" />}
+      size="sm"
+      width={460}
+      actions={actions}
+    >
+      <dl style={DETAIL_LIST_STYLE}>
+        {snapshot.version ? (
+          <DetailRow term="Version">
+            {snapshot.currentVersion ? `v${snapshot.currentVersion}` : "Current"} → v{snapshot.version}
+          </DetailRow>
+        ) : null}
+        <DetailRow term="Failed during">{phaseLabel(details?.phase)}</DetailRow>
+        {details?.availableBytes != null ? (
+          <DetailRow term="Available">{formatBytes(details.availableBytes)}</DetailRow>
+        ) : null}
+        {details?.requiredBytes != null ? (
+          <DetailRow term="Estimated needed">{formatBytes(details.requiredBytes)}</DetailRow>
+        ) : null}
+        {details?.volumePath ? (
+          <DetailRow term="Affected path" mono>{details.volumePath}</DetailRow>
+        ) : null}
+      </dl>
+      {technicalDetail ? <TechnicalDetailsFold text={technicalDetail} className="mt-2.5" /> : null}
 
-              <dl className="mt-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-fg/[0.08] bg-black/15 p-3 text-xs">
-                <dt className="text-muted-fg">Version</dt>
-                <dd className="text-right text-fg">
-                  {snapshot.currentVersion ? `v${snapshot.currentVersion}` : "Current"} → {versionLabel(snapshot.version)}
-                </dd>
-                <dt className="text-muted-fg">Failed during</dt>
-                <dd className="text-right text-fg">{phaseLabel(snapshot.errorDetails?.phase)}</dd>
-                {snapshot.errorDetails?.message ? (
-                  <>
-                    <dt className="text-muted-fg">Failure</dt>
-                    <dd className="text-right text-fg">{snapshot.errorDetails.message}</dd>
-                  </>
-                ) : null}
-                {snapshot.errorDetails?.availableBytes != null ? (
-                  <>
-                    <dt className="text-muted-fg">Available</dt>
-                    <dd className="text-right text-fg">{formatBytes(snapshot.errorDetails.availableBytes)}</dd>
-                  </>
-                ) : null}
-                {snapshot.errorDetails?.requiredBytes != null ? (
-                  <>
-                    <dt className="text-muted-fg">Estimated needed</dt>
-                    <dd className="text-right text-fg">{formatBytes(snapshot.errorDetails.requiredBytes)}</dd>
-                  </>
-                ) : null}
-                {snapshot.errorDetails?.volumePath ? (
-                  <>
-                    <dt className="text-muted-fg">Affected path</dt>
-                    <dd className="break-all text-right font-mono text-[10px] text-fg">{snapshot.errorDetails.volumePath}</dd>
-                  </>
-                ) : null}
-              </dl>
-
-              <div className="mt-4 text-xs leading-5 text-muted-fg">
-                <p className="font-medium text-fg">What to do</p>
-                <ol className="mt-1 list-decimal space-y-1 pl-4">
-                  {isDiskSpaceError ? (
-                    <>
-                      <li>Free space on the affected volume, including Trash if needed.</li>
-                      <li>Return here and choose Check again.</li>
-                    </>
-                  ) : (
-                    <>
-                      <li>Resolve the connection, permission, or installer problem described above.</li>
-                      <li>Choose Check again to retry the update.</li>
-                    </>
-                  )}
-                </ol>
-                {snapshot.errorDetails?.preservesDownload ? (
-                  <p className="mt-2 text-emerald-200/90">The downloaded update was kept, so ADE can reuse it when safe.</p>
-                ) : snapshot.version ? (
-                  <p className="mt-2">ADE must download the update again to avoid reusing an incomplete or unverified file.</p>
-                ) : null}
-              </div>
-
-              <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
-                {releaseNotesUrl ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full sm:w-auto"
-                    onClick={() => void window.ade.app.openExternal(releaseNotesUrl)}
-                  >
-                    <ArrowSquareOut size={12} weight="bold" />
-                    Changelog
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="primary"
-                  className="w-full sm:w-auto"
-                  onClick={onRetry}
-                  disabled={retrying}
-                >
-                  <ArrowsClockwise size={12} weight="bold" className={cn(retrying && "animate-spin")} />
-                  {retrying ? "Checking…" : "Check again"}
-                </Button>
-              </div>
-            </div>
-          </Dialog.Content>
-        </div>
-      </Dialog.Portal>
-    </Dialog.Root>
+      <div style={{ marginTop: 14 }}>
+        <p style={{ margin: 0, fontWeight: 600, color: "var(--color-fg)" }}>What to do</p>
+        <ol style={{ margin: "4px 0 0", paddingLeft: 18, display: "grid", gap: 3, listStyle: "decimal" }}>
+          {recoverySteps(snapshot).map((step) => <li key={step}>{step}</li>)}
+        </ol>
+        {details?.preservesDownload ? (
+          <p style={{ margin: "8px 0 0", color: "var(--color-success)" }}>
+            The downloaded update was kept, so ADE can reuse it when safe.
+          </p>
+        ) : snapshot.version && !isAutoUpdateCheckError(snapshot) ? (
+          <p style={{ margin: "8px 0 0" }}>
+            ADE must download the update again to avoid reusing an incomplete or unverified file.
+          </p>
+        ) : null}
+        {lastRetryAt != null && !retrying ? (
+          <p role="status" style={{ margin: "8px 0 0", color: "var(--color-warning)" }}>
+            Checked again at {formatRetryTime(lastRetryAt)}. It still didn't work.
+          </p>
+        ) : null}
+      </div>
+    </Dialog>
   );
 }

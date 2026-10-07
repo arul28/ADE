@@ -9,6 +9,8 @@ import {
   currentUid,
   type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
+  isLaunchAgentDisabled,
+  loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
   readPidElapsedMs,
@@ -369,6 +371,8 @@ function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidD
   return { ...deps, platform: deps?.platform ?? "darwin" };
 }
 
+const LAUNCHD_REGISTER_RETRY_MS = 1_000;
+
 function handoverFailure(
   servicePath: string,
   failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
@@ -604,15 +608,19 @@ export async function installLaunchdService(
   for (const pid of staleScan.ok ? staleScan.pids : []) {
     await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps));
   }
-  const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
-  if (load.status !== 0) {
-    return {
-      ok: false,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "install",
-      path: servicePath,
-      message: serviceManagerResultText(load) || "launchctl load failed.",
-    };
+  let load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
+  if (!load.ok) {
+    // A bootout launchd has not finished tearing down refuses the same label
+    // for a moment; one retry covers it without hiding a job that never loads.
+    await sleep(LAUNCHD_REGISTER_RETRY_MS);
+    load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
+  }
+  if (!load.ok) {
+    return handoverFailure(
+      servicePath,
+      "launchd_register",
+      `launchd did not register the ADE background service. ${load.detail}`,
+    );
   }
   const kickstartError = kickstartLaunchdService(run);
   const oldPid = loaded?.pid ?? null;
@@ -755,7 +763,9 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
       installed: true,
       running: false,
       path: servicePath,
-      message: serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
+      message: isLaunchAgentDisabled(ADE_RUNTIME_SERVICE_NAME)
+        ? "ADE service launchd service is installed but on launchd's disabled list, so macOS will not load it. Repair re-enables it."
+        : serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
     };
   }
 

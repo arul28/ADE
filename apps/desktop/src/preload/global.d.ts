@@ -1288,9 +1288,10 @@ declare global {
          * proves the group's rule: `diagnostics` shipped before this existed,
          * so a preload that exposes the group need not expose this. The
          * settings control checks for it and hides itself rather than offering
-         * a button that cannot work.
+         * a button that cannot work, and "Report issue" falls back to
+         * `openIssue`. Pass an error screen's context to report about it.
          */
-        sendManual?: () => Promise<DiagnosticsManualSendResult>;
+        sendManual?: (context?: DiagnosticReportRequestPayload) => Promise<DiagnosticsManualSendResult>;
         getSharing: () => Promise<DiagnosticsSharingStatus>;
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;
@@ -4487,6 +4488,8 @@ declare global {
       updateQuitAndInstall: (options?: { resumeChats?: boolean }) => Promise<boolean>;
       updateCancelAutoApply: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
+      /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
+      updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       perf: {
         getConfig: () => Promise<{

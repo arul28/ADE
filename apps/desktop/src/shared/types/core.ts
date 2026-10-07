@@ -54,9 +54,17 @@ export type LocalRuntimeStatus = {
    * "isolated" means the desktop fell back to an app-owned no-sync brain
    * (phone sync and ADE Code attach to the channel service, which is down).
    * The pool keeps probing and reinstalling until it migrates back to
-   * "primary".
+   * "primary". "app_fallback" uses the primary socket but disables sync
+   * because the desktop owns the brain instead of the machine service.
    */
-  runtimeMode: "primary" | "isolated";
+  runtimeMode: "primary" | "isolated" | "app_fallback";
+  /** This desktop owns a no-sync brain on the primary socket for this run. */
+  appFallback?: {
+    reason: "service_not_registered" | "service_not_running" | "service_install_failed"
+      | "predecessor_exit" | "replacement_pid" | "replacement_responsive"
+      | "background_item_blocked" | "launchd_register";
+    since: string;
+  } | null;
   versionSkew: {
     state: "none" | "runtime_newer" | "runtime_older" | "build_mismatch" | "role_mismatch" | "unknown";
     appVersion: string | null;
@@ -269,7 +277,8 @@ export type UpdateTransactionResult = {
 
 export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
 
-export type AutoUpdatePhase = "download" | "staging" | "verification" | "install";
+/** `check` is the feed request itself, before anything is downloaded. */
+export type AutoUpdatePhase = "check" | "download" | "staging" | "verification" | "install";
 
 export type AutoUpdateErrorKind =
   | "artifact_too_large"
@@ -277,6 +286,12 @@ export type AutoUpdateErrorKind =
   | "disk_full"
   | "quota"
   | "network"
+  /**
+   * The release server answers, but ADE's own updater connection fails before
+   * it reaches the network, and a fresh connection did not help. Restarting
+   * ADE is the fix.
+   */
+  | "network_stuck"
   | "signature"
   | "permission"
   | "verification"

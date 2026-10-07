@@ -74,7 +74,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
           <div className="flex min-h-full items-center justify-center px-6 py-10">
           <div className="w-full max-w-[520px]">
             <ErrorSurfaceCard
-              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
+              icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
               headline="ADE needs to reload this window"
               body={
                 <>

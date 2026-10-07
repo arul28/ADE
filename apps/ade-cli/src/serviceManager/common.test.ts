@@ -146,10 +146,6 @@ function writeSyncHostSingletonLock(args: {
   );
 }
 
-function watchdogPath(homeDir: string): string {
-  return path.join(homeDir, "Library", "LaunchAgents", `${resolveWatchdogServiceName()}.plist`);
-}
-
 function currentLaunchdDomain(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
   return `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`;
@@ -861,13 +857,7 @@ describe("launchd service install", () => {
   it("writes the plist and loads the launch agent", async () => {
     const homeDir = makeTempHome("ade-launchd-install-");
     const servicePath = launchAgentPath(homeDir);
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd();
 
     const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
@@ -878,16 +868,19 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(fs.readFileSync(servicePath, "utf8")).toBe(renderLaunchdPlist(serviceCommand, homeDir));
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-      { command: "launchctl", args: ["unload", servicePath] },
-      { command: "ps", args: ["-axo", "pid=,command="] },
-      { command: "launchctl", args: ["load", servicePath] },
-      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
-      // A successful install also arms the wedge watchdog.
-      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
-      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
+  });
+
+  it("registers a service left on launchd's disabled list", async () => {
+    const homeDir = makeTempHome("ade-launchd-disabled-");
+    const { spawnSync, registered, disabled } = fakeLaunchd({ disabled: [ADE_RUNTIME_SERVICE_NAME] });
+
+    const result = await install({ command: serviceCommand, spawnSync, homeDir });
+
+    expect(result).toMatchObject({ ok: true, action: "install" });
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(disabled.has(ADE_RUNTIME_SERVICE_NAME)).toBe(false);
   });
 
   it("leaves an unchanged running launch agent loaded", async () => {
@@ -895,10 +888,7 @@ describe("launchd service install", () => {
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\n", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running"});
 
     const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
@@ -909,13 +899,8 @@ describe("launchd service install", () => {
       path: servicePath,
       message: "ADE service launchd service is already installed and running.",
     });
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-      // Machines that were already running when the watchdog shipped take this
-      // path, so it has to arm one too.
-      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
-      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.pid).toBe(1234);
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("rewrites a healthy launch agent that predates the materialization policy", async () => {
@@ -929,13 +914,7 @@ describe("launchd service install", () => {
     expect(legacy).not.toBe(current);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, legacy, "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running"});
 
     const result = await install({
       command: serviceCommand,
@@ -953,15 +932,8 @@ describe("launchd service install", () => {
 
     expect(result.ok).toBe(true);
     expect(fs.readFileSync(servicePath, "utf8")).toBe(current);
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "print",
-      "unload",
-      "-axo",
-      "load",
-      "kickstart",
-      "unload",
-      "load",
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("reinstalls an unchanged running launch agent when its runtime socket is wedged", async () => {
@@ -969,13 +941,7 @@ describe("launchd service install", () => {
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running"});
     const responsivenessProbe = vi.fn()
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true);
@@ -993,27 +959,13 @@ describe("launchd service install", () => {
 
     expect(result.ok).toBe(true);
     expect(responsivenessProbe).toHaveBeenCalledTimes(2);
-    expect(calls.map((call) => call.args[0])).toEqual([
-      "print",
-      "unload",
-      "-axo",
-      "load",
-      "kickstart",
-      // The watchdog agent is (re)armed alongside the repaired brain.
-      "unload",
-      "load",
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("returns a typed failure when the replacement never becomes responsive", async () => {
     const homeDir = makeTempHome("ade-launchd-handover-fail-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync } = fakeLaunchd();
 
     const result = await install({
       command: serviceCommand,
@@ -1033,24 +985,14 @@ describe("launchd service install", () => {
 
   it("reports a live replacement that has not answered yet as starting, not failed", async () => {
     const homeDir = makeTempHome("ade-launchd-handover-starting-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      // The post-load kickstart.
-      { status: 0, stdout: "", stderr: "" },
-      // The handover poll sees launchd's replacement child running.
-      { status: 0, stdout: "state = running\npid = 4321\n", stderr: "" },
-    ]);
+    const { spawnSync } = fakeLaunchd();
 
     const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
       responsivenessProbe: () => false,
-      handoverPidAlive: (pid) => pid === 4321,
+      handoverPidAlive: (pid) => pid === 7777,
       handoverTimeoutMs: 0,
     });
 
@@ -1099,13 +1041,7 @@ describe("launchd service install", () => {
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running"});
     const kill = vi.fn();
 
     const result = await install({
@@ -1122,7 +1058,7 @@ describe("launchd service install", () => {
     });
 
     expect(result).toMatchObject({ ok: true, restarted: true });
-    expect(calls.map((call) => call.args[0])).toContain("load");
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
   });
 
   it("does not restart a young brain that answers, even when a restart was forced", async () => {
@@ -1188,15 +1124,16 @@ describe("launchd service install", () => {
     let loadSeen = false;
     let printsAfterLoad = 0;
     const spawnSync: ServiceManagerSpawnSync = (command, args) => {
-      if (command === "launchctl" && args[0] === "load") {
+      if (command === "launchctl" && args[0] === "bootstrap") {
         loadSeen = true;
         return { status: 0, stdout: "", stderr: "" };
       }
       if (command === "launchctl" && args[0] === "print") {
         if (!loadSeen) return { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" };
-        // launchd has not named the replacement yet for the first few polls.
+        // Registration succeeds, but launchd has not named the child yet.
         printsAfterLoad += 1;
-        if (printsAfterLoad <= 3) return { status: 1, stdout: "", stderr: "not found" };
+        if (printsAfterLoad === 1) return { status: 0, stdout: "state = waiting\n", stderr: "" };
+        if (printsAfterLoad <= 4) return { status: 1, stdout: "", stderr: "not found" };
         return { status: 0, stdout: "state = running\npid = 5678\n", stderr: "" };
       }
       return { status: 0, stdout: "", stderr: "" };
@@ -1231,13 +1168,7 @@ describe("launchd service install", () => {
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running"});
 
     const result = await install({
       command: serviceCommand,
@@ -1250,16 +1181,8 @@ describe("launchd service install", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-      { command: "launchctl", args: ["unload", servicePath] },
-      { command: "ps", args: ["-axo", "pid=,command="] },
-      { command: "launchctl", args: ["load", servicePath] },
-      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
-      // A successful install also arms the wedge watchdog.
-      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
-      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("reloads an unchanged launch agent when it is loaded but stopped", async () => {
@@ -1267,12 +1190,7 @@ describe("launchd service install", () => {
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
     fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = waiting\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "waiting"});
 
     const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
@@ -1282,16 +1200,8 @@ describe("launchd service install", () => {
       action: "install",
       path: servicePath,
     });
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-      { command: "launchctl", args: ["unload", servicePath] },
-      { command: "ps", args: ["-axo", "pid=,command="] },
-      { command: "launchctl", args: ["load", servicePath] },
-      { command: "launchctl", args: ["kickstart", currentLaunchdDomain()] },
-      // A successful install also arms the wedge watchdog.
-      { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
-      { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   // A launchd domain in on-demand-only mode ignores RunAtLoad and KeepAlive:
@@ -1401,9 +1311,8 @@ describe("launchd service install", () => {
       serviceName: "com.ade.runtime.beta",
       quitCommand: "ADE_PACKAGE_CHANNEL=beta ADE_HOME='/Users/example/.ade-beta' '/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta' brain stop --text",
     });
-    const calls: Array<{ command: string; args: string[] }> = [];
+    const { spawnSync, registered } = fakeLaunchd();
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
-    const spawnSync = spawnSequence(calls, []);
 
     const result = await install({
       command: serviceCommand,
@@ -1434,9 +1343,7 @@ describe("launchd service install", () => {
         : "brain stop --text",
     );
     expect(killed).toEqual([]);
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-    ]);
+    expect(registered.has(ADE_RUNTIME_SERVICE_NAME)).toBe(false);
     expect(fs.existsSync(servicePath)).toBe(true);
     expect(fs.readFileSync(servicePath, "utf8")).toBe(renderLaunchdPlist(serviceCommand, homeDir));
   });
@@ -1455,9 +1362,8 @@ describe("launchd service install", () => {
       adeHome,
       quitCommand: "ADE_HOME='/Users/example/.ade' '/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
     });
-    const calls: Array<{ command: string; args: string[] }> = [];
+    const { spawnSync, registered } = fakeLaunchd();
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
-    const spawnSync = spawnSequence(calls, []);
 
     const result = await install({
       command: serviceCommand,
@@ -1482,29 +1388,20 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(killed).toEqual([{ pid: existingPid, signal: "SIGTERM" }]);
-    expect(calls.map((call) => [call.command, call.args[0]])).toEqual([
-      ["launchctl", "print"],
-      ["launchctl", "unload"],
-      ["ps", "-axo"],
-      ["launchctl", "load"],
-      ["launchctl", "kickstart"],
-      ["launchctl", "unload"],
-      ["launchctl", "load"],
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("terminates the previous service child and stale serve processes on restart", async () => {
     const homeDir = makeTempHome("ade-launchd-sweep-");
     const adeHome = path.join(homeDir, ".ade");
     const staleServeLine = `  4242 ${serviceCommand.command} serve --socket ${path.join(adeHome, "sock", "ade.sock")}`;
-    const calls: Array<{ command: string; args: string[] }> = [];
+    const { spawnSync, registered } = fakeLaunchd({
+      initial: "running",
+      pid: 9876,
+      psOutput: `${staleServeLine}\n  4243 ${serviceCommand.command} serve --no-sync\n`,
+    });
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 9876\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: `${staleServeLine}\n  4243 ${serviceCommand.command} serve --no-sync\n`, stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
 
     const result = await install({
       command: serviceCommand,
@@ -1523,15 +1420,13 @@ describe("launchd service install", () => {
       { pid: 9876, signal: "SIGTERM" },
       { pid: 4242, signal: "SIGTERM" },
     ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
   });
 
   it("refuses to restart a launch agent from a descendant of the loaded service", async () => {
     const homeDir = makeTempHome("ade-launchd-self-install-");
     const servicePath = launchAgentPath(homeDir);
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running", pid: 100});
     const parentPid = (pid: number) => ({
       400: 300,
       300: 100,
@@ -1557,22 +1452,14 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(result.message).toContain("Refusing to restart ADE brain");
-    expect(calls).toEqual([
-      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
-    ]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.pid).toBe(100);
     expect(fs.existsSync(servicePath)).toBe(false);
   });
 
   it("allows launch agent restart from a descendant when self-mutation is explicitly enabled", async () => {
     const homeDir = makeTempHome("ade-launchd-self-install-override-");
     const servicePath = launchAgentPath(homeDir);
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
+    const { spawnSync, registered } = fakeLaunchd({initial: "running", pid: 100});
     const parentPid = (pid: number) => ({
       400: 300,
       300: 100,
@@ -1599,8 +1486,8 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(fs.existsSync(servicePath)).toBe(true);
-    expect(calls.map((call) => call.args[0]))
-      .toEqual(["print", "unload", "-axo", "load", "kickstart", "unload", "load"]);
+    expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.state).toBe("running");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
   });
 
   it("refuses to uninstall a launch agent from a descendant of the loaded service", () => {
@@ -1681,21 +1568,18 @@ describe("launchd service install", () => {
     expect(fs.existsSync(servicePath)).toBe(false);
   });
 
-  it("surfaces launchctl load failures", async () => {
+  it("surfaces a job launchd will not register after one retry", async () => {
     const homeDir = makeTempHome("ade-launchd-fail-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 5, stdout: "", stderr: "Load failed" },
-    ]);
+    const { spawnSync, registered, attempts } = fakeLaunchd({ bootstrap: "refused", load: "refused" });
+    const sleep = vi.fn(async () => {});
 
-    const result = await install({ command: serviceCommand, spawnSync, homeDir });
+    const result = await install({ command: serviceCommand, spawnSync, homeDir, sleep });
 
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("Load failed");
-    expect(calls.map((call) => call.args[0])).toEqual(["print", "unload", "-axo", "load"]);
+    expect(result).toMatchObject({ ok: false, failureStep: "launchd_register" });
+    expect(result.message).toContain("Load failed: 5: Input/output error");
+    expect(registered.has(ADE_RUNTIME_SERVICE_NAME)).toBe(false);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(attempts.bootstrap).toBe(2);
   });
 });
 
@@ -1732,6 +1616,69 @@ function spawnSequence(
     if (command === "launchctl" && args[0] === "load") loadSeen = true;
     return next ?? { status: 0, stdout: "", stderr: "" };
   };
+}
+
+/** A small launchd model: command exit status alone does not imply registration. */
+function fakeLaunchd(options: {
+  initial?: "running" | "waiting";
+  pid?: number;
+  psOutput?: string;
+  disabled?: string[];
+  bootstrap?: "ok" | "no-gui" | "refused";
+  load?: "ok" | "refused";
+} = {}) {
+  const registered = new Map<string, { domain: string; state: "running" | "waiting"; pid: number }>();
+  const disabled = new Set(options.disabled ?? []);
+  const attempts = { bootstrap: 0 };
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  if (options.initial) registered.set(ADE_RUNTIME_SERVICE_NAME, {
+    domain: `gui/${uid}`, state: options.initial, pid: options.pid ?? 1234,
+  });
+  const result = (status = 0, stdout = "", stderr = "") => ({ status, stdout, stderr });
+  const labelFromPath = (servicePath: string) => path.basename(servicePath, ".plist");
+  const spawnSync: ServiceManagerSpawnSync = (command, args) => {
+    if (command === "ps") return result(0, options.psOutput ?? "");
+    if (command === "/usr/bin/osascript") return result(0, "1\n");
+    if (command !== "launchctl") return result();
+    const [verb, target, servicePath] = args;
+    if (verb === "enable") {
+      disabled.delete(target.split("/").at(-1)!);
+      return result();
+    }
+    if (verb === "print-disabled") {
+      return result(0, [...disabled].map((label) => `"${label}" => disabled`).join("\n"));
+    }
+    if (verb === "print") {
+      const label = target.split("/").at(-1)!;
+      const entry = registered.get(label);
+      if (!entry || !target.startsWith(`${entry.domain}/`)) return result(113, "", "Could not find service");
+      return result(0, entry.state === "running" ? `state = running\npid = ${entry.pid}\n` : "state = waiting\n");
+    }
+    if (verb === "unload" || verb === "bootout") {
+      registered.delete(labelFromPath(verb === "unload" ? target : servicePath ?? target));
+      return result();
+    }
+    if (verb === "bootstrap" || verb === "load") {
+      if (verb === "bootstrap") attempts.bootstrap += 1;
+      const label = labelFromPath(verb === "bootstrap" ? servicePath : args.at(-1)!);
+      const mode = verb === "bootstrap" ? options.bootstrap ?? "ok" : options.load ?? "ok";
+      if (mode === "refused" || (mode === "no-gui" && verb === "bootstrap")) {
+        return result(5, "", verb === "bootstrap" ? "Bootstrap failed: 5: Input/output error" : "Load failed: 5: Input/output error");
+      }
+      if (disabled.has(label)) return result(0, "", "Load failed: 5: Input/output error");
+      registered.set(label, { domain: verb === "bootstrap" ? target : `user/${uid}`, state: "waiting", pid: 7777 });
+      return result();
+    }
+    if (verb === "kickstart") {
+      const label = target.split("/").at(-1)!;
+      const entry = registered.get(label);
+      if (!entry) return result(113, "", "Could not find service");
+      entry.state = "running";
+      return result();
+    }
+    return result();
+  };
+  return { spawnSync, registered, disabled, attempts };
 }
 
 const watchdogServiceCommand: AdeServiceCommand = {
@@ -1806,17 +1753,28 @@ describe("renderWatchdogLaunchdPlist", () => {
 describe("installLaunchdWatchdogAgent", () => {
   it("writes and loads the agent", () => {
     const homeDir = makeTempHome("ade-watchdog-home-");
-    const calls: Array<{ command: string; args: string[] }> = [];
+    const { spawnSync, registered } = fakeLaunchd();
     const result = installLaunchdWatchdogAgent({
       command: watchdogServiceCommand,
       homeDir,
-      spawnSync: spawnSequence(calls, []),
+      spawnSync,
     });
 
     const servicePath = watchdogLaunchAgentPath(homeDir);
     expect(result.installed).toBe(true);
     expect(fs.existsSync(servicePath)).toBe(true);
-    expect(calls.map((call) => call.args[0])).toEqual(["unload", "load"]);
+    expect(registered.has(resolveWatchdogServiceName())).toBe(true);
+  });
+
+  it("registers the watchdog in the user domain when there is no gui domain", () => {
+    const homeDir = makeTempHome("ade-watchdog-ssh-");
+    const { spawnSync, registered } = fakeLaunchd({ bootstrap: "no-gui" });
+
+    const result = installLaunchdWatchdogAgent({ command: watchdogServiceCommand, homeDir, spawnSync });
+
+    expect(result.installed).toBe(true);
+    // Windows reports uid -1; the domain is the user domain either way.
+    expect(registered.get(resolveWatchdogServiceName())?.domain).toMatch(/^user\/-?\d+$/);
   });
 
   it("rewrites an agent that predates the materialization policy", () => {
@@ -1842,15 +1800,15 @@ describe("installLaunchdWatchdogAgent", () => {
 
   it("reports a load failure instead of claiming the agent is armed", () => {
     const homeDir = makeTempHome("ade-watchdog-home-");
+    const { spawnSync, registered } = fakeLaunchd({ bootstrap: "refused", load: "refused" });
     const result = installLaunchdWatchdogAgent({
       command: watchdogServiceCommand,
       homeDir,
-      spawnSync: (command, args) =>
-        args[0] === "load"
-          ? { status: 1, stdout: "", stderr: "Load failed" }
-          : { status: 0, stdout: "", stderr: "" },
+      spawnSync,
     });
     expect(result.installed).toBe(false);
+    expect(result.message).toContain("Load failed: 5: Input/output error");
+    expect(registered.has(resolveWatchdogServiceName())).toBe(false);
   });
 
   it("removes the agent with the brain it guards", () => {

@@ -288,7 +288,7 @@ describe("AutoUpdateBanner update transaction notice", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("renders the failed step's plain line with a Repair affordance", async () => {
+  it("renders the failed step's plain line with a Fix it that restarts the background service", async () => {
     const restartBackgroundService = vi.fn(async () => {});
     installAdeMock(snapshot({
       updateTransaction: {
@@ -311,7 +311,9 @@ describe("AutoUpdateBanner update transaction notice", () => {
     await screen.findByText(
       "Updated the app, but the background service didn't restart — click Repair.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    // The service restart, not the sign-in repair: the update left the
+    // background service down, and that is what Fix it has to bring back.
+    fireEvent.click(screen.getByRole("button", { name: "Fix it" }));
     await waitFor(() => expect(restartBackgroundService).toHaveBeenCalledTimes(1));
   });
 

@@ -1255,7 +1255,7 @@ Runtime support files outside `services/sync/`:
   `wrangler d1 execute --env production` already reaches, so support recovery is
   a direct D1 statement after these logs identify the row.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
-  write-only R2 sink behind the desktop's **Send to ADE** action and
+  write-only R2 sink behind the desktop's **Report issue** button and
   `ade report-issue --send`. It is matched in `index.ts` *before* the directory
   router, because it is the one route here that is not account-scoped and the
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
@@ -1530,15 +1530,18 @@ Desktop connection UI:
 - `apps/desktop/src/renderer/hooks/useBrainRepair.ts` and
   `apps/desktop/src/renderer/components/settings/BrainRepairButton.tsx` — the
   shared **Repair** affordance for a brain that cannot read the stored account
-  session. The hook calls `window.ade.app.restartBackgroundService()`
+  session. The hook calls `account.repairSession` (credential store first, then
+  the restart) and falls back to `window.ade.app.restartBackgroundService()`
   (`ade.app.restartBackgroundService`), which restarts this Mac's
   `com.ade.runtime` launch agent and resolves only once the replacement answers
   a ping — readiness is observable only in the main process, so the renderer
   awaits it rather than sleeping and hoping. The IPC is optional in
   `global.d.ts`: the hosted-web adapter and browser mock cannot touch a launch
   agent, so `repair.available` feature-detects before any surface offers the
-  button. A rejected restart renders "Repair failed — quit and reopen ADE."
-  with the technical detail in the `title`; `onSettled` runs on both paths so the
+  button. A rejected restart renders "Repair didn't finish." with the main
+  process's sentence and the technical detail in the `title`, and a service that
+  stayed down adds a **Restart ADE** button rather than an instruction to quit
+  and reopen; `onSettled` runs on both paths so the
   caller's banner is re-derived either way. The button accepts an optional
   `disabled` so a sibling action (Account **Reconnect this computer**) can block
   Repair while it is in flight. The This Mac card, the Machines panel's

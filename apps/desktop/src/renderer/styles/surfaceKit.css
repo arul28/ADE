@@ -250,3 +250,32 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 }
 .kit-icon-btn:hover:not(:disabled) { background: var(--kit-active); color: var(--color-fg); }
 .kit-icon-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* Buttons for card surfaces (the recovery screen, the error screens). One
+   primary per card — the thing to do next — drawn in the theme's own ink, so
+   it reads on light and dark themes and never borrows a status colour. */
+.kit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease, opacity 100ms ease;
+}
+.kit-btn:hover:not(:disabled) { background: var(--kit-active); }
+.kit-btn:disabled { opacity: 0.55; cursor: default; }
+.kit-btn:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 1px; }
+.kit-btn-primary { border-color: transparent; background: var(--color-fg); color: var(--color-bg); font-weight: 600; }
+.kit-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, var(--color-bg)); }
+.kit-btn-ghost { border-color: transparent; background: transparent; color: var(--kit-text-2); }
+.kit-btn-ghost:hover:not(:disabled) { background: var(--kit-hover); color: var(--color-fg); }

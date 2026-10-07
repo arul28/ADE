@@ -273,6 +273,7 @@ describe("createAutoDiagnosticsService.sendManual", () => {
       ok: true,
       reference: "abcd1234",
       reportPath: "/tmp/reports/report.md",
+      report: "# report for user_requested",
     });
 
     expect(writeReportFile).toHaveBeenCalledWith("/tmp/reports/report.md", "# report for user_requested");
@@ -356,6 +357,7 @@ describe("createAutoDiagnosticsService.sendManual", () => {
         reason,
         // The local copy still exists, so the surface can offer to show it.
         reportPath: "/tmp/reports/report.md",
+        report: "# report for user_requested",
       });
     }
   });

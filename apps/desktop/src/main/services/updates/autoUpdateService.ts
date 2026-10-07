@@ -39,6 +39,13 @@ import {
   DEFAULT_RELEASE_NOTES_BASE_URL,
   DEFAULT_RELEASE_REPOSITORY,
 } from "./autoUpdateVersions";
+import {
+  buildUpdateFeedProbeUrl,
+  canReplaceUpdaterNetSession,
+  isChromiumNetError,
+  probeUpdateFeed,
+  replaceUpdaterNetSession,
+} from "./updaterNetRecovery";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
 // Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
@@ -128,6 +135,9 @@ type CreateAutoUpdateServiceArgs = {
    */
   beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
+  /** Quits and reopens ADE, after the usual quit warnings. */
+  /** Resolves true once the person agreed to restart; false when they kept ADE open. */
+  relaunchApp?: () => Promise<boolean>;
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
@@ -428,6 +438,7 @@ export function createAutoUpdateService({
   updater = autoUpdater as unknown as AutoUpdaterLike,
   beforeQuitAndInstall,
   rollbackQuitAndInstall,
+  relaunchApp,
   forceQuit,
   getRuntimeActivitySummary,
   productAnalyticsService,
@@ -463,13 +474,14 @@ export function createAutoUpdateService({
   // after discovering the artifact size but before bytes are written.
   updater.autoDownload = false;
   updater.autoInstallOnAppQuit = false;
+  let overrideFeedUrl: string | undefined;
   try {
     // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
     // feed (generic provider) instead of the GitHub release feed. Used to exercise
     // the real Install-update flow against a local server. Unset in production.
     // Defense-in-depth: only honor the override in non-packaged (dev/test) builds so
     // a packaged app can never be redirected to an attacker-controlled feed.
-    const overrideFeedUrl = !app.isPackaged ? process.env.ADE_UPDATE_FEED_URL?.trim() : undefined;
+    overrideFeedUrl = !app.isPackaged ? process.env.ADE_UPDATE_FEED_URL?.trim() : undefined;
     if (overrideFeedUrl) {
       updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
       logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });
@@ -589,6 +601,14 @@ export function createAutoUpdateService({
   let archiveRestoreInProgress = false;
   let staleHandoffRecoveriesThisInstall = 0;
   let staleHandoffRecoveryInProgress = false;
+  // Fresh updater sessions handed out so far; each needs its own partition name.
+  let netSessionGeneration = 0;
+  // A fresh session already failed to fix this streak. Background checks stop
+  // minting new sessions until a check succeeds; a user's Check again may
+  // still try one more.
+  let netRecoveryExhausted = false;
+  // Set by the net recovery when the feed is reachable but the updater is not.
+  let checkFailureKind: AutoUpdateErrorKind | null = null;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -669,6 +689,7 @@ export function createAutoUpdateService({
     phase: AutoUpdatePhase,
   ): boolean {
     return phase !== "download"
+      && phase !== "check"
       && (kind === "insufficient_space" || kind === "disk_full" || kind === "quota" || kind === "permission" || kind === "installer");
   }
 
@@ -698,14 +719,15 @@ export function createAutoUpdateService({
       && (classified.kind === "insufficient_space" || classified.kind === "disk_full" || classified.kind === "quota")
     ) {
       try {
-        const targetPath = classified.phase === "download"
+        const downloadSide = classified.phase === "download" || classified.phase === "check";
+        const targetPath = downloadSide
           ? updaterCacheDir ?? path.dirname(globalStatePath)
           : installTargetPath;
         const disk = getDiskSpace(targetPath);
         capacity = {
           availableBytes: disk.availableBytes,
           requiredBytes: estimateUpdateRequiredBytes(
-            classified.phase === "download" ? "download" : "install",
+            downloadSide ? "download" : "install",
             compressedUpdateBytes,
           ),
           volumePath: disk.volumePath,
@@ -858,7 +880,7 @@ export function createAutoUpdateService({
 
   const onCheckingForUpdate = () => {
     logger.info("autoUpdate.checking");
-    currentPhase = "download";
+    currentPhase = "check";
     patchSnapshot(preservedOrIdlePatch("checking"));
   };
 
@@ -1029,6 +1051,10 @@ export function createAutoUpdateService({
     }
     ignoredDownloadVersion = null;
     if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
+    // A Chromium net failure of the feed request belongs to runUpdateCheck: it
+    // may still recover and retry, so nothing is surfaced from here. Its catch
+    // applies the same ordering as below if the check really failed.
+    if (currentPhase === "check" && isChromiumNetError(err)) return;
     // The pre-install refresh is tested first. It can piggyback on a periodic
     // check that is already in flight, which leaves `readyCheckInProgress` set
     // too. Recording the failure is what aborts the install; swallowing it here
@@ -1071,7 +1097,80 @@ export function createAutoUpdateService({
   updater.on("update-cancelled", onUpdateCancelled);
   updater.on("error", onError);
 
-  async function runUpdateCheck(): Promise<void> {
+  /**
+   * One feed check that survives a wedged updater session. When Chromium fails
+   * the request, Node asks the feed the same question. Node getting through
+   * means the network is fine and the updater's session is not, so the updater
+   * gets a fresh session and the check runs once more. At most one retry per
+   * check; any failure that is left propagates to runUpdateCheck's catch.
+   */
+  async function checkFeedRecoveringNetSession(userInitiated: boolean): Promise<unknown> {
+    try {
+      return await updater.checkForUpdates();
+    } catch (error) {
+      if (
+        currentPhase !== "check"
+        || !isChromiumNetError(error)
+        || !canReplaceUpdaterNetSession(updater)
+      ) {
+        throw error;
+      }
+      const message = formatErrorMessage(error);
+      const probeUrl = buildUpdateFeedProbeUrl({
+        platform,
+        repository: releaseRepository,
+        genericFeedUrl: overrideFeedUrl,
+      });
+      if (!probeUrl) throw error;
+      const probe = await probeUpdateFeed(probeUrl);
+      if (!probe.reachable) {
+        logger.warn("autoUpdate.feed_unreachable", { message, probe });
+        throw error;
+      }
+      checkFailureKind = "network_stuck";
+      const attemptRecovery = !netRecoveryExhausted || userInitiated;
+      logger.warn("autoUpdate.net_wedge_detected", {
+        message,
+        probe,
+        attemptRecovery,
+        userInitiated,
+      });
+      if (!attemptRecovery) throw error;
+      netSessionGeneration += 1;
+      const partition = `electron-updater-recovered-${netSessionGeneration}`;
+      if (!replaceUpdaterNetSession(updater, partition)) {
+        netRecoveryExhausted = true;
+        logger.warn("autoUpdate.net_wedge_unrecovered", {
+          partition,
+          reason: "session_unavailable",
+          message,
+        });
+        throw error;
+      }
+      try {
+        const result = await updater.checkForUpdates();
+        checkFailureKind = null;
+        logger.info("autoUpdate.net_wedge_recovered", { partition, probe });
+        return result;
+      } catch (retryError) {
+        if (isChromiumNetError(retryError)) {
+          netRecoveryExhausted = true;
+          logger.warn("autoUpdate.net_wedge_unrecovered", {
+            partition,
+            reason: "retry_failed",
+            message: formatErrorMessage(retryError),
+          });
+        } else {
+          // The fresh session reached the server; whatever failed now is a
+          // different problem with its own classification.
+          checkFailureKind = null;
+        }
+        throw retryError;
+      }
+    }
+  }
+
+  async function runUpdateCheck(userInitiated = false): Promise<void> {
     if (checkPromise) {
       await checkPromise;
       return;
@@ -1112,8 +1211,13 @@ export function createAutoUpdateService({
       ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
       : null;
     readyCheckInProgress = isReadyCheck;
-    checkPromise = updater.checkForUpdates()
+    checkFailureKind = null;
+    checkPromise = checkFeedRecoveringNetSession(userInitiated)
       .then(async (result) => {
+        // The feed answered, so the updater's session works again and anything
+        // that fails from here on is download-side.
+        netRecoveryExhausted = false;
+        currentPhase = "download";
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
         if (
           updateInfo
@@ -1169,6 +1273,7 @@ export function createAutoUpdateService({
           setErrorSnapshot({
             error,
             fallbackPhase: currentPhase,
+            kind: checkFailureKind ?? undefined,
             preservesDownload: preservedUpdate ? true : undefined,
             preservedUpdate: preservedUpdate ?? undefined,
           });
@@ -1200,7 +1305,7 @@ export function createAutoUpdateService({
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
     });
-    return runUpdateCheck();
+    return runUpdateCheck(options.userInitiated === true);
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {
@@ -1905,6 +2010,19 @@ export function createAutoUpdateService({
     return quitAndInstallPromise;
   }
 
+  /**
+   * The remedy for a `network_stuck` check: a relaunch has cleared it every
+   * time. main.ts owns the quit warnings and the relaunch itself.
+   */
+  async function requestRelaunch(): Promise<boolean> {
+    logger.info("autoUpdate.relaunch_requested", {
+      status: snapshot.status,
+      kind: snapshot.errorDetails?.kind ?? null,
+    });
+    if (!relaunchApp) return false;
+    return relaunchApp();
+  }
+
   const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;
   const periodicTimer = autoCheckEnabled ? setInterval(checkForUpdates, periodicCheckMs) : null;
 
@@ -1949,6 +2067,7 @@ export function createAutoUpdateService({
       return () => listeners.delete(cb);
     },
     dismissInstalledNotice,
+    requestRelaunch,
     /**
      * Publishes the post-relaunch update-transaction result. It rides the same
      * snapshot as everything else about updates, so the renderer learns about a

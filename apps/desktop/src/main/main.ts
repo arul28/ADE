@@ -2084,6 +2084,9 @@ app.whenReady().then(async () => {
     app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  // Set once the diagnostics service exists, which is created after the pool.
+  let reportAppFallback: ((reason: string) => void) | null = null;
+  let reportedAppFallbackSince: string | null = null;
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     // A dev app's brain must never compete for the machine-wide sync host
     // lease: on 2026-09-21 a lane dev brain on a custom socket took the lease
@@ -2094,6 +2097,13 @@ app.whenReady().then(async () => {
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
+      // A service manager that refused the brain is the fleet failure nobody
+      // reports by hand: ADE keeps working, so nobody presses anything.
+      const fallback = status.appFallback;
+      if (fallback && fallback.since !== reportedAppFallbackSince) {
+        reportedAppFallbackSince = fallback.since;
+        reportAppFallback?.(fallback.reason);
+      }
     },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
@@ -2997,6 +3007,9 @@ app.whenReady().then(async () => {
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    // The remedy for a wedged updater session. Same quit warnings as any quit,
+    // so running agents are never ended without the user seeing them.
+    relaunchApp: () => requestQuitAfterWarnings(null, "relaunch"),
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
     productAnalyticsService,
     releaseRepository: packagedReleaseRepository,
@@ -3082,9 +3095,10 @@ app.whenReady().then(async () => {
         {
           surface: request.surface,
           headline: request.headline ?? null,
-          code: request.failureCode,
+          code: request.code ?? request.failureCode,
           technicalDetail: request.technicalDetail ?? null,
           projectRoot,
+          extraNotes: request.extraNotes,
         },
       );
       return { report: result.report, filePath: result.filePath, installId: result.installId };
@@ -3129,6 +3143,11 @@ app.whenReady().then(async () => {
         .catch(() => undefined);
     },
   });
+  reportAppFallback = (reason) => {
+    void autoDiagnosticsService
+      .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
+      .catch(() => undefined);
+  };
 
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged
@@ -8039,11 +8058,12 @@ app.whenReady().then(async () => {
   const confirmQuitWarning = (
     ownerWindow?: BrowserWindow | null,
     impact: UpdateInstallImpact | null = null,
+    relaunch = false,
   ): boolean => {
     const phoneDetail = describeConnectedPhones(impact);
     return showWindowCloseWarning(ownerWindow, {
-      buttons: ["Keep ADE open", "Quit ADE"],
-      title: "Quit ADE?",
+      buttons: ["Keep ADE open", relaunch ? "Restart ADE" : "Quit ADE"],
+      title: relaunch ? "Restart ADE?" : "Quit ADE?",
       message: "Save your work before closing ADE.",
       detail: [
         "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
@@ -8067,16 +8087,22 @@ app.whenReady().then(async () => {
 
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
-    reason: "before_quit" | "window_close",
-  ): void => {
-    if (shutdownRequested || quitConfirmationInFlight) return;
+    reason: "before_quit" | "window_close" | "relaunch",
+  ): Promise<boolean> => {
+    if (shutdownRequested || quitConfirmationInFlight) return Promise.resolve(false);
     quitConfirmationInFlight = true;
-    void (async () => {
+    // Resolves whether the person agreed, so "Restart ADE" can tell a restart
+    // that is happening from one they cancelled.
+    return (async () => {
       try {
-        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
+        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
         const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact)) return;
+        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return false;
+        // Registered only once the user has agreed, so a cancelled restart
+        // cannot turn a later plain quit into a relaunch. app.exit honors it.
+        if (reason === "relaunch") app.relaunch();
         requestAppShutdown({ reason, exitCode: 0 });
+        return true;
       } finally {
         quitConfirmationInFlight = false;
       }
@@ -8103,7 +8129,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
-    requestQuitAfterWarnings(win, "window_close");
+    void requestQuitAfterWarnings(win, "window_close");
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
@@ -9494,7 +9520,7 @@ app.whenReady().then(async () => {
     }
     event.preventDefault();
     if (shutdownRequested) return;
-    requestQuitAfterWarnings(null, "before_quit");
+    void requestQuitAfterWarnings(null, "before_quit");
   });
 });
 

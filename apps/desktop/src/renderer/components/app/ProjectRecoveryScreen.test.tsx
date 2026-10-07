@@ -86,6 +86,9 @@ describe("ProjectRecoveryScreen", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    // Restart ADE leaves a stamp that outlives the renderer; one test's click
+    // must not change the next test's ladder.
+    window.localStorage.clear();
     if (originalAde === undefined) delete (globalThis.window as any).ade;
     else globalThis.window.ade = originalAde;
   });
@@ -121,7 +124,6 @@ describe("ProjectRecoveryScreen", () => {
     expect(screen.queryByRole("button", { name: "Fix it" })).toBeNull();
     // The prerequisite the person owns still shows, and the way forward is to
     // try the open again rather than run a repair that cannot help.
-    expect(screen.getByText("What to do")).toBeTruthy();
     expect(screen.getByText(/Quit the other copy of ADE/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
@@ -211,7 +213,6 @@ describe("ProjectRecoveryScreen", () => {
     // so no fix offer — and the prerequisite the person owns still shows.
     expect(await screen.findByText("Another copy of ADE is open")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Fix it" })).toBeNull();
-    expect(screen.getByText("What to do")).toBeTruthy();
     expect(screen.getByText(/Quit the other copy of ADE/)).toBeTruthy();
   });
 
@@ -280,16 +281,20 @@ describe("ProjectRecoveryScreen", () => {
       }),
     );
     installRecoveryBridge({ diagnose, repair });
+    const updateRelaunchApp = vi.fn(async () => true);
+    (globalThis.window.ade as any).updateRelaunchApp = updateRelaunchApp;
     setError();
 
     render(<ProjectRecoveryScreen />);
     fireEvent.click(await screen.findByRole("button", { name: "Fix it" }));
 
     // A dead end is the failure mode this screen exists to prevent: with no
-    // nextAction from the main process it still says what to do next.
-    expect(await screen.findByText("What to do now")).toBeTruthy();
-    expect(screen.getByText(/Choose Try again\. A second try fixes most of these\./)).toBeTruthy();
+    // nextAction from the main process it still names what failed and climbs
+    // to the next rung, Restart ADE, instead of telling the person to quit.
+    expect(await screen.findByText("ADE's background service still won't start")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Restart ADE" }));
+    expect(updateRelaunchApp).toHaveBeenCalledTimes(1);
   });
 
   it("keeps raw internals inside the technical fold and off the main surface", async () => {
@@ -324,7 +329,7 @@ describe("ProjectRecoveryScreen", () => {
 
     render(<ProjectRecoveryScreen />);
 
-    await screen.findByText("Your Mac is blocking ADE");
+    await screen.findByText("macOS isn't letting ADE's background service run");
     // No fix can change the switch, so the one offer is the Settings pane.
     expect(screen.queryByRole("button", { name: "Fix it" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open System Settings" }));

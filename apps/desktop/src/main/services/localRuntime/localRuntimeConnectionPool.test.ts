@@ -3455,37 +3455,223 @@ describe("local runtime connection pool", () => {
     );
   });
 
-  it("does not spawn a primary sync runtime when service repair is configured but unavailable", async () => {
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
+  // The last resort when the service manager will not run the brain: the
+  // desktop runs one itself on the primary socket, with sync off, and only for
+  // a service-manager refusal. Service status comes from the injected probe,
+  // never this machine's real launchd.
+  it.each([
+    {
+      name: "launchd would not register the job",
+      install: { state: "failed", failureStep: "launchd_register" },
+      running: false,
+      fallback: "launchd_register",
+    },
+    {
+      name: "launchd never started a replacement",
+      install: { state: "failed", failureStep: "replacement_pid" },
+      running: false,
+      fallback: "replacement_pid",
+    },
+    {
+      name: "the predecessor brain is still alive",
+      install: { state: "failed", failureStep: "predecessor_exit" },
+      running: false,
+      fallback: null,
+    },
+    {
+      name: "the service reports a running brain",
+      install: { state: "installed" },
+      running: true,
+      fallback: null,
+    },
+  ])("primary socket with failed service repair: $name", async ({ install, running, fallback }) => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-fallback-"));
+    const originalAdeHome = process.env.ADE_HOME;
+    const originalSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH;
+    process.env.ADE_HOME = adeHome;
+    // An agent shell exports the live brain's socket; the primary socket here
+    // must be the throwaway home's.
+    delete process.env.ADE_RUNTIME_SOCKET_PATH;
+    try {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+        preferServiceRepair: true,
+        queryServiceStatusAsync: async () => ({
+          ok: true,
+          serviceName: "com.ade.runtime",
+          action: "status" as const,
+          installed: true,
+          running,
+          path: "/test/com.ade.runtime",
+          message: running ? "running" : "loaded but not running",
+        }),
+      });
+      const client = { close: vi.fn() };
+      const child = { pid: 4242, exitCode: null, signalCode: null } as unknown as ChildProcess;
+      const internals = pool as unknown as {
+        createConnection: () => Promise<{ child: ChildProcess | null }>;
+        tryConnect: (socketPath: string) => Promise<unknown>;
+        tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+        spawnRuntime: (socketPath: string, options: { disableSync?: boolean }) => ChildProcess;
+        connectSpawnedRuntime: (socketPath: string, child: ChildProcess) => Promise<typeof client>;
+        serviceInstallStatus: Record<string, unknown>;
+      };
+      vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+      vi.spyOn(internals, "tryRepairServiceConnection").mockImplementation(async () => {
+        internals.serviceInstallStatus = { ...internals.serviceInstallStatus, attempted: true, message: "refused", ...install };
+        return null;
+      });
+      const spawnRuntime = vi.spyOn(internals, "spawnRuntime").mockReturnValue(child);
+      vi.spyOn(internals, "connectSpawnedRuntime").mockResolvedValue(client);
+      const socketPath = resolveMachineAdeLayout().socketPath;
+
+      if (fallback) {
+        const entry = await internals.createConnection();
+        expect(entry.child).toBe(child);
+        expect(spawnRuntime).toHaveBeenCalledWith(socketPath, expect.objectContaining({ disableSync: true }));
+        expect(pool.getStatus()).toMatchObject({
+          runtimeMode: "app_fallback",
+          appFallback: { reason: fallback },
+        });
+      } else {
+        await expect(internals.createConnection()).rejects.toThrow(/refusing to spawn an app-owned sync-enabled brain/i);
+        expect(spawnRuntime).not.toHaveBeenCalled();
+        expect(pool.getStatus()).toMatchObject({ runtimeMode: "primary", appFallback: null });
+      }
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      if (originalSocketPath === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalSocketPath;
+      removeTempDir(adeHome);
+    }
+  });
+
+  it("brings the fallback back after a failed Fix it, and hands it to the next install", async () => {
+    // Real boundaries throughout: the running fallback is a real child, the
+    // installer is a real `serve --install-service` child that fails the way a
+    // refusing launchd does, and the restored fallback is a real `serve` child
+    // the pool itself spawns. Only the socket connect is faked.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-fallback-restore-"));
+    const logPath = path.join(dir, "cli.log");
+    const cliPath = path.join(dir, "fake-cli.cjs");
+    fs.writeFileSync(cliPath, [
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (args.includes('--install-service')) {",
+      `  fs.appendFileSync(${JSON.stringify(logPath)}, 'install\\n');`,
+      "  process.stdout.write(JSON.stringify({ ok: false, failureStep: 'launchd_register', message: 'launchd did not register the ADE background service.' }));",
+      "  process.exitCode = 1;",
+      "} else {",
+      `  fs.appendFileSync(${JSON.stringify(logPath)}, 'serve ' + (args.includes('--no-sync') ? 'no-sync' : 'sync') + ' ' + process.pid + '\\n');`,
+      "  setInterval(() => {}, 1000);",
+      "}",
+    ].join("\n"));
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
     };
-    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+    const runningFallback = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never, {
       preferServiceRepair: true,
+      queryServiceStatusAsync: async () => ({
+        ok: true, serviceName: "com.ade.runtime", action: "status" as const,
+        installed: true, running: false, path: "/test/com.ade.runtime", message: "not running",
+      }),
     });
     const internals = pool as unknown as {
-      createConnection: () => Promise<unknown>;
+      appFallback: { reason: string; since: string } | null;
+      ownedRuntimeChild: ChildProcess | null;
       tryConnect: (socketPath: string) => Promise<unknown>;
-      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
-      spawnRuntime: (socketPath: string) => ChildProcess;
+      connectSpawnedRuntime: (socketPath: string, child: ChildProcess) => Promise<unknown>;
     };
-    const tryConnect = vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
-    const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
-    const spawnRuntime = vi.spyOn(internals, "spawnRuntime");
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    try {
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+      internals.appFallback = { reason: "launchd_register", since: "2026-10-07T08:00:00.000Z" };
+      internals.ownedRuntimeChild = runningFallback;
+      vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+      // The spawned `serve` child has no socket to answer on; the readiness
+      // handshake is the one seam faked.
+      vi.spyOn(internals, "connectSpawnedRuntime").mockImplementation(async () => {
+        await vi.waitFor(() => expect(fs.readFileSync(logPath, "utf8")).toMatch(/serve [a-z-]+ \d+\n$/));
+        return { close: vi.fn() };
+      });
 
-    await expect(internals.createConnection()).rejects.toThrow(
-      /refusing to spawn an app-owned sync-enabled brain/i,
-    );
+      await Promise.all([
+        pool.installServiceBestEffort({ forceRestart: true }),
+        pool.installServiceBestEffort({ forceRestart: true }),
+      ]);
 
-    expect(tryConnect).toHaveBeenCalled();
-    expect(tryRepair).toHaveBeenCalled();
-    expect(spawnRuntime).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      "local_runtime.service_repair_fallback_blocked",
-      expect.objectContaining({ socketPath: expect.any(String) }),
-    );
+      const log = fs.readFileSync(logPath, "utf8").trim().split("\n");
+      // Each failed install is followed by its restored fallback, sync off,
+      // before the next install starts.
+      expect(log.map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual([
+        "install", "serve no-sync", "install", "serve no-sync",
+      ]);
+      const [firstRestored, secondRestored] = log.filter((line) => line.startsWith("serve")).map((line) => Number(line.split(" ")[2]));
+      // Every install stopped the fallback it found, including one it restored.
+      expect(runningFallback.exitCode != null || runningFallback.signalCode != null).toBe(true);
+      await vi.waitFor(() => expect(alive(firstRestored)).toBe(false));
+      expect(alive(secondRestored)).toBe(true);
+      expect(internals.ownedRuntimeChild?.pid).toBe(secondRestored);
+      expect(pool.getStatus()).toMatchObject({
+        runtimeMode: "app_fallback",
+        appFallback: { reason: "launchd_register" },
+        serviceInstall: { state: "failed" },
+      });
+    } finally {
+      pool.dispose();
+      runningFallback.kill("SIGKILL");
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("holds a queued install until the restored fallback has the socket", async () => {
+    // The ordering half of the restore, which the real-boundary test above
+    // cannot force without a wall-clock wait: a deferred restore must keep the
+    // queued install from starting a service brain against the same socket.
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never, { preferServiceRepair: true });
+    const events: string[] = [];
+    let releaseFallback!: () => void;
+    const internals = pool as unknown as {
+      runServiceInstallBestEffort: (options: { forceRestart?: boolean }) => Promise<void>;
+      startAppFallback: (socketPath: string, reason: string) => Promise<unknown>;
+      appFallbackStoppedForInstall: string | null;
+      serviceInstallStatus: Record<string, unknown>;
+    };
+    vi.spyOn(internals, "runServiceInstallBestEffort").mockImplementation(async (options) => {
+      events.push(options.forceRestart ? "forced_install" : "install");
+      internals.appFallbackStoppedForInstall = "launchd_register";
+      internals.serviceInstallStatus = { ...internals.serviceInstallStatus, state: "failed", failureStep: "launchd_register" };
+    });
+    const startAppFallback = vi.spyOn(internals, "startAppFallback").mockImplementation(() => {
+      events.push("fallback_restored");
+      return new Promise((resolve) => {
+        releaseFallback = () => resolve({ client: { close: vi.fn() }, child: null, socketPath: "/tmp/ade.sock" });
+      });
+    });
+
+    const first = pool.installServiceBestEffort();
+    const queued = pool.installServiceBestEffort({ forceRestart: true });
+    await vi.waitFor(() => expect(startAppFallback).toHaveBeenCalledTimes(1));
+    expect(events).toEqual(["install", "fallback_restored"]);
+
+    releaseFallback();
+    await first;
+    await vi.waitFor(() => expect(events).toContain("forced_install"));
+    expect(events.indexOf("forced_install")).toBeGreaterThan(events.indexOf("fallback_restored"));
+    pool.dispose();
+    await queued.catch(() => undefined);
   });
 
   it("surfaces a recorded disk failure with crash-loop context when repair remains blocked", async () => {
