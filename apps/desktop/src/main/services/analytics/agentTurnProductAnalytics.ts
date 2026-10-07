@@ -1,5 +1,6 @@
 import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
+import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -84,6 +85,36 @@ export function captureChatHandoffReplayAnalytics(args: {
       action: "handoff_replay",
       outcome: args.event.outcome,
       provider: args.event.provider,
+      source: "runtime",
+    },
+  });
+}
+
+/**
+ * One coarse fact per terminal state of a move to another machine.
+ *
+ * The product question is whether moving a chat to another machine works:
+ * it continued there, failed, was cancelled (kept here, denied, or dismissed),
+ * or ended unknown (the answer was lost). Nothing finer crosses the boundary:
+ * no session or handoff id, no machine name, no reason, branch, or capsule
+ * content. The handoff id only keys the local dedupe (hashed, never sent), so
+ * each move reports each outcome at most once an hour.
+ */
+export function captureCrossMachineMoveAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { handoffId: string; outcome: CrossMachineMoveOutcome };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    dedupeKey: `cross_machine_move:${args.event.handoffId}:${args.event.outcome}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "cross_machine_move",
+      outcome: args.event.outcome,
       source: "runtime",
     },
   });

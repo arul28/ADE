@@ -666,6 +666,8 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
+ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
 ade chat models --provider codex --json                          # model order + supported reasoning tiers

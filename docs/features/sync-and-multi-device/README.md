@@ -26,9 +26,11 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
   projects, remote device drive with proof filed back.
-- `cross-machine-session-handoff.md` — the clean/published Git contract,
-  bounded context capsule, destination setup, route binding, and
-  idempotent recovery used by **Continue on another machine**.
+- `cross-machine-session-handoff.md` — moving a Work chat to another
+  machine: the brain-owned move record and its states, agent and CLI control,
+  approval, the source banner and send routing, the Git contract (clean and
+  published, or uncommitted work carried as a bundle), the bounded context
+  capsule, destination setup, and idempotent recovery.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
@@ -1675,25 +1677,42 @@ Cross-machine Work union:
 
 Cross-machine Work chat handoff:
 
-- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
-  `CrossMachineHandoffModal.tsx` — Handoff-tab entry point and the staged
-  source/destination/clone/review/completion UI, including the destination
-  chat's model / reasoning / fast-mode / permission controls and the
-  fast-forward offer for a clean-but-behind destination lane.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts` —
+  the source brain's move: the durable record per chat (approval, queued
+  until the turn ends, sending checkpoints, continued / failed / cancelled /
+  unknown), the outbox capsule that retry and restart reuse, agent permission
+  mapping, and the copy for the approval card and ended notice.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffSource.ts` — the kv
+  move store, the outbox files, and `inspectLane`, the one source check that
+  returns every blocker with its fix.
+- `apps/desktop/src/main/services/chat/handoffGitBundle.ts` — opt-in transfer
+  of uncommitted and unpushed work: private-index snapshot, bundle of what
+  origin lacks, LFS and submodule refusal, apply with full rollback, and the
+  GitHub auth header env.
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`,
+  `CrossMachineHandoffBanner.tsx` — the source banner for every move state,
+  the arrival banner on the destination, and the routed send after a chat
+  continues elsewhere.
+- `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`
+  and `CrossMachineHandoffChooseStage.tsx` — the setup UI, a thin client of
+  `getCrossMachineHandoffOptions`, `previewCrossMachineHandoff` and
+  `startCrossMachineHandoff`.
+- `apps/desktop/src/renderer/components/terminals/CrossMachineMoveSubmenu.tsx`
+  — **Hand off › Another machine ▸** in the session menu, with quick brief.
 - `apps/desktop/src/renderer/components/chat/crossMachineHandoffPresentation.tsx`
-  — the modal's pure presentation half: stage/mode types, the `SourceCheck`
-  shape, the branch-row and route/repo-readiness copy, permission tone and icon
-  lookups, send-step labels, and the `CheckRow` component. Split out because
-  these are exactly the pieces that shipped wrong (a tone map that rendered
-  every permission pill grey, a branch row that called a two-commits-behind
-  branch "pushed") and were unreachable from a test inside the stateful modal.
+  — the modal's pure presentation half: permission tone and icon lookups and
+  the `CheckRow` component.
+- `apps/ios/ADE/Views/Work/WorkCrossMachineHandoffViews.swift`,
+  `WorkSessionHandoffSheets.swift`, and
+  `apps/ios/ADE/Services/SyncService+SessionHandoff.swift` — the phone's
+  handoff sheet, in-chat card, send gate, and session long-press menu.
 - `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` and
   `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` —
   cross-surface primitives the modal reuses rather than reimplementing: the
   reason-carrying blocked-action button/list, and the composer's permission
   pill.
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
-  source readiness, capsule creation and validation, destination preflight,
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — the wiring of
+  the orchestrator, capsule creation and validation, destination preflight,
   deterministic lane/chat acceptance, durable replay record, and source notice;
   it also owns the one-call session metadata regeneration action for bound chats.
 - `apps/desktop/src/shared/crossMachineHandoff.ts` and
@@ -4242,7 +4261,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
-| Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
+| Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
 

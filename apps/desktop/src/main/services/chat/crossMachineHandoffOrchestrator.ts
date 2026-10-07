@@ -182,6 +182,8 @@ export type CrossMachineHandoffOrchestratorDeps = {
   noticeEnded: (sessionId: string, notice: CrossMachineMoveEndedNotice) => void;
   /** Tell the phone: an agent asked to move the chat, or an unwatched move ended. */
   notifyPerson?: (sessionId: string, record: AgentChatCrossMachineHandoffRecord, title: string | null) => void;
+  /** Content-free hook for product analytics: a move reached a terminal state (never for a deleted chat). */
+  onMoveOutcome?: (event: { sessionId: string; handoffId: string; outcome: CrossMachineMoveOutcome }) => void;
   logger: {
     info(event: string, data?: Record<string, unknown>): void;
     warn(event: string, data?: Record<string, unknown>): void;
@@ -190,6 +192,9 @@ export type CrossMachineHandoffOrchestratorDeps = {
   /** Wall clock in ms, for the decline cooldown. */
   nowMs?: () => number;
 };
+
+/** The terminal states of a move, as product analytics records them. */
+export type CrossMachineMoveOutcome = "continued" | "failed" | "cancelled" | "unknown";
 
 /** The approval card's words; the host only emits it. */
 export type CrossMachineMoveApprovalCard = {
@@ -330,9 +335,11 @@ export function isCrossMachineSourceStaleError(error: unknown): boolean {
 
 /** The chat changed after a capsule that may have landed was sent. */
 class StaleCapsuleError extends Error {
-  constructor(machineName: string) {
+  constructor(machineName: string, dismissable: boolean) {
     super(
-      `This chat changed after the move was sent. Open ${machineName} to check whether it arrived; if it didn't, dismiss this move and start a new one.`,
+      `This chat changed after the move was sent. Open ${machineName} to check whether it arrived; if it didn't, ${
+        dismissable ? "dismiss this move and start a new one" : "start a new move"
+      }.`,
     );
   }
 }
@@ -426,6 +433,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       deps.showApprovalCard(sessionId, crossMachineMoveApprovalCard(persisted.record, false));
     }
     deps.noticeEnded(sessionId, crossMachineMoveEndedNotice(next.record));
+    deps.onMoveOutcome?.({ sessionId, handoffId: next.record.handoffId, outcome: state });
     deps.logger.info("agent_chat.cross_machine_handoff_ended", {
       sessionId,
       handoffId: next.record.handoffId,
@@ -867,7 +875,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           await validateStored(sessionId, persisted, prepared);
         } catch (error) {
           acceptanceStarted = true;
-          if (isCrossMachineSourceStaleError(error)) throw new StaleCapsuleError(persisted.record.targetMachineName);
+          if (isCrossMachineSourceStaleError(error)) throw new StaleCapsuleError(persisted.record.targetMachineName, true);
           // The check itself failed (git, the lane): nothing is known about the
           // chat, so nothing is resent. Keep the capsule for a retry.
           throw new UncheckedCapsuleError(errorText(error));
@@ -961,6 +969,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       });
       deps.outbox.remove(persisted.record.handoffId);
       knownUserMessages.delete(sessionId);
+      if (chatExists(sessionId)) {
+        deps.onMoveOutcome?.({ sessionId, handoffId: persisted.record.handoffId, outcome: "continued" });
+      }
       deps.logger.info("agent_chat.cross_machine_handoff_continued", {
         sessionId,
         handoffId: persisted.record.handoffId,
@@ -1007,10 +1018,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
    * once acceptance had started, the same capsule from the outbox: the
    * destination reconciles through its own record instead of creating a
    * second lane or chat. That capsule is resent only while it still matches
-   * the chat (branch, files, model, no newer messages). When it doesn't, a
-   * `failed` move is prepared again under a new handoffId (the destination
-   * refused the old one, so nothing landed), and an `unknown` move is refused:
-   * the old capsule may already have landed there.
+   * the chat (branch, files, model, no newer messages). When it doesn't,
+   * the retry is refused. A stored capsule exists only once acceptance had
+   * started, so even a `failed` move may have started its chat there (the
+   * destination can fail after the continuation began); a new handoffId would
+   * bypass the destination's record and could start a second agent on the
+   * same branch. The person checks that machine, then starts a new move.
    */
   const retry = async (sourceSessionId: string): Promise<AgentChatCrossMachineHandoffRecord> => {
     const persisted = deps.readPersisted(sourceSessionId);
@@ -1021,7 +1034,6 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     if (source?.turnActive) throw new Error("This chat is responding. Retry when the turn ends.");
     const oldId = persisted.record.handoffId;
     const stored = deps.outbox.read(oldId);
-    let patch: Partial<AgentChatCrossMachineHandoffRecord> = {};
     if (stored) {
       let stale = false;
       let checkError: unknown = null;
@@ -1041,22 +1053,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       if (checkError) {
         throw new Error(`Couldn't check the chat before retrying: ${errorText(checkError)}`);
       }
-      if (stale && persisted.record.state === "unknown") {
-        throw new StaleCapsuleError(persisted.record.targetMachineName);
-      }
       if (stale) {
-        deps.outbox.remove(oldId);
-        patch = { handoffId: randomUUID(), requestedAt: now(), targetLaneId: null, targetSessionId: null };
-        deps.logger.info("agent_chat.cross_machine_handoff_reprepare", {
-          sessionId: sourceSessionId,
-          previousHandoffId: oldId,
-          handoffId: patch.handoffId,
-        });
-      } else {
-        checkedOutbox.add(oldId);
+        throw new StaleCapsuleError(persisted.record.targetMachineName, persisted.record.state === "unknown");
       }
+      checkedOutbox.add(oldId);
     }
-    const next = write(sourceSessionId, persisted, { ...patch, state: "sending", reason: null, checkpoint: null });
+    const next = write(sourceSessionId, persisted, { state: "sending", reason: null, checkpoint: null });
     void run(sourceSessionId);
     return next.record;
   };

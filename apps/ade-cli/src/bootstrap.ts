@@ -169,6 +169,7 @@ import {
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
+  captureCrossMachineMoveAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
@@ -2365,6 +2366,13 @@ export async function createAdeRuntime(args: {
           analytics: productAnalyticsService,
           projectId,
           event,
+        }),
+        // This brain runs the moves (it owns the transport), so it records
+        // how each one ended.
+        onCrossMachineMoveOutcome: ({ handoffId, outcome }) => captureCrossMachineMoveAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event: { handoffId, outcome },
         }),
         onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
           analytics: productAnalyticsService,

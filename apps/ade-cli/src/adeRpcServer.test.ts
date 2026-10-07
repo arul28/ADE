@@ -5078,6 +5078,59 @@ describe("adeRpcServer", () => {
     expect(getSessionInputOrigin("chat-1")).toEqual(desktopStamp);
   });
 
+  it("stamps who started a cross-machine move from the caller's identity, never its arguments", async () => {
+    // [caller identity, initialize params, the stamp the brain must see]
+    const callers: Array<[string, Record<string, unknown>, Record<string, unknown>, "user" | "agent"]> = [
+      ["the person's desktop", { callerId: "ade-desktop:test", role: "cto" }, { clientName: "ade-desktop" }, "user"],
+      ["a chat-bound agent", { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" }, {}, "agent"],
+      // A run agent that only inherited the CTO role is not the CTO thread.
+      ["an agent with an inherited CTO role", { callerId: "ade-cli", role: "cto", runId: "run-1" }, {}, "agent"],
+    ];
+    for (const [label, identity, params, expected] of callers) {
+      const fixture = createRuntime();
+      const startCrossMachineHandoff = vi.fn(async (args: Record<string, unknown>) => ({
+        handoffId: "handoff-1",
+        state: "sending",
+        requestedBy: args.requestedBy,
+      }));
+      (fixture.runtime.agentChatService as any).startCrossMachineHandoff = startCrossMachineHandoff;
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "startCrossMachineHandoff",
+        // Each caller claims the opposite of what it is; the claim is ignored.
+        args: {
+          sourceSessionId: "chat-1",
+          machine: "Mac mini",
+          targetModelId: "openai/gpt-5.5",
+          requestedBy: expected === "user" ? "agent" : "user",
+        },
+      });
+      expect(result?.isError, label).toBeUndefined();
+      expect(startCrossMachineHandoff, label).toHaveBeenCalledTimes(1);
+      expect(startCrossMachineHandoff.mock.calls[0]![0], label).toMatchObject({
+        sourceSessionId: "chat-1",
+        machine: "Mac mini",
+        requestedBy: expected,
+      });
+    }
+
+    // A chat-bound agent moves only its own chat.
+    const fixture = createRuntime();
+    const startCrossMachineHandoff = vi.fn(async () => ({ handoffId: "handoff-2", state: "sending" }));
+    (fixture.runtime.agentChatService as any).startCrossMachineHandoff = startCrossMachineHandoff;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "startCrossMachineHandoff",
+      args: { sourceSessionId: "chat-2", machine: "Mac mini", targetModelId: "openai/gpt-5.5" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(startCrossMachineHandoff).not.toHaveBeenCalled();
+  });
+
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
     const fixture = createRuntime();
     const getChatEventHistory = vi.fn(async (sessionId: string) => ({

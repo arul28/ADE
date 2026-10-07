@@ -743,6 +743,7 @@ import {
   type CrossMachineHandoffOrchestrator,
   type CrossMachineHandoffPersisted,
   type CrossMachineHandoffTransport,
+  type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 import {
@@ -9991,6 +9992,16 @@ export function createAgentChatService(args: {
     outcome: ChatHandoffReplayOutcome;
     provider: AgentChatProvider;
   }) => void;
+  /**
+   * Content-free hook fired once per terminal state of a move to another
+   * machine (continued, failed, cancelled, unknown). Never the machine, the
+   * reason, the branch, or any capsule content.
+   */
+  onCrossMachineMoveOutcome?: (event: {
+    sessionId: string;
+    handoffId: string;
+    outcome: CrossMachineMoveOutcome;
+  }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
@@ -10097,6 +10108,7 @@ export function createAgentChatService(args: {
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
     onChatHandoffReplay,
+    onCrossMachineMoveOutcome,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -44547,6 +44559,7 @@ export function createAgentChatService(args: {
     notifyPerson: notifyCrossMachineHandoff
       ? (sessionId, record, title) => notifyCrossMachineHandoff({ sessionId, record, title })
       : undefined,
+    onMoveOutcome: onCrossMachineMoveOutcome,
     logger,
   });
   // Only the brain owns moves. A host without a transport (the desktop's own

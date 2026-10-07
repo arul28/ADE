@@ -50,6 +50,7 @@ function installCleanCrossMachineGitFixture(
   vi.mocked(runGit).mockImplementation(async (args) => {
     const command = args.join(" ");
     if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
+    if (command === "symbolic-ref --quiet HEAD") return { stdout: `refs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
@@ -3721,8 +3722,11 @@ describe("createAgentChatService", () => {
         manuallyNamed: true,
       });
       const lane = await laneService.getSummary("lane-1");
+      // A worktree lane travels under its own name (a primary lane travels
+      // under its branch), so that name is what must be scrubbed.
       laneService.getSummary.mockResolvedValue({
         ...lane,
+        laneType: "worktree",
         name: "Deploy password=super-secret-value",
       });
 
@@ -3741,19 +3745,26 @@ describe("createAgentChatService", () => {
 
     it("blocks a dirty source lane before generating or transferring context", async () => {
       installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
-      const { service } = createService();
+      const { service, aiIntegrationService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
         model: "",
         modelId: "opencode/openai/gpt-5.4",
       });
+      vi.mocked(streamText).mockClear();
+      vi.mocked(aiIntegrationService.summarizeTerminal).mockClear();
 
+      // The refusal names the blocker (the dirty file count), not a generic error.
       await expect(service.prepareCrossMachineHandoff({
         sourceSessionId: source.id,
         handoffId: "handoff-dirty-1",
         targetModelId: "opencode/openai/gpt-5.4-mini",
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
+      // Nothing was generated from the chat, and nothing reached git's remote.
+      expect(streamText).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "bundle" || args[0] === "push")).toBe(false);
     });
 
     it("revalidates source cleanliness immediately before destination acceptance", async () => {
@@ -3776,7 +3787,7 @@ describe("createAgentChatService", () => {
         sourceSessionId: source.id,
         capsule: prepared.capsule,
         capsuleFingerprint: prepared.capsuleFingerprint,
-      })).rejects.toThrow("Commit or discard every source lane change");
+      })).rejects.toThrow(/1 uncommitted change\b/);
     });
 
     it("blocks handoff when a source turn starts during brief generation", async () => {
@@ -3911,13 +3922,20 @@ describe("createAgentChatService", () => {
       // Preflight now fetches before evaluating whether an existing lane is a
       // strict ancestor; acceptance fetches again at its mutation boundary.
       expect(remoteAuthCalls).toHaveLength(3);
+      const extraHeaderKey = "http.https://github.com/.extraheader";
       for (const [, options] of remoteAuthCalls) {
-        expect(options?.env).toMatchObject({
-          GIT_TERMINAL_PROMPT: "0",
-          GCM_INTERACTIVE: "Never",
-          GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-          GIT_CONFIG_VALUE_0: expectedAuthorization,
-        });
+        const env = options?.env ?? {};
+        expect(env).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" });
+        const entries = Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
+          env[`GIT_CONFIG_KEY_${index}`],
+          env[`GIT_CONFIG_VALUE_${index}`],
+        ]);
+        // A reset entry first clears any extraheader a clone left behind, so
+        // GitHub sees exactly one Authorization header: this machine's token.
+        expect(entries[0]).toEqual([extraHeaderKey, ""]);
+        expect(entries.filter(([key, value]) => key === extraHeaderKey && value)).toEqual([
+          [extraHeaderKey, expectedAuthorization],
+        ]);
       }
       expect(Array.from(values.values())).toEqual(expect.arrayContaining([
         expect.objectContaining({

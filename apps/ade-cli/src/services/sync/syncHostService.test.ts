@@ -6451,6 +6451,9 @@ describe("CTO-gated Linear sync commands", () => {
       // A runtime with automations wires its webhook source, which is what
       // registers the optional `automations.webhook*` actions.
       getWebhookAutomations: () => null,
+      // Same for its rule source, which registers the optional
+      // `automations.list` / `saveDraft` / `deleteRule` actions.
+      getAutomationRules: () => null,
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 

@@ -76,13 +76,15 @@ they were, and a restart ends a `sending` move `unknown` ("ADE couldn't check
 this chat after a restart: <reason>. Retry when it's reachable.") with its
 outbox kept. When the capsule is stale:
 
-- a `failed` move (the destination refused it, so nothing landed) drops the
-  outbox and prepares again under a **new** `handoffId`, keeping `continuedOn`
-  and `resumedHere`;
-- an `unknown` move is refused and stays `unknown`: "This chat changed after
-  the move was sent. Open <machine> to check whether it arrived; if it didn't,
-  dismiss this move and start a new one." A restart that finds a stale capsule
-  for a `sending` move ends it `unknown` with the same words.
+- the retry is refused and the move stays as it was, `failed` or `unknown`:
+  "This chat changed after the move was sent. Open <machine> to check whether
+  it arrived; if it didn't, start a new move" (an `unknown` move says "dismiss
+  this move and start a new one"). A stored capsule exists only once
+  acceptance had started, so even a `failed` move may have started its chat
+  there; a new `handoffId` would bypass the destination's record and could
+  start a second agent on the same branch;
+- a restart that finds a stale capsule for a `sending` move ends it `unknown`
+  with the same words.
 
 An `unknown` move blocks a new one: `startCrossMachineHandoff` refuses ("A move
 to <machine> may have landed. Retry it, or open <machine> to check, or dismiss

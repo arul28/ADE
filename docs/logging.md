@@ -442,6 +442,36 @@ operational lines (`agent_chat.claude_replay_overflow_retry`,
 `agent_chat.claude_replay_overflow_gave_up`), which carry session and turn ids
 and turn counts, are not PostHog events.
 
+How a move of a chat to another machine ended records one coarse fact on the
+same `ade_feature_used` event with `feature: "chat"` and
+`action: "cross_machine_move"`, at the durable owner: the source brain's move
+orchestrator (`crossMachineHandoffOrchestrator.ts`), once per terminal state,
+through `onCrossMachineMoveOutcome` on the chat service and
+`captureCrossMachineMoveAnalytics`, wired in the brain's bootstrap (the only
+runtime with a transport, so the only one that runs moves). `outcome` is a
+closed set of four values — `continued` (the destination chat started),
+`failed` (a step failed or the destination refused), `cancelled` (kept here,
+denied, dismissed, or a new message won), and `unknown` (the answer was lost
+after acceptance started) — and `source` is the existing `runtime`. The product
+question is only whether moving a chat works, so nothing finer crosses the
+boundary: no session or handoff id, no machine name, no failure reason, no
+branch or commit, no model, and no capsule content. Who asked (`user` or
+`agent`) is left out because no existing key holds it, and no key was invented.
+A move whose chat was deleted records nothing.
+
+Volume is bounded by a `cross_machine_move:<handoffId>:<outcome>` deduplication
+key (hashed locally, never sent) with a one-hour minimum interval, so a retried
+move that ends `unknown` again inside the hour counts once. Moves are deliberate
+actions, and one move reaches at most four terminal outcomes (`unknown`, then a
+retry to `failed` or `continued`, or a dismissal to `cancelled`), so realistic
+volume is a handful per installation per day — inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling. No ceiling was raised, no PostHog definition changed (the provisioning
+scripts enumerate event names, not `action` or `outcome` values), and the
+dashboard spec is untouched until a product question needs it. The
+orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
+which carry session and handoff ids, are not PostHog events.
+
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 
 Provider-account mutations are captured at the `provider_instances` action

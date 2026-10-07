@@ -15,6 +15,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
+  captureCrossMachineMoveAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import {
@@ -419,6 +420,52 @@ describe("productAnalyticsService", () => {
       dedupeKey: `chat_${action}:session-1`,
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("records how a cross-machine move ended once per move and outcome, with no ids", () => {
+    const harness = makeHarness();
+    const move = (outcome: "continued" | "failed" | "cancelled" | "unknown", handoffId = "handoff-7c1e9a") =>
+      captureCrossMachineMoveAnalytics({
+        analytics: harness.service,
+        projectId: "/Users/ada/secret-repo",
+        event: { handoffId, outcome },
+      });
+
+    for (const outcome of ["continued", "failed", "cancelled", "unknown"] as const) move(outcome);
+    // A retried move that ends `unknown` again within the hour is the same fact.
+    move("unknown");
+    // Another move with the same outcome is a new fact.
+    move("unknown", "handoff-55d0b2");
+
+    const moves = harness.messages
+      .map((message) => (message as { properties: Record<string, unknown> }).properties)
+      .filter((properties) => properties.action === "cross_machine_move");
+    expect(moves.map((properties) => properties.outcome))
+      .toEqual(["continued", "failed", "cancelled", "unknown", "unknown"]);
+    for (const properties of moves) {
+      expect(properties).toMatchObject({ feature: "chat", source: "runtime" });
+      expect(properties).not.toHaveProperty("session_id");
+    }
+    // The handoff id only keys the local dedupe; the project path is hashed.
+    const sent = JSON.stringify(harness.messages);
+    expect(sent).not.toContain("handoff-7c1e9a");
+    expect(sent).not.toContain("handoff-55d0b2");
+    expect(sent).not.toContain("secret-repo");
+
+    // An outcome outside the closed set is dropped, and the machine, the reason
+    // and the chats on either side can't ride along.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "cross_machine_move",
+      outcome: "landed",
+      source: "runtime",
+      machine_name: "Mac mini",
+      target_machine: "Mac mini",
+      reason: "ADE lost the answer from Mac mini.",
+      target_session_id: "chat-9f2a",
+      handoff_id: "handoff-7c1e9a",
+    })).toEqual({ feature: "chat", action: "cross_machine_move", source: "runtime" });
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
