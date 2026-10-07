@@ -149,22 +149,22 @@ export function LaneTargeting({
         </select>
       </div>
 
-      {mode === "pr-branch" ? (
-        <div className={cn(recessedCls, "flex items-start gap-2 p-3 text-[11px] text-muted-fg")}>
-          <GitBranch size={12} weight="regular" className="mt-0.5 shrink-0 text-accent" />
-          <span>
-            Runs on the PR's own branch, so the agent can push to the PR. If the PR already has a lane, the run uses
-            it. Otherwise ADE opens the branch as a new lane.
-          </span>
-        </div>
-      ) : null}
-
-      {mode === "create" ? (
+      {mode === "create" || mode === "pr-branch" ? (
         <div className={cn(recessedCls, "space-y-3 p-3")}>
-          <div className="flex items-center gap-2 text-[11px] text-accent">
-            <Sparkle size={12} weight="fill" />
-            <span className="font-medium">A fresh lane is created for every run.</span>
-          </div>
+          {mode === "pr-branch" ? (
+            <div className="flex items-start gap-2 text-[11px] text-muted-fg">
+              <GitBranch size={12} weight="regular" className="mt-0.5 shrink-0 text-accent" />
+              <span>
+                Runs on the PR's own branch, so the agent can push to the PR. If the PR already has a lane, the run
+                uses it. Otherwise ADE opens the branch as a new lane with this name.
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-[11px] text-accent">
+              <Sparkle size={12} weight="fill" />
+              <span className="font-medium">A fresh lane is created for every run.</span>
+            </div>
+          )}
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block space-y-1.5">
               <div className={labelCls}>Name</div>

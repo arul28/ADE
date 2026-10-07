@@ -143,6 +143,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       execution: {
         kind: "agent-session",
         laneMode: "pr-branch",
+        laneNamePreset: "pr-title-author",
         session: { title: "Dependabot PR" },
       },
       modelConfig: SONNET,

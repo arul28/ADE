@@ -24,6 +24,10 @@ export type AutomationPrLaneService = {
 
 export type PrBranchLane = { id: string; name: string; branchRef?: string | null };
 
+function branchName(ref: string | null | undefined): string {
+  return (ref ?? "").trim().replace(/^refs\/heads\//, "");
+}
+
 export async function resolvePrBranchLane(args: {
   pr: AutomationTriggerPrContext | null | undefined;
   /** A lane the trigger already names (a local `git.pr_*` event carries one but no PR context). */
@@ -56,6 +60,12 @@ export async function resolvePrBranchLane(args: {
     }
     const lane = (await args.listActiveLanes()).find((entry) => entry.id === block.laneId);
     if (!lane) throw new Error(`${block.message} That lane is archived, so ADE will not run in it.`);
+    // A PR can be linked to a lane on another branch (PRs tab "link to lane").
+    // Running there would push the PR's work to the wrong branch.
+    const headBranch = preflight.headBranch?.trim();
+    if (headBranch && branchName(lane.branchRef) !== headBranch) {
+      throw new Error(`PR #${pr.number} is linked to lane '${lane.name}', which is not on the PR's branch '${headBranch}'.`);
+    }
     return lane;
   };
 

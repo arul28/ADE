@@ -105,6 +105,9 @@ const DEFAULT_INSTALLER_IO: AcpInstallerIo = {
  *
  * POSIX: `<prefix>/bin/<name>` links into `<prefix>/lib/node_modules/<pkg>`.
  * Windows: the `<prefix>\<name>.cmd` shim sits beside `<prefix>\node_modules\<pkg>`.
+ * A project-local install (`<repo>/node_modules/<pkg>`, its `.bin` shim) has
+ * neither layout and stays manual: installing "globally" there would leave
+ * the selected binary unchanged.
  */
 function npmPrefixFor(binaryPath: string, npmPackage: string, io: AcpInstallerIo): string | null {
   const pkgSegments = npmPackage.split("/");
@@ -114,14 +117,16 @@ function npmPrefixFor(binaryPath: string, npmPackage: string, io: AcpInstallerIo
     if (parts[i] !== "node_modules") continue;
     if (!pkgSegments.every((segment, offset) => parts[i + 1 + offset] === segment)) continue;
     const before = parts.slice(0, i);
-    if (before[before.length - 1] === "lib") before.pop();
+    if (before[before.length - 1] !== "lib") continue;
+    before.pop();
     const prefix = before.join(real.includes("\\") ? "\\" : "/");
     return prefix || null;
   }
   const lower = binaryPath.toLowerCase();
   if (lower.endsWith(".cmd") || lower.endsWith(".ps1") || lower.endsWith(".bat")) {
-    const dir = path.dirname(binaryPath);
-    if (io.exists(path.join(dir, "node_modules", ...pkgSegments))) return dir;
+    // A shim is a Windows-only shape, so read it with Windows path rules.
+    const dir = path.win32.dirname(binaryPath);
+    if (io.exists(path.win32.join(dir, "node_modules", ...pkgSegments))) return dir;
   }
   return null;
 }
@@ -337,11 +342,19 @@ export async function runAcpProviderInstall(args: {
       version: null,
     };
   }
+  // The installer's exit code is not proof: an install into another prefix
+  // succeeds and leaves this binary as it was. The binary must now report the
+  // version ADE asked for.
   const version = await run(args.installer.binaryPath, ["--version"], { ...runOpts, timeout: VERSION_TIMEOUT_MS });
   const versionLine = version.status === 0 ? lastMeaningfulLine(version.stdout, version.stderr) : "";
-  return {
-    ok: true,
-    message: versionLine ? `${policy.label} updated to ${versionLine}.` : `${policy.label} updated.`,
-    version: versionLine || null,
-  };
+  if (compareVersions(versionLine, policy.tested.max) !== 0) {
+    return {
+      ok: false,
+      message: versionLine
+        ? `The update finished, but ${policy.label} still reports ${versionLine}, not ${policy.tested.max}.`
+        : `The update finished, but ADE could not confirm the ${policy.label} version.`,
+      version: versionLine || null,
+    };
+  }
+  return { ok: true, message: `${policy.label} updated to ${versionLine}.`, version: versionLine };
 }
