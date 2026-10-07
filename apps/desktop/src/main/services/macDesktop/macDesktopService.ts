@@ -21,6 +21,7 @@ import {
   MAC_DESKTOP_DEFAULT_RESOLUTION,
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+  LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   WINDOWS_DESKTOP_HELD_CODE,
   WINDOWS_DESKTOP_LOCKED_CODE,
@@ -339,7 +340,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     displayName: macDesktopDisplayName,
   };
   const seatSupported = platform === seatAdapter.platform;
-  const unsupportedMessage = seatAdapter.unsupportedMessage;
+  // A Linux host has no seat at all; say that rather than "needs macOS".
+  const linuxHost = platform === "linux";
+  const unsupportedMessage = linuxHost ? LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE : seatAdapter.unsupportedMessage;
+  const unsupportedTitle = linuxHost ? "Lane screens are not on Linux yet" : seatAdapter.unsupportedTitle;
   const captureOutcome = (outcome: MacDesktopAnalyticsProperties["outcome"]): void => {
     deps.captureAnalytics?.({ action: "mac_desktop", outcome });
   };
@@ -887,8 +891,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     logger: deps.logger,
     platform,
     supportedPlatforms: [seatAdapter.platform],
-    unsupportedMessage: seatAdapter.unsupportedMessage,
-    unsupportedTitle: seatAdapter.unsupportedTitle,
+    unsupportedMessage,
+    unsupportedTitle,
     driverLabel: seatAdapter.driverLabel,
     permissionsSupported: seatAdapter.permissionsSupported,
     resolveExecutablePath: seatAdapter.resolveExecutablePath,
@@ -922,7 +926,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const laneId = args.laneId?.trim() || null;
     const driverHealth = driverLifecycle.driverHealth() ?? {
       state: seatSupported ? "starting" as const : "unsupported" as const,
-      title: seatSupported ? `${seatAdapter.driverLabel} is starting` : seatAdapter.unsupportedTitle,
+      title: seatSupported ? `${seatAdapter.driverLabel} is starting` : unsupportedTitle,
       message: seatSupported ? "ADE is preparing the native desktop driver." : unsupportedMessage,
       recovery: seatSupported ? "retry" as const : null,
       version: null,

@@ -904,6 +904,30 @@ implements a two-layer transform:
    already has a checkpoint `turn_diff_summary` keeps that `[diff]` notice and
    leaves `turn-end.fileEntries` empty so the files half is not listed twice.
 
+   **Computer-use action rows (desktop, hosted web, iOS).** The one exception
+   to "tool groups are not drawn": a group holding ADE computer-use shell
+   commands (`ade screen|mac-desktop|desk …`, `ade app-control …`,
+   `ade browser …`, `ade apple …`, `ade proof …`, also through
+   `"$ADE_CLI_PATH"`, from any provider's shell tool) stays in the thread and
+   draws only those commands, as sentences: "Clicked “Checkout” on
+   localhost:5173". `shared/computerUseActionSummary.ts` reads the command and
+   its output (the CLI's `hit:` / `effect:` lines, key-value rows, the Mac
+   Desktop windows footer, `ade:` errors, `--json` results) and returns null
+   whenever it is unsure (unknown verb, two acting commands in one call, shell
+   control flow), which keeps the plain shell row. The latest action of a run
+   draws in full (app icon, surface line — Lane screen, App Control, ADE
+   browser, Your browser in amber when the output marks it `attached:` or "your
+   Chrome", or the Apple device — and the failure reason); earlier ones are one
+   muted line with a status dot (amber when `effect: unconfirmed`, red when it
+   failed), and consecutive confirmed actions in one app fold into
+   "Notes · 4 actions". Clicking a compact line opens its full row under a thin
+   guide line. App icons come from `app.getAppIcon` (macOS, cached per name in
+   both processes); browsers use the installed-browser icons; everything else
+   draws a glyph. In the tools list the same commands read as their sentence.
+   The rows are history, so a finished turn folds them like any tool group.
+   iOS ports the parser to `WorkComputerUseActions.swift` and keeps the
+   cluster in `workPresentedTimelineEntries` with `computerUseActions` set.
+
    This is capability preserving: clients show only events and file data the
    selected provider actually emitted, without synthesizing Claude-style file
    histories for other runtimes.

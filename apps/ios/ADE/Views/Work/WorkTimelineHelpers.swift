@@ -2759,23 +2759,40 @@ func workPresentedTimelineEntries(
   let index = toolActivity ?? workTurnToolActivityIndex(from: timeline)
   let claimedInlineGroupIds = index.claimedInlineGroupIds
   let liveGroupIds = isStreaming ? index.activeInlineGroupIds : []
-  let drawn = timeline.filter { entry in
+  let drawn = timeline.compactMap { entry -> WorkTimelineEntry? in
     switch entry.payload {
-    case .toolGroup, .changedFiles:
+    case .toolGroup(let group):
       if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
-        return false
+        // A cluster holding computer-use actions (`ade screen click …`) stays
+        // in the thread as those actions (desktop keeps the same
+        // `work_log_group` rows); the rest of its tools live on the turn line.
+        let actions = workComputerUseActions(from: group.members)
+        guard !actions.isEmpty else { return nil }
+        var actionGroup = group
+        actionGroup.computerUseActions = actions
+        return WorkTimelineEntry(
+          id: entry.id,
+          timestamp: entry.timestamp,
+          rank: entry.rank,
+          payload: .toolGroup(actionGroup),
+          turnId: entry.turnId
+        )
+      }
+    case .changedFiles:
+      if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
+        return nil
       }
     default:
       break
     }
-    guard case .eventCard(let card) = entry.payload else { return true }
+    guard case .eventCard(let card) = entry.payload else { return entry }
     switch card.kind {
     case "activity", "activityBundle", "todo":
-      return false
+      return nil
     case "promptSuggestion":
-      return !hidesPromptSuggestions
+      return hidesPromptSuggestions ? nil : entry
     default:
-      return true
+      return entry
     }
   }
   return workGroupingPresentedRuns(drawn)

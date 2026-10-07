@@ -284,6 +284,20 @@ Explicit session metadata regeneration is a user-invoked, one-shot call through 
 - **Dev servers are discovered, never probed.** The PTY output pipeline sniffs the ready lines frameworks already print (`Local:   http://localhost:5173/`, `ready on`, `listening on`) with one bounded regex per chunk plus a carry for lines split across chunk boundaries, and publishes `{ port, url, source: { sessionId, laneId, projectRoot }, detectedAt }` into an in-memory registry (`main/services/devServers/devServerRegistry.ts`). The registry forgets a session's ports when its terminal ends. Renderers read it through `builtInBrowser.getDevServers()` / `localhost.getDevServers()`; nothing opens a socket. When a lane's server appears and that lane already holds a browser tab — or the Browser tool has nothing open — ADE opens it in a **background** tab once per (lane, port) per app session (`openPanel: false`, no focus steal) and emits `dev-server-detected` for the corner card. Both the auto-open target and the event's stamped collection are resolved from the record's own `projectRoot` — the detecting terminal's project, captured at detection time because nothing downstream can recover it from a lane id. On a two-project machine that is the difference between the lane's launchpad showing its `localhost` chip and another project's pane showing it instead; when the lane's project has no Browser collection materialized at all there is no chip event, and its pane lists the server from the registry the moment it opens. `browser.autoOpenDevServer` (default `true`, same `browser:` config block as `linkOpenMode`) turns the auto-open off without turning discovery off.
 - **`ade browser proof --har`** exports the tab's HAR alongside the screenshot and ingests it as a `browser_trace` artifact under the same owners, in one call. It requires network logging to be on for that tab and fails with that message when it is not, rather than filing half the proof.
 
+## Attach to the user's own browser
+
+An agent drives ADE's browser by default. Only when the user asks it to look
+at or use their own browser does it run `ade browser attach [--tab <title or
+URL text>] [--browser chrome|edge|brave|arc|helium|chromium]`, on the machine
+the chat runs on. Attach prints `attached: <browser> on <machine>, tab
+"<title>" (<url>)`, and the agent tells the user which machine and tab. While
+attached, that chat's page commands act in the user's tab and print `target:
+your <browser> on <machine>` first; `ade browser detach` returns the chat to
+ADE's browser. The browser must have remote debugging on (its
+`<scheme>://inspect/#remote-debugging` page), and it asks the user once to
+allow the connection. Details:
+[computer-use README](../computer-use/README.md#attach-to-the-users-own-browser).
+
 ## The corner card and parked preview views
 
 The Work tab has one pane for one screen tool, so the browser is

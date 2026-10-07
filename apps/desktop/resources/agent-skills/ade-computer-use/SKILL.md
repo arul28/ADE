@@ -17,6 +17,7 @@ then follow that surface's loop.
 | Any Windows app (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
 | An Electron app whose DOM you need — labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
+| A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
 
 Pick App Control for an Electron app whose DOM you need: it acts through the
 DOM, so labels, selectors, test ids and hover work, and it records and proves
@@ -25,6 +26,14 @@ and an installed app such as Slack or a packaged build of the app you work on:
 start it with a debug port, then attach (`ade mac-desktop open "<App>" --
 --remote-debugging-port=9333`, then `ade app-control connect --cdp-port 9333`).
 Otherwise Mac Desktop drives an Electron window by point, like any other app.
+
+ADE's browser is the default for web work. Attach to the user's own browser
+only when they ask for it, never on your own, and tell them which machine and
+tab you attached to.
+
+Lane screens (`ade screen`) exist on macOS and Windows hosts only. On a Linux
+host, `ade screen status` says "Lane screens are not supported on Linux yet";
+use `ade browser` and `ade app-control` there.
 
 **Only ADE's surfaces stay off the user's screen.** Anything else that clicks,
 types or captures — an MCP server, `osascript` or System Events,

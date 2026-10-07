@@ -213,6 +213,11 @@ import {
   createRemoteBrowserForwarder,
   withRemoteBrowserForwarding,
 } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { withUserBrowserAttachment } from "./services/builtInBrowser/userBrowserRouting";
+import {
+  createUserBrowserAttachService,
+  type UserBrowserAttachService,
+} from "../../desktop/src/main/services/userBrowser/userBrowserAttachService";
 import {
   createWorkToolsStateService,
   type WorkToolsStateService,
@@ -451,6 +456,11 @@ export type AdeRuntime = {
   getScenePreviewer?: () => ScenePreviewer | null;
   macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  /**
+   * `ade browser attach`: chats driving a tab of the user's own browser on
+   * this machine. Null on a chat-only runtime, which has no browser surface.
+   */
+  userBrowserAttachService?: UserBrowserAttachService | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
   configureBuiltInBrowserDesktopBridgeAuth?: (authToken: string) => Promise<boolean>;
@@ -1942,15 +1952,29 @@ export async function createAdeRuntime(args: {
         resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
       });
     if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
-    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
-      ? withRemoteBrowserForwarding(
-        createBuiltInBrowserDesktopBridgeClient({
-          socketPath: builtInBrowserBridgeSocketPath,
-          getAuthToken: () => builtInBrowserBridgeAuthToken,
-          projectRoot,
-          logger,
-        }),
-        remoteBrowserForwarder,
+    // The user's own browser is reached from THIS process (the chat's runtime
+    // host), so attaching needs no desktop and works on a remote runtime.
+    const userBrowserAttachService = chatOnlyRuntime
+      ? null
+      : createUserBrowserAttachService({
+        projectRoot,
+        logger,
+        machineName: async () =>
+          (await import("./services/sync/deviceRegistryService")).resolveDeviceDisplayNameSettled(),
+      });
+    if (userBrowserAttachService) teardown.push(() => userBrowserAttachService.dispose());
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder && userBrowserAttachService
+      ? withUserBrowserAttachment(
+        withRemoteBrowserForwarding(
+          createBuiltInBrowserDesktopBridgeClient({
+            socketPath: builtInBrowserBridgeSocketPath,
+            getAuthToken: () => builtInBrowserBridgeAuthToken,
+            projectRoot,
+            logger,
+          }),
+          remoteBrowserForwarder,
+        ),
+        userBrowserAttachService,
       )
       : null;
     builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
@@ -3358,6 +3382,7 @@ export async function createAdeRuntime(args: {
       getScenePreviewer: () => (desktopBridgeHolder.isAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
+      userBrowserAttachService,
       workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
         if (!builtInBrowserBridge) {

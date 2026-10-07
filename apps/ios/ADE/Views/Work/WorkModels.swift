@@ -1467,6 +1467,10 @@ struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
   var turnId: String? = nil
+  /// Set only when the transcript draws this cluster as computer-use action
+  /// rows (`workPresentedTimelineEntries`): the cluster's other tools stay on
+  /// the turn's tools toggle, like every other tool cluster.
+  var computerUseActions: [WorkComputerUseAction] = []
 
   var count: Int { members.count }
 }

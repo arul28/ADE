@@ -130,6 +130,13 @@ import {
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import {
+  arrangeComputerUseRuns,
+  ChatComputerUseActionRun,
+  computerUseSummaryForEntry,
+  estimateComputerUseRunHeight,
+  hasComputerUseEntries,
+} from "./ChatComputerUseActions";
+import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
@@ -1746,6 +1753,9 @@ function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
     if (entry.status !== "running") continue;
+    // A computer-use action already shows as its own row in the thread
+    // ("Clicking “Checkout”…"); repeating it here would say it twice.
+    if (computerUseSummaryForEntry(entry)) return null;
     if (entry.entryKind === "command" && entry.command?.trim()) return `Running ${oneLineCommand(entry.command)}`;
     if (entry.entryKind !== "tool" || !entry.toolName) continue;
     const args = readRecord(entry.args) ?? {};
@@ -4957,6 +4967,10 @@ const EventRow = React.memo(function EventRow({
         <NewSinceDivider sinceMs={envelope.event.sinceMs} />
       ) : envelope.event.type === "wake_chain" ? (
         <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
+      ) : envelope.event.type === "work_log_group" ? (
+        // Only groups holding computer-use actions reach the timeline; their
+        // other tools stay in the tools toggle.
+        <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
       ) : envelope.event.type === "activity_bundle"
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
@@ -5137,9 +5151,10 @@ export function estimateTranscriptRowHeight(
       return 26;
     case "done":
       return 34;
+    case "work_log_group":
+      return estimateComputerUseRunHeight(event.entries, event.computerUseCompact === true) || 30;
     case "reasoning":
     case "activity_bundle":
-    case "work_log_group":
     case "status":
     case "system_notice":
     case "turn_details":
@@ -6127,14 +6142,15 @@ function AgentChatMessageListMain({
   // `work_log_group` rows no longer render anything in the timeline: tool
   // calls are shown by the working indicator / done divider, and file changes
   // are summarized ONCE per turn at the done divider instead of once per
-  // burst. A checkpoint `turn_diff_summary` folds into that same line when
+  // burst. The exception is a group holding computer-use actions (`ade screen
+  // click …`): it stays, and draws only those actions as readable rows. A checkpoint `turn_diff_summary` folds into that same line when
   // the turn has a done row. Dropping the rows outright (rather than
   // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
   // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
-      if (row.event.type === "work_log_group") return false;
+      if (row.event.type === "work_log_group") return hasComputerUseEntries(row.event.entries);
       if (
         row.event.type === "turn_diff_summary"
         && row.event.turnId
@@ -6272,6 +6288,7 @@ function AgentChatMessageListMain({
   const previousFoldRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousWakeChainRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   const previousThoughtRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
+  const previousComputerUseRunRowsRef = useRef<ReadonlyMap<string, TranscriptGroupedEnvelope>>(new Map());
   // The reasoning row that draws the live ThinkingPreview: the newest row of
   // the live turn, read from the rows BEFORE work-log groups leave the drawn
   // timeline so a tool starting after the thought collapses it.
@@ -6344,9 +6361,12 @@ function AgentChatMessageListMain({
     }
     previousWakeChainRowsRef.current = chainRows;
     const withUnread = insertNewSinceDivider(folded, unreadSince);
-    const next = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
-    previousThoughtRunRowsRef.current = next === withUnread ? new Map() : collectMergedThoughtRows(next);
-    return next;
+    const merged = mergeAdjacentThoughtRows(withUnread, previousThoughtRunRowsRef.current, rowDrawContext);
+    previousThoughtRunRowsRef.current = merged === withUnread ? new Map() : collectMergedThoughtRows(merged);
+    // Only a turn's newest computer-use action is drawn in full.
+    const arranged = arrangeComputerUseRuns(merged, previousComputerUseRunRowsRef.current);
+    previousComputerUseRunRowsRef.current = arranged.built;
+    return arranged.rows;
   }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that

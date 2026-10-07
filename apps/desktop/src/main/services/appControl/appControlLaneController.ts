@@ -5,7 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { isPathInside } from "../shared/pathCompare";
-import { WebSocket, type RawData } from "ws";
+import { CdpClient } from "../shared/cdpClient";
 import type {
   AppControlClaimArgs,
   AppControlClickArgs,
@@ -76,7 +76,6 @@ import {
 
 const CDP_POLL_MS = 500;
 const CDP_HEALTH_POLL_MS = 2_000;
-const CDP_COMMAND_TIMEOUT_MS = 15_000;
 const MAX_DOM_ELEMENTS = 450;
 const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html", ".css"]);
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
@@ -231,12 +230,6 @@ type CdpDomClickResult = {
   label: string | null;
 };
 
-type CdpPendingCommand = {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
-};
-
 type DomSnapshotPayload = {
   url: string | null;
   title: string | null;
@@ -371,130 +364,6 @@ function pickCdpTarget(targets: CdpTarget[]): CdpTarget | null {
     ?? targets.find((target) => Boolean(target.webSocketDebuggerUrl))
     ?? null
   );
-}
-
-class CdpClient {
-  private readonly ws: WebSocket;
-  private nextId = 1;
-  private readonly pending = new Map<number, CdpPendingCommand>();
-  private readonly methodListeners = new Map<string, Set<(params: unknown) => void>>();
-  private closed = false;
-  private readonly closeWaiters = new Set<() => void>();
-
-  private constructor(ws: WebSocket) {
-    this.ws = ws;
-    ws.on("message", (data: RawData) => {
-      let message: Record<string, unknown>;
-      try {
-        message = JSON.parse(data.toString()) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-      const method = typeof message.method === "string" ? message.method : null;
-      if (method) {
-        const listeners = this.methodListeners.get(method);
-        if (listeners) {
-          for (const listener of listeners) {
-            try { listener(message.params); } catch { /* ignore */ }
-          }
-        }
-        return;
-      }
-      const id = typeof message.id === "number" ? message.id : null;
-      if (id == null) return;
-      const pending = this.pending.get(id);
-      if (!pending) return;
-      this.pending.delete(id);
-      clearTimeout(pending.timer);
-      if (message.error && typeof message.error === "object") {
-        const error = message.error as { message?: string };
-        pending.reject(new Error(error.message ?? "CDP command failed."));
-      } else {
-        pending.resolve(message.result);
-      }
-    });
-    ws.on("close", () => {
-      this.closed = true;
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error("CDP connection closed."));
-      }
-      this.pending.clear();
-      for (const resolve of this.closeWaiters) resolve();
-      this.closeWaiters.clear();
-    });
-    ws.on("error", (error) => {
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-      this.pending.clear();
-    });
-  }
-
-  static connect(wsUrl: string): Promise<CdpClient> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      ws.once("open", () => resolve(new CdpClient(ws)));
-      ws.once("error", (error) => reject(error instanceof Error ? error : new Error(String(error))));
-    });
-  }
-
-  send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    const id = this.nextId++;
-    const payload = JSON.stringify({ id, method, params: params ?? {} });
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`CDP command ${method} timed out after ${CDP_COMMAND_TIMEOUT_MS}ms.`));
-      }, CDP_COMMAND_TIMEOUT_MS);
-      this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
-        timer,
-      });
-      this.ws.send(payload, (error) => {
-        if (!error) return;
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(error);
-      });
-    });
-  }
-
-  on(method: string, listener: (params: unknown) => void): () => void {
-    let listeners = this.methodListeners.get(method);
-    if (!listeners) {
-      listeners = new Set();
-      this.methodListeners.set(method, listeners);
-    }
-    listeners.add(listener);
-    return () => {
-      const set = this.methodListeners.get(method);
-      if (!set) return;
-      set.delete(listener);
-      if (set.size === 0) this.methodListeners.delete(method);
-    };
-  }
-
-  isClosed(): boolean {
-    return this.closed || this.ws.readyState === this.ws.CLOSING || this.ws.readyState === this.ws.CLOSED;
-  }
-
-  close(): Promise<void> {
-    this.closed = true;
-    if (this.ws.readyState === this.ws.CLOSED) return Promise.resolve();
-    return new Promise((resolve) => {
-      this.closeWaiters.add(resolve);
-      if (this.ws.readyState === this.ws.OPEN) {
-        this.ws.close();
-      } else if (this.ws.readyState === this.ws.CLOSING) {
-        // Already waiting for the close event.
-      } else {
-        this.ws.terminate();
-      }
-    });
-  }
 }
 
 function cdpDomSnapshotScript(maxElements: number): string {

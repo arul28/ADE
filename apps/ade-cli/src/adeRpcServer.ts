@@ -134,6 +134,7 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { isUserBrowserRuntimeMethod } from "./services/builtInBrowser/userBrowserRouting";
 import {
   ctoCallerInitializeParams,
   DESKTOP_CLIENT_NAMES,
@@ -3513,6 +3514,13 @@ function scopeBuiltInBrowserAdeActionArgs(
   session: SessionState,
   action: string,
   browserArgs: Record<string, unknown>,
+  /**
+   * True when the call acts on the user's own browser (`attach` / `detach`,
+   * or any page command from a chat attached to it). Those reach nothing in
+   * ADE's browser, so they need the chat's identity but no ADE-browser actor
+   * capability — which a headless or remote runtime cannot mint.
+   */
+  userBrowserCall = false,
 ): Record<string, unknown> {
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const method = `run_ade_action:built_in_browser.${action}`;
@@ -3531,7 +3539,7 @@ function scopeBuiltInBrowserAdeActionArgs(
     !browserActorToken
     && Boolean(callerChatSessionId)
     && FORWARDABLE_BUILT_IN_BROWSER_METHODS.has(action);
-  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability)) {
+  if (!callerChatSessionId || (!browserActorToken && !forwardableWithoutCapability && !userBrowserCall)) {
     builtInBrowserAccessDenied(method);
   }
   if (
@@ -5914,10 +5922,14 @@ async function runTool(args: {
         rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
+      const callerChat = asOptionalTrimmedString(session.identity.chatSessionId);
+      const userBrowserCall = isUserBrowserRuntimeMethod(action)
+        || Boolean(runtime.userBrowserAttachService?.routes(callerChat, action));
       scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        userBrowserCall,
       );
       // The allowlist and the scoping above are both behind us, so reaching this
       // line means a real, exposed browser action is about to run. The desktop
@@ -5941,7 +5953,8 @@ async function runTool(args: {
       // this machine's Work-tools mirror claim an agent picked one up. (A user
       // client cannot reach this branch at all: the scoping denies a caller with
       // no chat session, and a session carrying one is not a user client.)
-      const bearsBrowserCapability = Boolean(
+      // Acting in the user's own browser is not ADE's browser in use either.
+      const bearsBrowserCapability = !userBrowserCall && Boolean(
         asOptionalTrimmedString(session.identity.browserActorToken),
       );
       if (bearsBrowserCapability) {

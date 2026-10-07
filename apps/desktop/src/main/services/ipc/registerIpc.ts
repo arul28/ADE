@@ -56,7 +56,7 @@ import {
 } from "../../../shared/editorTargets";
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
 import { detectBrowsersCached } from "../browsers/browserDetection";
-import { browserIconDataUrl } from "../browsers/browserIcons";
+import { appIconDataUrlByName, browserIconDataUrl } from "../browsers/browserIcons";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {
@@ -4315,6 +4315,19 @@ export function registerIpc({
         reason: error instanceof Error ? error.message : String(error),
       });
       return [];
+    }
+  });
+
+  /**
+   * An installed app's icon by name, for transcript rows that name the app an
+   * agent drove. Cached per name in the main process; a miss is null, never an
+   * error, because the row simply draws its glyph.
+   */
+  ipcMain.handle(IPC.appGetAppIcon, async (_event, arg: { name?: unknown }): Promise<string | null> => {
+    try {
+      return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
+    } catch {
+      return null;
     }
   });
 
