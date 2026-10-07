@@ -1,9 +1,13 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { CancellationToken } from "builder-util-runtime";
+import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
+import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
   buildGithubReleaseUrl,
   buildReleaseNotesUrl,
@@ -1504,6 +1508,123 @@ describe("createAutoUpdateService", () => {
       service.dispose();
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to Node when Chromium recovery is unavailable, then keeps later checks on Node", async () => {
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.end("version: 1.2.93\nfiles: []\n");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    expect(address && typeof address === "object").toBe(true);
+    if (!address || typeof address === "string") throw new Error("update test server did not bind");
+
+    const fetchMock = vi.fn(async () => new Response("version: 1.2.93\nfiles: []\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const httpExecutor = {
+      cachedSession: null as unknown,
+      createRequest: vi.fn((
+        _options: http.RequestOptions,
+        _callback: (response: http.IncomingMessage) => void,
+      ): http.ClientRequest => { throw new Error("Chromium transport was used"); }),
+      addRedirectHandlers: vi.fn(),
+    };
+    const updater = Object.assign(new FakeAutoUpdater(), { httpExecutor });
+    const logger = makeLogger();
+    let checkAttempt = 0;
+    updater.checkForUpdates.mockImplementation(async () => {
+      checkAttempt += 1;
+      updater.emit("checking-for-update");
+      if (checkAttempt === 1) throw new Error("net::ERR_FAILED");
+      await new Promise<void>((resolve, reject) => {
+        const request = httpExecutor.createRequest({
+          protocol: "http:",
+          hostname: "127.0.0.1",
+          port: address.port,
+          path: checkAttempt === 2 ? "/recovered-check" : "/later-check",
+          method: "GET",
+        }, (response: http.IncomingMessage) => {
+          response.resume();
+          response.on("end", resolve);
+          response.on("error", reject);
+        });
+        request.on("error", reject);
+        request.end();
+      });
+      updater.emit("update-not-available", { version: "1.2.93" });
+      return { updateInfo: { version: "1.2.93" } };
+    });
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.92",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeEmptyUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      platform: "darwin",
+      updater,
+    });
+
+    try {
+      await service.checkForUpdates({ userInitiated: true });
+
+      expect(service.getSnapshot()).toMatchObject({ status: "idle", latestKnownVersion: "1.2.93" });
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/latest-mac\.yml$/), expect.anything());
+      expect(logger.info).toHaveBeenCalledWith(
+        "autoUpdate.net_wedge_recovered",
+        expect.objectContaining({ transport: "node" }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "autoUpdate.net_fresh_session_failed",
+        expect.objectContaining({ reason: "session_unavailable" }),
+      );
+
+      await service.checkForUpdates();
+
+      expect(service.getSnapshot()).toMatchObject({ status: "idle", latestKnownVersion: "1.2.93" });
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(3);
+      expect(requests).toEqual(["/recovered-check", "/later-check"]);
+    } finally {
+      service.dispose();
+      vi.unstubAllGlobals();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("downloads a redirected artifact through Node after switching the updater transport", async () => {
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      if (request.url === "/redirect") {
+        response.writeHead(302, { location: "/artifact" });
+        response.end();
+        return;
+      }
+      response.end("verified update bytes");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    expect(address && typeof address === "object").toBe(true);
+    if (!address || typeof address === "string") throw new Error("update test server did not bind");
+    const destination = path.join(os.tmpdir(), `ade-node-update-${process.pid}-${Date.now()}.zip`);
+    const executor = new ElectronHttpExecutor();
+
+    try {
+      expect(switchUpdaterToNodeTransport({ httpExecutor: executor })).toBe(true);
+
+      await executor.download(new URL(`http://127.0.0.1:${address.port}/redirect`), destination, {
+        cancellationToken: new CancellationToken(),
+      });
+
+      expect(fs.readFileSync(destination, "utf8")).toBe("verified update bytes");
+      expect(requests).toEqual(["/redirect", "/artifact"]);
+    } finally {
+      fs.rmSync(destination, { force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
