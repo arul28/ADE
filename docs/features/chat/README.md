@@ -2666,15 +2666,23 @@ answering them re-arms the 10-minute progress window.
 
 The composer also raises a provider-neutral notice for the case the watchdog
 cannot see: a provider that accepts a request and then goes silent. When a live
-turn has produced no event for five minutes (`TURN_STALL_AFTER_MS`) and owns no
-open tool, command, foreground subagent, or approval, an inline warning banner
-appears above the composer — "No output for 5m" — with **Interrupt** and a
-dismiss ×. It never stops the turn. Open work suppresses it, so a long
+turn has produced no progress event for five minutes (`TURN_STALL_AFTER_MS`),
+is not waiting on the user, and owns no open tool, command, Codex sleep,
+foreground subagent, or approval, an inline warning banner appears above the
+composer — "No new activity for 5m" — with **Interrupt** and a dismiss ×. It
+never stops the turn. Silence is measured from the transcript's newest progress
+event (`latestTurnProgressAt`), not the session summary's `lastActivityAt`: the
+renderer refreshes the summary only on lifecycle edges, so through a turn of
+thinking and tool calls that field freezes at the last steer and raised the
+banner in every gap between tools. ADE's own notices (stall/recovery/diagnostic
+rows, queue and schedule bookkeeping, metadata patches, cards, `system_notice`)
+and dropped steers do not count as progress (`isTurnProgressEvent`); every
+other event type does, so a new provider event cannot cause a false alarm. Open work suppresses it, so a long
 foreground command is never mistaken for a stall, and a turn-start `status`
 event resets the open-work fold so a dangling tool from an earlier interrupted
 turn cannot keep the notice hidden. Dismissal lasts for the current turn only,
 and the fold runs only once a turn is already past the bar.
-`shared/turnInFlight.ts` owns the fold; `shared/sessionStatusPresentation.ts`
+`shared/turnInFlight.ts` owns the fold and the progress test; `shared/sessionStatusPresentation.ts`
 owns the threshold and `turnStallSilenceMs`.
 
 ### When the host machine sleeps

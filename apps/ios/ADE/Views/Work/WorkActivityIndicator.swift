@@ -115,7 +115,6 @@ struct WorkActivityIndicator: View {
 
   private func activityAccessibilityLabel(presentation: Presentation, elapsed: Int) -> String {
     var parts = [presentation.accessibilityLabel, "Working for \(Self.formatElapsedSeconds(elapsed))"]
-    if elapsed >= 30 { parts.append("Taking longer than usual") }
     if toolCount > 0 { parts.append("\(toolCount) actions") }
     return parts.joined(separator: ". ")
   }

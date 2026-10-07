@@ -496,29 +496,36 @@ export const TURN_STALL_AFTER_MS = 5 * 60 * 1000;
  * How long a live turn has been silent, or null when it is not past the bar.
  *
  * The caller supplies a session whose turn is LIVE — this reads the timestamps
- * and answers the silence question, nothing more. `lastActivityAt` moves on real
- * output only, so it is the honest clock; `currentTurnStartedAt` keeps a turn
- * that has produced nothing at all yet from inheriting the previous turn's quiet
- * stretch, because a turn's silence cannot start before the turn did. The anchor
- * is the later of the two.
+ * and answers the silence question, nothing more. `lastProgressAt` is the
+ * newest progress event in the transcript (`latestTurnProgressAt`): the live
+ * clock, because a renderer's session summary can sit unrefreshed for a whole
+ * turn of tool calls. `lastActivityAt` covers a transcript window that has not
+ * loaded yet. `currentTurnStartedAt` keeps a turn that has produced nothing at
+ * all yet from inheriting the previous turn's quiet stretch, because a turn's
+ * silence cannot start before the turn did. The anchor is the latest of the
+ * three.
  */
 export function turnStallSilenceMs(
   session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
   nowMs: number = Date.now(),
+  lastProgressAt: string | null = null,
 ): number | null {
-  const anchorMs = turnSilenceAnchorMs(session);
+  const anchorMs = turnSilenceAnchorMs(session, lastProgressAt);
   if (anchorMs == null) return null;
   const silentForMs = nowMs - anchorMs;
   return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
 }
 
 /** When the turn's silence started: the later of its last output and its start. */
-export function turnSilenceAnchorMs(session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null }): number | null {
-  const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
-  const turnMs = session.currentTurnStartedAt ? Date.parse(session.currentTurnStartedAt) : Number.NaN;
+export function turnSilenceAnchorMs(
+  session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
+  lastProgressAt: string | null = null,
+): number | null {
   const anchorMs = Math.max(
-    Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
-    Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
+    ...[session.lastActivityAt, session.currentTurnStartedAt, lastProgressAt].map((value) => {
+      const ms = value ? Date.parse(value) : Number.NaN;
+      return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+    }),
   );
   return Number.isFinite(anchorMs) ? anchorMs : null;
 }
