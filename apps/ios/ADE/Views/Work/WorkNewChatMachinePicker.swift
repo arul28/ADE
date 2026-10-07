@@ -67,7 +67,8 @@ func workNewChatModelCheck(machineKey: String?, provider: String, mode: WorkCurs
   return .fallback(modelId: fallback.modelId, provider: fallback.provider)
 }
 
-/// The machine dropdown beside the lane dropdown: same floating glass capsule.
+/// The machine dropdown beside the lane dropdown: the same solid kit capsule
+/// the Hub composer's destination control uses.
 struct WorkNewChatMachineDropdown: View {
   let options: [WorkNewChatMachineOption]
   let selected: WorkNewChatMachineOption
@@ -106,14 +107,14 @@ struct WorkNewChatMachineDropdown: View {
           .frame(maxWidth: 140, alignment: .leading)
           .foregroundStyle(selected.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .bold))
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.horizontal, 12)
-      .frame(height: 32)
-      .workChatGlass(in: Capsule(style: .continuous), interactive: true)
-      .overlay(Capsule(style: .continuous).stroke(ADEColor.textMuted.opacity(0.3), lineWidth: 0.75))
+      .frame(height: 34)
+      .background(ADEKit.surface, in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
       .contentShape(Capsule(style: .continuous))
     }
     .accessibilityLabel("Machine")

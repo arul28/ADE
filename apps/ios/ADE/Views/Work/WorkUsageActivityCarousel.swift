@@ -268,14 +268,7 @@ struct WorkUsageActivityCarousel: View {
     .padding(.horizontal, 14)
     .padding(.top, 12)
     .padding(.bottom, 10)
-    .background {
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .fill(ADEColor.textPrimary.opacity(0.035))
-    }
-    .overlay {
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .stroke(ADEColor.textPrimary.opacity(0.08), lineWidth: 0.5)
-    }
+    .adeKitCard(padding: nil)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(accessibilitySummary)
     .task(id: loadKey) { await loadStats() }
@@ -333,8 +326,8 @@ struct WorkUsageActivityCarousel: View {
     return "Activity for \(range.title): \(adeUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
   }
 
-  /// Desktop `TabRow`: every view the module offers, one tap away, as a
-  /// segmented track. The selection slides between segments.
+  /// Desktop `TabRow`: every view the module offers, one tap away, as the kit
+  /// segmented track (`.kit-seg`). The selection slides between segments.
   private var tabControl: some View {
     HStack(spacing: 2) {
       ForEach(WorkUsageTab.allCases) { option in
@@ -351,21 +344,21 @@ struct WorkUsageActivityCarousel: View {
             .frame(maxWidth: .infinity, minHeight: 28)
             .background {
               if selected {
-                Capsule(style: .continuous)
-                  .fill(ADEColor.cardBackground)
-                  .shadow(color: Color.black.opacity(0.12), radius: 3, y: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                  .fill(ADEKit.surface)
+                  .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
                   .matchedGeometryEffect(id: "usage-tab", in: tabNamespace)
               }
             }
-            .contentShape(Capsule(style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(option.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
     }
-    .padding(3)
-    .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
+    .padding(2)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Usage view")
   }
@@ -388,7 +381,7 @@ struct WorkUsageActivityCarousel: View {
       .foregroundStyle(ADEColor.textSecondary)
       .padding(.horizontal, 9)
       .frame(minHeight: 24)
-      .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       .fixedSize()
       .frame(minHeight: 44)
       .contentShape(Rectangle())
@@ -535,9 +528,8 @@ private struct WorkUsageTooltip: View {
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
-    .background(ADEColor.cardBackground.opacity(0.98), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
-    .shadow(color: Color.black.opacity(0.2), radius: 6, y: 2)
+    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
     .accessibilityElement(children: .combine)
   }
 }

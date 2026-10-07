@@ -115,11 +115,10 @@ struct WorkLanePickerDropdown: View {
         } label: {
           Image(systemName: "arrow.clockwise")
             .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 34, height: 34)
-            .background(ADEColor.surfaceBackground.opacity(0.55), in: Circle())
-            .glassEffect()
-            .overlay(Circle().stroke(ADEColor.accent.opacity(0.26), lineWidth: 0.6))
+            .background(ADEKit.surface, in: Circle())
+            .overlay(Circle().strokeBorder(ADEKit.edge, lineWidth: 0.75))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Refresh lanes")
@@ -129,8 +128,7 @@ struct WorkLanePickerDropdown: View {
   }
 
   private var triggerLabel: some View {
-    let surface = laneTriggerSurface(for: selectedLane, isAutoCreate: isAutoCreateSelected)
-    return ZStack {
+    ZStack {
       centeredTriggerContent
         .padding(.horizontal, 26)
       HStack(spacing: 0) {
@@ -144,21 +142,35 @@ struct WorkLanePickerDropdown: View {
     .padding(.leading, 14)
     .padding(.trailing, 4)
     .padding(.vertical, triggerBranchLabel == nil ? 10 : 9)
-    .background(surface.background, in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(surface.border, lineWidth: 1)
-    )
+    .background(ADEKit.surface, in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
     .frame(minWidth: 180, maxWidth: 320)
   }
 
   private var floatingTriggerLabel: some View {
-    let accent = isAutoCreateSelected ? ADEColor.accent : (triggerLaneColor ?? ADEColor.textSecondary)
-    return HStack(spacing: 6) {
+    // The branch only when it fits whole enough to read; otherwise the lane
+    // name alone rather than a two-letter stub of the branch.
+    ViewThatFits(in: .horizontal) {
+      floatingTriggerContent(showsBranch: true)
+      floatingTriggerContent(showsBranch: false)
+    }
+    .padding(.horizontal, 12)
+    .frame(height: 34)
+    // Solid kit surface, as the Hub composer's destination control: the lane's
+    // colour stays on its mark.
+    .background(ADEKit.surface, in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+    .frame(maxWidth: 300)
+    .fixedSize(horizontal: false, vertical: true)
+    .contentShape(Capsule(style: .continuous))
+  }
+
+  private func floatingTriggerContent(showsBranch: Bool) -> some View {
+    HStack(spacing: 6) {
       if isAutoCreateSelected {
         Image(systemName: "sparkles")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       } else if let triggerLaneColor {
         WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 11)
       }
@@ -167,31 +179,17 @@ struct WorkLanePickerDropdown: View {
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
         .layoutPriority(1)
-      if let branch = triggerBranchLabel {
-        HStack(spacing: 3) {
-          Image(systemName: "arrow.branch")
-            .font(.system(size: 9, weight: .semibold))
-          Text(branch)
-            .font(.system(size: 12))
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-        .foregroundStyle(ADEColor.textMuted)
+      if showsBranch, let branch = triggerBranchLabel {
+        Text(branch)
+          .font(.adeMono(11))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .fixedSize()
       }
-      Image(systemName: "chevron.down")
-        .font(.system(size: 9, weight: .bold))
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .padding(.horizontal, 12)
-    .frame(height: 32)
-    .workChatGlass(in: Capsule(style: .continuous), interactive: true)
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(accent.opacity(0.4), lineWidth: 0.75)
-    )
-    .frame(maxWidth: 300)
-    .fixedSize(horizontal: false, vertical: true)
-    .contentShape(Capsule(style: .continuous))
   }
 
   @ViewBuilder
@@ -224,8 +222,8 @@ struct WorkLanePickerDropdown: View {
         WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 13)
       } else if isAutoCreateSelected {
         Image(systemName: "sparkles")
-          .font(.system(size: 13, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       }
       Text(triggerTitle)
         .font(.system(size: 14, weight: .semibold))
@@ -234,16 +232,6 @@ struct WorkLanePickerDropdown: View {
     }
   }
 
-  private func laneTriggerSurface(for lane: LaneSummary?, isAutoCreate: Bool) -> (background: Color, border: Color) {
-    if isAutoCreate {
-      return (ADEColor.accent.opacity(0.06), ADEColor.accent.opacity(0.3))
-    }
-    guard let lane, let hex = lane.color?.trimmingCharacters(in: .whitespacesAndNewlines), !hex.isEmpty,
-          let tint = LaneColorPalette.color(forHex: hex) else {
-      return (Color.white.opacity(0.04), Color.white.opacity(0.08))
-    }
-    return (tint.opacity(0.12), tint.opacity(0.35))
-  }
 }
 
 /// Sheet body for the lane picker. Sized to fill its presentation container —
@@ -262,14 +250,14 @@ struct WorkLanePickerMenu: View {
   @FocusState private var searchFocused: Bool
 
   var body: some View {
-    VStack(spacing: 0) {
+    VStack(spacing: 12) {
       HStack(spacing: 8) {
         Image(systemName: "magnifyingglass")
-          .font(.system(size: 15, weight: .regular))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.6))
-        TextField("Search lanes...", text: $searchQuery)
+          .font(.system(size: 14, weight: .regular))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Search lanes", text: $searchQuery)
           .textFieldStyle(.plain)
-          .font(.system(size: 16))
+          .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
           .focused($searchFocused)
           .submitLabel(.done)
@@ -277,63 +265,66 @@ struct WorkLanePickerMenu: View {
           .textInputAutocapitalization(.never)
       }
       .padding(.horizontal, 12)
-      .frame(height: 44)
-      .overlay(alignment: .bottom) {
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 0.5)
-      }
-
-      if showsAutoCreateOption {
-        Button {
-          onSelect(workAutoCreateLaneSentinelId)
-        } label: {
-          HStack(spacing: 8) {
-            WorkOrchestratorRainbowText(text: "Auto-create lane", size: 16)
-            if selectedLaneId == workAutoCreateLaneSentinelId {
-              Image(systemName: "checkmark")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(ADEColor.accent)
-            }
-          }
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-          Rectangle()
-            .fill(ADEColor.border.opacity(0.25))
-            .frame(height: 0.5)
-        }
-      }
+      .frame(height: 38)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
       ScrollView {
-        LazyVStack(spacing: 2) {
-          if lanes.isEmpty {
-            Text(allLanesEmpty ? "No lanes available" : "No lanes found")
-              .font(.system(size: 15))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 20)
-          } else {
-            ForEach(lanes) { lane in
-              laneRow(lane)
+        VStack(spacing: 0) {
+          ADESettingsRows {
+            if showsAutoCreateOption {
+              autoCreateRow
+            }
+            if lanes.isEmpty {
+              Text(allLanesEmpty ? "No lanes available" : "No lanes found")
+                .font(.system(size: 14))
+                .foregroundStyle(ADEColor.textMuted)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+            } else {
+              ForEach(lanes) { lane in
+                laneRow(lane)
+              }
             }
           }
         }
-        .padding(.vertical, 6)
+        .padding(.bottom, 12)
       }
       .scrollDismissesKeyboard(.interactively)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .padding(.horizontal, 16)
-    .padding(.top, 12)
+    .padding(.top, 18)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .onAppear {
       searchFocused = true
     }
+  }
+
+  private var autoCreateRow: some View {
+    let isSelected = selectedLaneId == workAutoCreateLaneSentinelId
+    return Button {
+      onSelect(workAutoCreateLaneSentinelId)
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: "sparkles")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 18)
+        Text("Auto-create lane")
+          .font(.system(size: 15, weight: isSelected ? .semibold : .regular))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 8)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, ADEKit.inset)
+      .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+    }
+    .buttonStyle(ADEKitRowButtonStyle())
   }
 
   private func laneRow(_ lane: LaneSummary) -> some View {
@@ -347,78 +338,49 @@ struct WorkLanePickerMenu: View {
       guard !disabled else { return }
       onSelect(lane.id)
     } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 8) {
-          WorkLaneLogoMark(color: laneColor, laneIcon: lane.icon, size: 16)
-            .opacity(disabled ? 0.45 : 1)
+      HStack(alignment: .top, spacing: 10) {
+        WorkLaneLogoMark(color: laneColor, laneIcon: lane.icon, size: 14)
+          .frame(width: 18)
+          .padding(.top, 2)
+          .opacity(disabled ? 0.45 : 1)
+        VStack(alignment: .leading, spacing: 2) {
           Text(lane.name)
-            .font(.system(size: 16, weight: isSelected ? .semibold : .regular))
+            .font(.system(size: 15, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
             .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          if disabled {
-            Image(systemName: "lock.fill")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.warning.opacity(0.85))
-          } else if isSelected {
-            Image(systemName: "checkmark")
-              .font(.system(size: 15, weight: .bold))
-              .foregroundStyle(ADEColor.accent)
-          }
-        }
-        if !branch.isEmpty {
-          HStack(spacing: 5) {
-            Image(systemName: "arrow.branch")
-              .font(.system(size: 12, weight: .regular))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.6))
+          if !branch.isEmpty {
             Text(branch)
-              .font(.system(size: 13))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.92))
+              .font(.adeMono(11.5))
+              .foregroundStyle(ADEColor.textMuted)
               .lineLimit(1)
+              .truncationMode(.middle)
           }
-          .padding(.leading, 24)
+          if let eligibilitySubtitle, !eligibilitySubtitle.isEmpty {
+            Text(eligibilitySubtitle)
+              .font(.system(size: 12.5))
+              .foregroundStyle(disabled ? ADEColor.warning : ADEColor.textSecondary)
+              .lineLimit(2)
+          }
         }
-        if let eligibilitySubtitle, !eligibilitySubtitle.isEmpty {
-          Text(eligibilitySubtitle)
-            .font(.system(size: 13))
-            .foregroundStyle(disabled ? ADEColor.warning.opacity(0.9) : ADEColor.textSecondary)
-            .lineLimit(2)
-            .padding(.leading, 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        if disabled {
+          Image(systemName: "lock.fill")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.warning)
+            .padding(.top, 3)
+        } else if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.top, 3)
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 12)
+      .padding(.horizontal, ADEKit.inset)
+      .padding(.vertical, 11)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-      )
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
     .disabled(disabled)
   }
 }
 
-/// Desktop `ade-orchestrator-rainbow-text` gradient label for auto-create lane.
-private struct WorkOrchestratorRainbowText: View {
-  let text: String
-  let size: CGFloat
-
-  private static let colors: [Color] = [
-    Color(red: 1.0, green: 0.37, blue: 0.37),
-    Color(red: 1.0, green: 0.61, blue: 0.25),
-    Color(red: 0.97, green: 0.82, blue: 0.36),
-    Color(red: 0.35, green: 0.85, blue: 0.50),
-    Color(red: 0.31, green: 0.58, blue: 1.0),
-    Color(red: 0.65, green: 0.40, blue: 1.0),
-  ]
-
-  var body: some View {
-    Text(text)
-      .font(.system(size: size, weight: .medium))
-      .foregroundStyle(
-        LinearGradient(colors: Self.colors, startPoint: .leading, endPoint: .trailing)
-      )
-  }
-}

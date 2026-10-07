@@ -216,7 +216,7 @@ struct WorkModelPickerSheet: View {
         } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           HStack(spacing: 0) {
             ModelPickerRail(
               entries: railEntries,
@@ -231,7 +231,7 @@ struct WorkModelPickerSheet: View {
                 }
               }
             )
-            Divider().overlay(ADEColor.glassBorder)
+            Divider().overlay(ADEKit.rule)
             if effectiveSelection == .custom {
               customHarnessPane
             } else {
@@ -265,7 +265,7 @@ struct WorkModelPickerSheet: View {
               )
             }
           }
-          Divider().overlay(ADEColor.glassBorder)
+          Divider().overlay(ADEKit.rule)
           currentModelBar
         }
       }
@@ -496,22 +496,13 @@ struct WorkModelPickerSheet: View {
         }
       }
       .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
+      .frame(height: 36)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
       Button {
         dismiss()
       } label: {
-        Image(systemName: "xmark")
-          .font(.subheadline.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 38, height: 38)
-          .background(ADEColor.surfaceBackground.opacity(0.62), in: Circle())
-          .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
+        ADEKitCircleIcon(systemImage: "xmark")
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Close")
@@ -530,8 +521,7 @@ struct WorkModelPickerSheet: View {
       fastModeEnabled: selectedCodexFastMode
     )
     .padding(.horizontal, 14)
-    .padding(.vertical, 9)
-    .background(ADEColor.recessedBackground.opacity(0.32))
+    .padding(.vertical, 10)
   }
 
   @ViewBuilder
@@ -596,8 +586,10 @@ struct WorkModelPickerSheet: View {
           .padding(.top, 28)
           .padding(.horizontal, 24)
         } else {
-          ForEach(presets) { preset in
-            customHarnessRow(preset)
+          ADESettingsRows {
+            ForEach(presets) { preset in
+              customHarnessRow(preset)
+            }
           }
         }
       }
@@ -645,16 +637,13 @@ struct WorkModelPickerSheet: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      .padding(.horizontal, 10)
+      .padding(.horizontal, 12)
       .padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-      )
+      .background(isSelected ? ADEColor.accent.opacity(0.08) : Color.clear)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitRowButtonStyle())
     .disabled(!preset.bound)
     .accessibilityLabel(
       "\(preset.name), \(harnessLabel), \(modelLabel)"
@@ -907,7 +896,6 @@ struct ModelPickerRail: View {
       .padding(.horizontal, 5)
     }
     .frame(width: 60)
-    .background(ADEColor.recessedBackground.opacity(0.35))
   }
 
   @ViewBuilder
@@ -919,29 +907,19 @@ struct ModelPickerRail: View {
       ZStack(alignment: .topTrailing) {
         railIcon(for: entry, isActive: isActive)
           .frame(maxWidth: .infinity, minHeight: 44)
-          .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .fill(isActive ? Color.white.opacity(0.07) : Color.clear)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .stroke(isActive ? Color.white.opacity(0.06) : Color.clear, lineWidth: 0.8)
-          )
+          .background {
+            if isActive {
+              RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+            }
+          }
         if let badge = badgeCount(for: entry), badge > 0 {
           Text("\(badge)")
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground)
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            )
-            .offset(x: 4, y: -3)
+            .font(.adeMono(9, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.top, 3)
+            .padding(.trailing, 4)
         }
       }
     }
@@ -963,11 +941,11 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites:
       Image(systemName: isActive ? "star.fill" : "star")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(ADEColor.warning)
+        .font(.system(size: 16, weight: .medium))
+        .foregroundStyle(isActive ? ADEColor.warning : ADEColor.textSecondary)
     case .recents:
       Image(systemName: isActive ? "clock.fill" : "clock")
-        .font(.system(size: 16, weight: .semibold))
+        .font(.system(size: 16, weight: .medium))
         .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
     case .providerGroup(let key, _):
       WorkProviderBareLogo(
@@ -1080,22 +1058,20 @@ struct ModelPickerContentPane: View {
       if showsPiLoginAction {
         piLoginBanner
       }
-      Divider().overlay(ADEColor.glassBorder)
+      Divider().overlay(ADEKit.rule)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
         emptyState
       } else {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+          LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(groupedRows) { group in
-              VStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
+              VStack(alignment: .leading, spacing: 7) {
                 if let title = group.title {
-                  Text(title.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.4)
-                    .foregroundStyle(ADEColor.textMuted)
+                  ADEEyebrow(title)
                     .padding(.horizontal, 4)
-                    .padding(.top, 2)
                 }
+                // One kit panel per group: rows with hairlines, not a card each.
+                ADESettingsRows {
                 ForEach(group.models) { model in
                   ModelPickerListRow(
                     model: model,
@@ -1116,11 +1092,12 @@ struct ModelPickerContentPane: View {
                     isPiLoginBusy: isPiLoginBusy
                   )
                 }
+                }
               }
             }
           }
           .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          .padding(.vertical, 10)
         }
       }
     }
@@ -1131,25 +1108,34 @@ struct ModelPickerContentPane: View {
   private var providerTabStrip: some View {
     if providerTabs.count > 1 {
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
           ForEach(providerTabs) { provider in
             let selected = provider.key == activeProviderTabKey
             Button {
               onSelectProviderTab(provider.key)
             } label: {
               Text(provider.displayName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+                .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
                 .lineLimit(1)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(selected ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
+                .frame(minHeight: 28)
+                .background {
+                  if selected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                      .fill(ADEKit.surface)
+                      .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                  }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(selected ? .isSelected : [])
           }
         }
-        .padding(.horizontal, 14)
+        .padding(2)
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 12)
         .padding(.bottom, 8)
       }
     }
@@ -1170,16 +1156,17 @@ struct ModelPickerContentPane: View {
   private var claudeLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("claude"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("claude").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "claude",
+          fallbackSymbol: providerIcon("claude"),
+          tint: providerTint("claude"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Claude is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open a primary-lane terminal to finish Claude Code login.")
+          Text("Finish sign-in in a terminal.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1201,16 +1188,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(ADEColor.accent.opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isClaudeLoginBusy)
         .accessibilityLabel("Login to Claude")
       }
@@ -1221,12 +1200,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.6)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1235,16 +1209,17 @@ struct ModelPickerContentPane: View {
   private var piLoginBanner: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "terminal.fill")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(providerTint("pi"))
-          .frame(width: 24, height: 24)
-          .background(providerTint("pi").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        WorkProviderBareLogo(
+          provider: "pi",
+          fallbackSymbol: providerIcon("pi"),
+          tint: providerTint("pi"),
+          size: 18
+        )
         VStack(alignment: .leading, spacing: 2) {
           Text("Pi is signed out")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Open Pi’s native login flow on the paired machine. ADE never stores Pi credentials.")
+          Text("Finish sign-in on the machine.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1266,16 +1241,8 @@ struct ModelPickerContentPane: View {
               .font(.caption.weight(.bold))
               .lineLimit(1)
           }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 7)
-          .background(providerTint("pi").opacity(0.22), in: Capsule())
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-          )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
         .disabled(isPiLoginBusy)
         .accessibilityLabel("Open Pi native login")
       }
@@ -1286,12 +1253,7 @@ struct ModelPickerContentPane: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(providerTint("pi").opacity(0.32), lineWidth: 0.7)
-    )
+    .adeKitCard(padding: 12)
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
   }
@@ -1311,14 +1273,8 @@ struct ModelPickerContentPane: View {
         HStack {
           Spacer()
           Text("\(models.count)")
-            .font(.caption.weight(.bold))
+            .font(.adeMono(11))
             .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-              Capsule(style: .continuous)
-                .fill(ADEColor.recessedBackground.opacity(0.5))
-            )
         }
       }
     }
@@ -1342,7 +1298,7 @@ struct ModelPickerContentPane: View {
       case .recents:
         Image(systemName: "clock.fill")
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textSecondary)
       case .providerGroup(let key, _):
         WorkProviderBareLogo(
           provider: workRailLogoProvider(for: key),
@@ -1538,16 +1494,11 @@ struct ModelPickerListRow: View {
           .padding(.top, style == .detailed ? 7 : 5)
       }
     }
-    .padding(.horizontal, style == .compact ? 10 : 11)
-    .padding(.vertical, style == .compact ? 7 : 8)
-    .background(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .fill(isHighlighted ? ADEColor.accent.opacity(0.10) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.45 : 0.28))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
-        .stroke(isHighlighted ? ADEColor.accent.opacity(0.42) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
-    )
+    .padding(.leading, style == .compact ? 6 : 12)
+    .padding(.trailing, style == .compact ? 12 : 6)
+    .padding(.vertical, 8)
+    // A row in the group's panel; the accent tints only the selected one.
+    .background(isHighlighted ? ADEColor.accent.opacity(0.08) : Color.clear)
     .contentShape(Rectangle())
   }
 
@@ -1567,7 +1518,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1593,7 +1544,7 @@ struct ModelPickerListRow: View {
       )
       VStack(alignment: .leading, spacing: 1) {
         Text(model.displayName)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
           .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         if let piContextLabel {
@@ -1638,16 +1589,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(ADEColor.accent.opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.24), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isClaudeLoginBusy)
     .accessibilityLabel("Login to Claude")
   }
@@ -1670,16 +1613,8 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .lineLimit(1)
       }
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(providerTint("pi").opacity(0.18), in: Capsule())
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(providerTint("pi").opacity(0.28), lineWidth: 0.6)
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(isPiLoginBusy)
     .accessibilityLabel("Open Pi native login")
   }
@@ -1690,8 +1625,8 @@ struct ModelPickerListRow: View {
       onToggleFavorite()
     } label: {
       Image(systemName: isFavorite ? "star.fill" : "star")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted)
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(isFavorite ? ADEColor.warning : ADEColor.textMuted.opacity(0.7))
         .frame(width: 30, height: 30)
         .contentShape(Rectangle())
     }
@@ -1705,7 +1640,7 @@ struct ModelPickerListRow: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
+      HStack(spacing: 2) {
         ForEach(tiers, id: \.self) { tier in
           let normalized = tier.lowercased()
           let isActiveTier = normalized == normalizedCurrent
@@ -1713,19 +1648,19 @@ struct ModelPickerListRow: View {
             onSelectReasoning(normalized)
           } label: {
             Text(reasoningLabel(for: tier))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isActiveTier ? Color.white : ADEColor.textSecondary)
+              .font(.system(size: 12.5, weight: isActiveTier ? .semibold : .medium))
+              .foregroundStyle(isActiveTier ? ADEColor.textPrimary : ADEColor.textSecondary)
               .lineLimit(1)
-              .padding(.horizontal, 12)
-              .padding(.vertical, 7)
-              .background(
-                Capsule(style: .continuous)
-                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55))
-              )
-              .overlay(
-                Capsule(style: .continuous)
-                  .stroke(isActiveTier ? ADEColor.accent : ADEColor.glassBorder, lineWidth: 0.6)
-              )
+              .padding(.horizontal, 11)
+              .frame(minHeight: 28)
+              .background {
+                if isActiveTier {
+                  RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(ADEKit.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+                }
+              }
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .disabled(isBusy || !model.isAvailable)
@@ -1733,6 +1668,8 @@ struct ModelPickerListRow: View {
           .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
+      .padding(2)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
   }
 
@@ -1747,15 +1684,13 @@ struct ModelPickerListRow: View {
           .font(.caption.weight(.bold))
           .foregroundStyle(selectedCodexFastMode ? ADEColor.warning : ADEColor.textMuted)
         Text("Fast mode")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(selectedCodexFastMode ? "On" : "Off")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
       }
     }
     .toggleStyle(.switch)
-    .tint(ADEColor.warning)
+    .controlSize(.mini)
+    .tint(ADEColor.accent)
     .disabled(isBusy || !model.isAvailable)
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
@@ -1789,7 +1724,8 @@ struct ModelPickerCurrentModelBar: View {
   }
 
   private var reasoningLabel: String {
-    workReasoningChipLabel(reasoningEffort) ?? "Default"
+    let effort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    return effort.isEmpty ? "Default" : workReasoningEffortDisplayName(effort)
   }
 
   var body: some View {
@@ -1802,12 +1738,9 @@ struct ModelPickerCurrentModelBar: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Current model")
-          .font(.caption2.weight(.bold))
-          .tracking(0.4)
-          .foregroundStyle(ADEColor.textMuted)
+        ADEEyebrow("Current model")
         Text(model?.displayName ?? "Pick a model")
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if let model, let piContextLabel = workPiModelContextLabel(for: model) {
@@ -1835,13 +1768,6 @@ struct ModelPickerCurrentModelBar: View {
             .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.46), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(

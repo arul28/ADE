@@ -351,7 +351,8 @@ struct WorkSessionTypeSwitcher: View {
   var onUserSelect: ((WorkNewSessionMode) -> Void)? = nil
 
   var body: some View {
-    HStack(spacing: 4) {
+    // The kit segmented track (`.kit-seg`): quiet track, the selection raised.
+    HStack(spacing: 2) {
       ForEach(WorkNewSessionMode.allCases) { mode in
         let isSelected = selection == mode
         Button {
@@ -363,28 +364,21 @@ struct WorkSessionTypeSwitcher: View {
         } label: {
           HStack(spacing: 6) {
             Image(systemName: mode.systemImage)
-              .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
-              .opacity(0.85)
+              .font(.system(size: 11.5, weight: .medium))
             Text(mode.title)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
           }
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
           .padding(.horizontal, 14)
-          .padding(.vertical, 8)
+          .frame(minHeight: 30)
           .background {
             if isSelected {
-              Capsule(style: .continuous)
-                .fill(ADEColor.surfaceBackground.opacity(0.85))
+              RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
             }
           }
-          .overlay {
-            if isSelected {
-              Capsule(style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-            }
-          }
-          .contentShape(Capsule())
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(mode.title)
@@ -392,12 +386,8 @@ struct WorkSessionTypeSwitcher: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .padding(4)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: Capsule(style: .continuous))
-    .overlay {
-      Capsule(style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    }
+    .padding(2)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Session type")
   }
@@ -960,7 +950,8 @@ struct WorkNewChatScreen: View {
           }
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
-          .workChatGlass(in: Capsule(style: .continuous))
+          .background(ADEKit.surface, in: Capsule(style: .continuous))
+          .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
           .transition(.opacity)
         }
 
@@ -971,7 +962,8 @@ struct WorkNewChatScreen: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
             .padding(.horizontal, 20)
         }
 
@@ -1307,43 +1299,42 @@ struct WorkNewChatScreen: View {
     if next != headerTier { headerTier = next }
   }
 
-  /// Shell and Import session, as the thread's glass capsules. Only offered for
-  /// a concrete lane — both act on an existing worktree.
+  /// Shell and Import session, as quiet neutral pills (desktop's launch-shelf
+  /// ghost buttons). Only offered for a concrete lane — both act on an
+  /// existing worktree.
   @ViewBuilder
   private var sessionActionChips: some View {
     if selectedMachineKey == nil, let lane = selectedConcreteLane {
       let chipsDisabled = busy || shellLaunchBusy
       let shellQueued = queuedShellLaneIds.contains(lane.id)
       let shellDisabled = chipsDisabled || shellQueued
-      GlassEffectContainer(spacing: 8) {
-        HStack(spacing: 8) {
-          Button {
-            Task { await launchShell(in: lane) }
-          } label: {
-            shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(shellDisabled)
-
-          NavigationLink {
-            WorkImportSessionScreen(
-              lane: lane,
-              lanes: visibleLanes,
-              onCliImported: onCliStarted,
-              onChatImported: onChatImported
-            )
-            .environmentObject(syncService)
-          } label: {
-            importSessionAffordance(disabled: chipsDisabled)
-          }
-          .buttonStyle(.plain)
-          .disabled(chipsDisabled)
+      HStack(spacing: 8) {
+        Button {
+          Task { await launchShell(in: lane) }
+        } label: {
+          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
         }
+        .buttonStyle(.plain)
+        .disabled(shellDisabled)
+
+        NavigationLink {
+          WorkImportSessionScreen(
+            lane: lane,
+            lanes: visibleLanes,
+            onCliImported: onCliStarted,
+            onChatImported: onChatImported
+          )
+          .environmentObject(syncService)
+        } label: {
+          importSessionAffordance(disabled: chipsDisabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(chipsDisabled)
       }
     }
   }
 
-  private func glassChip(
+  private func quietChip(
     systemImage: String?,
     title: String,
     disabled: Bool,
@@ -1353,30 +1344,24 @@ struct WorkNewChatScreen: View {
       if showsProgress {
         ProgressView()
           .controlSize(.mini)
-          .tint(ADEColor.accent)
       } else if let systemImage {
         Image(systemName: systemImage)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
+          .font(.system(size: 12, weight: .medium))
       }
       Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+        .font(.system(size: 13, weight: .medium))
     }
+    .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 12)
-    .frame(minHeight: workChatComposerChipRowHeight)
-    .workChatGlass(in: Capsule(style: .continuous), interactive: !disabled)
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.accent.opacity(disabled ? 0.08 : 0.22), lineWidth: 0.75)
-    )
+    .frame(minHeight: 32)
+    .background(ADEKit.track, in: Capsule(style: .continuous))
     .contentShape(Capsule(style: .continuous))
-    .opacity(disabled && !showsProgress ? 0.6 : 1)
+    .opacity(disabled && !showsProgress ? 0.5 : 1)
     .frame(minHeight: 44)
   }
 
   private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
-    glassChip(
+    quietChip(
       systemImage: isQueued ? "clock.badge.checkmark" : "terminal",
       title: isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"),
       disabled: disabled,
@@ -1386,7 +1371,7 @@ struct WorkNewChatScreen: View {
   }
 
   private func importSessionAffordance(disabled: Bool) -> some View {
-    glassChip(systemImage: "square.and.arrow.down", title: "Import session", disabled: disabled)
+    quietChip(systemImage: "square.and.arrow.down", title: "Import session", disabled: disabled)
   }
 
   @ViewBuilder
