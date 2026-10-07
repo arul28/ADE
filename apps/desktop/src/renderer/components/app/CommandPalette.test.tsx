@@ -3,6 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -996,17 +997,18 @@ describe("CommandPalette", () => {
       });
     });
 
-    it("does not leave a draft when switching to a new-chat target fails", async () => {
-      const switchRemoteProject = vi.fn(async () => {
-        throw new Error("remote target unavailable");
-      });
+    it.each([
+      { online: true, drafted: true },
+      { online: false, drafted: false },
+    ])("drafts a new chat on another machine's lane without moving the tab (online: $online)", async ({ online, drafted }) => {
+      const switchRemoteProject = vi.fn();
       const onOpenChange = vi.fn();
       seedStore({
         switchRemoteProject,
         sessionsCacheByProject: { [PROJECT_ROOT]: [] },
         workViewByProject: {},
         crossMachineLanesByMachineId: {
-          "target-studio": makeForeignMachine(),
+          "target-studio": makeForeignMachine({ online }),
         },
       });
 
@@ -1017,14 +1019,27 @@ describe("CommandPalette", () => {
         </MemoryRouter>,
       );
 
-      fireEvent.click(
-        await screen.findByRole("button", { name: "New chat in release" }),
-      );
+      const newChat = await screen.findByRole("button", { name: "New chat in release" });
+      fireEvent.click(newChat);
 
-      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalled());
+      if (drafted) {
+        await waitFor(() => {
+          expect(screen.getByTestId("location").textContent).toBe("/work");
+        });
+        // The draft lives in this tab's project and names the lane's machine.
+        expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]).toMatchObject({
+          draftKind: "chat",
+          draftLaneId: "lane-remote",
+          draftMachineId: "target-studio",
+        });
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      } else {
+        await act(async () => { await Promise.resolve(); });
+        expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]).toBeUndefined();
+        expect(screen.getByTestId("location").textContent).toBe("/lanes");
+      }
+      expect(switchRemoteProject).not.toHaveBeenCalled();
       expect(useAppStore.getState().workViewByProject[REMOTE_BINDING.key]).toBeUndefined();
-      expect(screen.getByTestId("location").textContent).toBe("/lanes");
-      expect(onOpenChange).not.toHaveBeenCalledWith(false);
     });
 
     it("shows the status word for an active thread", async () => {

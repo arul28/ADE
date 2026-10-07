@@ -8290,7 +8290,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -8298,6 +8298,7 @@ app.whenReady().then(async () => {
         project,
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
+        openProjectTabRoots: project ? [project.rootPath] : [],
         pendingLocalProjectRoots: [],
         knownLocalProjectRoots: project ? [project.rootPath] : [],
       };
@@ -8305,12 +8306,17 @@ app.whenReady().then(async () => {
     const knownLocalProjectRoots = Array.from(
       windowKnownLocalProjectRoots.get(windowId) ?? [],
     );
+    // Every local tab the window shows, loaded or not. `openProjectTabs` lists
+    // only projects with a live context, and an idle project's context can be
+    // released while its tab stays open.
+    const openProjectTabRoots = Array.from(windowProjectTabRoots.get(windowId) ?? []);
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
       project: null,
       binding: remoteBinding,
       openProjectTabs: projectsForWindowTabs(windowId),
+      openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
     };
@@ -8320,6 +8326,7 @@ app.whenReady().then(async () => {
       project,
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
+      openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
     };

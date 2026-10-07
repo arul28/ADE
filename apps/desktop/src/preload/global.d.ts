@@ -1108,6 +1108,8 @@ declare global {
           project: ProjectInfo | null;
           binding: OpenProjectBinding | null;
           openProjectTabs: ProjectInfo[];
+          /** Every local tab root, including ones whose project is not loaded. */
+          openProjectTabRoots?: string[];
           /** Hosted web persists remote machine/project tabs in this browser. */
           openProjectBindings?: OpenProjectBinding[];
         }>;
@@ -3954,22 +3956,22 @@ declare global {
         onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
       github: {
-        getStatus: (opts?: { forceRefresh?: boolean }) => Promise<GitHubStatus>;
+        getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
         }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
-        setToken: (token: string) => Promise<GitHubSetTokenResult>;
-        clearToken: () => Promise<GitHubStatus>;
-        getAppUserAuthStatus: () => Promise<GitHubAppUserAuthStatus>;
-        startAppUserDeviceAuth: () => Promise<GitHubAppDeviceAuthStartResult>;
+        setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
+        clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
+        getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
+        startAppUserDeviceAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthStartResult>;
         pollAppUserDeviceAuth: (args: {
           sessionId: string;
-        }) => Promise<GitHubAppDeviceAuthPollResult>;
-        clearAppUserAuth: () => Promise<GitHubAppUserAuthStatus>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthPollResult>;
+        clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;
-        detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        detectRepo: (pin?: OpenProjectBinding | null) => Promise<{ owner: string; name: string } | null>;
         listRepoIssues: (args?: {
           owner?: string;
           name?: string;
@@ -3984,19 +3986,19 @@ declare global {
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;
-        }) => Promise<GitHubAutolink[]>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink[]>;
         getAppInstallationStatus: (args?: {
           owner?: string;
           name?: string;
           forceRefresh?: boolean;
-        }) => Promise<GitHubAppInstallationStatus>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;
           name?: string;
           keyPrefix: string;
           urlTemplate: string;
           isAlphanumeric?: boolean;
-        }) => Promise<GitHubAutolink>;
+        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink>;
         listRepoLabels: (args: {
           owner: string;
           name: string;
@@ -4096,7 +4098,7 @@ declare global {
           laneId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<PrSummary | null>;
-        reconcileNow: () => Promise<void>;
+        reconcileNow: (pin?: OpenProjectBinding | null) => Promise<void>;
         /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
         reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
         listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
@@ -4416,11 +4418,12 @@ declare global {
         getMemory: (pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
         updateMemory: (args: CtoUpdateMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
         searchMemory: (args: CtoSearchMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoSearchMemoryResult>;
-        getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
+        getLinearConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LinearConnectionStatus>;
-        clearLinearToken: () => Promise<LinearConnectionStatus>;
+        clearLinearToken: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
         getOnboardingState: (pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
         completeOnboardingStep: (args: {
           stepId: string;
@@ -4428,7 +4431,7 @@ declare global {
         previewSystemPrompt: (args?: {
           identityOverride?: Record<string, unknown>;
         }, pin?: OpenProjectBinding | null) => Promise<CtoSystemPromptPreview>;
-        getLinearProjects: () => Promise<CtoLinearProject[]>;
+        getLinearProjects: (pin?: OpenProjectBinding | null) => Promise<CtoLinearProject[]>;
         getLinearQuickView: () => Promise<CtoLinearQuickView>;
         getLinearIssuePickerData: () => Promise<CtoGetLinearIssuePickerDataResult>;
         searchLinearIssues: (
@@ -4451,13 +4454,13 @@ declare global {
           args: CtoCountLinearIssuesArgs,
         ) => Promise<CtoCountLinearIssuesResult>;
         getLinearCustomViews: () => Promise<CtoLinearCustomView[]>;
-        getLinearAgentOverview: () => Promise<LinearAgentOverview>;
-        startLinearAgentInstall: () => Promise<LinearAgentInstallStart>;
-        getLinearAgentInstallSession: (sessionId: string) => Promise<LinearAgentInstallSession>;
-        registerLinearAgentMember: (args?: { replace?: boolean }) => Promise<LinearAgentOverview>;
-        unregisterLinearAgentMember: () => Promise<LinearAgentOverview>;
-        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => Promise<LinearAgentOverview>;
-        uninstallLinearAgent: () => Promise<LinearAgentOverview>;
+        getLinearAgentOverview: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        startLinearAgentInstall: (pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallStart>;
+        getLinearAgentInstallSession: (sessionId: string, pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallSession>;
+        registerLinearAgentMember: (args?: { replace?: boolean }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        unregisterLinearAgentMember: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
+        uninstallLinearAgent: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
         getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => Promise<LinearInboxNotification[]>;
         markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => Promise<void>;
         getLinearIssueRelationsIssue: (issueId: string) => Promise<LinearAgentNormalizedIssue | null>;
@@ -4465,9 +4468,10 @@ declare global {
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;
         clearLinearOAuthClient: () => Promise<LinearConnectionStatus>;
-        startLinearOAuth: () => Promise<CtoStartLinearOAuthResult>;
+        startLinearOAuth: (pin?: OpenProjectBinding | null) => Promise<CtoStartLinearOAuthResult>;
         getLinearOAuthSession: (
           args: CtoGetLinearOAuthSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;

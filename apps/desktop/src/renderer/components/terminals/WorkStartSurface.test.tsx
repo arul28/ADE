@@ -124,7 +124,10 @@ describe("WorkStartSurface", () => {
     expect(agentChatPaneProps.latest?.suppressDraftLaunchNavigation).toBe(true);
   });
 
-  it("keeps a foreign draft lane selected instead of falling back locally", async () => {
+  it.each([
+    { name: "this machine has lanes", localLanes: [{ id: "lane-local", name: "Local lane" } as any] },
+    { name: "this machine has no lanes", localLanes: [] as any[] },
+  ])("keeps a foreign draft lane selected instead of falling back locally ($name)", async ({ localLanes }) => {
     crossMachineState.lanesByMachine = {
       studio: {
         machineId: "studio",
@@ -147,7 +150,7 @@ describe("WorkStartSurface", () => {
         draftKind="chat"
         draftLaneId="lane-studio"
         draftMachineId="studio"
-        lanes={[{ id: "lane-local", name: "Local lane" } as any]}
+        lanes={localLanes}
         onOpenChatSession={vi.fn()}
         onLaunchPtySession={vi.fn()}
       />,

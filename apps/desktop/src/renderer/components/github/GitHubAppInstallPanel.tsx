@@ -4,6 +4,7 @@ import type {
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -33,9 +34,16 @@ const SPIN_STYLE: CSSProperties = { animation: "ade-icon-spin 1s steps(30) infin
 
 type GitHubAppInstallPanelProps = {
   variant?: "settings" | "onboarding";
+  /**
+   * The machine whose GitHub App credential this panel shows and changes.
+   * Null reads through the tab's own binding (onboarding, This computer).
+   * Mount it with a `key` per machine (Settings keys the whole GitHub section)
+   * so a pending device code cannot carry over to another machine.
+   */
+  pin?: OpenProjectBinding | null;
 };
 
-export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstallPanelProps) {
+export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitHubAppInstallPanelProps) {
   const compact = variant === "onboarding";
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
   // Shared with the Settings connection ladder, so disconnecting here updates
@@ -45,7 +53,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     loaded: appAuthLoaded,
     refresh: refreshAppAuth,
     set: setAppAuth,
-  } = useGithubAppUserAuth();
+  } = useGithubAppUserAuth(pin);
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
@@ -73,7 +81,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       for (let attempt = 0; attempt < attemptCount; attempt += 1) {
         latestStatus = await window.ade.github.getAppInstallationStatus({
           forceRefresh: forceRefresh || attempt > 0,
-        });
+        }, pin);
         if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
         setStatus(latestStatus);
         if (!opts.retryAfterAuthorization || !isGithubRepoAccessPending(latestStatus)) break;
@@ -128,7 +136,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         }
       }
     }
-  }, [refreshAppAuth]);
+  }, [pin, refreshAppAuth]);
 
   const startAppAuthorization = useCallback(async () => {
     autoRenewCountRef.current = 0;
@@ -137,21 +145,22 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     setDeviceMessage(null);
     setDeviceCodeCopied(false);
     try {
-      const session = await window.ade.github.startAppUserDeviceAuth();
+      const session = await window.ade.github.startAppUserDeviceAuth(pin);
       setDeviceSession(session);
+      // The code is approved in a browser, which is always This computer's.
       openExternalUrl(session.verificationUriComplete ?? session.verificationUri);
     } catch (error) {
       setDeviceMessage(deviceAuthErrorCopy(error));
     } finally {
       setAuthLoading(false);
     }
-  }, []);
+  }, [pin]);
 
   const disconnectAppAuthorization = useCallback(async () => {
     if (!window.ade?.github?.clearAppUserAuth) return;
     setDisconnecting(true);
     try {
-      const next = await window.ade.github.clearAppUserAuth();
+      const next = await window.ade.github.clearAppUserAuth(pin);
       setAppAuth(next ?? null);
       setDeviceSession(null);
       setDeviceMessage("ADE's GitHub authorization was removed on this machine.");
@@ -161,7 +170,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       setDisconnecting(false);
       setDisconnectArmed(false);
     }
-  }, [setAppAuth]);
+  }, [pin, setAppAuth]);
 
   const copyDeviceCode = useCallback(async () => {
     if (!deviceSession) return;
@@ -186,7 +195,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     const timeout = window.setTimeout(async () => {
       let result: GitHubAppDeviceAuthPollResult | null = null;
       try {
-        result = await window.ade.github.pollAppUserDeviceAuth({ sessionId: deviceSession.sessionId });
+        result = await window.ade.github.pollAppUserDeviceAuth({ sessionId: deviceSession.sessionId }, pin);
       } catch (error) {
         result = {
           status: "error",
@@ -209,7 +218,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
           return;
         }
         try {
-          const nextSession = await window.ade.github.startAppUserDeviceAuth();
+          const nextSession = await window.ade.github.startAppUserDeviceAuth(pin);
           if (cancelled) return;
           autoRenewCountRef.current += 1;
           setDeviceSession(nextSession);
@@ -231,14 +240,14 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         // reconcile so this project's PR badges light up without a manual refresh.
         // Swallow rejections (e.g. a project transition tearing down the runtime)
         // so this fire-and-forget can never surface as an unhandled rejection.
-        void window.ade?.prs?.reconcileNow?.().catch(() => {});
+        void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
       }
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [deviceSession, loadStatus, setAppAuth]);
+  }, [deviceSession, loadStatus, pin, setAppAuth]);
 
   useEffect(() => {
     setDeviceCodeCopied(false);

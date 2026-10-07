@@ -204,7 +204,11 @@ resolves through `renderer/components/chat/thisMachineProjectRoot.ts`: it finds
 local tab happens to be first, and reports "Open this repository on This computer
 first, then switch back here." when there is none instead of silently switching
 the window to an unrelated repo. Machine ids and the "This computer" name come
-from `shared/machineIdentity.ts`.
+from `shared/machineIdentity.ts`. Another machine is offered when it is
+connected and has this repository (or a project already open in a tab);
+`projectOnOtherMachine` picks that machine's checkout of the same repository and
+never an unrelated one. A machine picked here is a deliberate choice, so the
+project tab stays on it instead of moving back to this computer's checkout.
 
 The ADE CLI uses the same machine endpoint through explicit `--personal`
 commands, for example:

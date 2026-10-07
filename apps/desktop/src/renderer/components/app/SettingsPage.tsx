@@ -224,9 +224,9 @@ export function SettingsPage({
   const machineParam = searchParams.get("machine");
   const machinesEnabled = !isWebClientMode();
   const { machines } = useProjectMachines(active && machinesEnabled);
-  // With no `?machine=`, a link to a setting that only works on the tab's own
-  // machine (GitHub, Linear, link opening) lands on that machine; anything else
-  // lands on This computer. For a tab open on this computer the two agree.
+  // With no `?machine=`, a link to a setting about the tab's own machine
+  // (GitHub, Linear, link opening) lands on that machine; anything else lands
+  // on This computer. For a tab open on this computer the two agree.
   const linkedEntryId = location.hash ? resolveSettingsHash(decodeSettingsHash(location.hash))?.id ?? null : null;
   const defaultMachineId = linkedEntryId && BOUND_MACHINE_ENTRY_IDS.has(linkedEntryId)
     ? (machines.find((machine) => machine.isActiveBinding)?.machineId ?? THIS_MACHINE_ID)

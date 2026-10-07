@@ -5,7 +5,7 @@ import type {
   CreateLaneFromPrBranchResult,
   GitHubPrListItem,
 } from "../../../../shared/types";
-import { openLaneInLanesTabPath } from "../../../lib/laneNavigation";
+import { openLaneOnMachinePath } from "../../../lib/laneNavigation";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import type { LaneMachine } from "../../../state/laneMachineRouting";
@@ -19,11 +19,6 @@ import {
   createLaneFromPrBranchRequestKey,
   formatActionError,
 } from "./GitHubTabCreateLaneDialog";
-
-/** `openLaneInLanesTabPath` plus the owning machine, which the Lanes tab resolves. */
-export function openLaneOnMachinePath(laneId: string, machineId: string): string {
-  return `${openLaneInLanesTabPath(laneId)}&machineId=${encodeURIComponent(machineId)}`;
-}
 
 const CREATE_LANE_MACHINE_COPY = {
   title: "Where should this lane live?",

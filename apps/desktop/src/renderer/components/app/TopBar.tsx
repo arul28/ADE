@@ -11,7 +11,6 @@ import {
   ArrowSquareOut,
   ChatCircleDots,
   CircleNotch,
-  DesktopTower,
   DownloadSimple,
   Folder,
   FolderOpen,
@@ -72,6 +71,7 @@ import {
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
+import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -529,6 +529,14 @@ function HeaderActionPill({
     </SmartTooltip>
   );
 }
+
+const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
+  connected: "Connected",
+  connecting: "Reconnecting",
+  parked: "Parked",
+  idle: "Disconnected",
+  error: "Disconnected",
+};
 
 function ProjectTabIcon({
   rootPath,
@@ -1098,6 +1106,22 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
+  usePreferLocalCheckout({
+    enabled: !webMode
+      && windowSessionRestored
+      && !personalChatsRouteActive
+      && !isProjectBusy
+      && !isNewTabOpen,
+    remoteBinding,
+    remoteOrigin: remoteBinding
+      ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
+      : null,
+    openLocalTabs: projectTabs,
+    knownLocalTabs: localRecentProjects,
+    setOpenRemoteProjectTabs,
+    setTabOrder,
+  });
+
   useEffect(() => {
     let cancelled = false;
     window.ade.app
@@ -1117,16 +1141,17 @@ export function TopBar({
             });
           }
         }
-        if (session.openProjectTabs.length > 0) {
+        // Restore every local tab root, loaded or not: an idle project's
+        // context may be released while its tab stays open. Hosted web sends
+        // only the loaded list.
+        const restored = session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
-          // Merge, don't replace. The main-process snapshot
-          // (projectsForWindowTabs) drops any tab root whose context was
-          // evicted while idle, so a remount could otherwise lose a local tab
-          // that the renderer still has. Restored roots come first; keep any
-          // extra local roots the renderer already knows about.
-          const restored = session.openProjectTabs.map((entry) => entry.rootPath);
+          // Merge, don't replace: keep any extra local roots the renderer
+          // already knows about after the restored ones.
           setOpenProjectTabRoots((prev) => {
             const merged = [...restored];
             for (const root of prev) {
@@ -1997,18 +2022,10 @@ export function TopBar({
                 if (!remoteTab) return null;
                 const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);
-                const remoteTabConnected = remoteTabState === "connected";
                 const remoteTabConnecting = remoteTabState === "connecting";
-                const remoteTabParked = remoteTabState === "parked";
                 const remoteTabDisconnected =
                   remoteTabState === "error" || remoteTabState === "idle";
-                const remoteTabStatusLabel = remoteTabConnected
-                  ? "Connected"
-                  : remoteTabConnecting
-                    ? "Reconnecting"
-                    : remoteTabParked
-                      ? "Parked"
-                      : "Disconnected";
+                const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
                 return (
                   <div
@@ -2023,17 +2040,14 @@ export function TopBar({
                     data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
+                    // A project tab looks the same wherever its checkout
+                    // lives. The machine is in the tooltip; only a connection
+                    // problem, which stops the tab from loading, is marked.
                     className={cn(
                       "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
-                      "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                      "cursor-pointer border",
-                      remoteTabConnected
-                        ? "border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]"
-                        : remoteTabConnecting
-                          ? "border-amber-400/60"
-                          : remoteTabParked
-                            ? "border-sky-400/50"
-                          : "border-red-400/60",
+                      "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
+                      "cursor-pointer",
+                      isCurrentRemote && "font-semibold",
                     )}
                     style={
                       {
@@ -2072,13 +2086,6 @@ export function TopBar({
                         className="shrink-0 animate-spin text-amber-300"
                         aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
                       />
-                    ) : remoteTabParked ? (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-sky-300"
-                        aria-label={`Parked: ${remoteTab.runtimeName}`}
-                      />
                     ) : remoteTabDisconnected ? (
                       <WarningCircle
                         size={11}
@@ -2086,14 +2093,7 @@ export function TopBar({
                         className="shrink-0 text-red-300"
                         aria-label={`Disconnected: ${remoteTab.runtimeName}`}
                       />
-                    ) : (
-                      <DesktopTower
-                        size={11}
-                        weight="duotone"
-                        className="shrink-0 text-[var(--color-warning)]"
-                        aria-label={`Machine: ${remoteTab.runtimeName}`}
-                      />
-                    )}
+                    ) : null}
                     <button
                       type="button"
                       className={cn(
@@ -2106,7 +2106,7 @@ export function TopBar({
                         e.stopPropagation();
                         handleCloseRemoteTab(remoteTab);
                       }}
-                      title="Close remote project"
+                      title="Close project"
                     >
                       <X size={13} weight="regular" />
                     </button>

@@ -12,6 +12,7 @@ import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { historyCommitsPath } from "../history/historyUrlHydration";
+import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
@@ -134,12 +135,9 @@ export function useWorkLaneContextMenu(options?: {
 } {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
-  const selectLane = useAppStore((s) => s.selectLane);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
   const [foreignMenuState, setForeignMenuState] = useState<ForeignMenuState | null>(null);
@@ -226,23 +224,16 @@ export function useWorkLaneContextMenu(options?: {
   ]);
   const openForeignLane = useCallback(() => {
     if (!foreignMenuState || !foreignMachineOnline) return;
-    const { binding, lane } = foreignMenuState;
+    const { lane, machineId } = foreignMenuState;
     close();
-    const switching = binding.kind === "remote"
-      ? switchRemoteProject(binding.targetId, binding.projectId)
-      : switchProjectToPath(binding.rootPath);
-    void switching.then(() => {
-      selectLane(lane.id);
-      void navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
-    });
+    // The Lanes list shows every machine's lanes, so the lane opens in this
+    // tab. The project tab never changes machine to show one lane.
+    void navigate(openLaneOnMachinePath(lane.id, machineId));
   }, [
     close,
     foreignMachineOnline,
     foreignMenuState,
     navigate,
-    selectLane,
-    switchProjectToPath,
-    switchRemoteProject,
   ]);
   const manageForeignLane = useCallback(() => {
     if (!foreignMenuState || !foreignMachineOnline) return;

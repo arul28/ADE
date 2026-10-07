@@ -1343,8 +1343,6 @@ export function CommandPalette({
     projectRoot: project?.rootPath ?? null,
     projectBinding,
     setWorkViewState,
-    switchProjectToPath,
-    switchRemoteProject,
   });
 
   const removeWorkFilter = useCallback(

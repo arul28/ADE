@@ -113,3 +113,70 @@ describe("refreshGithubAppUserAuth publication order", () => {
     expect(result.current.appAuth?.userLogin).toBe("returned-by-the-action");
   });
 });
+
+/**
+ * Each machine has its own GitHub App credential and Settings shows a page per
+ * machine, so a status read for one machine must never show on another's page.
+ */
+describe("useGithubAppUserAuth per machine", () => {
+  it("keeps each machine's status to itself and reads the right machine", async () => {
+    const studioPin = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade/ADE",
+      displayName: "ADE",
+    };
+    const getAppUserAuthStatus = vi.fn(async (pin?: { key: string } | null) =>
+      makeAppAuth({ userLogin: pin ? `on-${pin.key}` : "on-this-computer" }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { github: { getAppUserAuthStatus } },
+    });
+
+    const local = renderHook(() => useGithubAppUserAuth());
+    const studio = renderHook(() => useGithubAppUserAuth(studioPin));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(local.result.current.appAuth?.userLogin).toBe("on-this-computer");
+    expect(studio.result.current.appAuth?.userLogin).toBe(`on-${studioPin.key}`);
+    expect(getAppUserAuthStatus).toHaveBeenCalledWith(studioPin);
+
+    // An action on the Mac Studio page publishes there only.
+    act(() => studio.result.current.set(makeAppAuth({ userLogin: "studio-after-disconnect" })));
+    expect(studio.result.current.appAuth?.userLogin).toBe("studio-after-disconnect");
+    expect(local.result.current.appAuth?.userLogin).toBe("on-this-computer");
+  });
+});
+
+describe("useGithubAppUserAuth after a failed read", () => {
+  it("asks the machine again on the next mount instead of keeping the failure", async () => {
+    const getAppUserAuthStatus = vi.fn()
+      .mockRejectedValueOnce(new Error("machine unreachable"))
+      .mockResolvedValueOnce(makeAppAuth({ userLogin: "back-online" }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { github: { getAppUserAuthStatus } },
+    });
+
+    const first = renderHook(() => useGithubAppUserAuth());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The page stops waiting, with nothing to show.
+    expect(first.result.current.loaded).toBe(true);
+    expect(first.result.current.appAuth).toBeNull();
+    first.unmount();
+
+    const second = renderHook(() => useGithubAppUserAuth());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getAppUserAuthStatus).toHaveBeenCalledTimes(2);
+    expect(second.result.current.appAuth?.userLogin).toBe("back-online");
+  });
+});

@@ -15,6 +15,7 @@ import { LinearMark } from "../lanes/linearBrand";
 import "./IntegrationsSettings.css";
 import { LinearAgentSection } from "./LinearAgentSection";
 import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -56,12 +57,17 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   // active project changes so the autolink commands target the right repo and
   // Linear workspace instead of a stale previously-loaded project.
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  // Linear OAuth uses a 127.0.0.1 loopback callback server. When the project is
-  // bound to a remote runtime that server runs on the remote host, but the
-  // browser opens locally and redirects to localhost on THIS machine — so the
-  // callback never arrives. Steer remote sessions to the API-key path, which
-  // routes cleanly to the remote machine's credential store.
-  const isRemoteRuntime = useAppStore((s) => s.projectBinding?.kind === "remote");
+  // Every call below goes to this page's machine: its Linear credential, its
+  // checkout's GitHub repo, its ADE agent membership.
+  const { pin } = useSettingsMachineScope();
+  // Linear OAuth uses a 127.0.0.1 loopback callback server. When the runtime is
+  // on another computer that server runs there, but the browser opens locally
+  // and redirects to localhost on THIS machine — so the callback never arrives.
+  // Steer remote runtimes to the API-key path, which routes cleanly to the
+  // remote machine's credential store. Pinned pages judge by their own pin;
+  // unpinned ones follow the tab's binding.
+  const tabBindingRemote = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const isRemoteRuntime = pin ? pin.kind === "remote" : tabBindingRemote;
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
@@ -166,14 +172,14 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     if (!window.ade?.cto) return;
     const requestId = requestIdArg ?? invalidateLoadRequests();
     try {
-      const nextProjects = await window.ade.cto.getLinearProjects();
+      const nextProjects = await window.ade.cto.getLinearProjects(pin);
       if (!isCurrentLoadRequest(requestId)) return;
       setProjects(nextProjects);
     } catch {
       if (!isCurrentLoadRequest(requestId)) return;
       setProjects([]);
     }
-  }, [invalidateLoadRequests, isCurrentLoadRequest]);
+  }, [invalidateLoadRequests, isCurrentLoadRequest, pin]);
 
   const loadGithubAutolinks = useCallback(async () => {
     const github = window.ade?.github;
@@ -186,7 +192,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     setAutolinksLoading(true);
     setAutolinkError(null);
     try {
-      const repo = await github.detectRepo();
+      const repo = await github.detectRepo(pin);
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubRepo(repo);
       if (!repo) {
@@ -194,7 +200,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         setAutolinkError("No GitHub origin remote was detected for this project.");
         return;
       }
-      const autolinks = await github.listRepoAutolinks(repo);
+      const autolinks = await github.listRepoAutolinks(repo, pin);
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
     } catch (err) {
@@ -206,13 +212,13 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         setAutolinksLoading(false);
       }
     }
-  }, []);
+  }, [pin]);
 
   const loadStatus = useCallback(async () => {
     if (!window.ade?.cto) return;
     const requestId = invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.getLinearConnectionStatus();
+      const status = await window.ade.cto.getLinearConnectionStatus(pin);
       if (!isCurrentLoadRequest(requestId)) return;
       setConnection(status);
       if (status.connected) {
@@ -227,9 +233,9 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       setConnection(null);
       setProjects([]);
     }
-  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects]);
+  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects, pin]);
 
-  /* ── Initial load + reload on active-project change ── */
+  /* ── Initial load + reload on active-project or machine change ── */
   useEffect(() => {
     void loadStatus();
   }, [loadStatus, projectRoot]);
@@ -256,7 +262,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
 
     const poll = async () => {
       try {
-        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId });
+        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId }, pin);
         if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         if (session.status === "completed") {
           setOauthSessionIdState(null);
@@ -293,7 +299,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       if (timer != null) clearInterval(timer);
       if (timeout != null) clearTimeout(timeout);
     };
-  }, [loadProjects, loadStatus, oauthSessionId, setOauthSessionIdState, setOauthStartingState]);
+  }, [loadProjects, loadStatus, oauthSessionId, pin, setOauthSessionIdState, setOauthStartingState]);
 
   /* ── Handlers ── */
   const handleValidate = useCallback(async () => {
@@ -311,7 +317,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     setValidatingState(true);
     setError(null);
     try {
-      const status = await window.ade.cto.setLinearToken({ token: submittedToken });
+      const status = await window.ade.cto.setLinearToken({ token: submittedToken }, pin);
       if (
         !validatingRef.current
         || oauthStartingRef.current
@@ -343,7 +349,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         setValidatingState(false);
       }
     }
-  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects, setValidatingState, tokenInput]);
+  }, [invalidateLoadRequests, isCurrentLoadRequest, loadProjects, pin, setValidatingState, tokenInput]);
 
   const handleStartOAuth = useCallback(async () => {
     if (oauthSessionIdRef.current) {
@@ -368,7 +374,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     setOauthStartingState(true);
     setError(null);
     try {
-      const session = await cto.startLinearOAuth();
+      const session = await cto.startLinearOAuth(pin);
       if (!oauthStartingRef.current || validatingRef.current) return;
       await openExternal(session.authUrl);
       if (!oauthStartingRef.current || validatingRef.current) return;
@@ -378,13 +384,13 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       setOauthStartingState(false);
       setError(err instanceof Error ? err.message : "Unable to start OAuth.");
     }
-  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, isRemoteRuntime]);
+  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, isRemoteRuntime, pin]);
 
   const handleDisconnect = useCallback(async () => {
     if (!window.ade?.cto) return;
     invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.clearLinearToken();
+      const status = await window.ade.cto.clearLinearToken(pin);
       setConnection(status);
       announceLinearConnectionChanged();
       setProjects([]);
@@ -397,7 +403,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       setValidatingState(false);
       setOauthStartingState(false);
     }
-  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, setValidatingState]);
+  }, [invalidateLoadRequests, pin, setOauthSessionIdState, setOauthStartingState, setValidatingState]);
 
   const handleCreateAutolink = useCallback(async (candidate: GitHubAutolinkCandidate) => {
     const github = window.ade?.github;
@@ -411,14 +417,14 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         keyPrefix: candidate.keyPrefix,
         urlTemplate: candidate.urlTemplate,
         isAlphanumeric: candidate.isAlphanumeric,
-      });
+      }, pin);
       await loadGithubAutolinks();
     } catch (err) {
       setAutolinkError(err instanceof Error ? err.message : "Unable to create GitHub autolink.");
     } finally {
       setCreatingAutolinkId(null);
     }
-  }, [githubRepo, loadGithubAutolinks]);
+  }, [githubRepo, loadGithubAutolinks, pin]);
 
   const openApiSettings = (event: React.MouseEvent<HTMLAnchorElement>) => {
     const openExternal = window.ade?.app?.openExternal;
@@ -581,7 +587,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         )}
       </ModernSection>
 
-      {isConnected ? <LinearAgentSection connected={isConnected} /> : null}
+      {isConnected ? <LinearAgentSection connected={isConnected} pin={pin} /> : null}
 
       <ModernSection
         group="Linear"
