@@ -145,7 +145,7 @@ struct WorkSessionHandoffMenu: View {
             Label("Open on \(target.machineName)", systemImage: "arrow.up.forward.app")
           }
         }
-        if move.state == .unknown, crossMachineCancelAvailable {
+        if move.state == .unknown || move.state == .failed, crossMachineCancelAvailable {
           Button {
             onHandoff(session, .dismissMove)
           } label: {

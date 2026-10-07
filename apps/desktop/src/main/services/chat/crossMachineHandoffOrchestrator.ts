@@ -703,7 +703,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     }
     // Dismissing a move that may have landed: the person checked (or chose
     // not to), and its capsule goes with it so nothing can resend it.
-    if (mayHaveLanded(persisted.record)) {
+    if (mayHaveLanded(persisted.record) || persisted.record.state === "failed") {
       return end(sourceSessionId, persisted, "cancelled", "You dismissed the move.");
     }
     if (persisted.record.state !== "pending" && persisted.record.state !== "awaiting_approval") {

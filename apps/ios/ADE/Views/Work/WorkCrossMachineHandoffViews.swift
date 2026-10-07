@@ -120,6 +120,8 @@ func workCrossMachineHandoffCardModel(
     var actions: [WorkCrossMachineHandoffCardModel.Action] = [.retry]
     if alreadyContinues != nil { actions.append(.open) }
     if continuation != nil, !record.resumedHere { actions.append(.workHere) }
+    // A failed move that reached acceptance blocks a new one until dismissed.
+    actions.append(.dismiss)
     return WorkCrossMachineHandoffCardModel(
       title: "Couldn't move to \(machine)",
       detail: [record.reason, alreadyContinues].compactMap { $0 }.joined(separator: " "),
@@ -720,6 +722,12 @@ struct WorkCrossMachineHandoffSheet: View {
       case "behind":
         blockerButton("Update branch", key: "pull") {
           try await syncService.pullGitForChat(sessionId: target.sessionId, laneId: target.laneId)
+        }
+      case "move_unknown":
+        // The earlier move may have landed; dismissing it (after checking the
+        // other machine) is what lets a new move start.
+        blockerButton("Dismiss earlier move", key: "dismiss") {
+          _ = try await syncService.cancelCrossMachineHandoff(sourceSessionId: target.sessionId)
         }
       default:
         EmptyView()

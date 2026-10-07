@@ -264,6 +264,15 @@ export function CrossMachineHandoffBanner({
           { label: "Retry", busy: busy === "retry", onClick: () => void run("retry") },
           ...(alreadyContinues && openContinuation ? [{ ...openContinuation, variant: "link" as const }] : []),
           ...workHereAction,
+          // A failed move that reached acceptance blocks a new one until it is
+          // dismissed (the brain treats it like an unknown move).
+          {
+            label: "Dismiss",
+            variant: "link" as const,
+            busy: busy === "cancel",
+            disabled: Boolean(busy),
+            onClick: () => void run("cancel"),
+          },
           ...(record.reason
             ? [{
               label: detailsOpen ? "Hide details" : "Details",

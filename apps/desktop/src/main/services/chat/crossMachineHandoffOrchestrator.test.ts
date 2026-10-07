@@ -476,6 +476,8 @@ describe("cross-machine move orchestrator", () => {
     const dismissed = h.orchestrator.cancel(SESSION);
     expect(dismissed).toMatchObject({ handoffId: lost.handoffId, state: "cancelled" });
     expect(h.hasOutbox(lost.handoffId)).toBe(false);
+    // Dismissed, nothing blocks a new move.
+    expect((await h.orchestrator.getOptions(SESSION)).blockers.map((blocker) => blocker.id)).not.toContain("move_unknown");
 
     // Two starts racing on one chat: exactly one wins.
     h.chat.turnActive = true;
