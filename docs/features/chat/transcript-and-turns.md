@@ -904,6 +904,42 @@ implements a two-layer transform:
    already has a checkpoint `turn_diff_summary` keeps that `[diff]` notice and
    leaves `turn-end.fileEntries` empty so the files half is not listed twice.
 
+   **Computer-use action rows (desktop, hosted web, iOS).** The one exception
+   to "tool groups are not drawn": a group holding ADE computer-use shell
+   commands (`ade screen|mac-desktop|desk …`, `ade app-control …`,
+   `ade browser …`, `ade apple …`, `ade proof …`, also through
+   `"$ADE_CLI_PATH"`, from any provider's shell tool) stays in the thread and
+   draws only those commands, as sentences: "Clicked “Checkout” on
+   localhost:5173". `shared/computerUseActionSummary.ts` reads the command,
+   and `shared/computerUseActionOutput.ts` its output (the CLI's `hit:` /
+   `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:`
+   errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
+   `--json` results); the summary returns null
+   whenever it is unsure (unknown verb, two acting commands in one call, shell
+   control flow), which keeps the plain shell row. The latest action of a run
+   draws in full (app icon, surface line — Lane screen, App Control, ADE
+   browser, Your browser in amber when the output marks it with an `attached:`
+   or `target: your … on …` line (or their `--json` fields), or the Apple
+   device — and the failure reason); earlier ones are one
+   muted line with a status dot (amber when `effect: unconfirmed`, red when it
+   failed), and consecutive confirmed actions in one app fold into
+   "Notes · 4 actions". Clicking a compact line opens its full row under a thin
+   guide line. App icons come from `app.getAppIcon` (macOS, cached per name in
+   both processes); browsers use the installed-browser icons; everything else
+   draws a glyph. In the tools list the same commands read as their sentence.
+   A finished turn's fold does not hide them: they are the record of what the
+   agent did on a screen, so they stay in the thread on desktop and iOS.
+   `shared/computerUseActionPresentation.ts` turns a summary into words, and
+   `chat/chatComputerUseRows.ts` decides which entries are actions and how runs
+   sit in the timeline (`ChatComputerUseActions.tsx` draws them). A run that is
+   not the turn's last one draws all compact (`computerUseCompact` on the work
+   log group); the fold's `role: "keep"` for these groups is set in
+   `chatTranscriptTurnFolds.ts`. iOS ports the parser to
+   `WorkComputerUseSummary.swift`, the words to
+   `WorkComputerUsePresentation.swift` (rows in `WorkComputerUseActions.swift`) and
+   keeps the cluster in `workPresentedTimelineEntries` with
+   `computerUseActions` set.
+
    This is capability preserving: clients show only events and file data the
    selected provider actually emitted, without synthesizing Claude-style file
    histories for other runtimes.

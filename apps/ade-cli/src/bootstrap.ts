@@ -164,6 +164,7 @@ import {
   captureChatAutoResumeAnalytics,
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
+  captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
@@ -213,6 +214,13 @@ import {
   createRemoteBrowserForwarder,
   withRemoteBrowserForwarding,
 } from "./services/builtInBrowser/remoteBrowserForwarder";
+import {
+  withUserBrowserAttachment,
+} from "./services/builtInBrowser/userBrowserRouting";
+import {
+  createUserBrowserAttachService,
+  type UserBrowserAttachService,
+} from "../../desktop/src/main/services/userBrowser/userBrowserAttachService";
 import {
   createWorkToolsStateService,
   type WorkToolsStateService,
@@ -451,6 +459,11 @@ export type AdeRuntime = {
   getScenePreviewer?: () => ScenePreviewer | null;
   macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
+  /**
+   * `ade browser attach`: chats driving a tab of the user's own browser on
+   * this machine. Null on a chat-only runtime, which has no browser surface.
+   */
+  userBrowserAttachService?: UserBrowserAttachService | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
   /**
@@ -1413,6 +1426,23 @@ export async function createAdeRuntime(args: {
     teardown.push(() => syncStatusEventPublisher.dispose());
     // The late-bound push publisher feeds tracked CLI runtime states into the
     // phone's Live Activity.
+    // A chat that ends or is deleted lets go of the user's browser (chats and
+    // agent terminals alike); this also cancels an attach still waiting on the
+    // browser's prompt, and detaching a chat that never attached is a no-op.
+    // The attach service is built further down; hence the holder.
+    let userBrowserAttachServiceForRelease: UserBrowserAttachService | null = null;
+    const releaseChatBrowser = (chatSessionId: string): void => {
+      const attachService = userBrowserAttachServiceForRelease;
+      if (!attachService) return;
+      void Promise.resolve()
+        .then(() => attachService.detach({ chatSessionId }))
+        .catch((error: unknown) => {
+          logger.warn("user_browser.detach_on_chat_end_failed", {
+            chatSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    };
 
     const ptyService = createPtyService({
       projectRoot,
@@ -1457,6 +1487,7 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      releaseChatBrowser,
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -1954,25 +1985,50 @@ export async function createAdeRuntime(args: {
         }),
       });
     teardown.push(() => macDesktopService?.dispose());
+    // A chat-only runtime has no browser surface: no forwarder, no user-browser
+    // attachments, no bridge. Everything else has all three.
+    //
     // With no desktop attached HERE, `browser open` is still satisfiable: a
     // desktop that holds a remote pin on this machine can open the URL in its
     // own browser and reach this machine's localhost through a port-forward.
-    const remoteBrowserForwarder = chatOnlyRuntime
+    // The user's own browser is reached from THIS process (the chat's runtime
+    // host), so attaching needs no desktop and works on a remote runtime.
+    const browserSurface = chatOnlyRuntime
       ? null
-      : createRemoteBrowserForwarder({
-        emitEvent: (payload) => pushEvent("runtime", payload),
-        logger,
-        resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
-      });
-    if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
-    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
-      ? withRemoteBrowserForwarding(
-        createBuiltInBrowserDesktopBridgeClient({
-          socketPath: builtInBrowserBridgeSocketPath,
+      : {
+        remoteBrowserForwarder: createRemoteBrowserForwarder({
+          emitEvent: (payload) => pushEvent("runtime", payload),
+          logger,
+          resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
+        }),
+        userBrowserAttachService: createUserBrowserAttachService({
           projectRoot,
           logger,
+          machineName: async () =>
+            (await import("./services/sync/deviceRegistryService")).resolveDeviceDisplayNameSettled(),
+          captureAttached: () => captureUserBrowserAnalytics({
+            analytics: productAnalyticsService,
+            properties: { action: "user_browser", outcome: "started" },
+          }),
         }),
-        remoteBrowserForwarder,
+      };
+    if (browserSurface) {
+      teardown.push(() => browserSurface.remoteBrowserForwarder.dispose());
+      teardown.push(() => browserSurface.userBrowserAttachService.dispose());
+    }
+    const userBrowserAttachService = browserSurface?.userBrowserAttachService ?? null;
+    userBrowserAttachServiceForRelease = userBrowserAttachService;
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = browserSurface
+      ? withUserBrowserAttachment(
+        withRemoteBrowserForwarding(
+          createBuiltInBrowserDesktopBridgeClient({
+            socketPath: builtInBrowserBridgeSocketPath,
+            projectRoot,
+            logger,
+          }),
+          browserSurface.remoteBrowserForwarder,
+        ),
+        browserSurface.userBrowserAttachService,
       )
       : null;
     if (appControlService) {
@@ -2193,6 +2249,7 @@ export async function createAdeRuntime(args: {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         runtimeBudget: chatRuntimeBudget,
+        releaseChatBrowser,
         projectRoot,
         runtimeSocketPath,
         sessionActivityReportingEnabled,
@@ -3371,6 +3428,7 @@ export async function createAdeRuntime(args: {
       getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
+      userBrowserAttachService,
       workToolsStateService,
       noteDesktopAppConnected: () => {
         // A probe already in flight may have started before this desktop was

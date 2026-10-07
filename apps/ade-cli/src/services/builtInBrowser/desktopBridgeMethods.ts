@@ -106,6 +106,19 @@ export type BuiltInBrowserDesktopBridgeMethod =
  */
 export const BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD = "acknowledgeRemoteRequest";
 
+/**
+ * Runtime-served methods for the user's own browser (`ade browser attach` /
+ * `detach`). Like `acknowledgeRemoteRequest`, they never reach the desktop
+ * bridge: the runtime reaches the user's browser directly, so they work on a
+ * headless or remote runtime. `userBrowserRouting` serves them.
+ */
+export const BUILT_IN_BROWSER_ATTACH_USER_BROWSER_METHOD = "attachUserBrowser";
+export const BUILT_IN_BROWSER_DETACH_USER_BROWSER_METHOD = "detachUserBrowser";
+export const USER_BROWSER_RUNTIME_METHODS = [
+  BUILT_IN_BROWSER_ATTACH_USER_BROWSER_METHOD,
+  BUILT_IN_BROWSER_DETACH_USER_BROWSER_METHOD,
+] as const;
+
 export type BuiltInBrowserAcknowledgeRemoteRequestArgs = {
   requestId: string;
   desktopLabel?: string;

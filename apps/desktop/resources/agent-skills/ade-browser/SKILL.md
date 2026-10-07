@@ -22,6 +22,9 @@ a tab another chat owns — unless the user attached that tab to their message
 ("Attach to chat" on a tab), which is the user handing it to you: claim it with
 `ade --socket browser claim --tab <tab-id> --text` and carry on in it.
 
+ADE's browser is the default for all web work. Use the user's own browser only
+when the user asks for it; see step 10.
+
 ## Operating loop
 
 ### 1. Open or claim one tab
@@ -212,5 +215,37 @@ subscription or a recording keeps presence alive. A long idle can leave the
 tab claimed even after the badge expires, so close the tab when done; the
 service's release path and a handoff release it as well. No presence command
 is needed.
+
+### 10. Use the user's own browser only when they ask
+
+When the user asks you to look at or use their own browser ("look at the tab I
+have open", "use my Chrome"), attach to it. Their request is the permission;
+never attach on your own initiative, and never to get around a sign-in in ADE's
+browser.
+
+```bash
+ade --socket browser attach --text                   # the tab they are looking at
+ade --socket browser attach --tab "Stripe" --text    # a tab by title or URL text
+ade --socket browser detach --text
+```
+
+Attach runs on the machine this chat runs on. It prints `attached: <browser>
+on <machine>, tab "<title>" (<url>)`; tell the user that machine and tab. If
+several tabs could be the one, it lists them: ask the user, then pass `--tab`.
+`--browser chrome|edge|brave|arc|helium|chromium` picks the browser.
+
+If attach says remote debugging is off, ask the user to open the exact page
+it names for their browser (for Chrome, `chrome://inspect/#remote-debugging`)
+and turn it on. The browser then asks them once to allow the connection.
+
+While attached, this chat's `observe`, `click`, `fill`, `clear`, `type`,
+`key`, `scroll`, `hover`, `wait`, `open`, `reload`, `back`, `forward`,
+`screenshot`, `proof` and `trace` act in that tab, with the same `hit:` and
+`effect:` lines. Each prints `target: your <browser> on <machine>` first.
+Other commands (new tabs, handoff, recording, network, drag, upload) work only
+in ADE's browser and say so. These are the user's real accounts: do only what
+they asked. Run `ade browser detach` when you are done. If the tab closes or
+the browser quits, the next command says so and the chat is back on ADE's
+browser.
 
 Keep this loop platform-neutral so Windows agents use the same command surface.

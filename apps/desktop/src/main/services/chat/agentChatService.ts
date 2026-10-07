@@ -8092,6 +8092,7 @@ export function buildComputerUseDirective(
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "Web pages and localhost go in ADE's browser (`ade browser`, the **ade-browser** skill), which shares the user's sign-ins. To sign in as a test account or a second role, open an isolated tab with `ade browser open <url> --profile <name>` so the user stays signed in; never use a headless or external browser for that.",
+      "Use the user's own browser only when the user asks for it (\"look at the tab I have open\", \"use my Chrome\"): run `ade browser attach`, tell the user which machine and tab it attached to, and run `ade browser detach` when done. Never attach on your own initiative.",
       "App Control (`ade app-control`, the **ade-app-control** skill) drives an Electron app through its DOM — your dev build, or an installed app started with a debug port — one session per lane: `launch` or `connect`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
       "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
@@ -9888,6 +9889,12 @@ export function createAgentChatService(args: {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
+   * A chat's runtime ended or the chat was deleted: let go of anything it held
+   * outside ADE (the brain detaches its `ade browser attach` to the user's own
+   * browser). Called once per end; a no-op for a chat that held nothing.
+   */
+  releaseChatBrowser?: ((chatSessionId: string) => void) | null;
+  /**
    * How long ADE waits for a native provider title before naming the chat
    * itself. Tests pass 0 so auto-title assertions do not sleep 8s.
    */
@@ -10065,6 +10072,16 @@ export function createAgentChatService(args: {
   const sessionActivityReportingEnabled = args.sessionActivityReportingEnabled !== false;
   const claudeResumeDialogPreference = args.claudeResumeDialogPreference ?? null;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
+  const releaseChatBrowser = (chatSessionId: string): void => {
+    try {
+      args.releaseChatBrowser?.(chatSessionId);
+    } catch (error) {
+      logger.warn("agent_chat.release_chat_browser_failed", {
+        sessionId: chatSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
   const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
     ? injectedLaneAppleDeviceLookup
@@ -24064,6 +24081,7 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
+    releaseChatBrowser(managed.session.id);
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
@@ -56326,6 +56344,7 @@ export function createAgentChatService(args: {
     managedSessions.delete(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
+    releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
@@ -58843,6 +58862,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore emergency shutdown failures
       }
+      releaseChatBrowser(sessionId);
     }
     managedSessions.clear();
     void flushAllQueuedTranscriptWrites();

@@ -6,6 +6,7 @@ export const IPC = {
   appGetInstalledEditors: "ade.app.getInstalledEditors",
   appGetInstalledBrowsers: "ade.app.getInstalledBrowsers",
   appOpenInBrowser: "ade.app.openInBrowser",
+  appGetAppIcon: "ade.app.getAppIcon",
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",

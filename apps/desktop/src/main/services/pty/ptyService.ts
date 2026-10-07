@@ -2387,6 +2387,7 @@ export function createPtyService({
   onSessionRuntimeSignal,
   onSessionUserInput,
   diskPressureMonitor,
+  releaseChatBrowser,
   loadPty,
   disposePtyBackend
 }: {
@@ -2423,6 +2424,11 @@ export function createPtyService({
   }) => void;
   onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * A tracked agent CLI with no owning chat ended: let go of anything it held
+   * outside ADE (the brain detaches its `ade browser attach`).
+   */
+  releaseChatBrowser?: ((chatSessionId: string) => void) | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
@@ -4477,6 +4483,9 @@ export function createPtyService({
     // must go with it rather than pointing at a dead port.
     devServerRegistry.forgetSession(entry.sessionId);
     sessionService.clearAttentionRequest(entry.sessionId);
+    if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
+      releaseChatBrowser?.(entry.sessionId);
+    }
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
@@ -8439,6 +8448,9 @@ export function createPtyService({
         const endedAt = new Date().toISOString();
         sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
+          releaseChatBrowser?.(sessionId);
+        }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "killed", { touch: false });
@@ -8485,6 +8497,9 @@ export function createPtyService({
       // Same rule as closeEntry: the process serving those ports is going away.
       devServerRegistry.forgetSession(entry.sessionId);
       sessionService.clearAttentionRequest(entry.sessionId);
+      if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
+        releaseChatBrowser?.(entry.sessionId);
+      }
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);
         entry.aiTitleTimer = null;

@@ -358,6 +358,11 @@ func workTimelineEntryExpansionSignature(
   case .toolGroup(let group):
     owned.insert(group.id)
     for member in group.members { owned.insert(member.id) }
+    // Computer-use rows and their app folds open by id too.
+    for action in group.computerUseActions {
+      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: action.id))
+      owned.insert(WorkComputerUseRunView.expansionId(groupId: group.id, itemId: "fold:\(action.id)"))
+    }
   case .changedFiles(let group):
     owned.insert(group.id)
     for file in group.files { owned.insert(file.id) }

@@ -634,6 +634,27 @@ existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
 untouched: no card asks this yet.
 
+Whether agents use the user's own browser records the same `ade_feature_used`
+event once per successful `ade browser attach`, at the brain-side attach
+service (`createUserBrowserAttachService`, through an injected
+`captureAttached` callback — the service never reaches the analytics service
+or an id itself), with `feature: "work"`, `action: "user_browser"`, and
+`outcome: "started"`. A refused or cancelled attach, a detach, and every page
+action in the attached tab emit nothing: those are high-frequency or say
+nothing about adoption.
+
+The product question is only whether anyone lets agents into their own
+browser. Nothing finer crosses the boundary: no browser, machine name, tab,
+title, URL, or chat. A single `work_user_browser:started` key with a 24-hour
+minimum interval bounds this to at most one accepted event per installation
+per UTC day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute
+limits and the shared 200-event ceiling; no ceiling was raised. The dashboard
+spec is deliberately untouched: no card asks this yet.
+
+The transcript's computer-use action rows are render-only and emit nothing:
+they describe tool calls an agent already made, and counting them would
+report agent activity as user engagement.
+
 The Work tab's Focus view (busy lanes folded) and its Focus grid (every
 waiting chat side by side) report adoption on the same event, emitted by the two
 setters every entry point goes through (`setWorkFoldBusyLanes`,

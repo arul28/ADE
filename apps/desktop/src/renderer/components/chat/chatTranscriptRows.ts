@@ -155,6 +155,12 @@ export type ChatWorkLogGroupEvent = {
   summary?: string;
   toolUseIds?: string[];
   turnId?: string | null;
+  /**
+   * Desktop timeline only: a run of computer-use actions that is not the
+   * turn's last one, so all of its rows draw compact
+   * (`arrangeComputerUseRuns`).
+   */
+  computerUseCompact?: boolean;
 };
 
 export type ChatActivityBundleItem = {
@@ -3422,8 +3428,16 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
     return collapseChatTranscriptEventsWithContext(events);
   }
 
-  if (events[previousEvents.length - 1] !== previousEvents[previousEvents.length - 1]) {
-    return collapseChatTranscriptEventsWithContext(events);
+  // History is not strictly append-only: a provider can resend a tool call
+  // under the same item id (Claude sends `tool_call` with empty args, then
+  // again with the command), and the live merge replaces the earlier envelope
+  // in place (`upsertRepeatedToolCalls`). When another event arrived between
+  // the two, the last event is unchanged, so only a scan finds the
+  // replacement. Reference compares only; a replaced event means a full pass.
+  for (let index = previousEvents.length - 1; index >= 0; index -= 1) {
+    if (events[index] !== previousEvents[index]) {
+      return collapseChatTranscriptEventsWithContext(events);
+    }
   }
 
   const rows = previousRows.slice();
