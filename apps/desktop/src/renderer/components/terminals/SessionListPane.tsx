@@ -1606,8 +1606,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     [workPinnedLaneIds],
   );
 
-  // The stall rule depends on time passing, not on new data.
-  const stallNowMs = useTurnStallClock(allSessionsUnfiltered);
+  // The stall and wake rules depend on time passing, not on new data. Foreign
+  // rows count too: a missed wake on another machine must unfold its lane here.
+  const clockSessions = useMemo(
+    () => (foreignRows.length === 0
+      ? allSessionsUnfiltered
+      : [...allSessionsUnfiltered, ...foreignRows.flatMap((row) => row.sessions)]),
+    [allSessionsUnfiltered, foreignRows],
+  );
+  const stallNowMs = useTurnStallClock(clockSessions);
 
   /**
    * Chats a busy subagent keeps open, so their row reads Waiting like the lane

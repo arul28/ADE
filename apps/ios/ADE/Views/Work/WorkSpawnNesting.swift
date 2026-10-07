@@ -17,6 +17,68 @@ struct WorkSpawnNestingIndex: Equatable {
   )
 }
 
+/// Root parents whose same-lane nested subagents still keep them busy.
+/// Mirrors desktop `parentsWithBusySubagents`; it uses the same immediate-parent
+/// and root-flattening rules as the Work nesting index, while retaining scheduled
+/// ready/idle children that the quiet-parent nesting rule deliberately omits.
+func workBusySubagentParentIds(
+  sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String> = [],
+  now: Date
+) -> Set<String> {
+  let byId = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+  var nestUnderImmediate: [String: String] = [:]
+  for child in sessions {
+    let archivedAt = child.archivedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard archivedAt.isEmpty, !archivedSessionIds.contains(child.id),
+      !child.isFiledAsSnoozed(summary: chatSummaries[child.id], now: now)
+    else { continue }
+    let phase = workCanonicalSessionState(
+      session: child,
+      summary: chatSummaries[child.id],
+      now: now
+    ).phase
+    let keepsParentBusy: Bool
+    switch phase {
+    case .starting, .running, .stale:
+      keepsParentBusy = true
+    case .ready, .idle:
+      keepsParentBusy = workScheduledWakeIsPending(chatSummaries[child.id]?.nextWakeAt, now: now)
+    case .needsYou, .failed, .stopped, .ended, .settled:
+      keepsParentBusy = false
+    }
+    guard keepsParentBusy,
+      let parentId = workImmediateSubagentParentId(
+        session: child,
+        byId: byId,
+        chatSummaries: chatSummaries
+      ),
+      let parent = byId[parentId],
+      !workIsQuietParent(parent, summary: chatSummaries[parent.id], now: now)
+    else { continue }
+    nestUnderImmediate[child.id] = parentId
+  }
+
+  var parents: Set<String> = []
+  for childId in nestUnderImmediate.keys {
+    if let rootParentId = workFlattenToRootParentId(
+      sessionId: childId,
+      nestUnderImmediate: nestUnderImmediate
+    ) {
+      parents.insert(rootParentId)
+    }
+  }
+  return parents
+}
+
+/// Desktop keeps an armed wake pending for two minutes after its fire time so
+/// small scheduler/delivery delays do not make a row jump to Done.
+func workScheduledWakeIsPending(_ nextWakeAt: String?, now: Date) -> Bool {
+  guard let wakeAt = workParsedDate(nextWakeAt) else { return false }
+  return now < wakeAt.addingTimeInterval(120)
+}
+
 func workSessionChildSectionId(parentId: String) -> String {
   "chat:\(parentId)"
 }

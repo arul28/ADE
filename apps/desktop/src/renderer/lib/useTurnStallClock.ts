@@ -5,6 +5,8 @@ import {
   type TurnStallInput,
 } from "../../shared/sessionStatusPresentation";
 
+const MAX_CLOCK_DELAY_MS = 24 * 60 * 60 * 1000;
+
 /**
  * "Now" for the turn-stall rule. A silent turn becomes stalled five minutes
  * after its last output with no new data at all, so the caller re-renders
@@ -26,7 +28,9 @@ export function useTurnStallClock(
       .filter((value): value is number => value != null);
     if (deadlines.length === 0) return undefined;
     const deadline = Math.min(...deadlines);
-    const timer = window.setTimeout(() => setEpoch((value) => value + 1), Math.max(250, deadline - Date.now() + 50));
+    // A wake can be weeks away, past setTimeout's 32-bit limit, which would fire
+    // at once and re-render in a loop. Wait at most a day and re-arm from there.
+    const timer = window.setTimeout(() => setEpoch((value) => value + 1), Math.min(MAX_CLOCK_DELAY_MS, Math.max(250, deadline - Date.now() + 50)));
     return () => window.clearTimeout(timer);
   }, [sessions, nowMs]);
   return nowMs;

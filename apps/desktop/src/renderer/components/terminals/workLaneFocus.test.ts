@@ -8,6 +8,7 @@ import {
   stampWorkSeenAt,
   summarizeLaneFocus,
   WORK_SEEN_AT_LIMIT,
+  workFocusQueue,
 } from "./workLaneFocus";
 
 const NOW_ISO = "2026-04-01T12:00:00.000Z";
@@ -58,6 +59,22 @@ function finished(id: string): TerminalSessionSummary {
 
 const running = (id: string) => session({ id });
 
+/** A chat between turns (canonical idle), optionally parked on a scheduled wake. */
+function idleChat(id: string, nextWakeAt: string | null = null): TerminalSessionSummary {
+  return session({
+    id,
+    toolType: "codex-chat",
+    runtimeState: "idle",
+    startedAt: FINISHED_ISO,
+    lastActivityAt: FINISHED_ISO,
+    nextWakeAt,
+  });
+}
+
+const NOW_MS = Date.parse(NOW_ISO);
+const WAKE_AHEAD_ISO = "2026-04-01T12:12:00.000Z";
+const WAKE_OVERDUE_ISO = "2026-04-01T11:50:00.000Z"; // 10 min past due, past the grace
+
 function focus(args: {
   sessions: TerminalSessionSummary[];
   seen?: Record<string, string>;
@@ -65,6 +82,8 @@ function focus(args: {
   launching?: number;
   laneWaiting?: boolean;
   filingBuckets?: ReadonlyMap<string, SessionFilingBucket>;
+  busyParents?: string[];
+  nowMs?: number;
 }) {
   return summarizeLaneFocus({
     sessions: args.sessions,
@@ -72,7 +91,9 @@ function focus(args: {
     laneWaiting: args.laneWaiting ?? false,
     seenAtBySessionId: args.seen ?? {},
     nestedSessionIds: new Set(args.nested ?? []),
+    busySubagentParentIds: new Set(args.busyParents ?? []),
     launching: args.launching,
+    nowMs: args.nowMs,
   });
 }
 
@@ -158,6 +179,57 @@ describe("summarizeLaneFocus — the fold rule", () => {
     });
     expect(snoozedOnly.status).toBeNull();
     expect(snoozedOnly.folds).toBe(false);
+  });
+});
+
+describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
+  // The reported case: a /ship subagent parked on a CI-poll wake, its parent
+  // idle. Both are still working from a person's point of view.
+  it.each<[string, Parameters<typeof focus>[0], { status: string | null; folds: boolean }]>([
+    ["a chat parked on a wake still to come is Waiting and folds",
+      { sessions: [idleChat("poller", WAKE_AHEAD_ISO)] }, { status: "waiting", folds: true }],
+    ["an unseen parent whose subagent is busy folds with it",
+      { sessions: [idleChat("parent"), idleChat("child", WAKE_AHEAD_ISO)], nested: ["child"], busyParents: ["parent"] },
+      { status: "waiting", folds: true }],
+    ["the same unseen parent with no busy subagent holds the lane out",
+      { sessions: [idleChat("parent"), idleChat("child")], nested: ["child"] }, { status: "done", folds: false }],
+    ["an overdue wake holds the lane out even after the user saw it",
+      { sessions: [idleChat("poller", WAKE_OVERDUE_ISO), running("run")], seen: { poller: SEEN_ISO } },
+      { status: "working", folds: false }],
+    ["a failed parent still holds the lane out, whatever its subagent is doing",
+      { sessions: [session({ id: "parent", status: "failed", runtimeState: "exited", exitCode: 1 }), idleChat("child", WAKE_AHEAD_ISO)],
+        nested: ["child"], busyParents: ["parent"] },
+      { status: "waiting", folds: false }],
+    ["an overdue wake on a nested subagent still holds the lane out",
+      { sessions: [running("parent"), idleChat("child", WAKE_OVERDUE_ISO)], nested: ["child"] },
+      { status: "working", folds: false }],
+  ])("%s", (_label, args, expected) => {
+    expect(focus({ ...args, nowMs: NOW_MS })).toEqual(expected);
+  });
+
+  it("gives the Focus grid a tile for a missed wake but not for a parent its subagent keeps busy", () => {
+    const sessions = [
+      idleChat("busy-parent"),
+      idleChat("busy-child", WAKE_AHEAD_ISO),
+      idleChat("other-parent"),
+      idleChat("missed-child", WAKE_OVERDUE_ISO),
+      session({ id: "failed-parent", toolType: "codex-chat", status: "failed", runtimeState: "exited", exitCode: 1 }),
+    ];
+    const tiles = workFocusQueue({
+      sessions,
+      filingBuckets: NO_BUCKETS,
+      foldedLaneIds: new Set(),
+      laneWaiting: () => false,
+      nestedSessionIds: new Set(["busy-child", "missed-child"]),
+      busySubagentParentIds: new Set(["busy-parent", "failed-parent"]),
+      nowMs: NOW_MS,
+    });
+    expect(tiles).not.toContain("busy-parent");
+    expect(tiles).not.toContain("busy-child");
+    expect(tiles).toContain("missed-child");
+    expect(tiles).toContain("other-parent");
+    // A failure needs the user even while its subagent keeps working.
+    expect(tiles).toContain("failed-parent");
   });
 });
 

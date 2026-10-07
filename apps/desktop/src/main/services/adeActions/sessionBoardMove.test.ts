@@ -444,6 +444,55 @@ describe("the host's Waiting is narrower than the board's", () => {
   });
 });
 
+describe("a resting chat that will run again, dragged to Done", () => {
+  beforeEach(() => {
+    __resetStagedBoardMovesForTest();
+    vi.useRealTimers();
+  });
+
+  const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  type ChatLink = { sessionId: string; nextWakeAt?: string | null; orchestrationParentSessionId?: string; spawnKind?: string };
+
+  // The board files these in Waiting ("Wake scheduled" / "Subagent working"),
+  // so the host must start the move from Waiting too, or a drag to Done
+  // answers "already there" while the card visibly stays put.
+  it.each<[string, { wake?: string | null; chats: ChatLink[]; rows: Row[] }, { from: string; changed: boolean }]>([
+    ["its own wake is still to come", { wake: inMinutes(12), chats: [], rows: [] }, { from: "waiting", changed: true }],
+    ["a grandchild subagent is mid-turn", {
+      chats: [
+        { sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" },
+        { sessionId: "grandchild", spawnKind: "subagent", orchestrationParentSessionId: "child" },
+      ],
+      rows: [row({ id: "child" }), row({ id: "grandchild", runtimeState: "running" })],
+    }, { from: "waiting", changed: true }],
+    ["its subagent is parked on a wake", {
+      chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1", nextWakeAt: inMinutes(12) }],
+      rows: [row({ id: "child" })],
+    }, { from: "waiting", changed: true }],
+    ["nothing will run again: its subagent finished and its wake is overdue", {
+      wake: inMinutes(-10),
+      chats: [{ sessionId: "child", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" }],
+      rows: [row({ id: "child" })],
+    }, { from: "done", changed: false }],
+  ])("starts from the column the board shows when %s", async (_label, setup, expected) => {
+    const sessions = makeSessionService(row());
+    const actions = createSessionBoardMoveActions({
+      sessionService: {
+        ...sessions.service,
+        get: (id: string) => setup.rows.find((candidate) => candidate.id === id) ?? sessions.service.get(id),
+      },
+      agentChatService: {
+        getSessionSummary: async () => ({ awaitingInput: false, nextWakeAt: setup.wake ?? null }),
+        listSessions: async () => setup.chats,
+      },
+      logger: silentLogger,
+    });
+    const result = await actions.moveOnBoard({ sessionId: "chat-1", to: "done" });
+    expect(result).toMatchObject({ from: expected.from, to: "done", changed: expected.changed });
+    expect(sessions.calls.includes("settle")).toBe(expected.changed);
+  });
+});
+
 describe("a snoozed card dragged to Done", () => {
   beforeEach(() => {
     __resetStagedBoardMovesForTest();

@@ -4187,6 +4187,34 @@ describe("buildWorkBoardModel", () => {
     ]);
   });
 
+  it("moves a resting row that will start again into Waiting, and says why", () => {
+    // A finished chat parked on a wake, or one whose subagent is still busy, is
+    // not Done: it runs again by itself. An overdue wake and a settled row are.
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
+      runningFiltered: [],
+      needsYouFiltered: [],
+      restingFiltered: [
+        makeSession("s-poller", "lane-a", { nextWakeAt: "2026-04-01T12:12:00.000Z" }),
+        makeSession("s-parent", "lane-a"),
+        makeSession("s-missed", "lane-b", { nextWakeAt: "2026-04-01T11:50:00.000Z" }),
+        makeSession("s-finished", "lane-b"),
+      ],
+      endedFiltered: [],
+      settledFiltered: [makeSession("s-settled-parent", "lane-c")],
+      snoozedFiltered: [],
+      laneWaitingReason: noPrWait,
+      busySubagentParentIds: new Set(["s-parent", "s-settled-parent"]),
+      nowMs,
+    });
+
+    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-poller", "s-parent"]);
+    expect(waitingReasonBySessionId.get("s-poller")).toBe("scheduled");
+    expect(waitingReasonBySessionId.get("s-parent")).toBe("subagent");
+    expect(buckets.done.map((s) => s.id)).toEqual(["s-missed", "s-finished", "s-settled-parent"]);
+    expect(waitingReasonBySessionId.has("s-missed")).toBe(false);
+  });
+
   it("keeps the columns a partition when resting rows are present", () => {
     const all = ["s-raised", "s-resting", "s-running", "s-ended", "s-settled", "s-snoozed"];
     const { buckets } = buildWorkBoardModel({

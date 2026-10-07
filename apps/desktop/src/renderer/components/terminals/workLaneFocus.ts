@@ -42,6 +42,12 @@ type WorkRowFocus = {
    * work it promised is not coming on its own.
    */
   missedWake?: boolean;
+  /**
+   * A chat between turns (ready/idle) with nothing scheduled. Only such a row
+   * may be lifted to Waiting by a busy subagent: a failed or stopped parent
+   * still needs the user, whatever its subagents are doing.
+   */
+  resting?: boolean;
 };
 
 const STATUS_RANK: Record<WorkLaneFocusStatus, number> = {
@@ -114,7 +120,7 @@ function workRowFocus(args: {
       const wake = scheduledWakeState(args.session.nextWakeAt, args.nowMs);
       if (wake === "pending") return { status: "waiting", holdsOut: false };
       if (wake === "overdue") return { status: "done", holdsOut: true, missedWake: true };
-      return { status: "done", holdsOut: !args.seen };
+      return { status: "done", holdsOut: !args.seen, resting: true };
     }
     default:
       // failed / stopped / ended: the turn is over. It holds the
@@ -175,7 +181,7 @@ export function summarizeLaneFocus(args: {
     if (!row) continue;
     if (row.status === "done" && !row.missedWake) {
       if (args.nestedSessionIds.has(session.id)) continue;
-      if (args.busySubagentParentIds?.has(session.id)) row = { status: "waiting", holdsOut: false };
+      if (row.resting && args.busySubagentParentIds?.has(session.id)) row = { status: "waiting", holdsOut: false };
     }
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
     if (row.holdsOut) heldOut = true;
@@ -325,7 +331,7 @@ export function workFocusQueue(args: {
       continue;
     }
     if (nested) continue;
-    if (row.status === "done" && args.busySubagentParentIds?.has(session.id)) continue;
+    if (row.resting && args.busySubagentParentIds?.has(session.id)) continue;
     // A stale or stalled run is filed as working but holds its lane out: it
     // may be stuck, so the user is the one who has to look.
     if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);

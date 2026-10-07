@@ -1283,6 +1283,129 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
+  func testScheduledWakeAndBusySubagentWaitingReasons() {
+    struct Case {
+      let name: String
+      let parent: TerminalSessionSummary
+      let children: [TerminalSessionSummary]
+      let nextWakeAt: String?
+      let expected: WorkBoardWaitingReason?
+    }
+
+    var archivedChild = makeSession(
+      id: "child-archived",
+      laneId: "lane-a",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "parent"
+    )
+    archivedChild.archivedAt = iso(now.addingTimeInterval(-30))
+
+    let cases = [
+      Case(
+        name: "wake inside grace is scheduled",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [],
+        nextWakeAt: iso(now.addingTimeInterval(-60)),
+        expected: .scheduled
+      ),
+      Case(
+        name: "wake beyond grace is no longer waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [],
+        nextWakeAt: iso(now.addingTimeInterval(-121)),
+        expected: nil
+      ),
+      Case(
+        name: "running nested subagent keeps idle parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-running",
+          laneId: "lane-a",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: .subagent
+      ),
+      Case(
+        name: "finished nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-finished",
+          laneId: "lane-a",
+          status: "ended",
+          runtimeState: "exited",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "archived nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [archivedChild],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "snoozed nested child does not keep parent waiting",
+        parent: makeSession(id: "parent", laneId: "lane-a", status: "completed", runtimeState: "idle"),
+        children: [makeSession(
+          id: "child-snoozed",
+          laneId: "lane-a",
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60)),
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: nil,
+        expected: nil
+      ),
+      Case(
+        name: "snoozed parent keeps snooze reason",
+        parent: makeSession(
+          id: "parent",
+          laneId: "lane-a",
+          status: "completed",
+          runtimeState: "idle",
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+        children: [makeSession(
+          id: "child-running",
+          laneId: "lane-a",
+          spawnKind: .subagent,
+          orchestrationParentSessionId: "parent"
+        )],
+        nextWakeAt: iso(now.addingTimeInterval(60)),
+        expected: .snoozed
+      ),
+    ]
+
+    for testCase in cases {
+      let sessions = [testCase.parent] + testCase.children
+      let busyParents = workBusySubagentParentIds(
+        sessions: sessions,
+        chatSummaries: [:],
+        now: now
+      )
+      let phase = workCanonicalSessionState(session: testCase.parent, summary: nil, now: now).phase
+      XCTAssertEqual(
+        workSessionWaitingReason(
+          session: testCase.parent,
+          phase: phase,
+          laneWaitingReasonByLaneId: [:],
+          nextWakeAt: testCase.nextWakeAt,
+          busySubagentParentIds: busyParents,
+          now: now
+        ),
+        testCase.expected,
+        testCase.name
+      )
+    }
+  }
+
   /// The chip raw values are persisted per project+host, so they are wire
   /// values, and the case names are not. `needsYou`/`working`/`done` are board
   /// vocabulary on cases whose raw values must still be byte-identical to the

@@ -223,6 +223,23 @@ describe("sessionStatusPresentation usage-limit resume", () => {
   });
 });
 
+describe("sessionStatusPresentation for a chat that will run again", () => {
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  // A resting chat reads Waiting while something will start it again: its own
+  // wake (until the grace after it runs out) or a subagent that wakes it. Past
+  // the grace the wake is presumed lost and the row is Done, asking for a look.
+  it.each<[string, Parameters<typeof sessionStatusPresentation>[0], { nextWakeAt?: string; subagentBusy?: boolean }, string]>([
+    ["a wake still to come", "idle", { nextWakeAt: "2026-08-17T12:10:00.000Z" }, "Waiting"],
+    ["a wake just due, inside the grace", "ready", { nextWakeAt: "2026-08-17T11:59:00.000Z" }, "Waiting"],
+    ["a wake overdue past the grace", "idle", { nextWakeAt: "2026-08-17T11:50:00.000Z" }, "Done"],
+    ["a busy subagent with no wake of its own", "idle", { subagentBusy: true }, "Waiting"],
+    ["neither", "idle", {}, "Done"],
+    ["a busy subagent under a parent that failed", "failed", { subagentBusy: true }, "Failed"],
+  ])("%s", (_label, phase, activity, label) => {
+    expect(sessionStatusPresentation(phase, {}, { ...activity, nowMs })?.label).toBe(label);
+  });
+});
+
 describe("sessionStatusPresentation agent-reported activity", () => {
   const report: SessionActivityReport = {
     value: "testing",

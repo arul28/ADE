@@ -438,6 +438,7 @@ struct WorkSessionRowPresentation: Equatable {
 func workSessionRowPresentation(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
+  waitingOnSubagent: Bool = false,
   now: Date = Date()
 ) -> WorkSessionRowPresentation {
   let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
@@ -466,6 +467,8 @@ func workSessionRowPresentation(
     phase: phase,
     resolved: resolved,
     now: now,
+    scheduledWakePending: workScheduledWakeIsPending(summary?.nextWakeAt, now: now),
+    waitingOnSubagent: waitingOnSubagent,
     usageLimitStatus: usageLimitStatus,
     currentTurnStartedAt: summary?.currentTurnStartedAt
   )
@@ -530,6 +533,8 @@ private func workSessionStatusSlot(
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
   now: Date,
+  scheduledWakePending: Bool,
+  waitingOnSubagent: Bool,
   usageLimitStatus: WorkUsageLimitRowStatus?,
   currentTurnStartedAt: String?
 ) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
@@ -563,6 +568,19 @@ private func workSessionStatusSlot(
     }
 
     if phase == .settled { return (nil, false) }
+
+    if (phase == .ready || phase == .idle)
+      && (scheduledWakePending || waitingOnSubagent)
+    {
+      return (WorkSessionStatusPresentation(
+        label: "Waiting",
+        tone: .neutral,
+        glyph: .waiting,
+        showsElapsed: false,
+        prominent: false,
+        kind: nil
+      ), false)
+    }
   }
 
   // Above the phase table on purpose: the turn that hit the limit usually
