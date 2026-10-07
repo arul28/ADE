@@ -2623,6 +2623,8 @@ export async function createAdeRuntime(args: {
       db,
       projectId,
       credentialStore: openCursorCloudCredentialStore(projectRoot),
+      // Only a project with an enabled cursor.* rule polls the relay.
+      wantsEvents: () => automationService?.hasEnabledCursorCloudRules() ?? false,
       getAccountAccessToken,
       cursorStore: createKvIngressCursorStore(db),
       dispatch: async (record) => {
@@ -2646,8 +2648,11 @@ export async function createAdeRuntime(args: {
       logger,
     });
     automationService?.setCursorCloudIngressAvailable(() => {
+      // Unconfigured counts as available: enabling the first cursor.* rule is
+      // what starts the self-configuring poll, so gating on "ready" would make
+      // that first rule impossible to enable.
       const status = cursorCloudIngressService.getStatus();
-      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+      return status.state !== "error" || Boolean(status.webhookId);
     });
     teardown.push(() => cursorCloudIngressService.stop());
     cursorCloudIngressService.start();

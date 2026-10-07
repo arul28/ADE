@@ -63,6 +63,7 @@ function createLogger(): Logger {
 function createHarness(options: {
   fetchImpl?: typeof fetch;
   accountToken?: string | null;
+  wantsEvents?: () => boolean;
 } = {}) {
   const db = new FakeDb();
   const credentials = new FakeCredentialStore();
@@ -79,6 +80,7 @@ function createHarness(options: {
     },
     dispatch: (record) => { dispatched.push(record); },
     logger: createLogger(),
+    ...(options.wantsEvents ? { wantsEvents: options.wantsEvents } : {}),
     fetchImpl: options.fetchImpl ?? vi.fn(async () => {
       throw new Error("unexpected fetch");
     }) as unknown as typeof fetch,
@@ -163,7 +165,7 @@ describe("cursorCloudIngressService", () => {
     expect(harness.credentials.getSync(CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY)).toBe(existing);
   });
 
-  it("polls even when no automation rules exist and dispatches FINISHED events", async () => {
+  it("polls the relay and dispatches FINISHED events", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       const headers = new Headers(init?.headers);
@@ -200,6 +202,52 @@ describe("cursorCloudIngressService", () => {
       deliveryId: "delivery-1",
     }));
     expect(harness.cursorBySource.get("cursor-relay")).toBe("seq:1");
+  });
+
+  it.each([
+    ["unconfigured", false],
+    ["configured", true],
+  ])("makes no relay request while no cursor.* rule wants events (%s)", async (_label, configured) => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("unexpected fetch");
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl, wantsEvents: () => false });
+    if (configured) configureReady(harness);
+
+    await harness.service.pollNow();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(harness.deps.logger.warn).not.toHaveBeenCalled();
+    expect(harness.service.getStatus().state).toBe(configured ? "ready" : "unconfigured");
+    expect(harness.credentials.getSync(CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY)).toBe(
+      configured ? "cursor-cloud-webhook-secret-32chars" : null,
+    );
+  });
+
+  it("re-registers its stored secret when the relay no longer knows it", async () => {
+    const calls: Array<{ path: string; secret: string | null }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({
+        path,
+        secret: path === "/cursor/register" ? String((JSON.parse(String(init?.body)) as { secret: string }).secret) : null,
+      });
+      return path === "/cursor/events"
+        ? new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl, wantsEvents: () => true });
+    configureReady(harness, "stored-webhook-secret-of-32-chars-x");
+
+    await harness.service.pollNow();
+
+    expect(calls).toEqual([
+      { path: "/cursor/events", secret: null },
+      { path: "/cursor/register", secret: "stored-webhook-secret-of-32-chars-x" },
+    ]);
+    expect(harness.deps.logger.warn).not.toHaveBeenCalled();
+    expect(harness.service.getStatus()).toEqual(expect.objectContaining({ state: "ready", lastError: null }));
+    expect(harness.dispatched).toHaveLength(0);
   });
 
   it("does not re-dispatch a replayed delivery", async () => {
