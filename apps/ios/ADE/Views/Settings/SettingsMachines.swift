@@ -919,7 +919,7 @@ struct SettingsMachinePageContent: View {
   private func accountCountRow(_ provider: AccountMachineInventoryProvider, link: Bool) -> some View {
     HStack(spacing: 12) {
       if let asset = providerAssetName(provider.provider) {
-        Image(asset).resizable().scaledToFit().frame(width: 18, height: 18)
+        ADEProviderMark(assetName: asset, size: 18)
           .frame(width: 22)
       }
       Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)

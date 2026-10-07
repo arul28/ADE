@@ -234,6 +234,32 @@ struct ADEKitMeter: View {
   }
 }
 
+/// A provider's logo. The single-colour marks ship as white SVGs, so they are
+/// drawn as templates in the text colour; the brand-coloured ones as-is.
+struct ADEProviderMark: View {
+  let assetName: String
+  var size: CGFloat = 14
+
+  /// Assets whose SVG is one white fill (see `Assets.xcassets/Provider*`).
+  static let monochrome: Set<String> = [
+    "ProviderAnthropic", "ProviderCursor", "ProviderGitHub", "ProviderKimi",
+    "ProviderOpenAI", "ProviderOpenCode", "ProviderQwen", "ProviderXAI",
+  ]
+
+  var body: some View {
+    Group {
+      if Self.monochrome.contains(assetName) {
+        Image(assetName).renderingMode(.template).resizable().scaledToFit()
+          .foregroundStyle(ADEColor.textPrimary)
+      } else {
+        Image(assetName).resizable().scaledToFit()
+      }
+    }
+    .frame(width: size, height: size)
+    .accessibilityHidden(true)
+  }
+}
+
 /// A chart legend item (`.kit-legend`): swatch, label, tabular value.
 struct ADEKitLegendItem: View {
   let color: Color
@@ -244,7 +270,7 @@ struct ADEKitLegendItem: View {
   var body: some View {
     HStack(spacing: 5) {
       if let assetName {
-        Image(assetName).resizable().scaledToFit().frame(width: 12, height: 12)
+        ADEProviderMark(assetName: assetName, size: 12)
       } else {
         RoundedRectangle(cornerRadius: 2, style: .continuous).fill(color).frame(width: 8, height: 8)
       }

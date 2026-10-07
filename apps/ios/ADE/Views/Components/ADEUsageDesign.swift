@@ -5,7 +5,7 @@ import SwiftUI
 /// surface (the Settings Usage page and the Work new-chat activity module).
 ///
 /// This is the iOS counterpart of the desktop `usageDesign.ts`: the same five
-/// type steps, the same section/card rhythm, the same headroom rule, and
+/// type steps, the same headroom rule, and
 /// the same "top N providers plus a merged neutral Other" chart rule, so the two
 /// products read as one.
 ///
@@ -36,18 +36,6 @@ enum ADEUsageType {
   static func bodyFont(_ weight: Font.Weight = .regular) -> Font { .system(size: body, weight: weight) }
   static func detailFont(_ weight: Font.Weight = .regular) -> Font { .system(size: detail, weight: weight) }
   static func microFont(_ weight: Font.Weight = .regular) -> Font { .system(size: micro, weight: weight) }
-}
-
-// MARK: - Rhythm
-
-enum ADEUsageLayout {
-  /// Vertical rhythm between top-level bands of the page.
-  static let sectionGap: CGFloat = 32
-  /// Interior padding for cards and bands.
-  static let cardPadding: CGFloat = 24
-  /// Gap between related rows inside a single band.
-  static let rowGap: CGFloat = 12
-  static let cardCorner: CGFloat = 16
 }
 
 // MARK: - Headroom level
@@ -537,7 +525,7 @@ struct ADEUsageChartModel: Equatable {
     model.metric = resolvedMetric
 
     if !sawProviderSplit || byProvider.isEmpty {
-      // Supported fallback: one combined series, drawn in the neutral accent.
+      // Supported fallback: one combined series, drawn neutral.
       let total = combined.reduce(0, +)
       model.isCombinedFallback = true
       model.series = [
@@ -545,7 +533,7 @@ struct ADEUsageChartModel: Equatable {
           id: "__all",
           label: "All providers",
           assetName: nil,
-          color: ADEColor.purpleAccent,
+          color: ADEColor.textSecondary,
           values: combined,
           total: total
         )

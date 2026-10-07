@@ -16,26 +16,29 @@ struct SettingsUsageDailyChart: View {
 
   private var increasedContrast: Bool { contrast == .increased }
 
-  private var fillOpacity: Double { increasedContrast ? 0.34 : 0.20 }
-  private var lineWidth: CGFloat { increasedContrast ? 2.2 : 1.6 }
+  private var fillOpacity: Double { increasedContrast ? 0.24 : 0.10 }
+  private var lineWidth: CGFloat { increasedContrast ? 2.0 : 1.4 }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: ADEUsageLayout.rowGap) {
-      HStack(alignment: .top, spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 8) {
         axisLabels
         chartCanvas
       }
-      .frame(height: 156)
+      .frame(height: 120)
 
       HStack {
         Text(model.startLabel)
         Spacer(minLength: 8)
         Text(model.endLabel)
       }
-      .font(ADEUsageType.microFont())
+      .font(.adeMono(10))
       .foregroundStyle(ADEColor.textMuted)
+      .padding(.leading, 48)
 
-      legend
+      if model.hasData {
+        legend
+      }
     }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(accessibilityLabel)
@@ -61,11 +64,10 @@ struct SettingsUsageDailyChart: View {
       Spacer(minLength: 0)
       Text(model.metric == .cost ? "$0" : "0")
     }
-    .font(ADEUsageType.microFont())
+    .font(.adeMono(10))
     .foregroundStyle(ADEColor.textMuted)
-    .monospacedDigit()
     // Reserved width: live refreshes must not shove the plot sideways.
-    .frame(width: 44, alignment: .trailing)
+    .frame(width: 40, alignment: .trailing)
   }
 
   @ViewBuilder
@@ -84,8 +86,8 @@ struct SettingsUsageDailyChart: View {
           line.addLine(to: CGPoint(x: rect.maxX, y: y))
           context.stroke(
             line,
-            with: .color(ADEColor.textMuted.opacity(fraction == 0 ? 0.35 : 0.14)),
-            lineWidth: 0.6
+            with: .color(ADEColor.textPrimary.opacity(fraction == 0 ? 0.16 : 0.06)),
+            lineWidth: 0.75
           )
         }
 
@@ -110,58 +112,36 @@ struct SettingsUsageDailyChart: View {
     }
   }
 
-  /// Provider brand marks stand in for colour dots: the mark is the legend, so
-  /// the reader never has to learn a colour key.
+  /// One legend item per series: brand mark (or swatch), full name, total.
   private var legend: some View {
-    HStack(spacing: 14) {
+    let columns = [GridItem(.adaptive(minimum: 140), spacing: 10, alignment: .leading)]
+    return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
       ForEach(model.series) { series in
-        HStack(spacing: 5) {
-          if let assetName = series.assetName {
-            Image(assetName)
-              .resizable()
-              .scaledToFit()
-              .frame(width: 13, height: 13)
-              .accessibilityHidden(true)
-          } else {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-              .fill(series.color.opacity(0.7))
-              .frame(width: 11, height: 11)
-              .accessibilityHidden(true)
-          }
-          Text(series.label)
-            .font(ADEUsageType.microFont(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
+        ADEKitLegendItem(
+          color: series.color,
+          label: series.label,
+          value: model.metric == .cost ? adeUsageCost(series.total) : adeUsageCompact(Int(series.total.rounded())),
+          assetName: series.assetName
+        )
       }
-      Spacer(minLength: 0)
     }
   }
 }
 
-/// Warm, specific empty plot. Bars are decorative placeholders, never data.
+/// The empty plot: a flat baseline and one line of copy. No fake bars.
 struct SettingsUsageEmptyPlot: View {
-  private let fractions: [CGFloat] = [0.30, 0.52, 0.38, 0.66, 0.47, 0.60, 0.41, 0.55, 0.45, 0.63]
-
   var body: some View {
-    VStack(spacing: 12) {
-      HStack(alignment: .bottom, spacing: 6) {
-        ForEach(Array(fractions.enumerated()), id: \.offset) { _, fraction in
-          RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(ADEColor.textMuted.opacity(0.12))
-            .frame(height: max(6, 84 * fraction))
-            .frame(maxWidth: .infinity)
-        }
-      }
-      Text("Nothing here yet — your first Claude or Codex turn shows up within a minute.")
-        .font(ADEUsageType.detailFont())
-        .foregroundStyle(ADEColor.textSecondary)
-        .multilineTextAlignment(.center)
-        .fixedSize(horizontal: false, vertical: true)
+    VStack(spacing: 8) {
+      Spacer(minLength: 0)
+      Text("No usage in this range yet.")
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textMuted)
+      Spacer(minLength: 0)
+      Rectangle().fill(ADEKit.rule).frame(height: 0.75)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Nothing here yet. Your first Claude or Codex turn shows up within a minute.")
+    .accessibilityLabel("No usage in this range yet.")
   }
 }
 

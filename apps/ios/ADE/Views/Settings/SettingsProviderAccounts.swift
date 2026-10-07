@@ -426,7 +426,7 @@ struct ProviderAccountRow: View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
         if let asset = providerAssetName(account.provider) {
-          Image(asset).resizable().scaledToFit().frame(width: 14, height: 14)
+          ADEProviderMark(assetName: asset, size: 14)
         }
         Text(account.label)
           .font(.system(size: 15, weight: .semibold))
@@ -536,7 +536,7 @@ struct ProviderAccountDetailPage: View {
         VStack(alignment: .leading, spacing: 14) {
           HStack(spacing: 12) {
             if let asset = providerAssetName(account.provider) {
-              Image(asset).resizable().scaledToFit().frame(width: 28, height: 28)
+              ADEProviderMark(assetName: asset, size: 28)
             }
             VStack(alignment: .leading, spacing: 3) {
               HStack(spacing: 6) {
