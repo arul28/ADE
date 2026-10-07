@@ -241,11 +241,51 @@ _Playback architecture: filled in from the research pass. See the
 | **B. Separate ECS player helper** | A small bundled ECS app, launched on demand, runs MusicKit JS headless. ADE talks to it over a local pipe. | ADE stays on stock Electron. Music problems can never block an ADE release or break the IDE. | A second Chromium (about 100 MB more install, or a download on first use). Two processes and two signing flows. |
 | **C. Control only** | Now Playing from the OS (macOS MediaRemote adapter, Windows SMTC), plus Music.app AppleScript on macOS for library playlists. | No DRM or forked Electron. Works for any player. | Not a real Music tab: on Windows you can't start music from ADE. |
 
-**Recommendation:** **B**, proven by a spike first. The spike is a signed ECS
-helper on macOS and on Windows that plays one full catalog track from a
-Worker-minted token. Ship C's Now Playing widget early, since it is cheap and
-covers Spotify and browser audio as well. A remains possible later if ADE ever
-wants DRM video too.
+### OS web engines: spike result (2026-10-07)
+
+The table above was superseded by a lighter option: host the music page in
+the web engine the OS already ships, not in Chromium.
+
+- **ADE's browser today:** stock Electron 41 reports `com.widevine.alpha`,
+  PlayReady and FairPlay as all `null`; only clearkey works. The user confirmed
+  that previews play and library tracks don't.
+- **Windows WebView2 (runtime 154): PASS.**
+  - **Spike:** `tmp/spike-webview2-music/`, a C# WinForms host built with the
+    in-box `csc.exe` and the Microsoft.Web.WebView2 NuGet package.
+  - **DRM:** Widevine (SW_SECURE_CRYPTO) and PlayReady both work in the default
+    configuration.
+  - **Playback:** the user signed in and a **library track played for about
+    15 minutes without a fault**.
+  - **Startup:** first paint about 0.8 s after launch.
+  - **Memory:** about 660 MB working set with the full music.apple.com site
+    open. Most of that is Apple's web app, not WebView2.
+  - **Now playing:** `navigator.mediaSession.metadata` gives title, artist,
+    album and artwork. Play state must come from MusicKit, because
+    `playbackState` stays `"none"`.
+  - **Fragility:**
+    - Never pass `--disable-component-update`; it removes the Widevine CDM.
+    - PlayReady rides on the undocumented `msPlayReadyWin10` feature.
+    - The Evergreen runtime updates on Edge's schedule.
+    - Apple's sign-in dialog has a dark-mode contrast bug that makes its buttons
+      nearly invisible. Our UI should front it, or force a light color scheme
+      for the auth step.
+- **macOS WKWebView (FairPlay): not yet tested.** It needs a run on the
+  user's Mac Studio.
+
+**Decision:**
+- **Windows:** a WebView2 player host. ADE stays on stock Electron, and castLabs
+  is not needed on Windows.
+- **macOS:** a WKWebView player host, pending the spike.
+- **Both platforms:** the host loads only MusicKit JS on a minimal page from a
+  secure origin, not the full music.apple.com site. The Music tab, widget and
+  mini-player are ADE's own React UI that drives the host over IPC. This should
+  cut the memory and the slowness of Apple's web app.
+- **Fallback:** castLabs ECS (option B), only if a platform spike fails.
+- **Also:** ship C's Now Playing widget early.
+
+Next spike: the Windows host loads a blank secure-origin page with only MusicKit
+JS. It authorizes and plays a library track while driven from a test
+controller. Measure memory against the 150 MB target.
 
 ---
 
