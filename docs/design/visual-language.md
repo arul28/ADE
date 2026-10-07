@@ -231,6 +231,25 @@ Visual polish must not cost CPU or GPU while ADE is idle.
 | `ModernSection` + `ModernRows` in settings | a bespoke settings layout per page |
 | Banners, toasts and dialogs from `notices.md` | a card that copies the banner look |
 
+## iOS
+
+`apps/ios/ADE/Views/Components/ADEKit.swift` is the iOS counterpart of the
+surface kit and the modern settings primitives. It is flat (no materials,
+glows, gradients or shadows), so it is cheap inside scrolling lists.
+
+| Component | Desktop counterpart |
+|---|---|
+| `adeKitCard()`, `ADEKitCard`, `ADEKitCardHead` | `.kit-card`, `.kit-card-head` (40pt head: icon, label, count, action) |
+| `ADEEyebrow`, `ADEKitStat` | `.kit-eyebrow`, `.kit-stat` |
+| `ADEKitDot`, `ADEKitTag`, `ADEKitTone` | `.kit-dot`, `.kit-tag`, `data-state` / `data-tone` |
+| `ADEKitMeter`, `ADEKitLegendItem`, `ADEProviderMark` | `.kit-meter`, `.kit-legend`, `usageProviderLogo` |
+| `ADEKitSegmented`, `ADEKitMenuLabel`, `ADEKitButtonStyle`, `ADEKitRowButtonStyle` | `.kit-seg`, menu buttons, `.kit-row` |
+| `ADESettingsPage`, `ADESettingsSection`, `ADESettingsRows`, `ADESettingsRow` (+ `ValueRow`, `Link`, `ActionRow`, `Notice`) | `ModernPage`, `ModernSection`, `ModernRows`, `ModernRow` |
+| `adeSettingsList()`, `adeSettingsListRow()`, `ADESettingsListHeader` | the same panels in a `List`, for swipe actions |
+
+The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
+(amber at 20% left, red at 5%), the mirror of `usageLeftLevel`.
+
 ## Source map
 
 | Area | Files |
