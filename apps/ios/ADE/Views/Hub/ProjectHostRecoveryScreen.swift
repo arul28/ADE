@@ -410,7 +410,7 @@ struct ProjectHostRecoveryScreen: View {
           .padding(.top, 6)
       }
     }
-    .adeGlassCard()
+    .adeKitCard()
   }
 
   private var progressCard: some View {
@@ -449,7 +449,7 @@ struct ProjectHostRecoveryScreen: View {
       }
       .font(.subheadline.weight(.semibold))
     }
-    .adeGlassCard()
+    .adeKitCard()
   }
 }
 

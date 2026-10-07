@@ -51,7 +51,7 @@ struct AccountSignInView: View {
         .padding(.bottom, 32)
         .frame(maxWidth: .infinity)
       }
-      .background(AccountAuroraBackground().ignoresSafeArea())
+      .background(ADEColor.pageBackground.ignoresSafeArea())
       .adeNavigationGlass()
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
@@ -95,12 +95,11 @@ struct AccountSignInView: View {
         .aspectRatio(contentMode: .fit)
         .frame(maxWidth: 168)
         .frame(height: 52)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.35), radius: 14, y: 4)
         .accessibilityLabel("ADE")
 
       VStack(spacing: 5) {
         Text(headerTitle)
-          .font(.system(size: 24, weight: .heavy, design: .rounded))
+          .font(.system(size: 22, weight: .bold))
           .foregroundStyle(ADEColor.textPrimary)
           .multilineTextAlignment(.center)
         Text(headerSubtitle)
@@ -272,17 +271,11 @@ struct AccountSignInView: View {
         }
       )
 
-      Button {
+      Button("Done") {
         onFinish()
         dismiss()
-      } label: {
-        Text("Done")
-          .font(.subheadline.weight(.semibold))
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
       .padding(.top, 4)
     }
     .task { await account.loadMachines() }
@@ -302,8 +295,8 @@ struct AccountSignInView: View {
 
   private var line: some View {
     Rectangle()
-      .fill(ADEColor.border.opacity(0.4))
-      .frame(height: 1)
+      .fill(ADEKit.rule)
+      .frame(height: 0.75)
       .frame(maxWidth: .infinity)
   }
 
@@ -333,13 +326,10 @@ struct AccountSignInView: View {
           ProgressView().controlSize(.small).tint(.white)
         }
         Text(title)
-          .font(.subheadline.weight(.semibold))
       }
       .frame(maxWidth: .infinity)
-      .padding(.vertical, 12)
     }
-    .buttonStyle(.glassProminent)
-    .tint(ADEColor.accent)
+    .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     .accessibilityIdentifier(identifier)
     .disabled(disabled || busy != nil)
     .opacity(disabled ? 0.55 : 1)
@@ -458,15 +448,9 @@ struct AccountProviderButton: View {
           ProgressView().controlSize(.small)
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 13)
-      .frame(maxWidth: .infinity)
-      .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 14))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
-      )
+      .padding(.horizontal, ADEKit.inset)
+      .frame(minHeight: 48)
+      .adeKitCard(padding: nil)
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel(label)
@@ -508,27 +492,5 @@ private struct GoogleGlyph: View {
       )
       .frame(width: 22, height: 22)
       .background(Color.white, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-  }
-}
-
-/// Warm, quiet aurora backdrop shared by the sign-in sheet, echoing the
-/// settings screen's aurora so the two surfaces feel of a piece.
-struct AccountAuroraBackground: View {
-  var body: some View {
-    ZStack {
-      ADEColor.pageBackground
-      RadialGradient(
-        colors: [ADEColor.accent.opacity(0.28), .clear],
-        center: UnitPoint(x: 0.5, y: -0.02),
-        startRadius: 20,
-        endRadius: 380
-      )
-      RadialGradient(
-        colors: [ADEColor.purpleAccent.opacity(0.18), .clear],
-        center: UnitPoint(x: 0.9, y: 0.12),
-        startRadius: 8,
-        endRadius: 260
-      )
-    }
   }
 }

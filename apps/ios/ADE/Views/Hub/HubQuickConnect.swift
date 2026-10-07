@@ -141,11 +141,20 @@ struct HubQuickConnectSection: View {
             }
           }
           if targets.count > visibleTargets.count {
-            Button("See all machines", systemImage: "chevron.right") {
+            Button {
               syncService.settingsPresented = true
+            } label: {
+              HStack(spacing: 5) {
+                Text("See all machines")
+                Image(systemName: "chevron.right")
+                  .font(.system(size: 10, weight: .semibold))
+              }
+              .font(.system(size: 14, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
             }
-            .font(.subheadline.bold())
-            .frame(minHeight: 44)
+            .buttonStyle(.plain)
           }
           if connectingId != nil, let stage = syncService.accountConnectStageLabel {
             Text(stage)
@@ -175,16 +184,14 @@ struct HubQuickConnectSection: View {
         }
       } else if showsEmptyNote {
         HStack(spacing: 8) {
-          Circle().fill(ADEColor.textMuted).frame(width: 7, height: 7)
+          ADEKitDot(tone: .neutral, size: 7)
           Text("No saved machines yet")
             .font(.system(.caption, design: .rounded).weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(ADEColor.cardBackground.opacity(0.4), in: Capsule())
-        .overlay(Capsule().stroke(ADEColor.border.opacity(0.5), lineWidth: 1))
+        .padding(.horizontal, 12)
+        .frame(height: 30)
+        .background(ADEKit.track, in: Capsule())
       }
     }
     .frame(maxWidth: 420)
@@ -281,10 +288,9 @@ struct HubQuickConnectCard: View {
         routeHint: routeHint,
         online: online,
         statusPill: nil,
-        affordance: isConnecting ? .connecting : .chevron,
-        surface: .card
+        affordance: isConnecting ? .connecting : .chevron
       )
-      .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .contentShape(RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
     }
     .buttonStyle(ADEScaleButtonStyle())
     .disabled(isDisabled)
