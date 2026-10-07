@@ -1104,19 +1104,12 @@ struct ADERootTopBar<Actions: View>: View {
     .padding(.horizontal, 16)
     .padding(.top, 2)
     .frame(height: 60)
+    // A solid bar: content scrolling under a fading one collided with the
+    // title (the CTO thread was unreadable under "CTO").
     .background {
-      LinearGradient(
-        colors: [
-          ADEColor.pageBackground,
-          ADEColor.pageBackground.opacity(0.98),
-          ADEColor.pageBackground.opacity(0.88),
-          ADEColor.pageBackground.opacity(0)
-        ],
-        startPoint: .top,
-        endPoint: .bottom
-      )
-      .ignoresSafeArea(edges: .top)
-      .allowsHitTesting(false)
+      ADEColor.pageBackground
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
     }
   }
 }
