@@ -18,6 +18,14 @@ extension SyncService {
       .allSatisfy { supportsViewerRemoteAction($0) }
   }
 
+  /// The same three commands, asked of the brain that owns this chat (another
+  /// machine's connection, or the focused host for its own and foreign
+  /// projects). The rules live — and fire — where the chat lives.
+  func autoHandoffRulesAvailable(sessionId: String) -> Bool {
+    ["automations.list", "automations.saveDraft", "automations.deleteRule"]
+      .allSatisfy { canInvokeChatRemoteAction($0, sessionId: sessionId) }
+  }
+
   func crossMachineHandoffAvailable(sessionId: String) -> Bool {
     supportsChatRemoteAction("chat.getCrossMachineHandoffOptions", sessionId: sessionId)
       && supportsChatRemoteAction("chat.startCrossMachineHandoff", sessionId: sessionId)
@@ -75,17 +83,14 @@ extension SyncService {
   func deleteAutomationRule(id: String, forSessionId sessionId: String) async throws {
     try requireInvokableRemoteAction("automations.deleteRule")
     let scope = chatCommandScope(for: sessionId)
-    do {
-      _ = try await sendCommand(
-        action: "automations.deleteRule",
-        args: ["id": id],
-        targetProjectId: scope.projectId,
-        targetProjectRootPath: scope.rootPath
-      )
-    } catch {
-      if error.localizedDescription.range(of: "not found", options: .caseInsensitive) != nil { return }
-      throw error
-    }
+    // The brain treats an already-removed rule as success, so every error
+    // here is real.
+    _ = try await sendCommand(
+      action: "automations.deleteRule",
+      args: ["id": id],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   // MARK: Cross-machine handoff
@@ -159,6 +164,63 @@ extension SyncService {
     )
   }
 
+  /// Reads `detail.crossMachineHandoffState` off a live
+  /// `cross_machine_handoff_state` / `cross_machine_handoff_ended` notice and
+  /// folds it into the chat's cached summary (desktop AgentChatPane does the
+  /// same with `patchSessionSummary`). A key that is present but null clears
+  /// the record; an absent key or an unreadable record changes nothing.
+  func applyCrossMachineHandoffNoticeIfNeeded(
+    envelope: AgentChatEventEnvelope,
+    rawPayload: [String: Any]
+  ) {
+    guard let event = rawPayload["event"] as? [String: Any],
+          event["type"] as? String == "system_notice",
+          let status = event["status"] as? String,
+          status == "cross_machine_handoff_state" || status == "cross_machine_handoff_ended",
+          let detail = event["detail"] as? [String: Any],
+          detail.keys.contains("crossMachineHandoffState")
+    else { return }
+    let raw = detail["crossMachineHandoffState"]
+    if raw == nil || raw is NSNull {
+      clearCrossMachineHandoffRecord(sessionId: envelope.sessionId)
+      return
+    }
+    guard let object = raw as? [String: Any],
+          let record = try? decode(object, as: AgentChatCrossMachineHandoffRecord.self),
+          !record.handoffId.isEmpty
+    else { return }
+    foldCrossMachineHandoffRecord(record, sessionId: envelope.sessionId)
+  }
+
+  /// Folds a record an action answered with (cancel, approve, retry,
+  /// acknowledge) into the cached summary, so the card moves on before the
+  /// summary refresh lands.
+  func applyCrossMachineHandoffActionResult(_ record: AgentChatCrossMachineHandoffRecord?, sessionId: String) {
+    guard let record, !record.handoffId.isEmpty else { return }
+    foldCrossMachineHandoffRecord(record, sessionId: sessionId)
+  }
+
+  /// Folds a cross-machine move record into the cached summary for its chat.
+  /// The newer of the cached and incoming record wins, so a late older event
+  /// cannot roll the card back. No-op when the chat has no cached summary
+  /// (the next summary fetch carries the record).
+  func foldCrossMachineHandoffRecord(_ record: AgentChatCrossMachineHandoffRecord, sessionId: String) {
+    guard var summary = chatSummaryCache[sessionId] else { return }
+    summary.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+      current: summary.crossMachineHandoff,
+      incoming: record
+    )
+    guard summary != chatSummaryCache[sessionId] else { return }
+    cacheChatSummary(summary)
+  }
+
+  /// Drops the chat's move record: the brain said `crossMachineHandoffState: null`.
+  func clearCrossMachineHandoffRecord(sessionId: String) {
+    guard var summary = chatSummaryCache[sessionId], summary.crossMachineHandoff != nil else { return }
+    summary.crossMachineHandoff = nil
+    cacheChatSummary(summary)
+  }
+
   /// Publish / Update branch from the handoff sheet. Desktop pins these to the
   /// chat's machine (`CrossMachineHandoffModal` runtimePin); so does this.
   func pushGitForChat(sessionId: String, laneId: String) async throws {
@@ -185,18 +247,13 @@ extension SyncService {
   /// account machine key, so this is the same request a deeplink to that
   /// session makes; owner resolution switches machines when it has to.
   func openCrossMachineHandoffDestination(_ record: AgentChatCrossMachineHandoffRecord) {
-    // Prefer where the chat continues: a later attempt that failed or was
-    // cancelled may carry no target of its own.
-    let continuation = record.continuation
-    guard let targetSessionId = (continuation?.targetSessionId ?? record.targetSessionId)?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
-          !targetSessionId.isEmpty
-    else { return }
-    let machineKey = (continuation?.targetMachineKey ?? record.targetMachineKey)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    // Where the chat continues (a later attempt that failed or was cancelled
+    // may carry no target of its own); an `unknown` move opens its own target.
+    guard let target = workCrossMachineHandoffOpenTarget(record) else { return }
+    let machineKey = target.machineKey.trimmingCharacters(in: .whitespacesAndNewlines)
     requestedWorkSessionNavigation = WorkSessionNavigationRequest(
-      sessionId: targetSessionId,
-      laneId: continuation?.targetLaneId ?? record.targetLaneId,
+      sessionId: target.sessionId,
+      laneId: target.laneId,
       accountMachineKey: machineKey.isEmpty ? nil : machineKey,
       origin: .external
     )

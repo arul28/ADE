@@ -367,7 +367,7 @@ export const IPC = {
   agentChatValidateCrossMachineSource: "ade.agentChat.validateCrossMachineSource",
   agentChatMarkCrossMachineHandoff: "ade.agentChat.markCrossMachineHandoff",
   agentChatGetCrossMachineHandoffOptions: "ade.agentChat.getCrossMachineHandoffOptions",
-  agentChatGetCrossMachineHandoffState: "ade.agentChat.getCrossMachineHandoffState",
+  agentChatPreviewCrossMachineHandoff: "ade.agentChat.previewCrossMachineHandoff",
   agentChatStartCrossMachineHandoff: "ade.agentChat.startCrossMachineHandoff",
   agentChatCancelCrossMachineHandoff: "ade.agentChat.cancelCrossMachineHandoff",
   agentChatRetryCrossMachineHandoff: "ade.agentChat.retryCrossMachineHandoff",

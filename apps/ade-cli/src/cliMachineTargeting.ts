@@ -67,8 +67,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const primary = parsed.command[0]?.toLowerCase() ?? "";
   if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) return parsed;
   // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
-  // flag names the destination, so the command runs on this machine.
-  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") return parsed;
+  // flag names the destination, so the command runs on this machine and is
+  // never forwarded. The other handoff forms act on this machine's own move,
+  // so --machine with them is a mistake, not a target.
+  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
+    const flags = new Set(parsed.command.map((token) => token.split("=")[0]!));
+    if ((flags.has("--machine") || flags.has("--to-machine")) && ["--cancel", "--retry", "--options", "--where"].some((flag) => flags.has(flag))) {
+      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
+    }
+    return parsed;
+  }
   const kept: string[] = [];
   let machine: string | null = null;
   let allMachines = false;

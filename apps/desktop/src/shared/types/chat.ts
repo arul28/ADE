@@ -4237,6 +4237,12 @@ export type AgentChatValidateCrossMachineSourceArgs = {
   sourceSessionId: string;
   capsule: AgentChatCrossMachineHandoffCapsule;
   capsuleFingerprint: string;
+  /**
+   * The move's own choice, which may differ from `Boolean(capsule.gitBundle)`:
+   * a move that asked for changes but had none to carry has no bundle, yet
+   * its source was checked under the relaxed rules. Absent = has a bundle.
+   */
+  includeChanges?: boolean;
 };
 
 export type AgentChatCrossMachineDestinationPreflightArgs = {
@@ -4320,7 +4326,9 @@ export type AgentChatMarkCrossMachineHandoffArgs = {
  *   cancels it ("new instructions win").
  * - `sending`: in flight; `checkpoint` names the last durable step passed.
  * - `continued`: the destination chat started. The source stays usable; the
- *   first send after this asks once (`resumedHere` records the answer).
+ *   desktop routes new messages to the destination chat until the person
+ *   picks "Work here instead" (`resumedHere`). iOS asks "Continue on
+ *   <machine> / Work here instead" before a send.
  * - `unknown`: the destination may have accepted but confirmation was lost.
  *   Never auto-replayed; a retry reconciles through the destination record.
  */
@@ -4334,7 +4342,6 @@ export type AgentChatCrossMachineHandoffState =
   | "unknown";
 
 export type AgentChatCrossMachineHandoffCheckpoint =
-  | "checked"
   | "prepared"
   | "destination_ready"
   | "accepted"
@@ -4351,6 +4358,13 @@ export type AgentChatCrossMachineHandoffRecord = {
   /** Uncommitted and unpushed work travels as a git bundle. */
   includeChanges: boolean;
   requestedBy: "user" | "agent";
+  /**
+   * The permission level the destination chat would run with, in words
+   * ("ask before changes"). An agent's move runs there at the source chat's
+   * own level, mapped to the target model's provider (never broader), so the
+   * approval card can say exactly what it grants.
+   */
+  targetPermissionLabel?: string | null;
   requestedAt: string;
   updatedAt: string;
   /** Plain-sentence reason for `failed`, `cancelled` and `unknown`. */
@@ -4399,10 +4413,12 @@ export type AgentChatCrossMachineHandoffBlocker = {
     | "diverged"
     | "behind"
     | "rebasing"
+    | "merging"
     | "no_origin"
-    | "turn_active"
     | "awaiting_input"
     | "move_in_progress"
+    /** The last move's answer was lost; retry it, check the other machine, or dismiss it. */
+    | "move_unknown"
     | "not_work_chat";
   title: string;
   detail: string;
@@ -4412,7 +4428,8 @@ export type AgentChatCrossMachineHandoffBlocker = {
   fixHint: string | null;
 };
 
-export type AgentChatCrossMachineHandoffOptionsArgs = {
+/** Every move action that needs only the source chat. */
+export type AgentChatCrossMachineHandoffSessionArgs = {
   sourceSessionId: string;
 };
 
@@ -4437,8 +4454,27 @@ export type AgentChatStartCrossMachineHandoffArgs = AgentChatCrossMachineTargetC
   whenTurnEnds?: boolean;
 };
 
-export type AgentChatCancelCrossMachineHandoffArgs = {
+/**
+ * What the destination would say about a move, asked through the source
+ * brain's own transport before anything is prepared or sent. The setup UI
+ * shows this instead of reaching the destination itself, so the review step
+ * describes the path the move actually takes.
+ */
+export type AgentChatPreviewCrossMachineHandoffArgs = {
   sourceSessionId: string;
+  machine: string;
+  targetModelId: ModelId;
+  mode?: "brief" | "fork";
+  includeChanges?: boolean;
+};
+
+export type AgentChatPreviewCrossMachineHandoffResult = {
+  machineKey: string;
+  machineName: string;
+  /** False: the repository is not there yet; a move needs `clone`. */
+  hasRepository: boolean;
+  /** Null when the repository is missing (nothing to preflight yet). */
+  preflight: AgentChatCrossMachineDestinationPreflightResult | null;
 };
 
 export type AgentChatResolveCrossMachineHandoffApprovalArgs = {

@@ -710,11 +710,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "markCrossMachineHandoff",
     // The brain-owned move. `startCrossMachineHandoff` is open to agents on
     // purpose ("move this chat to my Mac mini"); the RPC server stamps
-    // `requestedBy`, and an agent moving a chat that isn't full-auto waits for
-    // the person's approval (crossMachineHandoffOrchestrator). Approval itself
-    // is the person's: see ADE_ACTION_USER_ONLY.
+    // `requestedBy`, holds a bound agent to its own chat, and strips any
+    // permission fields so the move keeps the chat's own settings. An agent
+    // moving a chat that isn't full-auto waits for the person's approval
+    // (crossMachineHandoffOrchestrator). Approval itself is the person's: see
+    // ADE_ACTION_USER_ONLY. `previewCrossMachineHandoff` only reads.
     "getCrossMachineHandoffOptions",
-    "getCrossMachineHandoffState",
+    "previewCrossMachineHandoff",
     "startCrossMachineHandoff",
     "cancelCrossMachineHandoff",
     "retryCrossMachineHandoff",

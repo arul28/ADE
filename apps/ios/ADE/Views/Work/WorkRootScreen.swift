@@ -199,6 +199,9 @@ struct WorkRootSyncInputs: Equatable {
   var deleteSessionAvailable = false
   var generateNamesAvailable = false
   /// Session-menu parity with desktop: Set tag, Restart agent, Hand off ▸.
+  /// The focused host's answer only — it re-renders the list when its
+  /// capabilities change. Each row asks the brain that owns its chat
+  /// (`sessionListRow`), since a chat on another machine or project may differ.
   var chatTagAvailable = false
   var restartAgentAvailable = false
   var localHandoffAvailable = false
@@ -859,7 +862,7 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   private func workList(proxy: ScrollViewProxy) -> some View {
-    List {
+    let list = List {
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -1277,6 +1280,25 @@ struct WorkRootListScreen: View, Equatable {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+    return sessionMenuPresentations(list)
+      .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
+        Button("Cancel", role: .cancel) {
+          stopRuntimeTarget = nil
+        }
+        Button("Stop", role: .destructive) {
+          Task { await stopRuntime(session) }
+        }
+      } message: { session in
+        Text("ADE will stop the running process. The saved session stays available unless you delete it.")
+      }
+  }
+
+  /// The session menu's own alerts and sheets (tag, restart, the three
+  /// handoff sheets and the auto-handoff rule refresh). Kept out of
+  /// `workList`'s modifier chain: with them inline, Swift could not
+  /// type-check that expression in reasonable time (CI test-ios).
+  private func sessionMenuPresentations<Content: View>(_ content: Content) -> some View {
+    content
       .alert("Set tag", isPresented: Binding(
         get: { tagTarget != nil },
         set: { if !$0 { tagTarget = nil } }
@@ -1322,18 +1344,8 @@ struct WorkRootListScreen: View, Equatable {
       }
       // Once per project (and when the host starts advertising the rules): the
       // menu only needs "does this chat have rules", and the editor re-reads.
-      .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")") {
+      .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")|\(sessions.count)") {
         await refreshAutoHandoffRuleIds()
-      }
-      .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
-        Button("Cancel", role: .cancel) {
-          stopRuntimeTarget = nil
-        }
-        Button("Stop", role: .destructive) {
-          Task { await stopRuntime(session) }
-        }
-      } message: { session in
-        Text("ADE will stop the running process. The saved session stays available unless you delete it.")
       }
   }
 
@@ -1670,13 +1682,23 @@ struct WorkRootListScreen: View, Equatable {
       laneMenu: workLaneMenuActions,
       generateNamesAvailable: inputs.generateNamesAvailable,
       onGenerateNames: generateSessionNames,
-      tagAvailable: inputs.chatTagAvailable,
+      // Per chat: a chat on another machine (or in another project) is served
+      // by that brain, so each item asks the host that owns THIS chat.
+      tagAvailable: syncService.canInvokeChatRemoteAction("chat.updateSession", sessionId: session.id),
       onSetTag: beginSetTag,
-      restartAvailable: inputs.restartAgentAvailable,
+      restartAvailable: syncService.canInvokeChatRemoteAction("chat.restartSession", sessionId: session.id),
       onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
-      localHandoffAvailable: inputs.localHandoffAvailable,
-      crossMachineHandoffAvailable: inputs.crossMachineHandoffAvailable,
-      autoHandoffAvailable: inputs.autoHandoffAvailable,
+      localHandoffAvailable: syncService.canInvokeChatRemoteAction("chat.handoff", sessionId: session.id),
+      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id),
+      crossMachineCancelAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.cancelCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      crossMachineRetryAvailable: syncService.crossMachineHandoffActionAvailable(
+        "chat.retryCrossMachineHandoff",
+        sessionId: session.id
+      ),
+      autoHandoffAvailable: syncService.autoHandoffRulesAvailable(sessionId: session.id),
       autoHandoffRuleCount: autoHandoffRuleIdsBySession[session.id]?.count,
       onHandoff: handleSessionHandoff
     )

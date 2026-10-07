@@ -259,8 +259,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatAcknowledgeCrossMachineHandoffArgs,
-  AgentChatCancelCrossMachineHandoffArgs,
-  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
@@ -2270,23 +2271,23 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         getCrossMachineHandoffOptions: (
-          args: AgentChatCrossMachineHandoffOptionsArgs,
+          args: AgentChatCrossMachineHandoffSessionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffOptionsResult>;
-        getCrossMachineHandoffState: (
-          args: AgentChatCancelCrossMachineHandoffArgs,
+        previewCrossMachineHandoff: (
+          args: AgentChatPreviewCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        ) => Promise<AgentChatPreviewCrossMachineHandoffResult>;
         startCrossMachineHandoff: (
           args: AgentChatStartCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
         cancelCrossMachineHandoff: (
-          args: AgentChatCancelCrossMachineHandoffArgs,
+          args: AgentChatCrossMachineHandoffSessionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         retryCrossMachineHandoff: (
-          args: AgentChatCancelCrossMachineHandoffArgs,
+          args: AgentChatCrossMachineHandoffSessionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
         resolveCrossMachineHandoffApproval: (

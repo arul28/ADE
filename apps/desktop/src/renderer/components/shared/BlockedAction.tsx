@@ -30,16 +30,12 @@ export type BlockedActionReason = {
   /** Why it matters, or what happens if it is ignored. */
   detail?: string;
   /**
-   * The specific action that clears this blocker. Omit when the fix genuinely
-   * lives elsewhere (another machine, another app) — then `detail` must say
-   * where to go.
+   * The actions that clear this blocker. The first is the primary one; the
+   * rest render after it as quieter buttons ("Publish branch", then "Bring
+   * them along"). Omit when the fix genuinely lives elsewhere (another
+   * machine, another app) — then `detail` must say where to go.
    */
-  fix?: BlockedActionFix;
-  /**
-   * Other ways to clear the same blocker, shown after `fix` as quieter
-   * buttons ("Publish branch" or "Bring them along").
-   */
-  moreFixes?: BlockedActionFix[];
+  fixes?: BlockedActionFix[];
 };
 
 export type BlockedActionFix = {
@@ -88,25 +84,17 @@ export function BlockedReasons({
             {reason.detail ? (
               <div className="mt-0.5 text-[10px] leading-4 text-rose-100/58">{reason.detail}</div>
             ) : null}
-            {reason.fix || reason.moreFixes?.length ? (
+            {reason.fixes?.length ? (
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                {reason.fix ? (
-                  <button
-                    type="button"
-                    disabled={reason.fix.busy}
-                    onClick={reason.fix.onFix}
-                    className="inline-flex h-7 items-center rounded-md border border-rose-200/25 bg-rose-300/10 px-2.5 text-[10px] font-semibold text-rose-50 transition-colors hover:bg-rose-300/16 disabled:opacity-45"
-                  >
-                    {reason.fix.label}
-                  </button>
-                ) : null}
-                {reason.moreFixes?.map((fix) => (
+                {reason.fixes.map((fix, index) => (
                   <button
                     key={fix.label}
                     type="button"
                     disabled={fix.busy}
                     onClick={fix.onFix}
-                    className="inline-flex h-7 items-center rounded-md border border-fg/[0.12] bg-fg/[0.03] px-2.5 text-[10px] font-semibold text-fg/75 transition-colors hover:bg-fg/[0.07] hover:text-fg/90 disabled:opacity-45"
+                    className={index === 0
+                      ? "inline-flex h-7 items-center rounded-md border border-rose-200/25 bg-rose-300/10 px-2.5 text-[10px] font-semibold text-rose-50 transition-colors hover:bg-rose-300/16 disabled:opacity-45"
+                      : "inline-flex h-7 items-center rounded-md border border-fg/[0.12] bg-fg/[0.03] px-2.5 text-[10px] font-semibold text-fg/75 transition-colors hover:bg-fg/[0.07] hover:text-fg/90 disabled:opacity-45"}
                   >
                     {fix.label}
                   </button>

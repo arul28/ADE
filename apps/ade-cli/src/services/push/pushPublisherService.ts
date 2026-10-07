@@ -213,6 +213,11 @@ type PendingAlert = {
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
   category?: string | null;
+  /**
+   * No account Activity item carries this alert (it changes no run state), so
+   * it is delivered even when the same flush published Activity.
+   */
+  standalone?: boolean;
 };
 
 type PushAgentChatService = {
@@ -1752,7 +1757,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const alertItems: PushRelayAlertItem[] = [];
     const alertAttempts: AlertDeliveryAttempt[] = [];
-    for (const alert of accountAttentionPublished ? [] : consumedAlerts) {
+    for (const alert of accountAttentionPublished ? consumedAlerts.filter((pending) => pending.standalone) : consumedAlerts) {
       const retryTargets = alert.targetDeviceIds ? new Set(alert.targetDeviceIds) : null;
       const eligibleDevices = devices.filter(
         (device) =>
@@ -2710,6 +2715,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         threadId: notice.sessionId,
         phase: "terminal",
         interruptionLevel: "active",
+        standalone: true,
       });
       scheduleFlush(true, false);
     },

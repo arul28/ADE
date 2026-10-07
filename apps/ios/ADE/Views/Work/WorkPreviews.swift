@@ -1363,7 +1363,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// "Continue on another machine" with fixture machines and blockers. See
   /// `WorkCrossMachineHandoffPreviewHost`.
   case handoffSheet = "handoff-sheet"
-  /// Every in-chat handoff card state stacked, plus the soft-lock prompt.
+  /// Every in-chat handoff card state stacked, plus the send gate's prompt
+  /// (where new messages go).
   case handoffCard = "handoff-card"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
@@ -1528,7 +1529,7 @@ enum WorkCrossMachineHandoffPreviewData {
     blockers: [
       AgentChatCrossMachineHandoffBlocker(id: "dirty", title: "Uncommitted changes", detail: "4 files changed in this lane are not committed.", clearedByIncludeChanges: true, fixHint: nil),
       AgentChatCrossMachineHandoffBlocker(id: "no_upstream", title: "Branch not published", detail: "ade/sync-reconnect has no upstream on origin.", clearedByIncludeChanges: true, fixHint: "ade git push --lane preview-lane"),
-      AgentChatCrossMachineHandoffBlocker(id: "turn_active", title: "A turn is running", detail: "The agent is working right now.", clearedByIncludeChanges: false, fixHint: nil),
+      AgentChatCrossMachineHandoffBlocker(id: "merging", title: "A merge is in progress", detail: "Finish or abort it before moving this chat.", clearedByIncludeChanges: false, fixHint: nil),
     ],
     changes: AgentChatCrossMachineHandoffChanges(unpushedCommits: 2, changedFiles: 4)
   )
@@ -1562,6 +1563,7 @@ private struct WorkCrossMachineHandoffCardsPreviewHost: View {
   private var actions: WorkCrossMachineHandoffActions {
     WorkCrossMachineHandoffActions(
       keepHere: {},
+      dismiss: {},
       resolveApproval: { _ in },
       acknowledge: { true },
       retry: {},
@@ -1586,15 +1588,20 @@ private struct WorkCrossMachineHandoffCardsPreviewHost: View {
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .confirmationDialog(
-      "This chat continues on \(gate.prompt?.machine ?? "another machine").",
+      "This chat continues on \(gate.prompt?.machine ?? "another machine")",
       isPresented: Binding(get: { gate.prompt != nil }, set: { if !$0 { gate.answer(.cancel) } }),
       titleVisibility: .visible
     ) {
-      Button("Continue on \(gate.prompt?.machine ?? "")") { gate.answer(.continueThere) }
+      Button("Continue on \(gate.prompt?.machine ?? "the other machine")") { gate.answer(.continueThere) }
       Button("Work here instead") { gate.answer(.workHere) }
       Button("Cancel", role: .cancel) { gate.answer(.cancel) }
     } message: {
-      Text(gate.prompt?.branch.map { "Both may change \($0)." } ?? "")
+      // Same copy as the chat's own dialog (`WorkChatSessionView`).
+      Text(
+        "Continue there takes your message to that chat (it's copied, paste it there). "
+          + (gate.prompt?.branch.map { "Working here instead means both machines may change \($0)." }
+            ?? "Working here instead means both machines may change the same branch.")
+      )
     }
   }
 }
@@ -1891,7 +1898,7 @@ struct WorkListPreviewHost: View {
       syncService.seedRemoteCommandActionsForPreview([
         "chat.updateSession", "chat.regenerateSessionMetadata", "chat.restartSession", "chat.setSpawnKind",
         "chat.handoff", "chat.getCrossMachineHandoffOptions", "chat.startCrossMachineHandoff",
-        "chat.cancelCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
+        "chat.cancelCrossMachineHandoff", "chat.retryCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
         "session.settleSessions", "session.unsettleSessions", "session.setSettleOverride",
         "session.snoozeSession", "session.wakeSession", "work.deleteSession", "lanes.rename", "lanes.updateAppearance",
       ])

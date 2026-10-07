@@ -33,6 +33,7 @@ import {
   type AgentChatDispatchSteerMode,
   type AgentChatReplayForkDisclosure,
   type AgentChatSteerResult,
+  type AgentChatCrossMachineHandoffRecord,
   type AgentChatStopMode,
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
@@ -192,6 +193,7 @@ import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeS
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
+import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -352,7 +354,10 @@ import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
-import { crossMachineSendsElsewhere } from "../../../shared/crossMachineHandoff";
+import {
+  crossMachineSendsElsewhere,
+  pickNewerCrossMachineHandoffRecord,
+} from "../../../shared/crossMachineHandoff";
 import { showToast } from "../app/toast/toastStore";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
@@ -8986,6 +8991,29 @@ export function AgentChatPane({
     });
   }, []);
 
+  /**
+   * Applies a chat's move record from wherever it came (a live event, an
+   * action's answer). They arrive in any order, so a late older record never
+   * replaces a newer one.
+   */
+  const applyCrossMachineHandoffRecord = useCallback((
+    sessionId: string,
+    record: AgentChatCrossMachineHandoffRecord | null,
+  ) => {
+    setSessions((prev) => {
+      let changed = false;
+      const next = prev.map((session) => {
+        if (session.sessionId !== sessionId) return session;
+        const current = session.crossMachineHandoff ?? null;
+        const kept = pickNewerCrossMachineHandoffRecord(current, record);
+        if (kept === current) return session;
+        changed = true;
+        return { ...session, crossMachineHandoff: kept };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   // Host-computed usage-limit resume state (`AgentChatUsageLimitResume`). It is
   // the ONE fact this feature renders from: the compact pill above the composer
   // owns the countdown and every action, the quota card stands down while it is
@@ -9034,7 +9062,7 @@ export function AgentChatPane({
       ) {
         const detail = envelope.event.detail;
         if (detail && typeof detail === "object" && "crossMachineHandoffState" in detail) {
-          patchSessionSummary(envelope.sessionId, { crossMachineHandoff: detail.crossMachineHandoffState ?? null });
+          applyCrossMachineHandoffRecord(envelope.sessionId, detail.crossMachineHandoffState ?? null);
         }
         if (envelope.event.status === "cross_machine_handoff_state") return;
       }
@@ -9287,7 +9315,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -12635,39 +12663,96 @@ export function AgentChatPane({
    * goes THERE: it is sent to the destination chat and that chat opens. The
    * banner's "Work here instead" (`resumedHere`) turns this off. Resolves true
    * when the message was handled (sent or handed over) and must not be sent
-   * here.
+   * here. A slash command is never routed: commands control this chat.
    */
   const crossMachineRouteInFlightRef = useRef(false);
+  const draftValueRef = useRef(draft);
+  draftValueRef.current = draft;
   const sendToContinuedChat = useCallback(async (): Promise<boolean> => {
     const continuation = crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff);
     const text = draft.trim();
-    if (!continuation || (!text.length && !attachments.length)) return false;
+    const contextCount = contextAttachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length;
+    if (!continuation || (!text.length && !attachments.length && !contextCount)) return false;
+    if (text.startsWith("/")) return false;
     if (crossMachineRouteInFlightRef.current) return true;
     crossMachineRouteInFlightRef.current = true;
     const where = continuation.targetMachineName;
+    const sentDraft = draft;
+    const sentFromSessionId = selectedSessionId;
+    // Only a lane this window actually reads routes safely: without it the
+    // send would reach this machine's brain with the other machine's chat id.
+    // A pinned route needs the lane on that machine's list; a lane on the
+    // tab's own binding is routed unpinned.
+    const laneOnActiveBinding = lanes.some((lane) => lane.id === continuation.targetLaneId);
+    const laneKnownElsewhere = Object.values(crossMachineLanesByMachineId).some((machine) =>
+      machine.lanes.some((lane) => lane.id === continuation.targetLaneId));
+    const pin = laneKnownElsewhere || laneOnActiveBinding
+      ? chatMachineRouter.pinForLane(continuation.targetLaneId)
+      : null;
+    const routesPinned = pin != null && laneKnownElsewhere;
+    const routesUnpinned = pin == null && laneOnActiveBinding;
+    const routable = routesPinned || routesUnpinned;
+    /**
+     * Hand the words over rather than lose them: files and attached context
+     * can't travel this way, and a machine this window can't reach can't take
+     * a send from here. The draft stays put either way.
+     */
+    const handOver = async () => {
+      let copied = false;
+      if (text.length) {
+        try {
+          if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      openChatOnOtherMachine(continuation.targetSessionId);
+      const stays = attachments.length && contextCount
+        ? "Attachments and attached context stay on this machine."
+        : attachments.length
+          ? "Attachments stay on this machine."
+          : contextCount
+            ? "Attached context stays on this machine."
+            : null;
+      const copyLine = !text.length
+        ? `Add them again in the chat on ${where}.`
+        : copied
+          ? stays
+            ? `Your message is copied; paste it there and add them again on ${where}.`
+            : `Your message is copied. Paste it in the chat on ${where}.`
+          : "Paste failed — your draft is still here.";
+      const copyFailed = text.length > 0 && !copied;
+      showToast({
+        tone: copyFailed ? "warning" : "info",
+        title: `Continue in the chat on ${where}`,
+        message: [stays, copyLine].filter(Boolean).join(" "),
+      });
+    };
     try {
-      // Only a lane this window actually reads routes safely: without it the
-      // send would reach this machine's brain with the other machine's chat id.
-      const laneKnown = Object.values(crossMachineLanesByMachineId).some((machine) =>
-        machine.lanes.some((lane) => lane.id === continuation.targetLaneId));
-      const pin = laneKnown ? chatMachineRouter.pinForLane(continuation.targetLaneId) : null;
-      if (!pin || attachments.length) {
-        // Hand the words over rather than lose them: files can't travel this
-        // way, and an unreachable machine can't take a send from here.
-        if (text.length) await navigator.clipboard?.writeText(text).catch(() => {});
-        openChatOnOtherMachine(continuation.targetSessionId);
-        showToast({
-          tone: "info",
-          title: `Continue in the chat on ${where}`,
-          message: attachments.length
-            ? "Attachments stay on this machine. Your message is copied; paste it there and attach the files on that machine."
-            : `Your message is copied. Paste it in the chat on ${where}.`,
-        });
+      if (!routable || attachments.length || contextCount) {
+        await handOver();
         return true;
       }
-      await window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin);
-      setDraft("");
-      if (selectedSessionId) draftsPerSessionRef.current.delete(selectedSessionId);
+      try {
+        await window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin);
+      } catch (sendError) {
+        // ADE Web reaches one machine; a chat elsewhere gets the hand-over.
+        if (isWebRuntimePinUnroutableError(sendError)) {
+          await handOver();
+          return true;
+        }
+        throw sendError;
+      }
+      // Typing went on while the send was in flight: keep the newer draft.
+      if (draftValueRef.current === sentDraft && selectedSessionIdRef.current === sentFromSessionId) {
+        setDraft("");
+        if (sentFromSessionId) draftsPerSessionRef.current.delete(sentFromSessionId);
+      }
       openChatOnOtherMachine(continuation.targetSessionId);
       showToast({ tone: "success", title: `Sent to the chat on ${where}` });
       return true;
@@ -12682,10 +12767,15 @@ export function AgentChatPane({
       crossMachineRouteInFlightRef.current = false;
     }
   }, [
+    appControlContextItems.length,
     attachments.length,
+    builtInBrowserContextItems.length,
     chatMachineRouter,
+    contextAttachments.length,
     crossMachineLanesByMachineId,
     draft,
+    iosElementContextItems.length,
+    lanes,
     selectedSession,
     selectedSessionId,
   ]);
@@ -16278,7 +16368,7 @@ export function AgentChatPane({
       sessionId={selectedSessionId}
       record={selectedSession?.crossMachineHandoff}
       runtimePin={chatRuntimePin}
-      onRecord={(next) => patchSessionSummary(selectedSessionId, { crossMachineHandoff: next })}
+      onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
       style={composerBannerStyle}
     />
   ) : null;
@@ -17156,8 +17246,6 @@ export function AgentChatPane({
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
           runtimePin={chatRuntimePin}
-          sourceMachineTargetId={chatEffectiveBinding?.kind === "remote" ? chatEffectiveBinding.targetId : null}
-          sourceMachineName={isRemoteChat ? chatMachineName : null}
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
@@ -17181,7 +17269,7 @@ export function AgentChatPane({
           }}
           onStarted={(record) => {
             setHandoffNote("");
-            patchSessionSummary(selectedSessionId, { crossMachineHandoff: record });
+            applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />
       ) : null}

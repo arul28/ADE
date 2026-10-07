@@ -707,18 +707,6 @@ struct WorkLaneContextMenuContent: View {
   }
 }
 
-/// What a `Hand off ▸` item asks for.
-enum WorkSessionHandoffIntent: Equatable {
-  case local
-  case remote
-  case auto
-  case removeAuto
-  /// Cancel a pending move ("Keep it here").
-  case keepHere
-  /// Open the chat a continued move landed on.
-  case openDestination
-}
-
 /// Single-row renderer for the session list that carries the swipe + context-menu action set.
 /// Used inside the sidebar's grouped loop so the Work root screen can drive the section
 /// organization directly (byLane / byStatus / byTime) without a nested Section wrapper.
@@ -795,10 +783,15 @@ struct WorkSessionListRow: View {
   /// The host advertises `chat.restartSession`.
   var restartAvailable: Bool = false
   var onRestartAgent: (TerminalSessionSummary) -> Void = { _ in }
-  /// `Hand off ▸` destinations. Each false hides its item: `chat.handoff`,
-  /// `chat.startCrossMachineHandoff`, and the three `automations.*` rule commands.
+  /// `Hand off ▸` destinations, asked of the brain that owns THIS chat. Each
+  /// false hides its item: `chat.handoff`, `chat.startCrossMachineHandoff`, and
+  /// the three `automations.*` rule commands.
   var localHandoffAvailable: Bool = false
   var crossMachineHandoffAvailable: Bool = false
+  /// The chat's brain takes `chat.cancelCrossMachineHandoff` /
+  /// `chat.retryCrossMachineHandoff` (Keep it here or Dismiss / Retry move).
+  var crossMachineCancelAvailable: Bool = false
+  var crossMachineRetryAvailable: Bool = false
   var autoHandoffAvailable: Bool = false
   /// Auto-handoff rules already scoped to this chat; nil while unknown. Drives
   /// "Edit auto handoff…" and "Remove auto handoff" like desktop's menu.
@@ -1103,12 +1096,6 @@ struct WorkSessionListRow: View {
     tagAvailable && session.toolType == "claude-chat" && session.status == "running"
   }
 
-  private var handoffRecord: AgentChatCrossMachineHandoffRecord? {
-    let record = chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff
-    guard let record, !record.handoffId.isEmpty else { return nil }
-    return record
-  }
-
   /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
   private var nameMenuSection: some View {
@@ -1262,67 +1249,21 @@ struct WorkSessionListRow: View {
     }
   }
 
-  private var showsHandoffMenu: Bool {
-    isChat && (localHandoffAvailable || crossMachineHandoffAvailable || autoHandoffAvailable || handoffRecord != nil)
-  }
-
-  /// Section 4 — Hand off ▸: a new chat here, another machine, or a rule. The
-  /// move in flight adds its own row (Keep it here / Open on <machine>).
-  @ViewBuilder
+  /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
+  /// sheets it opens).
   private var handoffMenuSection: some View {
-    if showsHandoffMenu {
-      Section {
-        Menu {
-          if let record = handoffRecord {
-            if record.state == .pending || record.state == .awaitingApproval {
-              Button {
-                onHandoff(session, .keepHere)
-              } label: {
-                Label("Keep it here", systemImage: "hand.raised")
-              }
-            } else if record.state == .continued, record.targetSessionId?.isEmpty == false {
-              Button {
-                onHandoff(session, .openDestination)
-              } label: {
-                Label("Open on \(record.machineLabel)", systemImage: "arrow.up.forward.app")
-              }
-            }
-          }
-          if localHandoffAvailable {
-            Button {
-              onHandoff(session, .local)
-            } label: {
-              Label("Local handoff…", systemImage: "arrow.triangle.branch")
-            }
-          }
-          if crossMachineHandoffAvailable {
-            Button {
-              onHandoff(session, .remote)
-            } label: {
-              Label("Another machine…", systemImage: "desktopcomputer")
-            }
-          }
-          if autoHandoffAvailable {
-            Divider()
-            Button {
-              onHandoff(session, .auto)
-            } label: {
-              Label((autoHandoffRuleCount ?? 0) > 0 ? "Edit auto handoff…" : "Auto handoff…",
-                    systemImage: "arrow.left.arrow.right")
-            }
-            if (autoHandoffRuleCount ?? 0) > 0 {
-              Button(role: .destructive) {
-                onHandoff(session, .removeAuto)
-              } label: {
-                Label("Remove auto handoff", systemImage: "nosign")
-              }
-            }
-          }
-        } label: {
-          Label("Hand off", systemImage: "arrowshape.turn.up.right")
-        }
-      }
-    }
+    WorkSessionHandoffMenu(
+      session: session,
+      record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
+      isChat: isChat,
+      localHandoffAvailable: localHandoffAvailable,
+      crossMachineHandoffAvailable: crossMachineHandoffAvailable,
+      crossMachineCancelAvailable: crossMachineCancelAvailable,
+      crossMachineRetryAvailable: crossMachineRetryAvailable,
+      autoHandoffAvailable: autoHandoffAvailable,
+      autoHandoffRuleCount: autoHandoffRuleCount,
+      onHandoff: onHandoff
+    )
   }
 
   /// Section 5 — the agent itself: restart, promote / demote.

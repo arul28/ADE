@@ -192,18 +192,19 @@ export function createProjectScaffoldService({
       }
     }
 
-    // `git -c … clone`, never `git clone -c …`: the clone's own `-c` is
-    // written into the new repository's .git/config, which persisted the token
-    // there and made every later ADE fetch (which adds its own header) fail
-    // with GitHub's "Duplicate header: Authorization".
-    const cloneArgs: string[] = [];
+    // `git clone -c …` on purpose: the clone's own `-c` is persisted in the
+    // new repository's .git/config, and ADE's normal fetch/push has no other
+    // auth injection, so later Git work relies on that header. Callers that
+    // add their own header (cross-machine handoff) reset the inherited list
+    // first, so GitHub never sees two.
+    const cloneArgs: string[] = ["clone"];
     if (authHeader) {
       cloneArgs.push(
         "-c",
         `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
       );
     }
-    cloneArgs.push("clone", url, rootPath);
+    cloneArgs.push(url, rootPath);
 
     try {
       const cloneRes = await runGit(cloneArgs, {

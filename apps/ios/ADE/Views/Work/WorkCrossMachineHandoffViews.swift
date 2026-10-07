@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Presentation (pure)
 
 /// What the in-chat card says and offers for one handoff record. Pure so the
-/// card, the soft-lock confirmation and a future test all read one table.
+/// card, the send gate's confirmation and a future test all read one table.
 struct WorkCrossMachineHandoffCardModel: Equatable {
   enum Action: Equatable {
     case keepHere
@@ -12,14 +12,17 @@ struct WorkCrossMachineHandoffCardModel: Equatable {
     case open
     case retry
     case workHere
+    /// Drops a lost move the person already checked (the brain cancels it).
+    case dismiss
   }
 
+  /// No red: a move that didn't happen leaves the chat fine where it is, so
+  /// failure reads amber (`warning`), never danger.
   enum Tone: Equatable {
     case neutral
     case accent
     case success
     case warning
-    case danger
   }
 
   var title: String
@@ -41,10 +44,10 @@ struct WorkCrossMachineHandoffCardModel: Equatable {
   }
 }
 
-/// The durable steps the source brain records, in order. Mirrors
-/// `AgentChatCrossMachineHandoffCheckpoint`.
-let workCrossMachineHandoffCheckpointOrder: [(id: String, label: String)] = [
-  ("checked", "Checked"),
+/// The durable steps of a move in order, with the words every surface shows.
+/// Mirrors `CROSS_MACHINE_HANDOFF_STEPS` in shared/crossMachineHandoff.ts — the
+/// one list, so the phone and desktop cannot drift.
+let workCrossMachineHandoffSteps: [(id: String, label: String)] = [
   ("prepared", "Packed"),
   ("destination_ready", "Ready there"),
   ("accepted", "Accepted"),
@@ -77,21 +80,25 @@ func workCrossMachineHandoffCardModel(
   case .awaitingApproval:
     return WorkCrossMachineHandoffCardModel(
       title: "Agent wants to continue on \(machine)",
-      detail: record.reason,
+      // Say what the chat would run with there before the person approves.
+      detail: {
+        let parts = [record.targetPermissionLabel.map { "Runs there as \($0)." }, alreadyContinues].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+      }(),
       symbol: "questionmark.circle",
       tone: .warning,
       actions: [.approve, .deny],
       checkpoints: []
     )
   case .sending:
-    let reached = workCrossMachineHandoffCheckpointOrder.firstIndex { $0.id == record.checkpoint } ?? -1
+    let reached = workCrossMachineHandoffSteps.firstIndex { $0.id == record.checkpoint } ?? -1
     return WorkCrossMachineHandoffCardModel(
       title: "Sending to \(machine)",
       detail: nil,
       symbol: "arrow.up.right.circle",
       tone: .accent,
       actions: [],
-      checkpoints: workCrossMachineHandoffCheckpointOrder.enumerated().map { index, step in
+      checkpoints: workCrossMachineHandoffSteps.enumerated().map { index, step in
         (label: step.label, done: index <= reached)
       }
     )
@@ -99,29 +106,43 @@ func workCrossMachineHandoffCardModel(
     guard let continuation, !record.resumedHere else { return nil }
     return WorkCrossMachineHandoffCardModel(
       title: "Continues on \(continuation.targetMachineName)",
-      detail: "New messages go to the chat on \(continuation.targetMachineName).",
+      // The phone asks on send (continue there, or work here), so it does
+      // not say messages go there on their own.
+      detail: "Sending here asks where it goes.",
       symbol: "arrow.up.forward.app",
       tone: .accent,
       actions: [.open, .workHere],
       checkpoints: []
     )
   case .failed:
+    // A chat that already continues elsewhere still sends there, so the card
+    // offers that chat and the way back here alongside the retry.
+    var actions: [WorkCrossMachineHandoffCardModel.Action] = [.retry]
+    if alreadyContinues != nil { actions.append(.open) }
+    if continuation != nil, !record.resumedHere { actions.append(.workHere) }
     return WorkCrossMachineHandoffCardModel(
       title: "Couldn't move to \(machine)",
       detail: [record.reason, alreadyContinues].compactMap { $0 }.joined(separator: " "),
       symbol: "exclamationmark.triangle",
       // Amber, not red: the chat is fine here; only the move didn't happen.
       tone: .warning,
-      actions: [.retry],
+      actions: actions,
       checkpoints: []
     )
   case .unknown:
+    // Open first: the chat may already be there. Retry reconciles the same
+    // move (same handoff id) and never starts a second chat.
+    var actions: [WorkCrossMachineHandoffCardModel.Action] = []
+    if workCrossMachineHandoffOpenTarget(record) != nil { actions.append(.open) }
+    actions.append(.retry)
+    if continuation != nil, !record.resumedHere { actions.append(.workHere) }
+    actions.append(.dismiss)
     return WorkCrossMachineHandoffCardModel(
       title: "Lost confirmation — check \(machine) before retrying",
-      detail: record.reason,
+      detail: record.reason ?? "The chat may already be there. Retrying won't start a second one.",
       symbol: "questionmark.diamond",
       tone: .warning,
-      actions: record.targetSessionId?.isEmpty == false ? [.open, .retry] : [.retry],
+      actions: actions,
       checkpoints: []
     )
   case .other:
@@ -136,6 +157,42 @@ func workCrossMachineHandoffNeedsSendConfirmation(_ record: AgentChatCrossMachin
   return record.sendsElsewhere != nil
 }
 
+/// A chat on another machine that "Open on <machine>" goes to.
+struct WorkCrossMachineHandoffOpenTarget: Equatable {
+  let sessionId: String
+  let laneId: String?
+  let machineKey: String
+  let machineName: String
+}
+
+/// The chat "Open on <machine>" goes to. An `unknown` move points at its own
+/// target first (that is the chat to check); everything else at where the
+/// chat continues. Nil when there is nothing to open.
+func workCrossMachineHandoffOpenTarget(
+  _ record: AgentChatCrossMachineHandoffRecord
+) -> WorkCrossMachineHandoffOpenTarget? {
+  let ownSession = record.targetSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let own = ownSession.isEmpty ? nil : WorkCrossMachineHandoffOpenTarget(
+    sessionId: ownSession,
+    laneId: record.targetLaneId,
+    machineKey: record.targetMachineKey,
+    machineName: record.machineLabel
+  )
+  if record.state == .unknown, let own { return own }
+  if let continuation = record.continuation {
+    let session = continuation.targetSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !session.isEmpty else { return own }
+    let name = continuation.targetMachineName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return WorkCrossMachineHandoffOpenTarget(
+      sessionId: session,
+      laneId: continuation.targetLaneId,
+      machineKey: continuation.targetMachineKey,
+      machineName: name.isEmpty ? continuation.targetMachineKey : name
+    )
+  }
+  return own
+}
+
 func workCrossMachineHandoffActionLabel(_ action: WorkCrossMachineHandoffCardModel.Action, machine: String) -> String {
   switch action {
   case .keepHere: return "Keep it here"
@@ -144,13 +201,16 @@ func workCrossMachineHandoffActionLabel(_ action: WorkCrossMachineHandoffCardMod
   case .open: return "Open on \(machine)"
   case .retry: return "Retry"
   case .workHere: return "Work here instead"
+  case .dismiss: return "Dismiss"
   }
 }
 
-/// The calls the in-chat card and the soft lock make. Built by the chat's
+/// The calls the in-chat card and the send gate make. Built by the chat's
 /// destination view, which owns the session id and the sync service.
 struct WorkCrossMachineHandoffActions {
   var keepHere: @MainActor () async -> Void
+  /// Cancels a lost (`unknown`) move the person already checked.
+  var dismiss: @MainActor () async -> Void
   var resolveApproval: @MainActor (Bool) async -> Void
   /// Records "send here anyway"; false when the write failed (the send stops).
   var acknowledge: @MainActor () async -> Bool
@@ -174,7 +234,6 @@ struct WorkCrossMachineHandoffCard: View {
     case .accent: return ADEColor.accent
     case .success: return ADEColor.success
     case .warning: return ADEColor.warning
-    case .danger: return ADEColor.danger
     }
   }
 
@@ -243,7 +302,7 @@ struct WorkCrossMachineHandoffCard: View {
   private func actionButton(_ action: WorkCrossMachineHandoffCardModel.Action) -> some View {
     let label = workCrossMachineHandoffActionLabel(
       action,
-      machine: record.continuation?.targetMachineName ?? record.machineLabel
+      machine: workCrossMachineHandoffOpenTarget(record)?.machineName ?? record.machineLabel
     )
     let primary = action == .approve || action == .open || action == .retry
     return Button {
@@ -251,13 +310,14 @@ struct WorkCrossMachineHandoffCard: View {
     } label: {
       Text(label)
         .font(.caption.weight(.semibold))
-        .foregroundStyle(primary ? Color.white : ADEColor.textPrimary)
+        .foregroundStyle(action == .retry ? ADEColor.warning : primary ? Color.white : ADEColor.textPrimary)
         .padding(.horizontal, 12)
         .frame(minHeight: 30)
         .background(
           Group {
             if primary {
-              Capsule(style: .continuous).fill(action == .retry ? ADEColor.danger : ADEColor.accent)
+              // Retry is amber like the card: a failed move is not an error state.
+              Capsule(style: .continuous).fill(action == .retry ? ADEColor.warning.opacity(0.18) : ADEColor.accent)
             } else {
               Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.8)
             }
@@ -284,6 +344,7 @@ struct WorkCrossMachineHandoffCard: View {
       case .deny: await actions.resolveApproval(false)
       case .retry: await actions.retry()
       case .workHere: _ = await actions.acknowledge()
+      case .dismiss: await actions.dismiss()
       case .open: break
       }
       inFlight = false
@@ -350,18 +411,15 @@ struct WorkCrossMachineHandoffSheet: View {
 
   private var forkSupported: Bool { workProviderSupportsCrossMachineHandoffFork(target.provider) }
 
-  /// The chat is busy now, by the caller's read or the brain's own blocker.
-  private var busy: Bool {
-    target.busy || (options?.blockers.contains { $0.id == "turn_active" } ?? false)
-  }
+  /// The chat is busy now. A busy chat is not a blocker: the move waits for
+  /// the turn to end ("Move when this turn ends").
+  private var busy: Bool { target.busy }
 
   /// Blockers still standing once the user's choices are applied: carried
-  /// changes clear the dirty/unpushed ones, and a busy chat waits for its turn.
+  /// changes clear the dirty/unpushed ones.
   private var openBlockers: [AgentChatCrossMachineHandoffBlocker] {
     (options?.blockers ?? []).filter { blocker in
-      if blocker.clearedByIncludeChanges && includeChanges { return false }
-      if blocker.id == "turn_active" { return false }
-      return true
+      !(blocker.clearedByIncludeChanges && includeChanges)
     }
   }
 
@@ -400,10 +458,10 @@ struct WorkCrossMachineHandoffSheet: View {
           if let errorMessage {
             Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
               .font(.caption)
-              .foregroundStyle(ADEColor.danger)
+              .foregroundStyle(ADEColor.warning)
               .frame(maxWidth: .infinity, alignment: .leading)
               .padding(12)
-              .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .background(ADEColor.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
         }
         .padding(16)
@@ -464,7 +522,7 @@ struct WorkCrossMachineHandoffSheet: View {
         } else if let loadError {
           Text(loadError)
             .font(.caption)
-            .foregroundStyle(ADEColor.danger)
+            .foregroundStyle(ADEColor.warning)
           Button("Try again") { Task { await loadOptions() } }
             .font(.caption.weight(.semibold))
         } else if machines.isEmpty {
@@ -629,7 +687,7 @@ struct WorkCrossMachineHandoffSheet: View {
   }
 
   private func blockerCard(_ blocker: AgentChatCrossMachineHandoffBlocker) -> some View {
-    let cleared = (blocker.clearedByIncludeChanges && includeChanges) || blocker.id == "turn_active"
+    let cleared = blocker.clearedByIncludeChanges && includeChanges
     return VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 9) {
         Image(systemName: cleared ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -638,7 +696,7 @@ struct WorkCrossMachineHandoffSheet: View {
           Text(blocker.title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text(blocker.id == "turn_active" ? "The move waits for this turn to end." : blocker.detail)
+          Text(blocker.detail)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -690,7 +748,7 @@ struct WorkCrossMachineHandoffSheet: View {
       Spacer(minLength: 0)
     }
     if let hint = blocker.fixHint, !hint.isEmpty, !["unpushed", "no_upstream", "behind"].contains(blocker.id),
-       !blocker.clearedByIncludeChanges, blocker.id != "turn_active" {
+       !blocker.clearedByIncludeChanges {
       Text(hint)
         .font(.caption2.monospaced())
         .foregroundStyle(ADEColor.textMuted)
@@ -862,7 +920,7 @@ func workCrossMachineHandoffChangesLabel(_ changes: AgentChatCrossMachineHandoff
   return "\(commits), \(files)"
 }
 
-// MARK: - Soft lock
+// MARK: - Send gate (where new messages go)
 
 enum WorkHandoffSendDecision: Equatable {
   /// Keep working here: records `resumedHere`, then sends here.

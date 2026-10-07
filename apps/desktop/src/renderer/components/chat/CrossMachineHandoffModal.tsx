@@ -3,41 +3,29 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CheckCircle,
   CircleNotch,
   CloudArrowUp,
   Desktop,
   GitBranch,
   GitFork,
   HardDrives,
-  Hourglass,
   LockKey,
-  ShieldWarning,
   Warning,
   X,
 } from "@phosphor-icons/react";
 import type {
+  AgentChatCrossMachineHandoffBlocker,
+  AgentChatCrossMachineHandoffMachineOption,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
-  AgentChatPermissionMode,
-  AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineTargetConfig,
-  AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatPermissionMode,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatProvider,
-  GitUpstreamSyncStatus,
-  LaneSummary,
   OpenProjectBinding,
-  RemoteRuntimeConnectionStatus,
-  RemoteRuntimeHandoffStoragePreflightResult,
-  RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import {
-  decodeCrossMachineDestinationPreflightResult,
-  normalizeGitRemoteIdentity,
-} from "../../../shared/crossMachineHandoff";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { providerSupportsCrossMachineHandoffFork } from "../../../shared/types/chat";
-import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
 import {
   getModelById,
   modelSupportsFastMode,
@@ -50,9 +38,8 @@ import {
   summarizeNativeControls,
 } from "../../lib/nativeLaunchControls";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
-import { getPermissionOptions, type SafetyLevel } from "../shared/permissionOptions";
+import { getPermissionOptions } from "../shared/permissionOptions";
 import {
-  PERMISSION_TRIGGER_CLASS,
   PermissionModePicker,
   type PermissionModeIconKind,
   type PermissionModeTone,
@@ -61,48 +48,47 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
   BlockedActionButton,
-  BlockedReasons,
+  type BlockedActionFix,
   type BlockedActionReason,
 } from "../shared/BlockedAction";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { formatBytes } from "../../lib/format";
 import { describeTravellingChanges } from "./CrossMachineHandoffBanner";
+import { CrossMachineHandoffChooseStage, machineAvailable } from "./CrossMachineHandoffChooseStage";
 import {
-  branchRowDetail,
-  branchRowState,
   CheckRow,
-  EMPTY_SOURCE_CHECK,
   forkFallbackReasonForPrepareError,
-  isInsecureRoute,
-  PERMISSION_MODE_ICONS,
-  PERMISSION_SAFETY_TONES,
   providerDisplayLabel,
-  repoNameFromRemote,
-  repoReadinessClass,
-  repoReadinessLabel,
-  routeLabel,
   toPermissionPickerOption,
-  type ForkHandoffSupport,
   type HandoffMode,
   type ModalStage,
-  type SourceCheck,
 } from "./crossMachineHandoffPresentation";
-import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
 
 /**
- * A machine can take a handoff when it is connected, serves projects, and is new
- * enough for the storage preflight. The source chat's own machine never can.
+ * Setup for moving a chat to another machine. A thin client of the source
+ * brain (`crossMachineHandoffOrchestrator`): the brain lists the machines and
+ * what blocks the move, previews what the destination would say over its own
+ * transport, and runs the move itself. Nothing here talks to the destination
+ * or packs the chat; the modal only collects choices and shows answers.
  */
-function isEligibleHandoffConnection(
-  connection: RemoteRuntimeConnectionStatus,
-  sourceMachineTargetId: string | null,
-): boolean {
-  return connection.state === "connected"
-    && connection.target.id !== sourceMachineTargetId
-    && connection.capabilities?.projects === true
-    && connection.capabilities.machineProjects.handoffStoragePreflight === true;
+
+const ROUTE_LINE = "The move travels over your account's paired connection between the two ADE brains.";
+
+function errorText(error: unknown): string {
+  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
+}
+
+/** Finds a machine by key or display name, case-insensitively. */
+function findMachine(
+  machines: AgentChatCrossMachineHandoffMachineOption[],
+  wanted: string | null | undefined,
+): AgentChatCrossMachineHandoffMachineOption | undefined {
+  const needle = wanted?.trim().toLowerCase() ?? "";
+  if (!needle) return undefined;
+  return machines.find((machine) =>
+    machine.machineKey.toLowerCase() === needle || machine.name.trim().toLowerCase() === needle,
+  );
 }
 
 export function CrossMachineHandoffModal({
@@ -110,8 +96,6 @@ export function CrossMachineHandoffModal({
   sourceSessionId,
   sourceLaneId,
   runtimePin = null,
-  sourceMachineTargetId = null,
-  sourceMachineName = null,
   sourceProvider,
   target,
   modelId,
@@ -134,37 +118,24 @@ export function CrossMachineHandoffModal({
 }: {
   open: boolean;
   sourceSessionId: string;
+  /** The chat's lane, for the Publish/Update branch fixes. */
   sourceLaneId: string;
   /**
    * The machine the SOURCE chat runs on, or null when it runs on the machine
-   * this tab is bound to. Every source-side call (lane/git inspection, capsule
-   * preparation, validation, the source marker) is pinned to it; destination
-   * dispatch already routes by target id and is unaffected.
+   * this tab is bound to. Every call goes to that brain: the options, the
+   * preview, the start, and the git push/pull behind the branch fixes.
    */
   runtimePin?: OpenProjectBinding | null;
-  /**
-   * The remote target the source chat runs on, when this window reaches it as a
-   * remote machine. That machine cannot be its own destination, so it is left
-   * out of the machine list.
-   */
-  sourceMachineTargetId?: string | null;
-  /** Display name of that source machine, for the empty machine list. */
-  sourceMachineName?: string | null;
   /** Source chat provider; drives whether forking history is offered. */
   sourceProvider?: AgentChatProvider | null;
   target: AgentChatCrossMachineTargetConfig;
-  /** Destination model for the new chat; the modal owns this choice now. */
+  /** Destination model for the new chat; the modal owns this choice. */
   modelId?: string;
   onModelChange?: (modelId: string) => void;
   availableModelIds?: string[];
   /** Same-provider models offered when forking (fork must stay on one provider). */
   forkAvailableModelIds?: string[];
-  /**
-   * Destination reasoning/permission settings. The capsule has always carried
-   * these and the destination has always honored them — until now there was
-   * simply no UI to set them, so every handoff silently shipped whatever the
-   * local handoff drawer happened to hold.
-   */
+  /** Destination reasoning/permission settings, carried with the move. */
   reasoningEffort?: string | null;
   onReasoningEffortChange?: (effort: string | null) => void;
   fastMode?: boolean;
@@ -181,20 +152,16 @@ export function CrossMachineHandoffModal({
    * the composer, so the modal closes.
    */
   onStarted: (record: AgentChatCrossMachineHandoffRecord) => void;
-  /** Machine to select on open (name or target id), e.g. from the session menu. */
+  /** Machine to select on open (key or name), e.g. from the session menu. */
   preselectedMachine?: string | null;
 }) {
   const [stage, setStage] = useState<ModalStage>("choose");
   const [loading, setLoading] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [sourceCheck, setSourceCheck] = useState<SourceCheck>(EMPTY_SOURCE_CHECK);
-  const [connections, setConnections] = useState<RemoteRuntimeConnectionStatus[]>([]);
-  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [options, setOptions] = useState<AgentChatCrossMachineHandoffOptionsResult | null>(null);
+  const [selectedMachineKey, setSelectedMachineKey] = useState<string | null>(null);
   const [continuationPrompt, setContinuationPrompt] = useState("");
-  const [prepared, setPrepared] = useState<AgentChatPrepareCrossMachineHandoffResult | null>(null);
-  const [destinationProject, setDestinationProject] = useState<RemoteRuntimeProjectRecord | null>(null);
-  const [destinationPreflight, setDestinationPreflight] = useState<AgentChatCrossMachineDestinationPreflightResult | null>(null);
-  const [storagePreflight, setStoragePreflight] = useState<RemoteRuntimeHandoffStoragePreflightResult | null>(null);
+  const [preview, setPreview] = useState<AgentChatPreviewCrossMachineHandoffResult | null>(null);
   const [cloneApproved, setCloneApproved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -206,48 +173,20 @@ export function CrossMachineHandoffModal({
   const [whenTurnEnds, setWhenTurnEnds] = useState(false);
   /** Clone consent for a queued move, which skips the clone step's own screen. */
   const [queuedCloneApproved, setQueuedCloneApproved] = useState(false);
-  /** The brain's view of this chat: what `includeChanges` would carry. */
-  const [brainOptions, setBrainOptions] = useState<AgentChatCrossMachineHandoffOptionsResult | null>(null);
   /**
-   * Per-machine repository readiness, resolved while the picker is on screen so
-   * the choice is informed instead of a guess you find out about two steps
-   * later. Deliberately narrow: it answers "is this repo already there", not
-   * "is everything ready" — provider auth and branch state are still the review
-   * step's job, and claiming more here would be a lie the user can't check.
-   */
-  const [machineRepoReadiness, setMachineRepoReadiness] = useState<
-    Record<string, "checking" | "present" | "absent" | "unknown">
-  >({});
-  /**
-   * Projects seen while resolving readiness, reused by `prepareDestination` so
-   * the hint costs nothing: the picker already had to ask each machine what it
-   * has, and prepare would otherwise ask the same question again a moment later.
-   */
-  const machineProjectsRef = useRef<Record<string, RemoteRuntimeProjectRecord[]>>({});
-  /**
-   * The source machine's binding, held in a ref so each operation can freeze it
-   * once and keep every one of its awaits on the same machine. Reading it fresh
-   * after an await could cross a lane-index change and split one handoff across
-   * two runtimes.
+   * The source machine's binding, held in a ref so each operation freezes it
+   * once and keeps every one of its awaits on the same brain.
    */
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
-  /**
-   * `inspectSource` builds the blocker list, and the "behind" blocker needs to
-   * offer the pull that clears it — but `updateBranch` is defined below and
-   * itself calls `inspectSource`. The ref breaks that cycle without making
-   * either callback depend on the other's identity.
-   */
-  const updateBranchRef = useRef<(() => Promise<void>) | null>(null);
+  /** Drops answers from a load that a newer one replaced. */
+  const loadRequestRef = useRef(0);
   // Cross-machine fork is narrower than local fork: Droid's session index is
   // machine-local, so it can fork here but never onto another machine.
   const sourceProviderSupportsFork = providerSupportsCrossMachineHandoffFork(sourceProvider);
   const [mode, setMode] = useState<HandoffMode>(sourceProviderSupportsFork ? "fork" : "brief");
-  // Destination fork capability, learned only after preflight. `null` = not yet
-  // checked; absent field on the response resolves to { supported: false }.
-  const [forkHandoffSupport, setForkHandoffSupport] = useState<ForkHandoffSupport | null>(null);
-  // Plain reason the current fork attempt fell back to brief (oversize history or
-  // an older/unsupported destination); drives the one-click "send as brief" offer.
+  // Plain reason a fork can't go as asked (an older destination, or history
+  // too big); drives the one-click "send as brief" offer.
   const [forkFallbackReason, setForkFallbackReason] = useState<string | null>(null);
   const providerLabel = providerDisplayLabel(sourceProvider);
   const forkModelIds = forkAvailableModelIds ?? availableModelIds;
@@ -258,9 +197,7 @@ export function CrossMachineHandoffModal({
 
   /**
    * Everything about the *destination* chat's controls is derived from the model
-   * chosen here, never from the local handoff drawer's model. Getting that wrong
-   * is how the modal previously shipped permission values computed against a
-   * different provider than the one that would actually run them.
+   * chosen here, never from the local handoff drawer's model.
    */
   const destinationDescriptor = useMemo(
     () => (modelId ? getModelById(modelId) ?? null : null),
@@ -273,31 +210,24 @@ export function CrossMachineHandoffModal({
     if (!modelId || !nativeControls || !onNativeControlsChange || !destinationDescriptor) return null;
     const providerGroup = resolveProviderGroupForModel(destinationDescriptor);
     if (!providerGroup) return null;
-    // Two different vocabularies, and they are not interchangeable:
-    // `getPermissionOptions` branches on ProviderFamily ("anthropic", "openai",
-    // "factory") while `summarizeNativeControls` keys off the provider group
-    // ("claude", "codex", "droid"). Passing the group as the family silently
-    // falls through to the generic option list, which then cannot represent the
-    // mode the capsule is actually carrying — so the pill shows one thing and
-    // the destination runs another.
-    const options = getPermissionOptions({
+    // Two vocabularies that are not interchangeable: `getPermissionOptions`
+    // branches on ProviderFamily ("anthropic", "openai", "factory") while
+    // `summarizeNativeControls` keys off the provider group ("claude", "codex",
+    // "droid").
+    const permissionOptions = getPermissionOptions({
       family: destinationDescriptor.family,
       isCliWrapped: destinationDescriptor.isCliWrapped,
     });
-    if (options.length === 0) return null;
+    if (permissionOptions.length === 0) return null;
     const summarized = summarizeNativeControls(providerGroup, nativeControls).permissionMode;
-    const representable = options.some((option) => option.value === summarized);
-    // A native combination the presets cannot express (e.g. Codex approval
-    // "never" with sandbox "workspace-write") must not borrow the first option's
-    // label. The raw controls are what actually travel in the capsule, so
-    // showing "Default" there would claim the destination asks for approval when
-    // it does not. Surface it as Custom instead, and leave it unselectable —
-    // picking a real preset is what overwrites the underlying controls.
+    const representable = permissionOptions.some((option) => option.value === summarized);
+    // A native combination the presets cannot express travels as-is, so it
+    // shows as Custom rather than borrowing the first preset's label.
     const customValue = "__custom__";
     const pickerOptions = representable
-      ? options.map(toPermissionPickerOption)
+      ? permissionOptions.map(toPermissionPickerOption)
       : [
-        ...options.map(toPermissionPickerOption),
+        ...permissionOptions.map(toPermissionPickerOption),
         {
           value: customValue,
           label: "Custom",
@@ -322,458 +252,117 @@ export function CrossMachineHandoffModal({
     );
   }, [destinationDescriptor, modelId, nativeControls, onNativeControlsChange]);
 
-  const selectedConnection = useMemo(
-    () => connections.find((connection) => connection.target.id === selectedTargetId) ?? null,
-    [connections, selectedTargetId],
+  const machines = useMemo(() => options?.machines ?? [], [options]);
+  const selectedMachine = useMemo(
+    () => machines.find((machine) => machine.machineKey === selectedMachineKey) ?? null,
+    [machines, selectedMachineKey],
   );
-  const eligibleConnections = useMemo(
-    () => connections.filter((connection) => isEligibleHandoffConnection(connection, sourceMachineTargetId)),
-    [connections, sourceMachineTargetId],
-  );
-  /**
-   * A stable identity for "which machines are eligible". `eligibleConnections`
-   * is a fresh array on every connection snapshot, and `listProjects` itself
-   * triggers a snapshot broadcast — depending on the array meant the readiness
-   * effect re-fired forever, hammering every paired machine with RPCs.
-   */
-  const eligibleTargetIds = useMemo(
-    () => eligibleConnections.map((connection) => connection.target.id).join("\u0000"),
-    [eligibleConnections],
-  );
-  const incompatibleConnectedCount = connections.filter((connection) =>
-    connection.state === "connected"
-    && connection.target.id !== sourceMachineTargetId
-    && connection.capabilities?.machineProjects.handoffStoragePreflight !== true,
-  ).length;
 
-  const inspectSource = useCallback(async (
-    pinOverride?: OpenProjectBinding | null,
-  ): Promise<SourceCheck> => {
-    const pin = pinOverride !== undefined ? pinOverride : runtimePinRef.current;
-    const [lanes, sync, origin] = await Promise.all([
-      window.ade.lanes.list({ includeArchived: false, includeStatus: true }, pin),
-      window.ade.git.getSyncStatus({ laneId: sourceLaneId }, pin),
-      window.ade.git.getOriginRemote({ laneId: sourceLaneId }, pin),
-    ]);
-    const lane = lanes.find((candidate) => candidate.id === sourceLaneId) ?? null;
-    const blockingErrors: BlockedActionReason[] = [];
-    const warnings: string[] = [];
-    if (!lane) {
-      blockingErrors.push({
-        id: "lane-missing",
-        title: "ADE could not find this chat's lane",
-        detail: "Reopen the project, then try again.",
-      });
-    }
-    if (lane?.status.dirty) {
-      blockingErrors.push({
-        id: "dirty",
-        title: "You have uncommitted changes",
-        detail: "The other machine picks the work up from Git. Commit it, or bring it along with this move.",
-      });
-    }
-    if (lane?.status.rebaseInProgress) {
-      blockingErrors.push({
-        id: "rebase",
-        title: "A rebase is in progress",
-        detail: "Finish or abort it before handing this chat off.",
-      });
-    }
-    // Behind/diverged is the blocker that used to be invisible: nothing rendered
-    // it, and the "Remote branch" row reported a cheerful "<branch> is pushed"
-    // because it only ever looked at the push direction.
-    if (sync.diverged) {
-      blockingErrors.push({
-        id: "diverged",
-        title: `${origin.branch ?? "This branch"} has diverged from origin`,
-        detail: `Local and origin both have commits the other doesn't (${sync.ahead} here, ${sync.behind} there). Reconcile them before handing off — ADE won't pick a strategy for you.`,
-      });
-    } else if (sync.behind > 0) {
-      blockingErrors.push({
-        id: "behind",
-        title: `${origin.branch ?? "This branch"} is ${sync.behind} ${sync.behind === 1 ? "commit" : "commits"} behind origin`,
-        detail: "The other machine would start from older code than origin has.",
-        fix: { label: "Update branch", onFix: () => void updateBranchRef.current?.() },
-      });
-    }
-    if (!origin.remoteUrl) {
-      blockingErrors.push({
-        id: "no-origin",
-        title: "This repository has no origin remote",
-        detail: "The other machine fetches your branch from origin, so one is required.",
-      });
-    }
-    if (!origin.branch) {
-      blockingErrors.push({
-        id: "no-branch",
-        title: "This lane isn't on a named branch",
-        detail: "Detached HEAD can't be handed off. Check out a branch first.",
-      });
-    }
-    const needsPush = !sync.hasUpstream || sync.ahead > 0 || sync.recommendedAction === "push";
-    if (needsPush) warnings.push("Publish the branch before ADE can prepare the destination.");
-    const next = { lane, sync, originUrl: origin.remoteUrl, branch: origin.branch, needsPush, blockingErrors, warnings };
-    setSourceCheck(next);
-    return next;
-  }, [sourceLaneId]);
-
-  const loadInitial = useCallback(async () => {
+  /** Asks the brain what the move looks like from here. */
+  const loadOptions = useCallback(async (): Promise<void> => {
+    const request = ++loadRequestRef.current;
+    const pin = runtimePinRef.current;
     setLoading(true);
-    setError(null);
     try {
-      const [, snapshot, options] = await Promise.all([
-        inspectSource(),
-        window.ade.remoteRuntime.getConnectionSnapshot(),
-        // Counts for "Bring them along". Optional: an older brain without the
-        // action still gets the full setup, just without the counts.
-        window.ade.agentChat
-          .getCrossMachineHandoffOptions({ sourceSessionId }, runtimePinRef.current)
-          .catch(() => null),
-      ]);
-      setConnections(snapshot.connections);
-      setBrainOptions(options);
-      const eligible = snapshot.connections.filter((connection) =>
-        isEligibleHandoffConnection(connection, sourceMachineTargetId),
-      );
-      const wanted = preselectedMachine?.trim().toLowerCase() ?? "";
-      const preselected = wanted
-        ? eligible.find((item) => item.target.id.toLowerCase() === wanted || item.target.name.trim().toLowerCase() === wanted)
-        : undefined;
-      setSelectedTargetId((current) => preselected?.target.id
-        ?? (current && eligible.some((item) => item.target.id === current)
-          ? current
-          : eligible[0]?.target.id ?? null));
+      const next = await window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, pin);
+      if (request !== loadRequestRef.current) return;
+      setOptions(next);
+      setSelectedMachineKey((current) => {
+        // A reload after a branch fix keeps the person's pick.
+        const kept = current ? next.machines.find((machine) => machine.machineKey === current) : undefined;
+        if (kept && machineAvailable(kept)) return kept.machineKey;
+        const preselected = findMachine(next.machines, preselectedMachine);
+        if (preselected && machineAvailable(preselected)) return preselected.machineKey;
+        return next.machines.find(machineAvailable)?.machineKey ?? null;
+      });
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      if (request === loadRequestRef.current) setError(errorText(loadError));
     } finally {
-      setLoading(false);
+      if (request === loadRequestRef.current) setLoading(false);
     }
-  }, [inspectSource, preselectedMachine, sourceMachineTargetId, sourceSessionId]);
+  }, [preselectedMachine, sourceSessionId]);
 
   useEffect(() => {
     if (!open) return;
     setStage("choose");
     setBusyLabel(null);
-    setSourceCheck(EMPTY_SOURCE_CHECK);
+    setOptions(null);
+    setSelectedMachineKey(null);
     setContinuationPrompt("");
-    setPrepared(null);
-    setDestinationProject(null);
-    setDestinationPreflight(null);
-    setStoragePreflight(null);
+    setPreview(null);
     setCloneApproved(false);
+    setError(null);
     setIncludeChanges(false);
     setWhenTurnEnds(false);
     setQueuedCloneApproved(false);
-    setBrainOptions(null);
-    machineProjectsRef.current = {};
-    setMachineRepoReadiness({});
     setMode(sourceProviderSupportsFork ? "fork" : "brief");
-    setForkHandoffSupport(null);
     setForkFallbackReason(null);
-    void loadInitial();
-  }, [loadInitial, open, sourceProvider, sourceProviderSupportsFork]);
+    void loadOptions();
+  }, [loadOptions, open, sourceProviderSupportsFork]);
 
-  useEffect(() => {
-    if (!open) return;
-    return window.ade.remoteRuntime.onConnectionSnapshotChanged((snapshot) => {
-      setConnections(snapshot.connections);
-    });
-  }, [open]);
+  const backToChoose = useCallback(() => {
+    setStage("choose");
+    setPreview(null);
+    setCloneApproved(false);
+    setError(null);
+  }, []);
 
-  // Resolve repository presence for every eligible machine once the source
-  // origin is known. Failures resolve to "unknown" rather than a scary state —
-  // a machine we couldn't ask about is not a machine that's broken.
-  useEffect(() => {
-    if (stage !== "choose") return;
-    const sourceOrigin = sourceCheck.originUrl ? normalizeGitRemoteIdentity(sourceCheck.originUrl) : null;
-    if (!sourceOrigin) return;
-    const targets = eligibleTargetIds ? eligibleTargetIds.split("\u0000") : [];
-    if (targets.length === 0) return;
-    let cancelled = false;
-    setMachineRepoReadiness((current) => {
-      const next = { ...current };
-      for (const id of targets) next[id] ??= "checking";
-      return next;
-    });
-    void Promise.all(targets.map(async (targetId) => {
-      let state: "present" | "absent" | "unknown" = "unknown";
-      let projects: RemoteRuntimeProjectRecord[] | null = null;
-      try {
-        projects = await window.ade.remoteRuntime.listProjects(targetId);
-        state = projects.some((project) => normalizeGitRemoteIdentity(project.gitOriginUrl) === sourceOrigin)
-          ? "present"
-          : "absent";
-      } catch {
-        state = "unknown";
-      }
-      // The cache write is inside the guard too: a superseded response landing
-      // after a newer one would otherwise leave a stale list that
-      // `prepareDestination` consumes, walking the user into a clone prompt for
-      // a repository the destination already has.
-      if (cancelled) return;
-      if (projects) machineProjectsRef.current[targetId] = projects;
-      setMachineRepoReadiness((current) => ({ ...current, [targetId]: state }));
-    }));
-    return () => { cancelled = true; };
-  }, [eligibleTargetIds, sourceCheck.originUrl, stage]);
-
-  const runDestinationPreflight = useCallback(async (
-    connection: RemoteRuntimeConnectionStatus,
-    project: RemoteRuntimeProjectRecord,
-    handoff: AgentChatPrepareCrossMachineHandoffResult,
-    requestedMode: HandoffMode,
-  ) => {
-    const response = await window.ade.remoteRuntime.callAction(connection.target.id, project.projectId, {
-      domain: "chat",
-      action: "preflightCrossMachineDestination",
-      args: {
-        targetModelId: handoff.capsule.target.targetModelId,
-        sourceBranchRef: handoff.capsule.source.branchRef,
-        sourceHeadSha: handoff.capsule.source.headSha,
-        mode: requestedMode,
-        ...(sourceProvider ? { sourceProvider } : {}),
-        ...(handoff.capsule.gitBundle ? { hasGitBundle: true } : {}),
-      },
-    });
-    const next = decodeCrossMachineDestinationPreflightResult(response.result);
-    // Absent field = older destination that predates fork handoff.
-    const forkSupport = requestedMode === "fork"
-      ? (next.forkHandoffSupport
-        ?? { supported: false, reason: "That machine needs an ADE update for fork handoff." })
-      : null;
-    setDestinationPreflight(next);
-    setForkHandoffSupport(forkSupport);
-    if (requestedMode === "fork" && forkSupport && !forkSupport.supported) {
-      setForkFallbackReason(forkSupport.reason ?? "That machine needs an ADE update for fork handoff.");
-    }
-    setDestinationProject(project);
-    setStage("review");
-    return next;
-  }, [sourceProvider]);
-
-  const prepareDestination = useCallback(async (requestedMode: HandoffMode = mode) => {
-    const sourceBlocks = sourceCheck.blockingErrors.filter((reason) => !(includeChanges && reason.id === "dirty"));
-    if (!selectedConnection || sourceBlocks.length || (sourceCheck.needsPush && !includeChanges)) return;
-    if (turnActive || awaitingInput) {
-      setError(turnActive
-        ? "Stop the current response, or choose to move when this turn ends."
-        : "Resolve the current approval or question before preparing the handoff.");
-      return;
-    }
-    setBusyLabel(requestedMode === "fork" ? "Packaging this chat's history…" : "Preparing the handoff…");
+  /**
+   * The review step: the source brain asks the destination over its own
+   * transport, so what shows here is what the move will actually meet.
+   */
+  const reviewMove = useCallback(async (requestedMode: HandoffMode = mode) => {
+    if (!selectedMachine || !modelId) return;
+    setBusyLabel(`Checking ${selectedMachine.name}…`);
     setError(null);
     setForkFallbackReason(null);
     try {
-      const handoff = await window.ade.agentChat.prepareCrossMachineHandoff({
+      const next = await window.ade.agentChat.previewCrossMachineHandoff({
         sourceSessionId,
-        handoffId: crypto.randomUUID(),
-        continuationPrompt,
+        machine: selectedMachine.machineKey,
+        targetModelId: modelId,
         mode: requestedMode,
         ...(includeChanges ? { includeChanges: true } : {}),
-        ...target,
       }, runtimePinRef.current);
-      setPrepared(handoff);
-      // Prefer what the readiness pass already fetched; only ask again when the
-      // picker never got an answer for this machine.
-      const projects = machineProjectsRef.current[selectedConnection.target.id]
-        ?? await window.ade.remoteRuntime.listProjects(selectedConnection.target.id);
-      const sourceOrigin = normalizeGitRemoteIdentity(handoff.capsule.source.originUrl);
-      const matchingProject = projects.find((project) => normalizeGitRemoteIdentity(project.gitOriginUrl) === sourceOrigin) ?? null;
-      if (matchingProject) {
-        await runDestinationPreflight(selectedConnection, matchingProject, handoff, requestedMode);
-        return;
+      setPreview(next);
+      const fork = requestedMode === "fork" ? next.preflight?.forkHandoffSupport : undefined;
+      if (requestedMode === "fork" && next.preflight && !fork?.supported) {
+        // Absent = an older destination that predates fork handoff.
+        setForkFallbackReason(fork?.reason ?? `${next.machineName} needs an ADE update for fork handoff.`);
       }
-      if (!sourceOrigin?.startsWith("github.com/")) {
-        throw new Error("The repository is not registered on the destination. Automatic clone currently supports GitHub repositories; add this repository to ADE on that machine, then retry.");
-      }
-      const parentDir = await window.ade.remoteRuntime.getDefaultParentDir(selectedConnection.target.id);
-      const storage = await window.ade.remoteRuntime.getHandoffStoragePreflight(selectedConnection.target.id, {
-        parentDir,
-        repoName: repoNameFromRemote(handoff.capsule.source.originUrl),
-        originUrl: handoff.capsule.source.originUrl,
-        branchRef: handoff.capsule.source.branchRef,
-        sourceHeadSha: handoff.capsule.source.headSha,
-        // The commits travel in the bundle, so origin need not have them.
-        ...(handoff.capsule.gitBundle ? { hasGitBundle: true } : {}),
-      });
-      setStoragePreflight(storage);
-      setStage("clone");
-    } catch (prepareError) {
-      const message = prepareError instanceof Error ? prepareError.message : String(prepareError);
-      // A fork that can't be packaged (oversize, or an unforkable provider file)
-      // still works as a brief — offer the one-click swap instead of a dead end.
-      const fallbackReason = requestedMode === "fork" ? forkFallbackReasonForPrepareError(message) : null;
-      if (fallbackReason) {
-        setForkFallbackReason(fallbackReason);
-        setError(null);
-      } else {
-        setError(message);
-      }
+      setStage(next.hasRepository ? "review" : "clone");
+    } catch (previewError) {
+      setError(errorText(previewError));
     } finally {
       setBusyLabel(null);
     }
-  }, [
-    awaitingInput,
-    continuationPrompt,
-    includeChanges,
-    mode,
-    runDestinationPreflight,
-    selectedConnection,
-    sourceCheck.blockingErrors,
-    sourceCheck.needsPush,
-    sourceSessionId,
-    target,
-    turnActive,
-  ]);
+  }, [includeChanges, mode, modelId, selectedMachine, sourceSessionId]);
 
   const switchMode = useCallback((next: HandoffMode) => {
     setMode(next);
-    setPrepared(null);
-    setDestinationProject(null);
-    setDestinationPreflight(null);
-    setForkHandoffSupport(null);
     setForkFallbackReason(null);
-    setStoragePreflight(null);
-    setCloneApproved(false);
     setError(null);
     if (next === "fork" && modelId && forkModelIds && forkModelIds.length > 0 && !forkModelIds.includes(modelId)) {
       onModelChange?.(forkModelIds[0]!);
     }
   }, [forkModelIds, modelId, onModelChange]);
 
-  // One-click recovery: drop to a brief and re-run prepare + preflight. Used both
-  // when the source history is too big and when the destination can't fork.
-  const sendAsBrief = useCallback(() => {
-    setStage("choose");
-    setMode("brief");
-    setForkHandoffSupport(null);
-    setForkFallbackReason(null);
-    setPrepared(null);
-    setDestinationProject(null);
-    setDestinationPreflight(null);
-    setStoragePreflight(null);
-    setCloneApproved(false);
-    void prepareDestination("brief");
-  }, [prepareDestination]);
-
-  const publishBranch = useCallback(async () => {
-    setBusyLabel("Publishing source branch…");
-    setError(null);
-    try {
-      const pin = runtimePinRef.current;
-      await window.ade.git.push({ laneId: sourceLaneId }, pin);
-      await inspectSource(pin);
-    } catch (pushError) {
-      setError(pushError instanceof Error ? pushError.message : String(pushError));
-    } finally {
-      setBusyLabel(null);
-    }
-  }, [inspectSource, sourceLaneId]);
-
   /**
-   * Clears the "behind origin" blocker in place. Only offered when the branch is
-   * strictly behind — a diverged branch keeps the hard block, because picking
-   * merge-vs-rebase for the user is exactly the kind of decision this flow
-   * should not be making on their behalf.
+   * The brain runs the move from here (pack, destination checks, fast-forward,
+   * accept, mark) and persists each step, so the modal's job ends when it
+   * accepts. Progress, failure and "lost confirmation" live in the banner.
    */
-  const updateBranch = useCallback(async () => {
-    setBusyLabel("Updating source branch…");
-    setError(null);
-    try {
-      const pin = runtimePinRef.current;
-      await window.ade.git.pull({ laneId: sourceLaneId }, pin);
-      await inspectSource(pin);
-    } catch (pullError) {
-      setError(pullError instanceof Error ? pullError.message : String(pullError));
-    } finally {
-      setBusyLabel(null);
-    }
-  }, [inspectSource, sourceLaneId]);
-
-  useEffect(() => {
-    updateBranchRef.current = updateBranch;
-  }, [updateBranch]);
-
-  const cloneDestination = useCallback(async () => {
-    if (!selectedConnection || !prepared || !storagePreflight || !cloneApproved) return;
-    setBusyLabel("Cloning repository on destination…");
-    setError(null);
-    try {
-      if (storagePreflight.blockingErrors.length) {
-        throw new Error(storagePreflight.blockingErrors.join(" "));
-      }
-      const project = await window.ade.remoteRuntime.cloneProject(selectedConnection.target.id, {
-        url: prepared.capsule.source.originUrl,
-        parentDir: storagePreflight.parentDir,
-        name: repoNameFromRemote(prepared.capsule.source.originUrl),
-      }, { credentialMode: "destination_only" });
-      await runDestinationPreflight(selectedConnection, project, prepared, mode);
-    } catch (cloneError) {
-      const expectedOrigin = normalizeGitRemoteIdentity(prepared.capsule.source.originUrl);
-      try {
-        const projects = await window.ade.remoteRuntime.listProjects(selectedConnection.target.id);
-        const recovered = projects.find((project) =>
-          normalizeGitRemoteIdentity(project.gitOriginUrl) === expectedOrigin,
-        ) ?? null;
-        if (recovered) {
-          await runDestinationPreflight(selectedConnection, recovered, prepared, mode);
-          return;
-        }
-      } catch {
-        // Preserve the original clone failure; it explains whether the remote
-        // result was uncertain or the target path was already occupied.
-      }
-      setError(cloneError instanceof Error ? cloneError.message : String(cloneError));
-    } finally {
-      setBusyLabel(null);
-    }
-  }, [cloneApproved, mode, prepared, runDestinationPreflight, selectedConnection, storagePreflight]);
-
-  /**
-   * Asks the destination to catch its own lane up. The destination re-validates
-   * everything and only ever does a `--ff-only` merge, so a stale preflight here
-   * can be refused there rather than silently rewriting someone's branch.
-   */
-  const fastForwardDestinationLane = useCallback(async () => {
-    const target = destinationPreflight?.laneFastForward;
-    if (!target || !selectedConnection || !destinationProject || !prepared) return;
-    setBusyLabel("Fast-forwarding the lane on the other machine…");
-    setError(null);
-    try {
-      await window.ade.remoteRuntime.callAction(selectedConnection.target.id, destinationProject.projectId, {
-        domain: "chat",
-        action: "fastForwardCrossMachineHandoffLane",
-        args: { laneId: target.laneId, expectedHead: prepared.capsule.source.headSha },
-      });
-      await runDestinationPreflight(selectedConnection, destinationProject, prepared, mode);
-    } catch (ffError) {
-      setError(ffError instanceof Error ? ffError.message : String(ffError));
-    } finally {
-      setBusyLabel(null);
-    }
-  }, [destinationPreflight, destinationProject, mode, prepared, runDestinationPreflight, selectedConnection]);
-
-  /**
-   * The brain runs the move from here (prepare, destination checks, accept,
-   * mark) and persists each step, so the modal's job ends when it accepts.
-   * Progress, failure and "lost confirmation" all live in the banner above
-   * the composer, where they survive this modal closing.
-   */
-  const startMove = useCallback(async () => {
-    if (!selectedConnection) return;
+  const startMove = useCallback(async (overrideMode?: HandoffMode) => {
+    if (!selectedMachine) return;
+    const moveMode = overrideMode ?? mode;
     setBusyLabel(turnActive ? "Queuing the move…" : "Starting the move…");
     setError(null);
     try {
-      // The brain knows machines by its own key; match by name, then id.
-      const name = selectedConnection.target.name.trim().toLowerCase();
-      const brainMachine = brainOptions?.machines.find((machine) =>
-        machine.machineKey === selectedConnection.target.id || machine.name.trim().toLowerCase() === name,
-      );
       const record = await window.ade.agentChat.startCrossMachineHandoff({
         ...target,
         sourceSessionId,
-        machine: brainMachine?.machineKey ?? selectedConnection.target.name,
-        mode,
+        machine: selectedMachine.machineKey,
+        mode: moveMode,
         continuationPrompt: continuationPrompt.trim() || null,
         ...(includeChanges ? { includeChanges: true } : {}),
         ...(cloneApproved || queuedCloneApproved ? { clone: true } : {}),
@@ -782,12 +371,15 @@ export function CrossMachineHandoffModal({
       onStarted(record);
       onClose();
     } catch (startError) {
-      setError(stripElectronErrorWrapper(startError instanceof Error ? startError.message : String(startError)));
+      const message = errorText(startError);
+      // A fork that can't be packed still works as a brief: offer the swap.
+      const fallbackReason = moveMode === "fork" ? forkFallbackReasonForPrepareError(message) : null;
+      if (fallbackReason) setForkFallbackReason(fallbackReason);
+      else setError(message);
     } finally {
       setBusyLabel(null);
     }
   }, [
-    brainOptions,
     cloneApproved,
     continuationPrompt,
     includeChanges,
@@ -795,62 +387,107 @@ export function CrossMachineHandoffModal({
     onClose,
     onStarted,
     queuedCloneApproved,
-    selectedConnection,
+    selectedMachine,
     sourceSessionId,
     target,
     turnActive,
   ]);
 
+  // One click from "can't fork" to a brief. A queued move or a clone the
+  // person already confirmed starts at once; otherwise the brief is reviewed
+  // against the destination again.
+  const sendAsBrief = useCallback(() => {
+    switchMode("brief");
+    if (stage === "clone" || (stage === "choose" && turnActive && whenTurnEnds)) {
+      void startMove("brief");
+    } else {
+      void reviewMove("brief");
+    }
+  }, [reviewMove, stage, startMove, switchMode, turnActive, whenTurnEnds]);
+
+  /** Runs a git fix on the chat's own machine, then asks the brain again. */
+  const runBranchFix = useCallback(async (label: string, action: (pin: OpenProjectBinding | null) => Promise<unknown>) => {
+    setBusyLabel(label);
+    setError(null);
+    try {
+      await action(runtimePinRef.current);
+      await loadOptions();
+    } catch (fixError) {
+      setError(errorText(fixError));
+    } finally {
+      setBusyLabel(null);
+    }
+  }, [loadOptions]);
+  const publishBranch = useCallback(() => runBranchFix(
+    "Publishing the branch…",
+    (pin) => window.ade.git.push({ laneId: sourceLaneId }, pin),
+  ), [runBranchFix, sourceLaneId]);
+  /**
+   * Only offered when the branch is strictly behind. A diverged branch keeps
+   * the hard block: picking merge or rebase is not this flow's decision.
+   */
+  const updateBranch = useCallback(() => runBranchFix(
+    "Updating the branch…",
+    (pin) => window.ade.git.pull({ laneId: sourceLaneId }, pin),
+  ), [runBranchFix, sourceLaneId]);
+
   if (!open) return null;
 
   const busyNow = Boolean(busyLabel);
-  const changes = brainOptions?.changes ?? null;
+  const changes = options?.changes ?? null;
   const changesLabel = changes ? describeTravellingChanges(changes.unpushedCommits, changes.changedFiles) : null;
-  const bringAlong = {
+  const bringAlong: BlockedActionFix = {
     label: changesLabel ? `Bring them along (${changesLabel})` : "Bring them along",
     onFix: () => setIncludeChanges(true),
     busy: busyNow,
   };
-  // With "Bring them along", uncommitted work travels instead of blocking.
-  const effectiveSourceBlocks = sourceCheck.blockingErrors.filter((reason) => !(includeChanges && reason.id === "dirty"));
-  const hasSourceBlock = effectiveSourceBlocks.length > 0;
-  // Fix buttons share the modal's single busy slot, so they grey out together
-  // with everything else while an operation is running.
-  const sourceBlockReasons: BlockedActionReason[] = effectiveSourceBlocks.map((reason) => {
-    const withBusy = reason.fix ? { ...reason, fix: { ...reason.fix, busy: busyNow } } : reason;
-    return reason.id === "dirty" ? { ...withBusy, moreFixes: [bringAlong] } : withBusy;
-  });
-  const selectedRepoReadiness = selectedConnection ? machineRepoReadiness[selectedConnection.target.id] : undefined;
+  const fixesFor = (blocker: AgentChatCrossMachineHandoffBlocker): BlockedActionFix[] => {
+    const fixes: BlockedActionFix[] = [];
+    if (blocker.id === "unpushed" || blocker.id === "no_upstream") {
+      fixes.push({ label: "Publish branch", onFix: () => void publishBranch(), busy: busyNow });
+    }
+    if (blocker.id === "behind") {
+      fixes.push({ label: "Update branch", onFix: () => void updateBranch(), busy: busyNow });
+    }
+    if (blocker.clearedByIncludeChanges) fixes.push(bringAlong);
+    return fixes;
+  };
+  // With "Bring them along", what travels no longer blocks.
+  const brainBlockers = (options?.blockers ?? []).filter((blocker) =>
+    !(includeChanges && blocker.clearedByIncludeChanges),
+  );
+  const brainSaysAwaitingInput = brainBlockers.some((blocker) => blocker.id === "awaiting_input");
+  const queueOnly = turnActive && whenTurnEnds;
   // A queued move never sees the clone screen, so it asks for consent here.
-  const queuedMoveNeedsClone = turnActive && whenTurnEnds && selectedRepoReadiness === "absent";
+  const queuedMoveNeedsClone = queueOnly && selectedMachine?.hasRepository === false;
   /**
-   * Everything standing between the user and "Continue". Assembled in one place
-   * so the button cannot be disabled for a reason the user was never shown —
-   * the blockers below the checks and the button's own tooltip read from this
-   * same list.
+   * Everything standing between the user and "Continue", in one list so the
+   * button cannot be disabled for a reason the user was never shown.
    */
   const continueBlockers: BlockedActionReason[] = [
-    ...sourceBlockReasons,
-    // Only when a plain push can actually resolve it. A diverged branch also
-    // reports needsPush (ahead > 0), but its upstream already exists and the
-    // push would be rejected as non-fast-forward — offering Publish there sits
-    // next to the divergence blocker suggesting a fix that cannot work.
-    ...(sourceCheck.needsPush && !hasSourceBlock && !includeChanges
+    ...brainBlockers.map((blocker) => {
+      const fixes = fixesFor(blocker);
+      return {
+        id: blocker.id,
+        title: blocker.title,
+        detail: blocker.detail,
+        ...(fixes.length ? { fixes } : {}),
+      };
+    }),
+    ...(!modelId
       ? [{
-        id: "needs-push",
-        title: `${sourceCheck.branch ?? "This branch"} hasn't been published`,
-        detail: "The other machine fetches your work from origin, so publish it or bring the commits along.",
-        fix: { label: "Publish branch", onFix: () => void publishBranch(), busy: busyNow },
-        moreFixes: [bringAlong],
+        id: "no-model",
+        title: "No model picked for the new chat",
+        detail: "Pick the model the chat should continue with.",
       }]
       : []),
-    ...(!selectedConnection
+    ...(!loading && !selectedMachine
       ? [{
         id: "no-machine",
         title: "No machine selected",
-        detail: eligibleConnections.length === 0
-          ? "No other ADE machine is connected right now."
-          : "Pick which computer should continue this chat.",
+        detail: machines.some(machineAvailable)
+          ? "Pick which computer should continue this chat."
+          : "No other ADE machine on this account can take it right now.",
       }]
       : []),
     // A busy chat is not a dead end: it can move once the turn ends.
@@ -859,19 +496,21 @@ export function CrossMachineHandoffModal({
         id: "turn-active",
         title: "This chat is still responding",
         detail: "Move it when this turn ends, or stop the current response.",
-        fix: { label: "Move when this turn ends", onFix: () => setWhenTurnEnds(true), busy: busyNow },
-        moreFixes: [{ label: "Stop current response", onFix: () => void onStopTurn(), busy: busyNow }],
+        fixes: [
+          { label: "Move when this turn ends", onFix: () => setWhenTurnEnds(true), busy: busyNow },
+          { label: "Stop current response", onFix: () => void onStopTurn(), busy: busyNow },
+        ],
       }]
       : []),
     ...(queuedMoveNeedsClone && !queuedCloneApproved
       ? [{
         id: "queued-clone",
-        title: `This repository isn't on ${selectedConnection?.target.name ?? "that machine"} yet`,
-        detail: "ADE clones it there when the move starts. Nothing uncommitted or secret leaves this machine unless you bring it along.",
-        fix: { label: "Clone it there", onFix: () => setQueuedCloneApproved(true), busy: busyNow },
+        title: `This repository isn't on ${selectedMachine?.name ?? "that machine"} yet`,
+        detail: "ADE clones it there from GitHub when the move starts.",
+        fixes: [{ label: "Clone it there", onFix: () => setQueuedCloneApproved(true), busy: busyNow }],
       }]
       : []),
-    ...(awaitingInput
+    ...(awaitingInput && !brainSaysAwaitingInput
       ? [{
         id: "awaiting-input",
         title: "This chat is waiting on you",
@@ -879,27 +518,94 @@ export function CrossMachineHandoffModal({
       }]
       : []),
   ];
-  // A fork prepared against a destination that can't fork must not send as-is;
-  // the user switches to a brief (one click) or backs out.
-  const forkUnsupportedAtReview = mode === "fork" && forkHandoffSupport != null && !forkHandoffSupport.supported;
-  const reviewBundle = prepared?.capsule.gitBundle ?? null;
-  // An older destination would silently drop the bundle; the brain refuses it
-  // too, but the review should say so before Send.
-  const bundleUnsupportedAtReview = Boolean(reviewBundle) && destinationPreflight != null
-    && destinationPreflight.gitBundleSupport !== true;
-  // A pending fast-forward must gate Send. Preflight reports it as a warning so
-  // the offer can render, but `acceptCrossMachineHandoff` still requires the
-  // destination lane to be at the exact source commit — without this the user
-  // could send and hit a hard failure after acceptance had already started.
-  const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length)
-    || Boolean(destinationPreflight?.laneFastForward)
+
+  const preflight = preview?.preflight ?? null;
+  const reviewMachineName = preview?.machineName ?? selectedMachine?.name ?? "that machine";
+  // A fork against a destination that can't fork must not send as-is.
+  const forkUnsupportedAtReview = mode === "fork" && preflight != null && preflight.forkHandoffSupport?.supported !== true;
+  // An older destination would drop the changes; the brain refuses it too,
+  // but the review says so before Send.
+  const bundleUnsupportedAtReview = includeChanges && preflight != null && preflight.gitBundleSupport !== true;
+  const modelReady = preflight ? preflight.modelAvailable && preflight.providerAuthorized : false;
+  const reviewBlocked = !preflight
+    || preflight.blockingErrors.length > 0
+    || !modelReady
     || forkUnsupportedAtReview
     || bundleUnsupportedAtReview;
-  const reviewIsFork = prepared?.capsule.mode === "fork";
-  const insecureRouteNotice = reviewIsFork
-    ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
-    : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
-  const queueOnly = turnActive && whenTurnEnds;
+  const fastForward = preflight?.laneFastForward ?? null;
+  const lanePlan = fastForward
+    ? `Will fast-forward ‘${fastForward.laneName}’ there (${fastForward.behindBy} ${fastForward.behindBy === 1 ? "commit" : "commits"} behind)`
+    : preflight?.existingLaneId
+      ? "Reuse the existing clean lane there"
+      : "Start a new lane from your branch";
+  const sendLabel = turnActive ? "Send when this turn ends" : "Send chat";
+
+  const newChatControls = onModelChange && modelId != null ? (
+    <div className="space-y-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">The new chat</span>
+      {/* The composer's own control row, so each picker keeps its
+          own "can this model do it?" logic. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ModelPicker
+          value={modelId}
+          onChange={(nextModelId, pickerOptions) => {
+            if (pickerOptions) onFastModeChange?.(pickerOptions.fastMode);
+            onModelChange(nextModelId);
+          }}
+          compact
+          {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
+          {...(mode === "fork" ? { filter: forkModelFilter } : {})}
+          {...(onOpenSignIn ? { onOpenSignIn } : {})}
+          fastMode={Boolean(fastMode)}
+          fastModeSupported={destinationFastModeSupported}
+          {...(onFastModeChange ? { onFastModeChange } : {})}
+        />
+        {onReasoningEffortChange ? (
+          <ReasoningEffortPicker
+            modelId={modelId}
+            reasoningEffort={reasoningEffort ?? null}
+            onChange={onReasoningEffortChange}
+            compact
+          />
+        ) : null}
+        {destinationPermissionPicker}
+      </div>
+      {mode === "fork" ? (
+        <span className="block text-[10px] leading-4 text-fg/40">Forked history stays with {providerLabel}; any {providerLabel} model is fine.</span>
+      ) : null}
+    </div>
+  ) : null;
+
+  const whatTravels = (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-fg/[0.065] bg-fg/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55" data-testid="handoff-what-travels">
+      <span className="inline-flex items-center gap-1.5">
+        <HardDrives size={13} className="text-fg/40" />
+        {mode === "fork" ? "Sent: the full conversation history" : "Sent: a short summary of this chat"}
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <GitBranch size={13} className="text-fg/40" />
+        {includeChanges
+          ? `Sent: the branch, your note, and ${changesLabel ?? "your uncommitted work"}`
+          : "Sent: the branch and commit, plus your note"}
+      </span>
+      {mode === "fork" ? (
+        <span className="inline-flex items-center gap-1.5">
+          <Warning size={13} className="text-fg/40" />
+          Includes anything pasted into this conversation
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1.5">
+          <LockKey size={13} className="text-fg/40" />
+          Never sent: the raw transcript, secrets, terminals, and caches
+        </span>
+      )}
+      <span className="inline-flex items-center gap-1.5">
+        <X size={12} weight="bold" className="text-fg/40" aria-hidden />
+        .env and ignored files stay here
+      </span>
+      <span className="block w-full text-fg/42">{ROUTE_LINE}</span>
+    </div>
+  );
 
   return (
     <Dialog
@@ -920,7 +626,6 @@ export function CrossMachineHandoffModal({
       dismissible={!busyLabel}
       onEscapeKeyDown={(event) => {
         // An open permission list takes Escape first and closes itself only.
-        // (Dialog stops the key either way, so it never reaches the chat.)
         if (document.querySelector("[data-permission-mode-picker-dropdown]")) event.preventDefault();
       }}
       footerStart={
@@ -937,16 +642,8 @@ export function CrossMachineHandoffModal({
           {stage === "clone" || stage === "review" ? (
             <button
               type="button"
-              disabled={Boolean(busyLabel)}
-              onClick={() => {
-                setStage("choose");
-                setPrepared(null);
-                setDestinationProject(null);
-                setDestinationPreflight(null);
-                setStoragePreflight(null);
-                setCloneApproved(false);
-                setError(null);
-              }}
+              disabled={busyNow}
+              onClick={backToChoose}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
             >
               <ArrowLeft size={12} /> Back
@@ -955,10 +652,10 @@ export function CrossMachineHandoffModal({
           {stage === "choose" ? (
             <BlockedActionButton
               reasons={loading ? [] : continueBlockers}
-              busy={loading || Boolean(busyLabel)}
-              // A busy chat can't be packed yet, so a queued move skips review:
-              // the brain re-runs every check when the turn ends.
-              onClick={() => void (queueOnly ? startMove() : prepareDestination())}
+              busy={loading || busyNow}
+              // A queued move skips review: the brain re-runs every check when
+              // the turn ends.
+              onClick={() => void (queueOnly ? startMove() : reviewMove())}
             >
               {queueOnly ? <>Move when this turn ends <ArrowRight size={12} /></> : <>Continue <ArrowRight size={12} /></>}
             </BlockedActionButton>
@@ -966,21 +663,21 @@ export function CrossMachineHandoffModal({
           {stage === "clone" ? (
             <button
               type="button"
-              disabled={Boolean(busyLabel) || !cloneApproved || Boolean(storagePreflight?.blockingErrors.length)}
-              onClick={() => void cloneDestination()}
+              disabled={busyNow || !cloneApproved}
+              onClick={() => void startMove()}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
             >
-              Clone repository <ArrowRight size={12} />
+              Clone and {turnActive ? "send when this turn ends" : "send"} <ArrowRight size={12} />
             </button>
           ) : null}
           {stage === "review" ? (
             <button
               type="button"
-              disabled={Boolean(busyLabel) || reviewBlocked}
+              disabled={busyNow || reviewBlocked}
               onClick={() => void startMove()}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
             >
-              {turnActive ? "Send when this turn ends" : "Send chat"} <ArrowRight size={12} />
+              {sendLabel} <ArrowRight size={12} />
             </button>
           ) : null}
         </div>
@@ -1004,7 +701,7 @@ export function CrossMachineHandoffModal({
             type="button"
             aria-label="Close handoff setup"
             onClick={onClose}
-            disabled={Boolean(busyLabel)}
+            disabled={busyNow}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-30"
           >
             <X size={15} />
@@ -1013,285 +710,46 @@ export function CrossMachineHandoffModal({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {stage === "choose" ? (
-            <div className="space-y-5">
-              <div>
-                <div className="inline-flex w-full rounded-lg border border-fg/[0.07] bg-fg/[0.02] p-0.5">
-                  {([
-                    { value: "fork" as const, label: "Fork", disabled: !sourceProviderSupportsFork },
-                    { value: "brief" as const, label: "Brief", disabled: false },
-                  ]).map(({ value, label, disabled }) => {
-                    const active = mode === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        disabled={disabled}
-                        aria-pressed={active}
-                        onClick={() => switchMode(value)}
-                        className={cn(
-                          "flex-1 rounded-md px-3 py-1.5 font-sans text-[11px] font-semibold transition-colors",
-                          active ? "bg-sky-400/[0.14] text-sky-50 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.28)]" : "text-fg/52 hover:text-fg/78",
-                          disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
-                        )}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="mt-1.5 text-[10px] leading-4 text-fg/46">
-                  {!sourceProviderSupportsFork
-                    ? `${providerLabel} can't fork chat history — send a brief instead.`
-                    : mode === "fork"
-                      ? "Sends the full history so the new chat picks up exactly where this one left off."
-                      : "Sends a short summary; the new chat starts fresh from it."}
-                </div>
-              </div>
-              <div className="grid gap-5 md:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-              <div className="space-y-3">
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Get this machine ready</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Commit and push your work, or bring it along with the move.</div>
-                </div>
-                {loading ? <CheckRow label="Inspecting source lane" detail="Checking Git state and publication" state="pending" /> : (
-                  <>
-                    <CheckRow
-                      label="Working tree"
-                      detail={sourceCheck.lane?.status.dirty
-                        ? (includeChanges ? "Your uncommitted changes travel with this move" : "Commit them, or bring them along")
-                        : "No uncommitted changes"}
-                      state={sourceCheck.lane?.status.dirty && !includeChanges ? "error" : sourceCheck.lane ? "ok" : "pending"}
-                    />
-                    <CheckRow
-                      label="Remote branch"
-                      detail={includeChanges && sourceCheck.needsPush && !sourceCheck.sync?.diverged
-                        ? "Unpublished commits travel with this move"
-                        : branchRowDetail(sourceCheck)}
-                      state={includeChanges && sourceCheck.needsPush && !sourceCheck.sync?.diverged
-                        ? "ok"
-                        : branchRowState(sourceCheck)}
-                    />
-                    <CheckRow
-                      label="Repository"
-                      detail={sourceCheck.originUrl ? normalizeGitRemoteIdentity(sourceCheck.originUrl) ?? sourceCheck.originUrl : "No origin remote configured"}
-                      state={sourceCheck.originUrl ? "ok" : "error"}
-                    />
-                  </>
-                )}
-                {/*
-                  Every blocker renders here and only here. Standalone panels for
-                  the active turn and the unpublished branch used to sit
-                  alongside this list, so the same blocker and the same fix button
-                  appeared twice — with different disabled behavior on each copy.
-                */}
-                <BlockedReasons
-                  reasons={continueBlockers}
-                  {...(continueBlockers.length > 1
-                    ? { heading: `${continueBlockers.length} things to fix first` }
-                    : {})}
-                />
-                {includeChanges ? (
-                  <Banner
-                    layout="inline"
-                    testId="handoff-bring-changes"
-                    model={{
-                      id: "handoff-bring-changes",
-                      tone: "accent",
-                      icon: <GitBranch size={13} weight="bold" />,
-                      title: changesLabel ? `Bringing ${changesLabel} along` : "Bringing your uncommitted work along",
-                      detail: ".env and other ignored files stay here.",
-                      actions: [{ label: "Leave them here", variant: "link", onClick: () => setIncludeChanges(false) }],
-                    }}
-                  />
-                ) : null}
-                {queueOnly ? (
-                  <Banner
-                    layout="inline"
-                    testId="handoff-when-turn-ends"
-                    model={{
-                      id: "handoff-when-turn-ends",
-                      tone: "info",
-                      icon: <Hourglass size={13} weight="bold" />,
-                      title: "Moves when this turn ends",
-                      detail: queuedCloneApproved
-                        ? `ADE checks everything again then, and clones the repository on ${selectedConnection?.target.name ?? "that machine"}.`
-                        : "ADE checks everything again then. A new message from you keeps it here.",
-                      actions: [
-                        { label: "Stop current response", variant: "secondary", disabled: busyNow, onClick: () => void onStopTurn() },
-                        { label: "Don't wait", variant: "link", onClick: () => setWhenTurnEnds(false) },
-                      ],
-                    }}
-                  />
-                ) : null}
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Choose a machine</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Computers connected to ADE appear here.</div>
-                </div>
-                <div className="space-y-2">
-                  {eligibleConnections.map((connection) => {
-                    const selected = selectedTargetId === connection.target.id;
-                    return (
-                      <button
-                        key={connection.target.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedTargetId(connection.target.id);
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors",
-                          selected
-                            ? "border-sky-300/26 bg-sky-400/[0.09]"
-                            : "border-fg/[0.065] bg-fg/[0.025] hover:bg-fg/[0.045]",
-                        )}
-                      >
-                        <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", selected ? "bg-sky-300/12 text-sky-200" : "bg-fg/[0.04] text-fg/48")}>
-                          <Desktop size={17} />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[11px] font-semibold text-fg/82">{connection.target.name}</div>
-                          <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-fg/42">
-                            {connection.route?.kind === "ssh" || connection.route?.kind === "tailnet" ? <LockKey size={11} /> : <ShieldWarning size={11} />}
-                            {routeLabel(connection)}
-                            {repoReadinessLabel(machineRepoReadiness[connection.target.id]) ? (
-                              <>
-                                <span className="text-fg/22">·</span>
-                                <span className={repoReadinessClass(machineRepoReadiness[connection.target.id])}>
-                                  {repoReadinessLabel(machineRepoReadiness[connection.target.id])}
-                                </span>
-                              </>
-                            ) : null}
-                          </div>
-                        </div>
-                        {selected ? <CheckCircle size={16} weight="fill" className="text-sky-200" /> : null}
-                      </button>
-                    );
-                  })}
-                  {!loading && eligibleConnections.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-fg/[0.09] px-4 py-6 text-center">
-                      <Desktop size={22} className="mx-auto text-fg/28" />
-                      <div className="mt-2 text-[11px] font-semibold text-fg/62">No eligible connected machines</div>
-                      <div className="mt-1 text-[10px] leading-4 text-fg/40">
-                        {sourceMachineTargetId
-                          ? `This chat runs on ${sourceMachineName ?? "another machine"}. Connect a different ADE machine to this Mac, then reopen this setup.`
-                          : "Connect another ADE machine, then reopen this setup."}
-                      </div>
-                    </div>
-                  ) : null}
-                  {incompatibleConnectedCount > 0 ? (
-                    <div className="text-[10px] leading-4 text-amber-200/55">
-                      {incompatibleConnectedCount} connected {incompatibleConnectedCount === 1 ? "machine needs" : "machines need"} an ADE update before handoff.
-                    </div>
-                  ) : null}
-                </div>
-                {onModelChange && modelId != null ? (
-                  <div className="space-y-1.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">The new chat</span>
-                    {/*
-                      Same control row as the composer, so there is nothing new to
-                      learn and each picker keeps its own "can this model do it?"
-                      logic — ReasoningEffortPicker renders nothing for a model
-                      with no tiers, and fast mode only appears where supported.
-                    */}
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <ModelPicker
-                        value={modelId}
-                        onChange={(nextModelId, options) => {
-                          if (options) onFastModeChange?.(options.fastMode);
-                          onModelChange(nextModelId);
-                        }}
-                        compact
-                        {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
-                        {...(mode === "fork" ? { filter: forkModelFilter } : {})}
-                        {...(onOpenSignIn ? { onOpenSignIn } : {})}
-                        fastMode={Boolean(fastMode)}
-                        fastModeSupported={destinationFastModeSupported}
-                        {...(onFastModeChange ? { onFastModeChange } : {})}
-                      />
-                      {onReasoningEffortChange ? (
-                        <ReasoningEffortPicker
-                          modelId={modelId}
-                          reasoningEffort={reasoningEffort ?? null}
-                          onChange={onReasoningEffortChange}
-                          compact
-                        />
-                      ) : null}
-                      {destinationPermissionPicker}
-                    </div>
-                    {mode === "fork" ? (
-                      <span className="block text-[10px] leading-4 text-fg/40">Forked history stays with {providerLabel}; any {providerLabel} model is fine.</span>
-                    ) : null}
-                  </div>
-                ) : null}
-                <label className="block">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Note for the new chat</span>
-                  <textarea
-                    value={continuationPrompt}
-                    onChange={(event) => setContinuationPrompt(event.target.value)}
-                    maxLength={4000}
-                    rows={4}
-                    placeholder={mode === "fork"
-                      ? "Optional. Tell the new chat what to do next; otherwise it just keeps going from the full history."
-                      : "Optional. Tell the new chat what to do next; otherwise it just continues from the summary."}
-                    className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-fg/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
-                  />
-                  <span className="mt-1 block text-right text-[9px] text-fg/28">{continuationPrompt.length} / 4,000</span>
-                </label>
-              </div>
-              </div>
-              {forkFallbackReason ? (
-                <Banner
-                  model={{
-                    id: "handoff-fork-fallback",
-                    tone: "warning",
-                    title: forkFallbackReason,
-                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
-                  }}
-                  layout="inline"
-                />
-              ) : null}
-            </div>
+            <CrossMachineHandoffChooseStage
+              mode={mode}
+              sourceProviderSupportsFork={sourceProviderSupportsFork}
+              providerLabel={providerLabel}
+              onSwitchMode={switchMode}
+              loading={loading}
+              optionsLoaded={options != null}
+              continueBlockers={continueBlockers}
+              includeChanges={includeChanges}
+              changesLabel={changesLabel}
+              onLeaveChangesHere={() => setIncludeChanges(false)}
+              queueOnly={queueOnly}
+              queuedCloneApproved={queuedCloneApproved}
+              busy={busyNow}
+              onStopTurn={onStopTurn}
+              onDontWait={() => setWhenTurnEnds(false)}
+              machines={machines}
+              selectedMachineKey={selectedMachineKey}
+              selectedMachineName={selectedMachine?.name ?? null}
+              onSelectMachine={(machineKey) => {
+                setSelectedMachineKey(machineKey);
+                setQueuedCloneApproved(false);
+              }}
+              newChatControls={newChatControls}
+              continuationPrompt={continuationPrompt}
+              onContinuationPromptChange={setContinuationPrompt}
+            />
           ) : null}
 
-          {stage === "clone" && selectedConnection && prepared && storagePreflight ? (
+          {stage === "clone" ? (
             <div className="mx-auto max-w-[580px] space-y-4">
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Repository setup</div>
-                <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Clone on {selectedConnection.target.name}?</h3>
+                <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Clone on {reviewMachineName}?</h3>
                 <p className="mt-1 text-[11px] leading-5 text-fg/48">
-                  This repository isn&rsquo;t on {selectedConnection.target.name} yet. ADE will clone it there first.
+                  This repository isn&rsquo;t on {reviewMachineName} yet. ADE clones it there from GitHub with that
+                  machine&rsquo;s own Git sign-in, checks everything, then sends the chat.
                 </p>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <CheckRow label="Clone destination" detail={storagePreflight.targetPath} state={storagePreflight.targetExists ? "error" : "ok"} />
-                <CheckRow
-                  label="Free disk space"
-                  detail={`${storagePreflight.freeBytes > 0 ? formatBytes(storagePreflight.freeBytes) : "Unavailable"} free · ${formatBytes(storagePreflight.requiredBytes)} minimum`}
-                  state={storagePreflight.blockingErrors.some((item) => /space/i.test(item)) ? "error" : storagePreflight.warnings.length ? "warn" : "ok"}
-                />
-              </div>
-              {storagePreflight.blockingErrors.map((message, index) => (
-                <Banner
-                  key={`error:${index}:${message}`}
-                  model={{ id: `handoff-storage-error-${index}`, tone: "error", title: message }}
-                  layout="inline"
-                />
-              ))}
-              {storagePreflight.warnings.map((message, index) => (
-                <Banner
-                  key={`warning:${index}:${message}`}
-                  model={{ id: `handoff-storage-warning-${index}`, tone: "warning", title: message }}
-                  layout="inline"
-                />
-              ))}
-              {isInsecureRoute(selectedConnection) ? (
-                <Banner
-                  model={{ id: "handoff-insecure-route", tone: "warning", title: insecureRouteNotice }}
-                  layout="inline"
-                />
-              ) : null}
+              {whatTravels}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-fg/[0.07] bg-fg/[0.025] px-3 py-2.5">
                 <input
                   type="checkbox"
@@ -1300,168 +758,93 @@ export function CrossMachineHandoffModal({
                   className="mt-0.5 accent-sky-400"
                 />
                 <span className="text-[10px] leading-4 text-fg/58">
-                  Clone the repository on {selectedConnection.target.name}. Nothing uncommitted or secret leaves this machine.
+                  Clone the repository on {reviewMachineName}.
                 </span>
               </label>
             </div>
           ) : null}
 
-          {(stage === "review" || stage === "sending") && selectedConnection && prepared && destinationPreflight ? (
+          {stage === "review" && preview ? (
             <div className="mx-auto max-w-[620px] space-y-3.5">
-              {/* The destination is the headline, not a sentence: its icon, its
-                  name, and the route it travels on, in one glance. */}
               <div className="flex items-center gap-3 rounded-xl border border-sky-300/18 bg-[linear-gradient(150deg,rgba(56,189,248,0.13),rgba(255,255,255,0.014)_62%)] px-4 py-3.5">
                 <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-sky-300/24 bg-sky-400/12 text-sky-100">
                   <Desktop size={20} weight="duotone" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-semibold text-fg/90">Ready to continue on {selectedConnection.target.name}</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1 text-[10px] text-fg/60">
-                  {isInsecureRoute(selectedConnection) ? <ShieldWarning size={11} /> : <LockKey size={11} />}
-                  {routeLabel(selectedConnection)}
+                  <div className="truncate text-[14px] font-semibold text-fg/90">
+                    {reviewBlocked ? `Not ready on ${reviewMachineName} yet` : `Ready to continue on ${reviewMachineName}`}
+                  </div>
                 </div>
               </div>
-              {forkUnsupportedAtReview ? (
-                <Banner
-                  model={{
-                    id: "handoff-fork-fallback-review",
-                    tone: "warning",
-                    title: forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff.",
-                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
-                  }}
-                  layout="inline"
-                />
+              {preflight ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <CheckRow icon={<HardDrives size={13} weight="duotone" />} label="Repository" detail="Already on that machine" state="ok" />
+                  <CheckRow
+                    icon={destinationDescriptor ? <ProviderLogo family={destinationDescriptor.family} size={13} /> : undefined}
+                    label="Model access"
+                    detail={!preflight.providerAuthorized
+                      ? "That machine isn't signed in to this provider"
+                      : preflight.modelAvailable
+                        ? "The model is available there"
+                        : "That model isn't available there yet"}
+                    state={modelReady ? "ok" : "error"}
+                  />
+                  <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={lanePlan} state="ok" />
+                  {mode === "fork" ? (
+                    <CheckRow
+                      icon={<Check size={13} weight="bold" />}
+                      label="Full history"
+                      detail={forkUnsupportedAtReview ? "That machine can't take a fork" : "That machine can take the full history"}
+                      state={forkUnsupportedAtReview ? "error" : "ok"}
+                    />
+                  ) : null}
+                </div>
               ) : null}
-              {/* The four checks ARE the "is this ready" answer, so they stay —
-                  now with the subject's own mark instead of four identical rows. */}
-              <div className="grid gap-2 sm:grid-cols-2">
-                <CheckRow icon={<HardDrives size={13} weight="duotone" />} label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
-                <CheckRow icon={<GitBranch size={13} weight="duotone" />} label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={reviewBundle || destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
-                <CheckRow
-                  icon={destinationDescriptor ? <ProviderLogo family={destinationDescriptor.family} size={13} /> : undefined}
-                  label="Model access"
-                  detail={destinationPreflight.modelAvailable ? "The model is available there" : "That model isn't available there yet"}
-                  state={destinationPreflight.modelAvailable && destinationPreflight.providerAuthorized ? "ok" : "error"}
-                />
-                <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
-              </div>
               {bundleUnsupportedAtReview ? (
                 <Banner
                   layout="inline"
                   model={{
                     id: "handoff-bundle-unsupported",
                     tone: "warning",
-                    title: `${selectedConnection.target.name} needs an ADE update to take uncommitted changes.`,
+                    title: `${reviewMachineName} needs an ADE update to take uncommitted changes.`,
                     detail: "Update ADE there, or go back and commit and publish instead.",
                   }}
                 />
               ) : null}
-              {includeChanges ? (
-                /* What travels with "Bring them along", in two lines. */
-                <div className="space-y-1 rounded-xl border border-fg/[0.065] bg-fg/[0.025] px-3.5 py-2.5 text-[10.5px]" data-testid="handoff-what-travels">
-                  <div className="kit-eyebrow text-fg/40">What travels</div>
-                  <div className="inline-flex items-center gap-1.5 text-fg/70">
-                    <Check size={12} weight="bold" className="text-emerald-300/80" aria-hidden />
-                    {[
-                      reviewIsFork ? "fork" : "brief",
-                      reviewBundle
-                        ? describeTravellingChanges(reviewBundle.unpushedCommitCount, reviewBundle.changedFileCount)
-                        : changesLabel,
-                    ].filter(Boolean).join(" · ")}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-fg/48">
-                    <X size={12} weight="bold" className="text-fg/40" aria-hidden />
-                    .env and ignored files stay here
-                  </div>
-                </div>
-              ) : null}
-              {destinationPreflight.warnings.map((message, index) => (
-                <Banner
-                  key={`warning:${index}:${message}`}
-                  model={{ id: `handoff-destination-warning-${index}`, tone: "warning", title: message }}
-                  layout="inline"
-                />
-              ))}
-              {destinationPreflight.blockingErrors.map((message, index) => (
+              {preflight?.warnings
+                // The fast-forward is a plan, not a warning: the brain does it.
+                .filter((message) => !(fastForward && /fast-forward/i.test(message)))
+                .map((message, index) => (
+                  <Banner
+                    key={`warning:${index}:${message}`}
+                    model={{ id: `handoff-destination-warning-${index}`, tone: "warning", title: message }}
+                    layout="inline"
+                  />
+                ))}
+              {preflight?.blockingErrors.map((message, index) => (
                 <Banner
                   key={`error:${index}:${message}`}
                   model={{ id: `handoff-destination-error-${index}`, tone: "error", title: message }}
                   layout="inline"
                 />
               ))}
-              {destinationPreflight.laneFastForward ? (
-                /*
-                  The destination's lane is clean and a strict ancestor of your
-                  commit, so it can catch up without losing anything. Offered
-                  rather than done automatically: this rewrites git state on a
-                  machine the user isn't sitting at.
-                */
-                <Banner
-                  model={{
-                    id: "handoff-lane-fast-forward",
-                    tone: "warning",
-                    title: `Lane ‘${destinationPreflight.laneFastForward.laneName}’ is ${destinationPreflight.laneFastForward.behindBy} ${destinationPreflight.laneFastForward.behindBy === 1 ? "commit" : "commits"} behind`,
-                    detail: `It’s clean, so ADE can fast-forward it to your commit on ${selectedConnection?.target.name ?? "that machine"}. Nothing is discarded.`,
-                    actions: [{
-                      label: "Fetch & fast-forward there",
-                      icon: <GitBranch size={12} />,
-                      disabled: Boolean(busyLabel),
-                      onClick: () => void fastForwardDestinationLane(),
-                    }],
-                  }}
-                  layout="inline"
-                />
-              ) : null}
-              {/* What travels, as marks rather than a paragraph. */}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-fg/[0.065] bg-fg/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
-                <span className="inline-flex items-center gap-1.5">
-                  <HardDrives size={13} className="text-fg/40" />
-                  {reviewIsFork ? "Sent: the full conversation history" : "Sent: a short summary of this chat"}
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <GitBranch size={13} className="text-fg/40" />
-                  Sent: the branch and commit, plus your note
-                </span>
-                {!reviewIsFork ? (
-                  <>
-                    <span className="inline-flex items-center gap-1.5">
-                      <LockKey size={13} className="text-fg/40" />
-                      Never sent: the raw transcript, secrets, terminals, and caches
-                    </span>
-                  </>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Warning size={13} className="text-fg/40" />
-                    Includes anything pasted into this conversation
-                  </span>
-                )}
-                {prepared.sanitizedSensitiveContext ? (
-                  <span className="inline-flex items-center gap-1.5 text-emerald-200/70">
-                    <CheckCircle size={13} weight="fill" />
-                    {reviewIsFork
-                      ? "ADE removed secret-shaped values from your note."
-                      : "ADE removed detected secret-shaped values or source-only absolute paths from the summary."}
-                  </span>
-                ) : null}
-              </div>
-              {isInsecureRoute(selectedConnection) ? (
-                /*
-                  Informational, not a second confirmation. Sending the chat from
-                  a non-end-to-end route is already an explicit act; the notice
-                  has to be visible but must not stand between the user and a
-                  button they just read.
-                */
-                <Banner
-                  model={{ id: "handoff-insecure-route-review", tone: "warning", title: insecureRouteNotice }}
-                  layout="inline"
-                  testId="insecure-route-notice"
-                />
-              ) : null}
+              {whatTravels}
             </div>
           ) : null}
 
-          {error && stage !== "complete" ? (
+          {mode === "fork" && (forkFallbackReason || forkUnsupportedAtReview) ? (
+            <Banner
+              model={{
+                id: "handoff-fork-fallback",
+                tone: "warning",
+                title: forkFallbackReason ?? `${reviewMachineName} needs an ADE update for fork handoff.`,
+                actions: [{ label: "Send as brief instead", disabled: busyNow, onClick: sendAsBrief }],
+              }}
+              layout="inline"
+              style={{ margin: "16px auto 0", maxWidth: 620 }}
+            />
+          ) : null}
+          {error ? (
             <Banner
               model={{
                 id: "handoff-error",

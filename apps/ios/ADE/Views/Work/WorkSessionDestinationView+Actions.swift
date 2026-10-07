@@ -1914,12 +1914,12 @@ func workChatMappedPullRequest(
   }
 }
 
-// MARK: - Cross-machine handoff (in-chat card + soft lock)
+// MARK: - Cross-machine handoff (in-chat card + send gate)
 
 extension WorkSessionDestinationView {
   /// The card's calls, each the `chat.*CrossMachineHandoff` command desktop's
   /// banner makes. Nil when the host has none of them, which hides the card's
-  /// buttons and lifts the soft lock.
+  /// buttons and lifts the send gate.
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? {
     guard syncService.crossMachineHandoffActionAvailable("chat.cancelCrossMachineHandoff", sessionId: sessionId)
       || syncService.crossMachineHandoffActionAvailable("chat.acknowledgeCrossMachineHandoff", sessionId: sessionId)
@@ -1928,6 +1928,11 @@ extension WorkSessionDestinationView {
     return WorkCrossMachineHandoffActions(
       keepHere: {
         await runCrossMachineHandoffAction("Couldn't keep the chat here") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      dismiss: {
+        await runCrossMachineHandoffAction("Couldn't dismiss the move") {
           try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
         }
       },
@@ -1945,10 +1950,13 @@ extension WorkSessionDestinationView {
         guard let record = composerChatSummary?.crossMachineHandoff else { return true }
         do {
           // Keyed by the move that landed the chat, not a later attempt.
-          try await syncService.acknowledgeCrossMachineHandoff(
+          let next = try await syncService.acknowledgeCrossMachineHandoff(
             sourceSessionId: sessionId,
             handoffId: record.continuation?.handoffId ?? record.handoffId
           )
+          applyCrossMachineHandoffResult(next)
+          // The send that asked goes ahead now; the summary catches up behind it.
+          Task { @MainActor in await refreshChatStateAfterAction(forceRemote: true) }
           return true
         } catch {
           ADEHaptics.error()
@@ -1976,12 +1984,28 @@ extension WorkSessionDestinationView {
     _ operation: () async throws -> AgentChatCrossMachineHandoffRecord?
   ) async {
     do {
-      _ = try await operation()
+      let next = try await operation()
       ADEHaptics.success()
+      applyCrossMachineHandoffResult(next)
       await refreshChatStateAfterAction(forceRemote: true)
     } catch {
       ADEHaptics.error()
       errorMessage = "\(failure): \(error.localizedDescription)"
+    }
+  }
+
+  /// Folds the record an action answered with into the cache and the live
+  /// summary at once, so the card and the send gate move before the refresh.
+  @MainActor
+  func applyCrossMachineHandoffResult(_ record: AgentChatCrossMachineHandoffRecord?) {
+    guard let record, !record.handoffId.isEmpty else { return }
+    syncService.applyCrossMachineHandoffActionResult(record, sessionId: sessionId)
+    if var current = chatSummary {
+      current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+        current: current.crossMachineHandoff,
+        incoming: record
+      )
+      if current != chatSummary { chatSummary = current }
     }
   }
 }

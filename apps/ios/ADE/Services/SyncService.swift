@@ -19448,10 +19448,12 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog(preferRemoteSelection: true)
   }
 
+  #if DEBUG
   /// DEBUG fixture screens only; see `seedRemoteCommandActionsForPreview`.
   func applyPreviewRemoteCommandDescriptors(_ descriptors: [SyncRemoteCommandDescriptor]) {
     remoteCommandDescriptors = descriptors
   }
+  #endif
 
   func applyHelloPayloadForTesting(
     _ payload: [String: Any],
@@ -20923,6 +20925,10 @@ final class SyncService: ObservableObject {
         // refetch. Decodes to `.unknown` for transcript purposes (older switches
         // stay valid); the mode payload is read from the raw event dict here.
         applyChatSessionMetaModeUpdateIfNeeded(envelope: envelope, rawPayload: dict)
+        // A move to another machine: the live-only state notice (and the
+        // durable "ended" one) carry the record; fold it into the cached
+        // summary so the in-chat card and the send gate follow it live.
+        applyCrossMachineHandoffNoticeIfNeeded(envelope: envelope, rawPayload: dict)
         // A `pending_input_resolved` receipt or a human `user_message` means the
         // ask this row is flagged for has been answered. Clear the local
         // attention state now rather than waiting for the host's changeset, so

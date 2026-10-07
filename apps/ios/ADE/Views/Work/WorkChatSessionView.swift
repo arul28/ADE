@@ -614,8 +614,9 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
-  /// Cross-machine handoff card actions and the soft lock. Nil hides the
-  /// card's buttons and sends without asking (an older host has no record).
+  /// Cross-machine handoff card actions and the send gate (where new messages
+  /// go). Nil hides the card's buttons and sends without asking (an older host
+  /// has no record).
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
 
   @State private var threadCommentsSheetPresented = false
@@ -1445,25 +1446,25 @@ struct WorkChatSessionView: View {
   /// where it goes: "Continue on <machine>" copies the message and opens that
   /// chat; "Work here instead" records `resumedHere` (acknowledge) and sends
   /// here, after which sends go straight through.
-  var gatedOnSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool {
+  var crossMachineSendGate: (@MainActor (String) async -> Bool)? {
     let record = chatSummaryContext.crossMachineHandoff
     guard let actions = crossMachineHandoffActions,
           let record,
           workCrossMachineHandoffNeedsSendConfirmation(record)
-    else { return onSend }
+    else { return nil }
     let gate = handoffSendGate
-    let send = onSend
     let branch = lanes.first { $0.id == session.laneId }?.branchRef
       .replacingOccurrences(of: "refs/heads/", with: "")
     let machine = record.sendsElsewhere?.targetMachineName ?? record.machineLabel
-    return { text, attachments, mode in
+    return { text in
       switch await gate.ask(machine: machine, branch: branch) {
       case .workHere:
-        guard await actions.acknowledge() else { return false }
-        return await send(text, attachments, mode)
+        // Sending here proceeds only once "working here" is recorded.
+        return await actions.acknowledge()
       case .continueThere:
         // This phone can't send to a chat on another machine from here, so
-        // the words travel by clipboard into the chat that opens.
+        // the words travel by clipboard into the chat that opens; the draft
+        // stays put too.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { UIPasteboard.general.string = trimmed }
         actions.open()
@@ -1692,14 +1693,19 @@ struct WorkChatSessionView: View {
             await onSelectRuntimeMode(mode)
           }
         },
-        onSend: gatedOnSend,
+        onSend: onSend,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
         },
-        hasSendableThreadComments: hasSendableThreadComments
+        hasSendableThreadComments: hasSendableThreadComments,
+        sendGate: crossMachineSendGate
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    // A prompt left open when the chat goes away would strand its send
+    // forever; answer it for the person.
+    .onDisappear { handoffSendGate.answer(.cancel) }
+    .onChange(of: session.id) { _, _ in handoffSendGate.answer(.cancel) }
     .confirmationDialog(
       "This chat continues on \(handoffSendGate.prompt?.machine ?? "another machine")",
       isPresented: Binding(
@@ -2513,6 +2519,10 @@ private struct WorkChatComposerCard: View {
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   var body: some View {
     WorkChatComposerDraftInput(
@@ -2546,7 +2556,8 @@ private struct WorkChatComposerCard: View {
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
       onSent: onSent,
-      hasSendableThreadComments: hasSendableThreadComments
+      hasSendableThreadComments: hasSendableThreadComments,
+      sendGate: sendGate
     )
   }
 }
@@ -2591,6 +2602,10 @@ private struct WorkChatComposerDraftInput: View {
   /// Pending thread comments will ride the next send, so an empty field may
   /// still send.
   var hasSendableThreadComments = false
+  /// Asked BEFORE the field is emptied (a chat that continues on another
+  /// machine asks where the message goes). False keeps the draft untouched
+  /// and shows no failure, because nothing was sent.
+  var sendGate: (@MainActor (String) async -> Bool)? = nil
 
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
@@ -2764,6 +2779,20 @@ private struct WorkChatComposerDraftInput: View {
   /// it entirely.
   @MainActor
   private func performSend(mode: WorkActiveSendMode) {
+    guard sendEnabled else { return }
+    if let sendGate {
+      let text = draftState.text
+      Task { @MainActor in
+        guard await sendGate(text) else { return }
+        sendNow(mode: mode)
+      }
+      return
+    }
+    sendNow(mode: mode)
+  }
+
+  @MainActor
+  private func sendNow(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
     let key = draftPersistenceKey
     let pendingSend = draftState.beginPendingSend()

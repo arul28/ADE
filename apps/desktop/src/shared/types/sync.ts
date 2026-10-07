@@ -2537,7 +2537,7 @@ export type SyncRemoteCommandAction =
   | "chat.acceptCrossMachineHandoff"
   | "chat.markCrossMachineHandoff"
   | "chat.getCrossMachineHandoffOptions"
-  | "chat.getCrossMachineHandoffState"
+  | "chat.previewCrossMachineHandoff"
   | "chat.startCrossMachineHandoff"
   | "chat.cancelCrossMachineHandoff"
   | "chat.retryCrossMachineHandoff"

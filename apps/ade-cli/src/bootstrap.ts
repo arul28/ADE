@@ -2311,15 +2311,18 @@ export async function createAdeRuntime(args: {
         ...(typeof args !== "string" && args.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: args.crossMachineHandoffTransport }
           : {}),
-        // An agent-started or queued move ended while the person may be away.
-        onCrossMachineHandoffLanded: ({ sessionId, record, title }) => {
+        // An agent asked to move a chat, or an agent-started or queued move
+        // ended while the person may be away.
+        notifyCrossMachineHandoff: ({ sessionId, record, title }) => {
           const subject = title?.trim() || "Your chat";
           const machine = record.targetMachineName;
+          // Fixed copy only: a failure reason can carry paths, branch names
+          // or remote output, and a push leaves the machine through Apple.
           const copy = record.state === "awaiting_approval"
             ? { title: `${subject}: the agent wants to continue on ${machine}`, body: "Approve or deny it in the chat." }
             : record.state === "continued"
               ? { title: `${subject} continues on ${machine}`, body: "Open it there to keep going." }
-              : { title: `${subject} couldn't move to ${machine}`, body: record.reason };
+              : { title: `${subject} couldn't move to ${machine}`, body: "Open the chat for details." };
           pushPublisherForPtySignals?.handleSessionNotice({
             sessionId,
             dedupeKey: `cross-machine-move:${record.handoffId}:${record.state}`,

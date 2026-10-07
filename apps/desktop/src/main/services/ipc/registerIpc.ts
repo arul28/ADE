@@ -484,8 +484,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatAcknowledgeCrossMachineHandoffArgs,
-  AgentChatCancelCrossMachineHandoffArgs,
-  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
@@ -8925,13 +8926,13 @@ export function registerIpc({
   // with a plain message rather than pretending to move anything.
   ipcMain.handle(
     IPC.agentChatGetCrossMachineHandoffOptions,
-    async (_event, arg: AgentChatCrossMachineHandoffOptionsArgs): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
       await ensureAgentChatContext().agentChatService.getCrossMachineHandoffOptions(arg),
   );
   ipcMain.handle(
-    IPC.agentChatGetCrossMachineHandoffState,
-    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
-      await ensureAgentChatContext().agentChatService.getCrossMachineHandoffState(arg),
+    IPC.agentChatPreviewCrossMachineHandoff,
+    async (_event, arg: AgentChatPreviewCrossMachineHandoffArgs): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
+      await ensureAgentChatContext().agentChatService.previewCrossMachineHandoff(arg),
   );
   ipcMain.handle(
     IPC.agentChatStartCrossMachineHandoff,
@@ -8943,12 +8944,12 @@ export function registerIpc({
   );
   ipcMain.handle(
     IPC.agentChatCancelCrossMachineHandoff,
-    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       await ensureAgentChatContext().agentChatService.cancelCrossMachineHandoff(arg),
   );
   ipcMain.handle(
     IPC.agentChatRetryCrossMachineHandoff,
-    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> =>
+    async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord> =>
       await ensureAgentChatContext().agentChatService.retryCrossMachineHandoff(arg),
   );
   ipcMain.handle(

@@ -1,10 +1,12 @@
 import { useRef, useState } from "react";
 import {
+  ArrowClockwise,
   ArrowSquareOut,
   Desktop,
   Hourglass,
   Prohibit,
   SlidersHorizontal,
+  X,
 } from "@phosphor-icons/react";
 import type {
   AgentChatCrossMachineHandoffOptionsResult,
@@ -15,7 +17,11 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { crossMachineContinuation } from "../../../shared/crossMachineHandoff";
+import {
+  crossMachineContinuation,
+  isCrossMachineHandoffActive,
+  pickNewerCrossMachineHandoffRecord,
+} from "../../../shared/crossMachineHandoff";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { showToast } from "../app/toast/toastStore";
 import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/CrossMachineHandoffBanner";
@@ -26,8 +32,10 @@ import { cn } from "../ui/cn";
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
  * fills its machine rows when the brain answers (a context menu that waits on
  * IPC before it appears is a broken one). A row's main click is a quick brief
- * with the chat's current model and permissions; its trailing button opens the
- * full setup with that machine picked.
+ * with the chat's current model and permissions (and any uncommitted work,
+ * which the row says travels); its trailing button opens the full setup with
+ * that machine picked. A machine without the repository always opens the full
+ * setup, which asks before cloning.
  */
 
 type OptionsState =
@@ -94,25 +102,37 @@ export function CrossMachineMoveSubmenu({
   };
 
   const result = options.status === "ready" ? options.result : null;
-  const record: AgentChatCrossMachineHandoffRecord | null = result
-    ? result.current
-    : session.crossMachineHandoff ?? null;
+  // The summary and the brain's answer can arrive in either order.
+  const record: AgentChatCrossMachineHandoffRecord | null = pickNewerCrossMachineHandoffRecord(
+    session.crossMachineHandoff ?? null,
+    result?.current ?? null,
+  );
   const changes = result?.changes ?? null;
   const changesLabel = changes ? describeTravellingChanges(changes.unpushedCommits, changes.changedFiles) : null;
   const changeCount = changes ? changes.unpushedCommits + changes.changedFiles : 0;
-  // Blockers a quick brief can't clear on its own. Changes travel along; a
-  // running turn waits; anything else needs the full setup.
+  // Blockers a quick brief can't clear on its own. Changes travel along;
+  // anything else needs the full setup.
   const hardBlockers = (result?.blockers ?? []).filter((blocker) =>
-    !blocker.clearedByIncludeChanges && blocker.id !== "turn_active" && blocker.id !== "move_in_progress",
+    !blocker.clearedByIncludeChanges && blocker.id !== "move_in_progress",
   );
 
-  const cancelMove = async () => {
+  /** Keeps a queued move here, or drops a lost one the person already checked. */
+  const cancelMove = async (outcome: { title: string; message: string }) => {
     onClose();
     try {
       await window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId: session.id }, binding);
-      showToast({ tone: "info", title: "Kept it here", message: "The move was cancelled." });
+      showToast({ tone: "info", ...outcome });
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't cancel the move", message: errorText(error) });
+    }
+  };
+
+  const retryMove = async () => {
+    onClose();
+    try {
+      await window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId: session.id }, binding);
+    } catch (error) {
+      showToast({ tone: "warning", title: "Couldn't retry the move", message: errorText(error) });
     }
   };
 
@@ -138,13 +158,12 @@ export function CrossMachineMoveSubmenu({
         ...(busy ? { whenTurnEnds: true } : {}),
       }, binding);
       const model = getModelById(started.targetModelId)?.displayName ?? started.targetModelId;
+      // Info, not success: the move has only started; the banner reports how it ends.
       showToast({
-        tone: "success",
+        tone: "info",
         title: started.state === "pending"
           ? `Moving to ${started.targetMachineName} when this turn ends`
-          : started.state === "awaiting_approval"
-            ? `Waiting for approval to move to ${started.targetMachineName}`
-            : `Sending this chat to ${started.targetMachineName}`,
+          : `Sending this chat to ${started.targetMachineName}`,
         message: ["Brief", model, started.includeChanges && changesLabel ? `brings ${changesLabel}` : null]
           .filter(Boolean)
           .join(" · "),
@@ -159,9 +178,12 @@ export function CrossMachineMoveSubmenu({
     }
   };
 
-  const moveActive = record?.state === "pending" || record?.state === "awaiting_approval";
   // Kept across later attempts, so a cancelled second move still offers it.
   const continuation = crossMachineContinuation(record);
+  // A lost confirmation is never replayed blindly: retry it or go look.
+  const unknownTargetSessionId = record?.state === "unknown"
+    ? record.targetSessionId ?? continuation?.targetSessionId ?? null
+    : null;
   return (
     <MenuSubmenu
       label="Another machine"
@@ -171,7 +193,7 @@ export function CrossMachineMoveSubmenu({
       panelMinWidth={248}
       onOpen={load}
     >
-      {moveActive && record ? (
+      {record && isCrossMachineHandoffActive(record) && record.state !== "sending" ? (
         <>
           <MenuSubmenuStatus>
             {record.state === "pending"
@@ -182,7 +204,7 @@ export function CrossMachineMoveSubmenu({
             type="button"
             data-testid="session-menu-move-keep-here"
             className={MENU_ITEM_CLASS}
-            onClick={() => void cancelMove()}
+            onClick={() => void cancelMove({ title: "Kept it here", message: "The move was cancelled." })}
           >
             <MenuRowIcon icon={Prohibit} />
             Keep it here
@@ -190,6 +212,42 @@ export function CrossMachineMoveSubmenu({
         </>
       ) : record?.state === "sending" ? (
         <MenuSubmenuStatus>Sending to {record.targetMachineName}…</MenuSubmenuStatus>
+      ) : record?.state === "unknown" ? (
+        <>
+          <MenuSubmenuStatus>Lost confirmation from {record.targetMachineName}. Check it before retrying.</MenuSubmenuStatus>
+          <button
+            type="button"
+            data-testid="session-menu-move-retry"
+            className={MENU_ITEM_CLASS}
+            onClick={() => void retryMove()}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Retry the move
+          </button>
+          {unknownTargetSessionId ? (
+            <button
+              type="button"
+              data-testid="session-menu-move-open-target"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                onClose();
+                openChatOnOtherMachine(unknownTargetSessionId);
+              }}
+            >
+              <MenuRowIcon icon={ArrowSquareOut} />
+              Open on {record.targetMachineName}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-testid="session-menu-move-dismiss"
+            className={MENU_ITEM_CLASS}
+            onClick={() => void cancelMove({ title: "Move dismissed", message: `Stopped tracking the move to ${record.targetMachineName}.` })}
+          >
+            <MenuRowIcon icon={X} />
+            Dismiss
+          </button>
+        </>
       ) : (
         <>
           {continuation ? (
@@ -212,7 +270,7 @@ export function CrossMachineMoveSubmenu({
           {options.status === "idle" || options.status === "loading" ? (
             <MenuSubmenuStatus>Finding your machines…</MenuSubmenuStatus>
           ) : options.status === "error" ? (
-            <MenuSubmenuStatus tone="danger">{options.message}</MenuSubmenuStatus>
+            <MenuSubmenuStatus>{options.message}</MenuSubmenuStatus>
           ) : result && result.machines.length === 0 ? (
             <MenuSubmenuStatus>No other machines on this account.</MenuSubmenuStatus>
           ) : null}
@@ -221,10 +279,14 @@ export function CrossMachineMoveSubmenu({
           ) : null}
           {result?.machines.map((machine) => {
             const available = machine.online && !machine.unavailableReason;
-            const hint = [
-              changeCount > 0 && changesLabel ? `+${changesLabel}` : null,
-              busy ? "when this turn ends" : null,
-            ].filter(Boolean).join(" · ");
+            // No repository there: the full setup asks before cloning.
+            const needsClone = machine.hasRepository === false;
+            const hint = needsClone
+              ? "will clone the repo"
+              : [
+                changeCount > 0 && changesLabel ? `brings ${changesLabel}` : null,
+                busy ? "when this turn ends" : null,
+              ].filter(Boolean).join(" · ");
             return (
               <div key={machine.machineKey} className="flex items-center gap-0.5" data-testid="session-menu-move-machine">
                 <button
@@ -232,7 +294,14 @@ export function CrossMachineMoveSubmenu({
                   disabled={!available}
                   title={available ? undefined : machine.unavailableReason ?? "Offline"}
                   className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:text-muted-fg/45 disabled:hover:bg-transparent")}
-                  onClick={() => void quickBrief(machine.machineKey, machine.name)}
+                  onClick={() => {
+                    if (needsClone) {
+                      onClose();
+                      onOpenFullSetup(machine.machineKey);
+                      return;
+                    }
+                    void quickBrief(machine.machineKey, machine.name);
+                  }}
                 >
                   <span
                     className="kit-dot shrink-0"
@@ -240,14 +309,14 @@ export function CrossMachineMoveSubmenu({
                     aria-label={available ? "Online" : "Unavailable"}
                   />
                   <span className="min-w-0 flex-1 truncate">
-                    {available ? `Quick brief to ${machine.name}` : machine.name}
+                    {!available ? machine.name : needsClone ? `Set up ${machine.name}…` : `Quick brief to ${machine.name}`}
                   </span>
                   {available ? (
                     hint ? <span className="ml-2 shrink-0 text-[10px] text-muted-fg/55">{hint}</span> : null
                   ) : (
                     <span className="ml-2 shrink-0 text-[10px] text-muted-fg/45">{machine.unavailableReason ?? "Offline"}</span>
                   )}
-                  {busy && available ? <Hourglass size={11} className="shrink-0 text-muted-fg/45" aria-hidden /> : null}
+                  {busy && available && !needsClone ? <Hourglass size={11} className="shrink-0 text-muted-fg/45" aria-hidden /> : null}
                 </button>
                 {available ? (
                   <button
@@ -257,7 +326,7 @@ export function CrossMachineMoveSubmenu({
                     aria-label={`Set up the move to ${machine.name}`}
                     onClick={() => {
                       onClose();
-                      onOpenFullSetup(machine.name);
+                      onOpenFullSetup(machine.machineKey);
                     }}
                   >
                     <SlidersHorizontal size={12} />

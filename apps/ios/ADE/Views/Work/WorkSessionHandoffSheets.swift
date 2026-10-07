@@ -18,6 +18,145 @@ func workProviderSupportsHandoffFork(_ provider: String?) -> Bool {
   return ["claude", "codex", "opencode", "droid", "cursor"].contains(provider)
 }
 
+// MARK: - Session menu: Hand off ▸
+
+/// What a `Hand off ▸` item asks for.
+enum WorkSessionHandoffIntent: Equatable {
+  case local
+  case remote
+  case auto
+  case removeAuto
+  /// Cancel a pending move ("Keep it here").
+  case keepHere
+  /// Retry a move whose confirmation was lost — the same move
+  /// (`chat.retryCrossMachineHandoff`), never a new one.
+  case retryMove
+  /// Drop a lost move the person already checked (cancels it on the brain).
+  case dismissMove
+  /// Open the chat the move landed on (where the chat continues).
+  case openDestination
+}
+
+/// The Work row's `Hand off ▸` submenu: a new chat here, another machine, or
+/// a rule — plus the move this chat already has (Keep it here / Retry / Dismiss /
+/// Open on <machine>). Mirrors desktop `SessionContextMenu` +
+/// `CrossMachineMoveSubmenu`. Every flag is the chat's own brain's answer.
+struct WorkSessionHandoffMenu: View {
+  let session: TerminalSessionSummary
+  let record: AgentChatCrossMachineHandoffRecord?
+  let isChat: Bool
+  let localHandoffAvailable: Bool
+  let crossMachineHandoffAvailable: Bool
+  let crossMachineCancelAvailable: Bool
+  let crossMachineRetryAvailable: Bool
+  let autoHandoffAvailable: Bool
+  let autoHandoffRuleCount: Int?
+  let onHandoff: (TerminalSessionSummary, WorkSessionHandoffIntent) -> Void
+
+  private var move: AgentChatCrossMachineHandoffRecord? {
+    guard let record, !record.handoffId.isEmpty else { return nil }
+    return record
+  }
+
+  /// A move that is asking, waiting or sending, or one whose outcome is
+  /// unknown, rules out starting another: the brain would refuse it, and an
+  /// unknown one is settled by Retry (same handoff id), not a second move.
+  private var offersNewMove: Bool {
+    guard crossMachineHandoffAvailable else { return false }
+    guard let move else { return true }
+    return !move.isActive && move.state != .unknown
+  }
+
+  var body: some View {
+    if isChat && (localHandoffAvailable || crossMachineHandoffAvailable || autoHandoffAvailable || move != nil) {
+      Section {
+        Menu {
+          moveItems
+          if localHandoffAvailable {
+            Button {
+              onHandoff(session, .local)
+            } label: {
+              Label("Local handoff…", systemImage: "arrow.triangle.branch")
+            }
+          }
+          if offersNewMove {
+            Button {
+              onHandoff(session, .remote)
+            } label: {
+              Label("Another machine…", systemImage: "desktopcomputer")
+            }
+          }
+          if autoHandoffAvailable {
+            Divider()
+            Button {
+              onHandoff(session, .auto)
+            } label: {
+              Label((autoHandoffRuleCount ?? 0) > 0 ? "Edit auto handoff…" : "Auto handoff…",
+                    systemImage: "arrow.left.arrow.right")
+            }
+            if (autoHandoffRuleCount ?? 0) > 0 {
+              Button(role: .destructive) {
+                onHandoff(session, .removeAuto)
+              } label: {
+                Label("Remove auto handoff", systemImage: "nosign")
+              }
+            }
+          }
+        } label: {
+          Label("Hand off", systemImage: "arrowshape.turn.up.right")
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var moveItems: some View {
+    if let move {
+      if move.isActive {
+        if move.state == .sending {
+          // Status, not an action: nothing to do while it is in flight.
+          Button {} label: {
+            Label("Sending to \(move.machineLabel)…", systemImage: "arrow.up.right.circle")
+          }
+          .disabled(true)
+        } else if crossMachineCancelAvailable {
+          Button {
+            onHandoff(session, .keepHere)
+          } label: {
+            Label("Keep it here", systemImage: "hand.raised")
+          }
+        }
+      } else {
+        if move.state == .unknown, crossMachineRetryAvailable {
+          Button {
+            onHandoff(session, .retryMove)
+          } label: {
+            Label("Retry move to \(move.machineLabel)", systemImage: "arrow.clockwise")
+          }
+        }
+        // Where the chat continues outlives later attempts (`continuedOn`);
+        // an unknown move points at its own target, the chat to check.
+        if move.continuation != nil || move.state == .unknown,
+           let target = workCrossMachineHandoffOpenTarget(move) {
+          Button {
+            onHandoff(session, .openDestination)
+          } label: {
+            Label("Open on \(target.machineName)", systemImage: "arrow.up.forward.app")
+          }
+        }
+        if move.state == .unknown, crossMachineCancelAvailable {
+          Button {
+            onHandoff(session, .dismissMove)
+          } label: {
+            Label("Dismiss", systemImage: "xmark")
+          }
+        }
+      }
+      Divider()
+    }
+  }
+}
+
 // MARK: - Local handoff
 
 /// "Hand off ▸ Local handoff…": a new chat on this machine that continues the
@@ -74,7 +213,7 @@ struct WorkLocalHandoffSheet: View {
           if let errorMessage {
             Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
               .font(.caption)
-              .foregroundStyle(ADEColor.danger)
+              .foregroundStyle(ADEColor.warning)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
@@ -361,7 +500,7 @@ struct WorkAutoHandoffSheet: View {
             ADEKitCard(title: "Auto handoff") {
               if let loadError {
                 VStack(alignment: .leading, spacing: 8) {
-                  Text(loadError).font(.caption).foregroundStyle(ADEColor.danger)
+                  Text(loadError).font(.caption).foregroundStyle(ADEColor.warning)
                   Button("Try again") { Task { await load() } }.font(.caption.weight(.semibold))
                 }
               } else {
@@ -476,7 +615,7 @@ struct WorkAutoHandoffSheet: View {
     if let errorMessage {
       Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
         .font(.caption)
-        .foregroundStyle(ADEColor.danger)
+        .foregroundStyle(ADEColor.warning)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     VStack(spacing: 6) {
@@ -544,14 +683,19 @@ struct WorkAutoHandoffSheet: View {
     guard let existing, !busy else { return }
     busy = true
     defer { busy = false }
+    var remaining = existing
     do {
       for rule in existing {
         try await syncService.deleteAutomationRule(id: rule.id, forSessionId: subject.sessionId)
+        remaining.removeAll { $0.id == rule.id }
       }
       ADEHaptics.success()
       onChanged([])
       dismiss()
     } catch {
+      // Report what is actually left, so the menu doesn't keep offering
+      // rules that are already gone.
+      onChanged(remaining)
       ADEHaptics.error()
       errorMessage = error.localizedDescription
     }

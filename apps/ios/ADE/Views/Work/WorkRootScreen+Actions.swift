@@ -1226,26 +1226,35 @@ extension WorkRootListScreen {
     case .removeAuto:
       let ids = autoHandoffRuleIdsBySession[session.id] ?? []
       Task {
+        var remaining = ids
         do {
           for id in ids {
             try await syncService.deleteAutomationRule(id: id, forSessionId: session.id)
+            remaining.removeAll { $0 == id }
           }
           autoHandoffRuleIdsBySession[session.id] = []
           ADEHaptics.success()
         } catch {
+          // Keep only what is actually left, so a retry doesn't re-delete
+          // rules that are already gone.
+          autoHandoffRuleIdsBySession[session.id] = remaining
           ADEHaptics.error()
           actionErrorMessage = error.localizedDescription
         }
       }
     case .keepHere:
-      Task {
-        do {
-          try await syncService.cancelCrossMachineHandoff(sourceSessionId: session.id)
-          ADEHaptics.success()
-        } catch {
-          ADEHaptics.error()
-          actionErrorMessage = error.localizedDescription
-        }
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't keep the chat here") {
+        try await syncService.cancelCrossMachineHandoff(sourceSessionId: session.id)
+      }
+    case .retryMove:
+      // The same move again (same handoff id): the brain reconciles it through
+      // the destination's record and never starts a second chat.
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't retry the move") {
+        try await syncService.retryCrossMachineHandoff(sourceSessionId: session.id)
+      }
+    case .dismissMove:
+      runCrossMachineHandoffMenuAction(session, failure: "Couldn't dismiss the move") {
+        try await syncService.cancelCrossMachineHandoff(sourceSessionId: session.id)
       }
     case .openDestination:
       if let record = chatSummaries[session.id]?.crossMachineHandoff ?? session.crossMachineHandoff {
@@ -1254,20 +1263,67 @@ extension WorkRootListScreen {
     }
   }
 
-  /// Which chats already carry auto-handoff rules. A failed read leaves the
-  /// map untouched, so the menu falls back to "Auto handoff…" and the editor
-  /// does its own authoritative read.
-  func refreshAutoHandoffRuleIds() async {
-    guard inputs.autoHandoffAvailable, inputs.isLive else { return }
-    guard let rules = try? await syncService.sendDecodableCommand(
-      action: "automations.list",
-      as: [WorkAutomationRuleSummary].self
-    ) else { return }
-    var next: [String: [String]] = [:]
-    for rule in rules where rule.handoffAction != nil {
-      guard let sessionId = rule.scope?.sessionId, !sessionId.isEmpty else { continue }
-      next[sessionId, default: []].append(rule.id)
+  /// Runs one move command from the row menu, folds the record it answered
+  /// with into the row at once, then re-reads the chat's summary so the row
+  /// and an open chat agree with the brain.
+  private func runCrossMachineHandoffMenuAction(
+    _ session: TerminalSessionSummary,
+    failure: String,
+    _ operation: @escaping @MainActor () async throws -> AgentChatCrossMachineHandoffRecord?
+  ) {
+    Task { @MainActor in
+      do {
+        let record = try await operation()
+        ADEHaptics.success()
+        if let record, !record.handoffId.isEmpty, var summary = chatSummaries[session.id] {
+          summary.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+            current: summary.crossMachineHandoff,
+            incoming: record
+          )
+          if summary != chatSummaries[session.id] { chatSummaries[session.id] = summary }
+        }
+        syncService.applyCrossMachineHandoffActionResult(record, sessionId: session.id)
+        if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: session.id),
+           let fetched = try? await syncService.fetchChatSummary(sessionId: session.id) {
+          if fetched != chatSummaries[session.id] { chatSummaries[session.id] = fetched }
+          syncService.cacheChatSummary(fetched)
+        }
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = "\(failure): \(error.localizedDescription)"
+      }
     }
-    autoHandoffRuleIdsBySession = next
+  }
+
+  /// Which chats already carry auto-handoff rules. Rules live on the brain
+  /// that owns the chat, so the listed chats are grouped by their command
+  /// scope (this project, another project, another machine) and each scope is
+  /// read once, through the same routing the editor uses. A scope that can't
+  /// list rules, or whose read fails, keeps what the map already had for its
+  /// chats, so the menu falls back to "Auto handoff…" and the editor does its
+  /// own authoritative read.
+  func refreshAutoHandoffRuleIds() async {
+    var chatsByScope: [String: [String]] = [:]
+    for session in sessions where isChatSession(session) {
+      let scope = syncService.chatCommandScope(for: session.id)
+      chatsByScope["\(scope.projectId ?? "")|\(scope.rootPath ?? "")", default: []].append(session.id)
+    }
+    var next = autoHandoffRuleIdsBySession
+    for sessionIds in chatsByScope.values {
+      guard let representative = sessionIds.first,
+            syncService.autoHandoffRulesAvailable(sessionId: representative),
+            let rules = try? await syncService.listAutomationRules(forSessionId: representative)
+      else { continue }
+      let members = Set(sessionIds)
+      var found: [String: [String]] = [:]
+      for rule in rules where rule.handoffAction != nil {
+        guard let sessionId = rule.scope?.sessionId, members.contains(sessionId) else { continue }
+        found[sessionId, default: []].append(rule.id)
+      }
+      for sessionId in sessionIds {
+        next[sessionId] = found[sessionId] ?? []
+      }
+    }
+    if next != autoHandoffRuleIdsBySession { autoHandoffRuleIdsBySession = next }
   }
 }

@@ -50,11 +50,18 @@ function parseAutoHandoffDraft(payload: Record<string, unknown>): AutomationSave
   const candidate = draft as AutomationRuleDraft;
   const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
   const actions = Array.isArray(candidate.actions) ? candidate.actions : [];
+  // `legacyActions` and `execution` decide what a run does too, so they are
+  // held to the same bar: handoffs only, run by ADE itself (never an agent).
+  const legacyActions = candidate.legacyActions;
+  const execution = candidate.execution;
   if (
     !id.startsWith(AUTO_HANDOFF_RULE_ID_PREFIX)
     || candidate.origin !== "chat-menu"
     || actions.length === 0
     || actions.some((action) => action?.type !== "handoff")
+    || (legacyActions !== undefined
+      && (!Array.isArray(legacyActions) || legacyActions.some((action) => action?.type !== "handoff")))
+    || (execution !== undefined && execution !== null && execution?.kind !== "built-in")
   ) {
     throw new Error("Only auto-handoff rules can be saved from this device.");
   }
@@ -81,6 +88,10 @@ export function createAutomationRuleRemoteCommandHandlers(source: AutomationRule
         if (!id.startsWith(AUTO_HANDOFF_RULE_ID_PREFIX)) {
           throw new Error("Only auto-handoff rules can be removed from this device.");
         }
+        // Idempotent: a rule that is already gone is the outcome the phone
+        // asked for, so it gets the current list rather than an error it would
+        // have to recognise by its wording.
+        if (!source.list().some((rule) => rule.id === id)) return source.list();
         return source.deleteRule({ id });
       },
     },

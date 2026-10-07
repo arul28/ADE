@@ -554,8 +554,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatAcknowledgeCrossMachineHandoffArgs,
-  AgentChatCancelCrossMachineHandoffArgs,
-  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
@@ -7759,19 +7760,19 @@ const adeBridge = {
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     getCrossMachineHandoffOptions: async (
-      args: AgentChatCrossMachineHandoffOptionsArgs,
+      args: AgentChatCrossMachineHandoffSessionArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineHandoffOptions", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetCrossMachineHandoffOptions, args),
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
-    getCrossMachineHandoffState: async (
-      args: AgentChatCancelCrossMachineHandoffArgs,
+    previewCrossMachineHandoff: async (
+      args: AgentChatPreviewCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineHandoffState", { args }, () =>
-        ipcRenderer.invoke(IPC.agentChatGetCrossMachineHandoffState, args),
+    ): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "previewCrossMachineHandoff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPreviewCrossMachineHandoff, args),
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     startCrossMachineHandoff: async (
@@ -7783,7 +7784,7 @@ const adeBridge = {
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     cancelCrossMachineHandoff: async (
-      args: AgentChatCancelCrossMachineHandoffArgs,
+      args: AgentChatCrossMachineHandoffSessionArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "cancelCrossMachineHandoff", { args }, () =>
@@ -7791,7 +7792,7 @@ const adeBridge = {
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     retryCrossMachineHandoff: async (
-      args: AgentChatCancelCrossMachineHandoffArgs,
+      args: AgentChatCrossMachineHandoffSessionArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCrossMachineHandoffRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>

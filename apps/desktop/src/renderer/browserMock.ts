@@ -78,6 +78,10 @@ import {
   type AgentChatRecoverTurnArgs,
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
+  type AgentChatCrossMachineHandoffRecord,
+  type AgentChatCrossMachineHandoffSessionArgs,
+  type AgentChatPreviewCrossMachineHandoffArgs,
+  type AgentChatStartCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
   type ChatMentionKind,
   type ChatMentionSuggestArgs,
@@ -229,6 +233,9 @@ function createMockBrowserAgentAccess() {
     },
   };
 }
+
+/** The browser preview's move records, by source chat id. */
+const browserMockCrossMachineMoves = new Map<string, AgentChatCrossMachineHandoffRecord>();
 
 const resolvedArg =
   <T>(v: T) =>
@@ -6532,6 +6539,89 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
+      // The brain-owned move. The preview has one paired machine with the
+      // repository, so the setup modal can be walked end to end.
+      getCrossMachineHandoffOptions: async (args: AgentChatCrossMachineHandoffSessionArgs) => ({
+        machines: [{
+          machineKey: "mock-remote",
+          name: "Mock remote",
+          online: true,
+          unavailableReason: null,
+          hasRepository: true,
+        }],
+        blockers: [],
+        changes: null,
+        current: browserMockCrossMachineMoves.get(args.sourceSessionId) ?? null,
+      }),
+      previewCrossMachineHandoff: async (args: AgentChatPreviewCrossMachineHandoffArgs) => ({
+        machineKey: "mock-remote",
+        machineName: "Mock remote",
+        hasRepository: true,
+        preflight: {
+          providerAuthorized: true,
+          modelAvailable: true,
+          remoteBranchHeadSha: "1234567890abcdef1234567890abcdef12345678",
+          existingLaneId: null,
+          blockingErrors: [],
+          warnings: [],
+          ...(args.mode === "fork" ? { forkHandoffSupport: { supported: true } } : {}),
+          gitBundleSupport: true,
+        },
+      }),
+      startCrossMachineHandoff: async (args: AgentChatStartCrossMachineHandoffArgs) => {
+        const now = new Date().toISOString();
+        const record: AgentChatCrossMachineHandoffRecord = {
+          handoffId: `mock-move-${Date.now()}`,
+          state: args.whenTurnEnds ? "pending" : "sending",
+          checkpoint: null,
+          targetMachineKey: "mock-remote",
+          targetMachineName: "Mock remote",
+          mode: args.mode ?? "brief",
+          targetModelId: args.targetModelId,
+          includeChanges: args.includeChanges === true,
+          requestedBy: "user",
+          requestedAt: now,
+          updatedAt: now,
+          reason: null,
+          targetLaneId: null,
+          targetSessionId: null,
+          resumedHere: false,
+        };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, record);
+        return record;
+      },
+      cancelCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = { ...current, state: "cancelled" as const, updatedAt: new Date().toISOString() };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      retryCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) throw new Error("There is no move to retry.");
+        const next = { ...current, state: "sending" as const, reason: null, updatedAt: new Date().toISOString() };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      resolveCrossMachineHandoffApproval: async (args: { sourceSessionId: string; approve: boolean }) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = {
+          ...current,
+          state: args.approve ? "sending" as const : "cancelled" as const,
+          updatedAt: new Date().toISOString(),
+        };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
+      acknowledgeCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+        const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
+        if (!current) return null;
+        const next = { ...current, resumedHere: true, updatedAt: new Date().toISOString() };
+        browserMockCrossMachineMoves.set(args.sourceSessionId, next);
+        return next;
+      },
       send: async (args: AgentChatSendArgs) => {
         let text = args.text;
         if (args.includeThreadComments) {

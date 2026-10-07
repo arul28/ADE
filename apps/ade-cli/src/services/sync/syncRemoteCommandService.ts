@@ -72,6 +72,7 @@ import type {
   AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatStartCrossMachineHandoffArgs,
+  AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatProvider,
   AgentChatRewindFilesArgs,
@@ -1260,21 +1261,27 @@ function parseFastForwardCrossMachineHandoffLaneArgs(
   };
 }
 
-function parsePrepareCrossMachineHandoffArgs(
+/**
+ * The fields a move and its prepare step share: the source chat, the target
+ * model and its settings, the mode and whether changes travel. `action`
+ * names the command in error messages.
+ */
+function parseCrossMachineTargetArgs(
   value: Record<string, unknown>,
-): AgentChatPrepareCrossMachineHandoffArgs {
+  action: string,
+): Omit<AgentChatPrepareCrossMachineHandoffArgs, "handoffId"> {
   const parseNullableString = (key: string): string | null | undefined => {
     if (!(key in value)) return undefined;
     if (value[key] == null) return null;
     if (typeof value[key] !== "string") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a string or null.`);
+      throw new Error(`${action} ${key} must be a string or null.`);
     }
     return value[key].trim();
   };
   const parseBoolean = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} must be a boolean.`);
+      throw new Error(`${action} ${key} must be a boolean.`);
     }
     return value[key];
   };
@@ -1282,7 +1289,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!(key in value)) return undefined;
     const parsed = asTrimmedString(value[key]);
     if (!parsed || !allowed.includes(parsed as T)) {
-      throw new Error(`chat.prepareCrossMachineHandoff ${key} is invalid.`);
+      throw new Error(`${action} ${key} is invalid.`);
     }
     return parsed as T;
   };
@@ -1290,7 +1297,7 @@ function parsePrepareCrossMachineHandoffArgs(
     if (!("cursorConfigValues" in value)) return undefined;
     if (value.cursorConfigValues == null) return null;
     if (!isRecord(value.cursorConfigValues)) {
-      throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues must be an object or null.");
+      throw new Error(`${action} cursorConfigValues must be an object or null.`);
     }
     const entries = Object.entries(value.cursorConfigValues).map(([rawKey, entryValue]) => {
       const key = rawKey.trim();
@@ -1302,7 +1309,7 @@ function parsePrepareCrossMachineHandoffArgs(
           || (typeof entryValue === "number" && Number.isFinite(entryValue))
         )
       ) {
-        throw new Error("chat.prepareCrossMachineHandoff cursorConfigValues contains an invalid entry.");
+        throw new Error(`${action} cursorConfigValues contains an invalid entry.`);
       }
       return [key, entryValue] as const;
     });
@@ -1321,21 +1328,17 @@ function parsePrepareCrossMachineHandoffArgs(
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
-  const mode = parseHandoffMode(value.mode, "chat.prepareCrossMachineHandoff");
+  const mode = parseHandoffMode(value.mode, action);
   const includeChanges = parseBoolean("includeChanges");
   return {
     sourceSessionId: requireString(
       value.sourceSessionId,
-      "chat.prepareCrossMachineHandoff requires sourceSessionId.",
+      `${action} requires sourceSessionId.`,
     ),
     ...(mode !== undefined ? { mode } : {}),
-    handoffId: requireString(
-      value.handoffId,
-      "chat.prepareCrossMachineHandoff requires handoffId.",
-    ),
     targetModelId: requireString(
       value.targetModelId,
-      "chat.prepareCrossMachineHandoff requires targetModelId.",
+      `${action} requires targetModelId.`,
     ) as AgentChatPrepareCrossMachineHandoffArgs["targetModelId"],
     ...(continuationPrompt !== undefined ? { continuationPrompt } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
@@ -1353,14 +1356,19 @@ function parsePrepareCrossMachineHandoffArgs(
   };
 }
 
-/** Same target fields as prepare; the brain mints the handoff id itself. */
+function parsePrepareCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPrepareCrossMachineHandoffArgs {
+  return {
+    ...parseCrossMachineTargetArgs(value, "chat.prepareCrossMachineHandoff"),
+    handoffId: requireString(value.handoffId, "chat.prepareCrossMachineHandoff requires handoffId."),
+  };
+}
+
+/** The brain-owned move: the shared target fields plus where and when. */
 function parseStartCrossMachineHandoffArgs(
   value: Record<string, unknown>,
 ): AgentChatStartCrossMachineHandoffArgs {
-  const { handoffId: _handoffId, ...target } = parsePrepareCrossMachineHandoffArgs({
-    ...value,
-    handoffId: "start",
-  });
   const flag = (key: string): boolean | undefined => {
     if (!(key in value)) return undefined;
     if (typeof value[key] !== "boolean") throw new Error(`chat.startCrossMachineHandoff ${key} must be a boolean.`);
@@ -1369,10 +1377,29 @@ function parseStartCrossMachineHandoffArgs(
   const clone = flag("clone");
   const whenTurnEnds = flag("whenTurnEnds");
   return {
-    ...target,
+    ...parseCrossMachineTargetArgs(value, "chat.startCrossMachineHandoff"),
     machine: requireString(value.machine, "chat.startCrossMachineHandoff requires machine."),
     ...(clone !== undefined ? { clone } : {}),
     ...(whenTurnEnds !== undefined ? { whenTurnEnds } : {}),
+  };
+}
+
+function parsePreviewCrossMachineHandoffArgs(
+  value: Record<string, unknown>,
+): AgentChatPreviewCrossMachineHandoffArgs {
+  if ("includeChanges" in value && typeof value.includeChanges !== "boolean") {
+    throw new Error("chat.previewCrossMachineHandoff includeChanges must be a boolean.");
+  }
+  const mode = parseHandoffMode(value.mode, "chat.previewCrossMachineHandoff");
+  return {
+    sourceSessionId: requireString(value.sourceSessionId, "chat.previewCrossMachineHandoff requires sourceSessionId."),
+    machine: requireString(value.machine, "chat.previewCrossMachineHandoff requires machine."),
+    targetModelId: requireString(
+      value.targetModelId,
+      "chat.previewCrossMachineHandoff requires targetModelId.",
+    ) as AgentChatPreviewCrossMachineHandoffArgs["targetModelId"],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(value.includeChanges === true ? { includeChanges: true } : {}),
   };
 }
 
@@ -1416,6 +1443,7 @@ function parseValidateCrossMachineSourceArgs(
       value.capsuleFingerprint,
       "chat.validateCrossMachineSource requires capsuleFingerprint.",
     ),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
   };
 }
 
@@ -5015,10 +5043,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffOptions({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffOptions requires sourceSessionId."),
     }));
-  register("chat.getCrossMachineHandoffState", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineHandoffState({
-      sourceSessionId: requireString(payload.sourceSessionId, "chat.getCrossMachineHandoffState requires sourceSessionId."),
-    }));
+  // Read-only: asks the destination through this brain's own transport.
+  register("chat.previewCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").previewCrossMachineHandoff(
+      parsePreviewCrossMachineHandoffArgs(payload),
+    ));
   register("chat.startCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineHandoff({
       ...parseStartCrossMachineHandoffArgs(payload),
@@ -6196,14 +6225,6 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
 }
 
 /**
- * Apple device environment for remote surfaces.
- *
- * Project-scoped like `workTools.*` — a lane only exists inside a project — and
- * registered only when this runtime actually built a simulator service, so a
- * Windows brain or a chat-only runtime advertises no `apple.*` action at all
- * rather than a namespace whose every call throws.
- */
-/**
  * Auto-handoff rules (`automations.list` / `saveDraft` / `deleteRule`). Not
  * advertised unless the runtime wires a source, so the phone hides
  * "Auto handoff…" on a host without automations.
@@ -6226,6 +6247,14 @@ function registerAutomationRuleRemoteCommands({ args, register }: RemoteCommandR
   }
 }
 
+/**
+ * Apple device environment for remote surfaces.
+ *
+ * Project-scoped like `workTools.*` — a lane only exists inside a project — and
+ * registered only when this runtime actually built a simulator service, so a
+ * Windows brain or a chat-only runtime advertises no `apple.*` action at all
+ * rather than a namespace whose every call throws.
+ */
 function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Not advertised unless the runtime wires a source, so a client's
   // capability check hides the Webhooks pane on such a host.

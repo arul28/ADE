@@ -1769,6 +1769,13 @@ struct WorkSessionDestinationView: View {
        current.title != cached.title {
       current.title = cached.title
     }
+    // A cross-machine move record folded from a live notice (or an action's
+    // answer). Newer wins, so a fetched summary is never rolled back by an
+    // older cache entry.
+    current.crossMachineHandoff = AgentChatCrossMachineHandoffRecord.pickNewer(
+      current: current.crossMachineHandoff,
+      incoming: cached.crossMachineHandoff
+    )
     if current != chatSummary {
       chatSummary = current
     }

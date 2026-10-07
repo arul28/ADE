@@ -22,7 +22,7 @@ export const RETRYABLE_REMOTE_ACTIONS = new Set([
   // Reads only. Never `start`: a replayed start after a lost answer could
   // begin a second move.
   "chat.getCrossMachineHandoffOptions",
-  "chat.getCrossMachineHandoffState",
+  "chat.previewCrossMachineHandoff",
   "file.listTreeChildren",
   "file.quickOpen",
   "file.readFileRange",

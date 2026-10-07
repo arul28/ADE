@@ -12,10 +12,11 @@ import type {
   AgentChatCrossMachineHandoffCheckpoint,
   AgentChatCrossMachineHandoffRecord,
   AgentChatEventEnvelope,
+  AgentChatNoticeDetail,
   OpenProjectBinding,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { crossMachineContinuation } from "../../../shared/crossMachineHandoff";
+import { CROSS_MACHINE_HANDOFF_STEPS, crossMachineContinuation } from "../../../shared/crossMachineHandoff";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
@@ -30,28 +31,7 @@ import { cn } from "../ui/cn";
  * cancelled move or no move.
  */
 
-export type CrossMachineHandoffArrival = {
-  handoffId: string;
-  sourceMachineName: string;
-  sourceSessionId: string;
-  mode: "brief" | "fork";
-  unpushedCommits: number;
-  changedFiles: number;
-};
-
-const SEND_STEPS: Array<{ id: AgentChatCrossMachineHandoffCheckpoint; label: string }> = [
-  { id: "checked", label: "Checked" },
-  { id: "prepared", label: "Packed" },
-  { id: "destination_ready", label: "Destination ready" },
-  { id: "accepted", label: "Accepted" },
-];
-const CHECKPOINT_ORDER: AgentChatCrossMachineHandoffCheckpoint[] = [
-  "checked",
-  "prepared",
-  "destination_ready",
-  "accepted",
-  "marked",
-];
+export type CrossMachineHandoffArrival = NonNullable<AgentChatNoticeDetail["crossMachineHandoffArrival"]>;
 
 function modelLabel(modelId: string): string {
   return getModelById(modelId)?.displayName ?? modelId;
@@ -77,10 +57,10 @@ export function openChatOnOtherMachine(sessionId: string | null | undefined): vo
 }
 
 function SendSteps({ checkpoint }: { checkpoint: AgentChatCrossMachineHandoffCheckpoint | null }) {
-  const reached = checkpoint ? CHECKPOINT_ORDER.indexOf(checkpoint) : -1;
+  const reached = checkpoint ? CROSS_MACHINE_HANDOFF_STEPS.findIndex((step) => step.id === checkpoint) : -1;
   return (
     <ol className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px]" aria-label="Move progress">
-      {SEND_STEPS.map((step, index) => {
+      {CROSS_MACHINE_HANDOFF_STEPS.map((step, index) => {
         const done = index <= reached;
         const current = index === reached + 1;
         return (
@@ -136,19 +116,24 @@ export function CrossMachineHandoffBanner({
     setBusy(action);
     try {
       const api = window.ade.agentChat;
-      const next = action === "cancel"
-        ? await api.cancelCrossMachineHandoff({ sourceSessionId: sessionId }, runtimePin)
-        : action === "workHere"
-          ? await api.acknowledgeCrossMachineHandoff(
-            { sourceSessionId: sessionId, handoffId: continuation?.handoffId ?? record.handoffId },
-            runtimePin,
-          )
-        : action === "retry"
-          ? await api.retryCrossMachineHandoff({ sourceSessionId: sessionId }, runtimePin)
-          : await api.resolveCrossMachineHandoffApproval(
-            { sourceSessionId: sessionId, handoffId: record.handoffId, approve: action === "approve" },
-            runtimePin,
-          );
+      const session = { sourceSessionId: sessionId };
+      const calls: Record<BannerAction, () => Promise<AgentChatCrossMachineHandoffRecord | null>> = {
+        cancel: () => api.cancelCrossMachineHandoff(session, runtimePin),
+        retry: () => api.retryCrossMachineHandoff(session, runtimePin),
+        workHere: () => api.acknowledgeCrossMachineHandoff(
+          { ...session, handoffId: continuation?.handoffId ?? record.handoffId },
+          runtimePin,
+        ),
+        approve: () => api.resolveCrossMachineHandoffApproval(
+          { ...session, handoffId: record.handoffId, approve: true },
+          runtimePin,
+        ),
+        deny: () => api.resolveCrossMachineHandoffApproval(
+          { ...session, handoffId: record.handoffId, approve: false },
+          runtimePin,
+        ),
+      };
+      const next = await calls[action]();
       onRecord(next);
     } catch (error) {
       showToast({
@@ -177,6 +162,17 @@ export function CrossMachineHandoffBanner({
   const alreadyContinues = continuation && continuation.handoffId !== record.handoffId
     ? `This chat already continues on ${continuation.targetMachineName}.`
     : null;
+  // A failed or lost move on a chat that already continues elsewhere still
+  // sends new messages there; the person can take the chat back here.
+  const workHereAction = continuation && !record.resumedHere
+    ? [{
+      label: "Work here instead",
+      variant: "link" as const,
+      busy: busy === "workHere",
+      disabled: Boolean(busy),
+      onClick: () => void run("workHere"),
+    }]
+    : [];
   const meta = [
     record.mode === "fork" ? "Full history" : "Brief",
     modelLabel(record.targetModelId),
@@ -267,6 +263,7 @@ export function CrossMachineHandoffBanner({
         actions: [
           { label: "Retry", busy: busy === "retry", onClick: () => void run("retry") },
           ...(alreadyContinues && openContinuation ? [{ ...openContinuation, variant: "link" as const }] : []),
+          ...workHereAction,
           ...(record.reason
             ? [{
               label: detailsOpen ? "Hide details" : "Details",
@@ -287,6 +284,15 @@ export function CrossMachineHandoffBanner({
         actions: [
           ...(openAction ? [{ ...openAction, variant: "primary" as const }] : []),
           { label: "Retry", variant: "secondary", busy: busy === "retry", onClick: () => void run("retry") },
+          ...workHereAction,
+          // The person checked and wants it gone: the brain marks it cancelled.
+          {
+            label: "Dismiss",
+            variant: "link",
+            busy: busy === "cancel",
+            disabled: Boolean(busy),
+            onClick: () => void run("cancel"),
+          },
         ],
       };
       break;

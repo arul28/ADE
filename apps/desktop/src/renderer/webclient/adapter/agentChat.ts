@@ -11,6 +11,7 @@ import type {
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
+  AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
   AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -312,9 +313,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("getCrossMachineHandoffOptions", pin);
       return await callRequiredRead<AgentChatCrossMachineHandoffOptionsResult>("chat.getCrossMachineHandoffOptions", args);
     },
-    getCrossMachineHandoffState: async (args, pin) => {
-      guardPin("getCrossMachineHandoffState", pin);
-      return await callRequiredRead<AgentChatCrossMachineHandoffRecord | null>("chat.getCrossMachineHandoffState", args);
+    // Asks the destination through the source brain's own transport; a read,
+    // so it is safe to repeat.
+    previewCrossMachineHandoff: async (args, pin) => {
+      guardPin("previewCrossMachineHandoff", pin);
+      return await callRequiredRead<AgentChatPreviewCrossMachineHandoffResult>("chat.previewCrossMachineHandoff", args);
     },
     startCrossMachineHandoff: async (args, pin) => {
       guardPin("startCrossMachineHandoff", pin);

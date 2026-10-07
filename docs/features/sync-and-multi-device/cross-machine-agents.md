@@ -42,7 +42,10 @@ one row saying so.
 
 `ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO
 that one: here `--machine` names the destination, and the command runs on this
-machine's brain (it is exempt from `--machine` forwarding). It is the same move
+machine's brain. The move form is never forwarded, so you cannot move a chat
+that lives on another machine from here; and `--machine` with `--cancel`,
+`--retry` or `--options` is an error, because those act on this machine's own
+move. It is the same move
 the desktop modal, the session menu and the phone start; see
 [cross-machine session handoff](./cross-machine-session-handoff.md).
 
@@ -53,17 +56,29 @@ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 
 ade chat handoff <session> --machine "Mac mini" --model … --include-changes   # bring uncommitted/unpushed work
 ade chat handoff <session> --machine "Mac mini" --model … --clone             # set the repo up there first
 ade chat handoff <session> --machine "Mac mini" --model … --when-turn-ends    # queue it from inside a turn
-ade chat handoff <session> --cancel                # keep a queued or awaiting move here
-ade chat handoff <session> --retry                 # retry a failed move with the same choices
+ade chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
+ade chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
 ```
 
 - The call returns the move record at once; the move continues in the brain
   and the chat's banner shows it. Read the record later with
   `ade chat handoff <session> --options --json` (`current`).
 - An agent moving its own chat mid-turn needs `--when-turn-ends`. Any newer
-  message from the person cancels a queued move.
+  message from the person cancels a queued move (a scheduled wake or another
+  agent's message does not).
+- A chat-bound agent can list options for, move, cancel, retry or preview only
+  its own chat.
+- An agent's move runs at the chat's own permission level: permission flags
+  (`--permissions`, `--sandbox`, …) are dropped, and the destination chat gets
+  the source chat's level in the target model's provider (a provider that
+  can't express it steps down, never up).
+- An `unknown` move (the answer was lost) blocks a new one until it is retried
+  or dismissed with `--cancel`. A retry whose chat changed since the move was
+  sent is refused for `unknown` (it may have landed) and prepared afresh for
+  `failed`.
 - A chat that is not full-auto waits for the person to approve an
   agent-requested move. An `ade` shell with no chat identity counts as an agent.
+  After the person denies one, the agent can't ask again for two minutes.
 - Blockers come back as one line each with a fix ("run `ade git push --lane …`,
   or pass --include-changes"); nothing is sent while any remain.
 

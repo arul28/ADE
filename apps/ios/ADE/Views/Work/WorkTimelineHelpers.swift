@@ -4792,6 +4792,12 @@ func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // A cross-machine move's live state carrier and a destination's arrival
+      // marker are state, not conversation (desktop hides both). Their kind is
+      // promoted from `status` on the live and replay paths alike.
+      guard kind != AgentChatNoticeKind.crossMachineHandoffState.rawValue,
+            kind != AgentChatNoticeKind.crossMachineHandoffArrived.rawValue
+      else { return nil }
       // Automatic provider retries/reconnects are live working state. Older
       // hosts persisted one notice per attempt; keep replay from rebuilding
       // the same wall of cards that desktop and TUI intentionally suppress.
@@ -4908,6 +4914,8 @@ func eventCard(
         tint: noticeTint(for: kind),
         timestamp: envelope.timestamp,
         body: message,
+        // A move's "ended" notice arrives without its detail
+        // (`systemNoticeStatusHidesDetail`), so it shows its message only.
         bullets: detail.map { [$0] } ?? [],
         metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized],
         // The raw kind, so the diagnostics fold can treat a routine kind whose

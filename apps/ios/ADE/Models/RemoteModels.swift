@@ -2296,6 +2296,16 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// is what lets the timeline draw the "Use reset" control instead of a dead
   /// sentence. See `normalizedSystemNoticeKind(from:)`.
   case resetCreditAvailable = "reset_credit_available"
+  /// Live-only move-state carrier (`status: "cross_machine_handoff_state"`,
+  /// empty message, `detail.crossMachineHandoffState`). State, not
+  /// conversation: SyncService folds the record into the chat summary and the
+  /// timeline never draws it. Promoted from `status` — see
+  /// `normalizedSystemNoticeKind(from:)`.
+  case crossMachineHandoffState = "cross_machine_handoff_state"
+  /// The durable "arrived from <machine>" marker on a destination chat
+  /// (`status: "cross_machine_handoff_arrived"`). Desktop reads it for a
+  /// banner and never draws it as a row; neither does the phone.
+  case crossMachineHandoffArrived = "cross_machine_handoff_arrived"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2337,8 +2347,18 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.hostAwake.rawValue: return .hostAwake
   case "authentication_failed": return .auth
   case AgentChatNoticeKind.resetCreditAvailable.rawValue: return .resetCreditAvailable
+  case AgentChatNoticeKind.crossMachineHandoffState.rawValue: return .crossMachineHandoffState
+  case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   default: return nil
   }
+}
+
+/// Whether a `system_notice` with this `status` keeps its `detail` out of the
+/// timeline. A move's "ended" notice (`cross_machine_handoff_ended`) says it
+/// all in its message; its detail is the move record, which SyncService folds
+/// into the chat summary from the raw payload, so the decoded notice drops it.
+func systemNoticeStatusHidesDetail(_ status: String?) -> Bool {
+  status?.trimmingCharacters(in: .whitespacesAndNewlines) == "cross_machine_handoff_ended"
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {
@@ -4295,7 +4315,9 @@ extension AgentChatEvent {
         self = .systemNotice(
           noticeKind: normalizedSystemNoticeKind(from: noticeStatus) ?? declaredKind,
           message: try container.decode(String.self, forKey: .message),
-          detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
+          detail: try systemNoticeStatusHidesDetail(noticeStatus)
+            ? nil
+            : container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
           turnId: eventTurnId,
           steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
         )
@@ -8034,7 +8056,8 @@ struct AgentChatCrossMachineContinuation: Codable, Equatable, Hashable {
 struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
   var handoffId: String
   var state: AgentChatCrossMachineHandoffState
-  /// Last durable step passed: checked, prepared, destination_ready, accepted, marked.
+  /// Last durable step passed: prepared, destination_ready, accepted, marked
+  /// (`workCrossMachineHandoffSteps`).
   var checkpoint: String?
   var targetMachineKey: String
   var targetMachineName: String
@@ -8049,13 +8072,15 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
   var reason: String?
   var targetLaneId: String?
   var targetSessionId: String?
+  /// The permission level the chat runs with there (the source chat's own).
+  var targetPermissionLabel: String?
   /// Where the chat last landed, kept across later move attempts.
   var continuedOn: AgentChatCrossMachineContinuation?
   var resumedHere: Bool
 
   private enum CodingKeys: String, CodingKey {
     case handoffId, state, checkpoint, targetMachineKey, targetMachineName, mode, targetModelId
-    case includeChanges, requestedBy, requestedAt, updatedAt, reason, targetLaneId, targetSessionId, continuedOn, resumedHere
+    case includeChanges, requestedBy, requestedAt, updatedAt, reason, targetLaneId, targetSessionId, targetPermissionLabel, continuedOn, resumedHere
   }
 
   init(
@@ -8073,6 +8098,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
     reason: String? = nil,
     targetLaneId: String? = nil,
     targetSessionId: String? = nil,
+    targetPermissionLabel: String? = nil,
     continuedOn: AgentChatCrossMachineContinuation? = nil,
     resumedHere: Bool = false
   ) {
@@ -8090,6 +8116,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
     self.reason = reason
     self.targetLaneId = targetLaneId
     self.targetSessionId = targetSessionId
+    self.targetPermissionLabel = targetPermissionLabel
     self.continuedOn = continuedOn
     self.resumedHere = resumedHere
   }
@@ -8120,6 +8147,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
       reason: string(.reason),
       targetLaneId: string(.targetLaneId),
       targetSessionId: string(.targetSessionId),
+      targetPermissionLabel: string(.targetPermissionLabel),
       continuedOn: ((try? c.decodeIfPresent(AgentChatCrossMachineContinuation.self, forKey: .continuedOn)) ?? nil)
         .flatMap { $0.targetSessionId.isEmpty ? nil : $0 },
       resumedHere: bool(.resumedHere)
@@ -8142,6 +8170,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
     try c.encodeIfPresent(reason, forKey: .reason)
     try c.encodeIfPresent(targetLaneId, forKey: .targetLaneId)
     try c.encodeIfPresent(targetSessionId, forKey: .targetSessionId)
+    try c.encodeIfPresent(targetPermissionLabel, forKey: .targetPermissionLabel)
     try c.encodeIfPresent(continuedOn, forKey: .continuedOn)
     try c.encode(resumedHere, forKey: .resumedHere)
   }
@@ -8163,14 +8192,38 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
     )
   }
 
+  /// A move that is still asking, waiting or in flight. Mirrors
+  /// `isCrossMachineHandoffActive` in shared/crossMachineHandoff.ts.
+  var isActive: Bool {
+    switch state {
+    case .awaitingApproval, .pending, .sending: return true
+    case .continued, .failed, .cancelled, .unknown, .other: return false
+    }
+  }
+
   /// New messages go to the destination: it continued there, no move is under
   /// way, and the person hasn't chosen to work here instead.
   var sendsElsewhere: AgentChatCrossMachineContinuation? {
-    if resumedHere { return nil }
-    switch state {
-    case .awaitingApproval, .pending, .sending: return nil
-    default: return continuation
+    if resumedHere || isActive { return nil }
+    return continuation
+  }
+
+  /// Which of two records about the same chat to keep. Records arrive from a
+  /// live notice, an action's answer and a summary refresh in any order; a
+  /// late older one must not replace a newer one. A different move (another
+  /// handoffId) wins when it was requested later; the same move by
+  /// `updatedAt`. Mirrors `pickNewerCrossMachineHandoffRecord`.
+  static func pickNewer(
+    current: AgentChatCrossMachineHandoffRecord?,
+    incoming: AgentChatCrossMachineHandoffRecord?
+  ) -> AgentChatCrossMachineHandoffRecord? {
+    guard let incoming else { return current }
+    guard let current else { return incoming }
+    func time(_ value: String) -> TimeInterval { workParsedDate(value)?.timeIntervalSince1970 ?? 0 }
+    if current.handoffId != incoming.handoffId {
+      return time(incoming.requestedAt) >= time(current.requestedAt) ? incoming : current
     }
+    return time(incoming.updatedAt) >= time(current.updatedAt) ? incoming : current
   }
 
   /// The machine's display name, falling back to its key.
