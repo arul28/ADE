@@ -455,11 +455,19 @@ describe("cross-machine move orchestrator", () => {
     expect(h.outcomes).toEqual([{ handoffId: started.handoffId, outcome: state }]);
   });
 
-  it("an unknown move blocks a new one until dismissed, and one chat moves once at a time", async () => {
+  // A move that may have landed: its answer was lost, or it failed after
+  // acceptance started (the destination can fail after the chat began).
+  it.each([
+    ["unknown", lostAnswer],
+    ["failed after acceptance", () => {
+      throw new Error("Mac mini refused the move: the destination failed after it started.");
+    }],
+  ] as const)("a %s move blocks a new one until dismissed, and one chat moves once at a time", async (_label, accept) => {
     const h = createHarness();
-    h.setAccept(lostAnswer);
+    h.setAccept(accept);
     const lost = await h.start();
     await h.settled();
+    expect(h.hasOutbox(lost.handoffId)).toBe(true);
 
     await expect(h.start()).rejects.toThrow(/may have landed/);
     const options = await h.orchestrator.getOptions(SESSION);

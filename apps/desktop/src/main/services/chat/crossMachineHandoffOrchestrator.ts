@@ -511,7 +511,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       });
     }
     const current = deps.readPersisted(sourceSessionId)?.record ?? null;
-    if (current?.state === "unknown") {
+    if (current && mayHaveLanded(current)) {
       blockers.push({
         id: "move_unknown",
         title: `A move to ${current.targetMachineName} may have landed`,
@@ -553,6 +553,16 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     return match;
   };
 
+  /**
+   * The destination may already hold this move's chat: the answer was lost
+   * (`unknown`), or it failed after acceptance started (its capsule is still
+   * kept for a reconciling retry). A new move would get a new handoffId the
+   * destination can't reconcile, so it could start a second chat there.
+   */
+  const mayHaveLanded = (record: AgentChatCrossMachineHandoffRecord | null | undefined): boolean =>
+    Boolean(record && (record.state === "unknown"
+      || (record.state === "failed" && deps.outbox.read(record.handoffId))));
+
   const refuseIfMoving = (sourceSessionId: string): CrossMachineHandoffPersisted | null => {
     const existing = deps.readPersisted(sourceSessionId);
     if (existing && isCrossMachineHandoffActive(existing.record)) {
@@ -560,8 +570,8 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         `This chat is already moving to ${existing.record.targetMachineName}. Cancel that move first.`,
       );
     }
-    if (existing?.record.state === "unknown") {
-      const name = existing.record.targetMachineName;
+    if (mayHaveLanded(existing?.record)) {
+      const name = existing!.record.targetMachineName;
       throw new Error(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`);
     }
     return existing;
@@ -691,9 +701,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     if (persisted.record.state === "sending") {
       throw new Error("The move is already being sent and can't be stopped now.");
     }
-    // Dismissing a move whose answer was lost: the person checked (or chose
+    // Dismissing a move that may have landed: the person checked (or chose
     // not to), and its capsule goes with it so nothing can resend it.
-    if (persisted.record.state === "unknown") {
+    if (mayHaveLanded(persisted.record)) {
       return end(sourceSessionId, persisted, "cancelled", "You dismissed the move.");
     }
     if (persisted.record.state !== "pending" && persisted.record.state !== "awaiting_approval") {

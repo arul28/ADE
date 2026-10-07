@@ -86,7 +86,10 @@ outbox kept. When the capsule is stale:
 - a restart that finds a stale capsule for a `sending` move ends it `unknown`
   with the same words.
 
-An `unknown` move blocks a new one: `startCrossMachineHandoff` refuses ("A move
+A move that may have landed blocks a new one. That is an `unknown` move, and a
+`failed` move that failed after acceptance started (its capsule is kept: the
+destination can fail after the chat began, and a new `handoffId` could start a
+second chat there). `startCrossMachineHandoff` refuses ("A move
 to <machine> may have landed. Retry it, or open <machine> to check, or dismiss
 it."), and the options list it as the `move_unknown` blocker. The person (or the
 chat's own agent) clears it with **Retry**, or dismisses it with
