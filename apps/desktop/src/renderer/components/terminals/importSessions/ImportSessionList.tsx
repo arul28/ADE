@@ -1,12 +1,56 @@
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { Banner } from "../../ui/notice";
 import { ToolLogo } from "../ToolLogos";
-import { PROVIDER_TOOL_TYPE, type ExternalSessionSummary } from "./contract";
-import { sessionKey, type SessionPlace } from "./importBrowserModel";
+import { importProviderLabel } from "../../../../shared/externalSessionPolicy";
+import { PROVIDER_TOOL_TYPE, type ExternalSessionProvider, type ExternalSessionSummary } from "./contract";
+import { sessionKey, type ProviderFilter, type SessionPlace } from "./importBrowserModel";
 import { LiveBadge, MetaSeparator, PlaceLabel } from "./ImportSessionParts";
 import { formatPromptCount, formatUpdatedAtCompact, sessionHeading } from "./sessionPresentation";
 
 export type SessionGroup = { label: string; rows: ExternalSessionSummary[] };
+
+/**
+ * Provider filter over the session list: one segmented control, each option a
+ * logo, a name and its count, so it reads as a summary and filters the list.
+ */
+export function ImportProviderFilter({
+  providerChips,
+  totalCount,
+  providerFilter,
+  onProviderFilterChange,
+}: {
+  providerChips: Array<{ provider: ExternalSessionProvider; count: number }>;
+  totalCount: number;
+  providerFilter: ProviderFilter;
+  onProviderFilterChange: (filter: ProviderFilter) => void;
+}) {
+  return (
+    <div className="import-providers">
+      <div className="kit-seg" data-case="sentence" role="group" aria-label="Provider">
+        <button
+          type="button"
+          aria-pressed={providerFilter === "all"}
+          onClick={() => onProviderFilterChange("all")}
+        >
+          All
+          <span className="kit-num">{totalCount}</span>
+        </button>
+        {providerChips.map((chip) => (
+          <button
+            key={chip.provider}
+            type="button"
+            aria-pressed={providerFilter === chip.provider}
+            onClick={() => onProviderFilterChange(chip.provider)}
+          >
+            <ToolLogo toolType={PROVIDER_TOOL_TYPE[chip.provider]} size={13} />
+            {importProviderLabel(chip.provider)}
+            <span className="kit-num">{chip.count}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const ImportSessionRow = memo(function ImportSessionRow({
   summary,

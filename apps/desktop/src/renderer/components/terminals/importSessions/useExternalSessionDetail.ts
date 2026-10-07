@@ -84,14 +84,14 @@ export function useExternalSessionDetail(
       const getOnce = () => api.getDetail?.({ provider: summary.provider, sessionId: summary.id }, runtimePin);
       try {
         // A failed watch still leaves a plain read: no live updates, but the
-        // whole conversation instead of the list row's text samples.
+        // whole conversation instead of the list row's text samples. The
+        // cleanup still unwatches, so main drops whatever the failed start claimed.
         const loaded = localWatch
-          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId }).catch(() => {
-            watching = false;
-            return getOnce();
-          })
+          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId }).catch(() => getOnce())
           : await getOnce();
-        if (loaded) apply(loaded);
+        // No source file means the store has no such session (a detail with
+        // nothing in it); the list row's samples beat an empty preview.
+        if (loaded && (loaded.sourcePath || loaded.events?.length || loaded.messages?.length)) apply(loaded);
         else if (!cancelled) setError("Couldn't load this conversation.");
       } catch {
         if (!cancelled) setError("Couldn't load this conversation.");

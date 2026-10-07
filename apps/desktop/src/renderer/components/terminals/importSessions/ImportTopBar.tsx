@@ -2,58 +2,8 @@ import type { RefObject } from "react";
 import { ArrowClockwise, CircleNotch, MagnifyingGlass } from "@phosphor-icons/react";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { DraftMachinePicker } from "../../chat/DraftMachinePicker";
-import { ToolLogo } from "../ToolLogos";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
-import { importProviderLabel } from "../../../../shared/externalSessionPolicy";
-import {
-  PROVIDER_TOOL_TYPE,
-  type ExternalSessionProvider,
-  type ExternalSessionSource,
-} from "./contract";
-import type { ProviderFilter } from "./importBrowserModel";
-
-/**
- * Provider filter over the session list: one segmented control, each option a
- * logo, a name and its count, so it reads as a summary and filters the list.
- */
-export function ImportProviderFilter({
-  providerChips,
-  totalCount,
-  providerFilter,
-  onProviderFilterChange,
-}: {
-  providerChips: Array<{ provider: ExternalSessionProvider; count: number }>;
-  totalCount: number;
-  providerFilter: ProviderFilter;
-  onProviderFilterChange: (filter: ProviderFilter) => void;
-}) {
-  return (
-    <div className="import-providers">
-      <div className="kit-seg" data-case="sentence" role="group" aria-label="Provider">
-        <button
-          type="button"
-          aria-pressed={providerFilter === "all"}
-          onClick={() => onProviderFilterChange("all")}
-        >
-          All
-          <span className="kit-num">{totalCount}</span>
-        </button>
-        {providerChips.map((chip) => (
-          <button
-            key={chip.provider}
-            type="button"
-            aria-pressed={providerFilter === chip.provider}
-            onClick={() => onProviderFilterChange(chip.provider)}
-          >
-            <ToolLogo toolType={PROVIDER_TOOL_TYPE[chip.provider]} size={13} />
-            {importProviderLabel(chip.provider)}
-            <span className="kit-num">{chip.count}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+import type { ExternalSessionSource } from "./contract";
 
 /** One row of 28px controls: lane, search, computer, refresh. */
 export function ImportTopBar({

@@ -43,9 +43,9 @@ import {
   type SessionPlace,
 } from "./importBrowserModel";
 import { ImportActionBar } from "./ImportActionBar";
-import { ImportSessionList, type SessionGroup } from "./ImportSessionList";
+import { ImportProviderFilter, ImportSessionList, type SessionGroup } from "./ImportSessionList";
 import { ImportSessionPreview } from "./ImportSessionPreview";
-import { ImportProviderFilter, ImportTopBar } from "./ImportTopBar";
+import { ImportTopBar } from "./ImportTopBar";
 import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
 
