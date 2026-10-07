@@ -101,8 +101,8 @@ function compareByMode(
 /**
  * Full ordering key, in priority order:
  *
- *   1. the primary lane, always first — in every mode, drag included
- *   2. tier: pinned → active → quiet
+ *   1. pinned lanes, then the primary lane — in every mode, drag included
+ *   2. tier: active → quiet
  *   3. the active sort mode
  *   4. createdAt desc, then id — a total, stable tiebreak
  *
@@ -115,9 +115,11 @@ export function compareWorkLanes(
   mode: WorkLaneSortMode,
   manualIndex: ReadonlyMap<string, number>,
 ): number {
-  const aPrimary = a.laneType === "primary" ? 0 : 1;
-  const bPrimary = b.laneType === "primary" ? 0 : 1;
-  if (aPrimary !== bPrimary) return aPrimary - bPrimary;
+  // Pins lead, because a pin is the user's own "keep this on top". The primary
+  // lane comes next, as the fixed landmark of the unpinned list.
+  const aLead = a.pinned ? 0 : a.laneType === "primary" ? 1 : 2;
+  const bLead = b.pinned ? 0 : b.laneType === "primary" ? 1 : 2;
+  if (aLead !== bLead) return aLead - bLead;
 
   const tierDelta = TIER_RANK[workLaneTier(a)] - TIER_RANK[workLaneTier(b)];
   if (tierDelta !== 0) return tierDelta;

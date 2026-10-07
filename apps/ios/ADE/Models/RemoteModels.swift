@@ -1230,6 +1230,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// Work the live turn still has open (commands, tools, foreground subagents,
+  /// pending approvals). Present, zero included, while a turn is live; an older
+  /// host omits it, which means unknown, never zero.
+  var turnOpenWorkCount: Int? = nil
   var threadId: String?
   var requestedCwd: String?
   // Spawn lineage
@@ -1304,6 +1308,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId

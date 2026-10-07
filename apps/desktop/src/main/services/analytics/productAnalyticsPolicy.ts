@@ -163,6 +163,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // says the surface was reached — it cannot tell a Browser install from a Git
   // one. Never a lane, project, tab, URL, or session.
   "tool_opened",
+  // Whether an installation uses the Work tab's Focus view (busy lanes folded)
+  // and its Focus grid (every waiting chat side by side). Two coarse modes,
+  // never a lane, chat, count, or page.
+  "focus_mode",
   // Which live view an installation actually watches an iOS simulator through.
   // `tool_ios` says the pane was opened; it cannot tell an install that drives
   // a simulator on this Mac from one driving a Mac across the room, which is
@@ -362,6 +366,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
     "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop",
+    // The two Work Focus modes, prefixed like the tool ids so they cannot be
+    // confused with another action's outcome.
+    "mode_focus", "mode_focus_grid",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

@@ -6713,8 +6713,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
-  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async () =>
-    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories());
+  register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
+    requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
+      refresh: payload.refresh === true,
+    }));
   register("ai.listCursorCloudAgents", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudAgents({
       includeArchived: payload.includeArchived !== false,

@@ -284,6 +284,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
+import type { SubagentLink } from "../sessions/sessionSettleTeardown";
 import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -4531,6 +4532,13 @@ type ManagedChatSession = {
   /** See `PersistedChatState.historyGeneration`. Absent means 1. */
   historyGeneration?: number;
   lastActivityTimestamp: number;
+  /**
+   * Work the current turn still has open (a running command, tool call,
+   * foreground subagent, or approval), folded from every emitted event with the
+   * shared `trackTurnInFlight` contract and reset at each turn start. A silent
+   * turn holding open work is waiting, not stalled. Created on first use.
+   */
+  turnOpenWork?: Set<string>;
   turnBeforeSha: string | null;
   /** The dirty tree at turn start; scopes an uncommitted turn's diff summary. */
   turnBeforeTree: Promise<WorkingTreeFingerprint | null> | null;
@@ -4810,6 +4818,21 @@ const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
+/** Codex turn items that are work a turn waits on in silence while in progress. */
+const CODEX_OPEN_WORK_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "commandExecution",
+  "fileChange",
+  "toolCall",
+  "dynamicToolCall",
+  "mcpToolCall",
+  "webSearch",
+  "imageGeneration",
+  "delegation",
+  "collabAgentToolCall",
+  "collabToolCall",
+  "subAgentActivity",
+  "sleep",
+]);
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
@@ -20215,6 +20238,15 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    if (
+      (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
+      || normalizedEvent.type === "done"
+    ) {
+      managed.turnOpenWork?.clear();
+    } else {
+      managed.turnOpenWork ??= new Set<string>();
+      trackTurnInFlight(managed.turnOpenWork, normalizedEvent);
+    }
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
@@ -36469,6 +36501,36 @@ export function createAgentChatService(args: {
       }
 
       if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+
+      // A silent turn that still owns a running command or tool is waiting on
+      // it, not stalled: a test suite with buffered output can print nothing
+      // for longer than the watchdog. When the app-server answered, its turn
+      // items decide (they also cover work ADE never saw start, and an entry
+      // ADE leaked cannot hold the watchdog off). ADE's own fold answers only
+      // when the probe failed. Keep watching, so a turn that stays silent
+      // after the work finishes is still caught.
+      const openWorkItem = currentTurn
+        ? codexTurnItems(currentTurn).find((item) =>
+            CODEX_OPEN_WORK_ITEM_TYPES.has(stringOrNull(item.type) ?? "")
+            && isCodexReconciledItemInProgress(item.status))
+        : undefined;
+      const hasOpenWork = currentTurn ? openWorkItem != null : (managed.turnOpenWork?.size ?? 0) > 0;
+      if (stallReason === "no_progress" && hasOpenWork) {
+        logger.info("agent_chat.codex_watchdog_suspended", {
+          sessionId: managed.session.id,
+          turnId,
+          reason: "open_work",
+          openWorkCount: managed.turnOpenWork?.size ?? 0,
+          openItemType: openWorkItem ? stringOrNull(openWorkItem.type) : null,
+        });
+        armCodexTurnProgressWatchdog(managed, runtime, {
+          turnId,
+          startedAt: turnStartedAt,
+          lastProgressAt,
+          firstUsefulProgressSeen: true,
+        }, CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS);
         return;
       }
 
@@ -55472,6 +55534,11 @@ export function createAgentChatService(args: {
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
+      // Present (zero included) whenever a turn is live: a reader treats a
+      // missing count as unknown (an older host) and never calls that stalled.
+      ...(liveSession?.status === "active"
+        ? { turnOpenWorkCount: liveManaged?.turnOpenWork?.size ?? 0 }
+        : {}),
       // Omitted when nothing is live, like every other optional field here: a
       // zero record carries no information and would ride along on every
       // summary read for every session.
@@ -55536,6 +55603,39 @@ export function createAgentChatService(args: {
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
+  };
+
+  /**
+   * The subagents of these sessions, for the settle cascade. Peers are left
+   * out: a peer is independent work, so filing its parent away must not stop
+   * it. Each lane is scanned once per batch, and lineage is read from the live
+   * session or its persisted state, never a full summary (a summary can write).
+   * A tracked CLI child records only its parent, so it counts as a subagent.
+   */
+  const listSubagentLinks = async (parentSessionIds: readonly string[]): Promise<SubagentLink[]> => {
+    const parents = new Set(parentSessionIds);
+    const laneIds = new Set<string>();
+    for (const id of parents) {
+      const laneId = sessionService.get(id)?.laneId;
+      if (laneId) laneIds.add(laneId);
+    }
+    const children: SubagentLink[] = [];
+    for (const laneId of laneIds) {
+      for (const row of sessionService.list({ laneId, limit: null })) {
+        if (parents.has(row.id)) continue;
+        if (row.orchestrationParentSessionId && parents.has(row.orchestrationParentSessionId)) {
+          children.push({ sessionId: row.id, parentSessionId: row.orchestrationParentSessionId });
+          continue;
+        }
+        if (!isChatToolType(row.toolType)) continue;
+        const lineage = managedSessions.get(row.id)?.session ?? readPersistedState(row.id);
+        const parentId = lineage?.orchestrationParentSessionId?.trim();
+        if (parentId && parents.has(parentId) && lineage?.spawnKind === "subagent") {
+          children.push({ sessionId: row.id, parentSessionId: parentId });
+        }
+      }
+    }
+    return children;
   };
 
   // --- Event-driven waits ---------------------------------------------------
@@ -63127,6 +63227,7 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listSubagentLinks,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,

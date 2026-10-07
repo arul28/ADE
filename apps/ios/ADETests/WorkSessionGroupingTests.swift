@@ -672,8 +672,9 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   // MARK: - Ordering tiers
 
-  func testPrimaryLaneLeadsEveryTier() {
+  func testPinnedLanesLeadThenPrimaryLeadsEveryTier() {
     // The primary lane is the oldest and quiet — every other key would sink it.
+    // A pin is the user's own "keep this on top", so it still comes first.
     let primary = makeLane(id: "lane-primary", name: "Primary", laneType: "primary", createdAt: "2026-01-01T00:00:00.000Z")
     let pinned = makeLane(id: "lane-pinned", name: "Pinned", createdAt: "2026-06-01T00:00:00.000Z")
     let active = makeLane(id: "lane-active", name: "Active", createdAt: "2026-05-01T00:00:00.000Z")
@@ -687,7 +688,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       ]
     )
 
-    XCTAssertEqual(ordered.map(\.id), ["lane-primary", "lane-pinned", "lane-active"])
+    XCTAssertEqual(ordered.map(\.id), ["lane-pinned", "lane-primary", "lane-active"])
   }
 
   func testTierOrderIsPinnedThenActiveThenQuiet() {
@@ -954,36 +955,40 @@ final class WorkSessionGroupingTests: XCTestCase {
   /// few hours later, so the two clocks file it under different headers — which
   /// is exactly what a single threaded clock has to prevent.
   func testByStatusFilesAgainstTheInjectedClock() {
+    // A snooze that ends a minute from now: the injected clock alone decides
+    // whether the chat is still filed as snoozed or back among the done ones.
     let lane = makeLane(id: "lane-a", name: "feature/one")
-    let calm = makeSession(
+    let snoozed = makeSession(
       id: "s-1",
       laneId: lane.id,
       runtimeState: "idle",
+      snoozedUntil: iso(now.addingTimeInterval(60)),
+      snoozedAt: iso(now.addingTimeInterval(-60)),
       chatIdleSinceAt: iso(now.addingTimeInterval(-60))
     )
 
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
-        sessions: [calm],
+        sessions: [snoozed],
         chatSummaries: [:],
         archivedSessionIds: [],
         orderedLanes: [lane],
         now: now
       ).map(\.id),
-      ["status:done"]
+      [workSnoozedSectionId]
     )
 
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
-        sessions: [calm],
+        sessions: [snoozed],
         chatSummaries: [:],
         archivedSessionIds: [],
         orderedLanes: [lane],
-        now: now.addingTimeInterval(sessionStaleAfterSeconds + 60)
+        now: now.addingTimeInterval(120)
       ).map(\.id),
-      ["status:running"]
+      ["status:done"]
     )
   }
 

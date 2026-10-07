@@ -60,7 +60,7 @@ import type {
 import { addTokenCounts, readFiniteNumber, readTrimmedText } from "../acpTelemetryReaders";
 import { openReadOnlyDatabase } from "../../../projects/readOnlySqlite";
 import { copilotSessionStorePath } from "../../../shared/providerConfigHomes";
-import { getErrorMessage } from "../../../shared/utils";
+import { isSqliteBusyOrLockedError } from "../../../state/sqliteErrors";
 import { COPILOT_USAGE_TABLE } from "../../../usage/providerLedgerFormats";
 import { uncachedInputTokens } from "../../../usage/tokenSplit";
 
@@ -70,9 +70,6 @@ const COPILOT_LEDGER_READ_ATTEMPTS = 3;
 const COPILOT_LEDGER_RETRY_DELAY_MS = 40;
 /** A turn with more requests than this is not a turn; stop reading. */
 const COPILOT_LEDGER_ROW_LIMIT = 5_000;
-/** SQLite primary result codes for a store another connection holds. */
-const SQLITE_BUSY = 5;
-const SQLITE_LOCKED = 6;
 
 export type CopilotUsageRow = Record<string, unknown>;
 
@@ -173,14 +170,6 @@ export function summarizeCopilotUsageRows(rows: readonly CopilotUsageRow[]): Acp
   };
 }
 
-/** True when SQLite reported the store busy or locked, the one error worth a retry. */
-function isBusyError(error: unknown): boolean {
-  const code = (error as { errcode?: unknown } | null)?.errcode;
-  // Extended result codes (SQLITE_BUSY_SNAPSHOT, ...) carry the primary in the low byte.
-  if (typeof code === "number" && [SQLITE_BUSY, SQLITE_LOCKED].includes(code & 0xff)) return true;
-  return /database (?:table )?is locked|busy/i.test(getErrorMessage(error));
-}
-
 /**
  * Read one Copilot ACP session's rows from the ledger, one turn at a time.
  * Every failure resolves `null`; nothing here may break or stall a turn.
@@ -228,7 +217,7 @@ export function createCopilotUsageLedger(args: {
         } catch (error) {
           // A missing store or table, or anything else that is not a lock,
           // will not change on a retry.
-          if (!isBusyError(error)) return null;
+          if (!isSqliteBusyOrLockedError(error)) return null;
         }
       }
       return null;

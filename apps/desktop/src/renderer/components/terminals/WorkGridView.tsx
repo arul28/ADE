@@ -94,6 +94,7 @@ export function WorkGridView({
   onAddSessionToGrid,
   onRemoveFromGrid,
   onFocusSession,
+  columns,
   className,
 }: {
   gridSet: WorkGridSet;
@@ -107,6 +108,8 @@ export function WorkGridView({
   /** A tile was dragged out of the grid (released outside any pane). */
   onRemoveFromGrid: (sessionId: string) => void;
   onFocusSession: (sessionId: string) => void;
+  /** Tiles per row for the seed layout; omitted = near-square auto layout. */
+  columns?: number;
   className?: string;
 }) {
   const members = useMemo(
@@ -123,8 +126,8 @@ export function WorkGridView({
   // each poll and retriggered PaneTilingLayout's load effect — a visible flicker.
   const liveMemberKey = members.map((m) => m.id).join("|");
   const fallbackTree = useMemo(
-    () => buildWorkSessionTilingTree(liveMemberKey ? liveMemberKey.split("|") : [], "auto"),
-    [liveMemberKey],
+    () => buildWorkSessionTilingTree(liveMemberKey ? liveMemberKey.split("|") : [], "auto", columns),
+    [columns, liveMemberKey],
   );
 
   const panes = useMemo(() => {

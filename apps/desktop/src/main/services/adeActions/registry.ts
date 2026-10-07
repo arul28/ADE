@@ -2243,7 +2243,8 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
       void runtime.agentChatService?.refreshScheduledWork();
     },
-    listCursorCloudRepositories: () => aiIntegrationService.listCursorCloudRepositories(),
+    listCursorCloudRepositories: (args?: { refresh?: boolean }) =>
+      aiIntegrationService.listCursorCloudRepositories({ refresh: args?.refresh === true }),
     listCursorCloudAgents: (args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) =>
       aiIntegrationService.listCursorCloudAgents(args ?? {}),
     listCursorCloudRuns: (args?: { agentId?: string; limit?: number; cursor?: string | null }) =>

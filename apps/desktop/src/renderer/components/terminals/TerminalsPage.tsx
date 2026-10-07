@@ -6,7 +6,10 @@ import type { PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
-import { WorkViewArea } from "./WorkViewArea";
+import { SessionSurface, WorkViewArea } from "./WorkViewArea";
+import { WorkGridView } from "./WorkGridView";
+import { WorkFocusGridEmpty, WorkFocusRoster } from "./WorkFocusGrid";
+import { useWorkFocusGrid } from "./useWorkFocusGrid";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
@@ -60,6 +63,7 @@ import {
 } from "../../lib/sessions";
 import {
   addSessionBesideTarget,
+  findGridSetForSession,
   makeGridLayoutId,
   makeGridSetId,
   MAX_WORK_GRID_TILES,
@@ -232,6 +236,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const hasProjectSidebar = useHasProjectSidebar();
   const projectSidebarHidden = useProjectSidebarHidden();
+  const focusGridMode = work.workViewMode !== "board" && work.workFoldBusyLanes && work.workFocusGrid;
+  const focus = useWorkFocusGrid({
+    enabled: focusGridMode,
+    // With the sessions sidebar on screen, the sidebar is the grid's roster.
+    sidebarIsRoster: hasProjectSidebar && !projectSidebarHidden,
+    projectStateKey,
+    rememberSessionPin: machineRouter.rememberSessionPin,
+  });
+  const { focusSession } = focus;
   const [boardHost, setBoardHost] = useState<HTMLDivElement | null>(null);
 
   const refreshWorkSessionsAfterLaneDelete = useCallback(
@@ -358,12 +371,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
          early, because multi-select is a thing you do while staying on the
          board. The toggle in the toolbar is the way back. */
       if (work.workViewMode === "board") work.setWorkViewMode("list");
+      // In the Focus grid a row click focuses that chat's tile. A chat with no
+      // tile (it is working, or the grid is full) opens in the normal view.
+      if (work.workFocusGrid && work.workFoldBusyLanes && work.workViewMode !== "board") {
+        if (!focusSession(id)) work.setWorkFocusGrid(false);
+      }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
       if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
     },
-    [selectableSessions, selectionAnchorId, work],
+    [focusSession, selectableSessions, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(
@@ -1708,6 +1726,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   runtimePin={activeWorkSessionRuntimePin}
                   maximized={workToolsMaximized}
                   onMaximizedChange={setWorkToolsMaximized}
+                  showOwner={Boolean(activeWorkSession && findGridSetForSession(work.gridSets, activeWorkSession.id))}
                 />
               </motion.div>
             ) : null}
@@ -1728,6 +1747,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       </NativeToolFeedsProvider>
     ),
     [
+      work.gridSets,
       activeLaneId,
       activeWorkSession,
       activeWorkSessionRuntimePin,
@@ -1762,19 +1782,75 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const boardMode = work.workViewMode === "board";
   const boardBesideList = boardMode && hasProjectSidebar && !projectSidebarHidden;
 
-  /**
-   * The session roster. It lives in the project sidebar in list mode, stays
-   * there beside the board in board mode, and fills the main area only when
-   * the board has no sidebar to sit next to.
-   *
-   * One element, not two call sites: the toolbar it owns — search, the
-   * List/Board toggle, filters, new chat — must be the same control in every
-   * mode, and the pane's cross-machine subscription must not run twice.
-   */
+  /** Leave the grid and open this chat in the normal view, where Tools live. */
+  const openFocusChatInWork = useLatestCallback((sessionId: string) => {
+    setSelectedSessionIds(new Set());
+    setSelectionAnchorId(sessionId);
+    work.setSelectedSessionId(sessionId);
+    work.openSessionTab(sessionId);
+    work.setWorkFocusGrid(false);
+  });
+  const renderFocusSurface = useLatestCallback((session: TerminalSessionSummary) => (
+    <SessionSurface
+      session={session}
+      lanes={sortedLanes}
+      isActive={session.id === focus.activeId}
+      shouldAutofocus={session.id === focus.focusedId}
+      runtimePin={focus.bindingById.get(session.id) ?? resolveSessionRuntimePin(session)}
+      pageActive={active}
+      terminalVisible
+      onContextMenu={handleContextMenu}
+      onInfoClick={handleInfoClick}
+      onOpenChatSession={handleOpenChatSession}
+      onContinueCliSession={handleContinueCliSession}
+      onResumeCliSession={handleResumeCliSession}
+      onToggleTerminalPane={toggleTerminalPane}
+      onOpenTerminalPane={openTerminalPane}
+      terminalPaneOpen={terminalPaneOpen}
+      onOpenFullView={() => openFocusChatInWork(session.id)}
+    />
+  ));
+  const focusGrid = focusGridMode ? (
+    <div className="flex h-full min-h-0 w-full flex-col" data-testid="work-focus-grid">
+      <div key={focus.pageKey} {...focus.pageProps}>
+        {focus.members.length === 0 ? (
+          <WorkFocusGridEmpty workingCount={work.runningFiltered.length} onLeaveGrid={() => work.setWorkFocusGrid(false)} />
+        ) : focus.members.length === 1 ? (
+          renderFocusSurface(focus.members[0]!)
+        ) : (
+          <WorkGridView
+            gridSet={focus.gridSet}
+            sessions={focus.members}
+            lanes={sortedLanes}
+            activeItemId={focus.activeId}
+            renderSession={renderFocusSurface}
+            onFocusSession={focus.setFocusedId}
+            columns={focus.columns}
+            // Membership follows what waits for the user, not drags.
+            onAddSessionToGrid={() => {}}
+            onRemoveFromGrid={() => {}}
+            className="ade-work-grid-tiling h-full min-h-0"
+          />
+        )}
+      </div>
+      {focus.rosterProps ? (
+        <WorkFocusRoster
+          {...focus.rosterProps}
+          onChatContextMenu={(session, event) => handleContextMenu(session, event, focus.bindingById.get(session.id) ?? null)}
+        />
+      ) : null}
+    </div>
+  ) : null;
+
   // Stable handles for the session list: these callbacks are rebuilt whenever
   // the sessions, selection or filters change (several times a second while
   // agents run), and each new identity re-rendered every lane header and card.
   const listSelectSession = useLatestCallback(handleSelectSession);
+  // A new draft draws in the normal view, so starting one leaves the grid.
+  const listShowDraftKind = useLatestCallback((...args: Parameters<typeof work.showDraftKind>) => {
+    if (work.workFocusGrid) work.setWorkFocusGrid(false);
+    return work.showDraftKind(...args);
+  });
   const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
   const listClearSelection = useLatestCallback(() => {
     setSelectedSessionIds(new Set());
@@ -1785,6 +1861,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const listBulkStopAndDelete = useLatestCallback(handleBulkStopAndDeleteSelected);
   const listRefreshOrphanSessions = useLatestCallback(handleRefreshOrphanSessions);
 
+  // In the Focus grid the sidebar's one filled row is the focused tile, not
+  // the chat that was last open in the normal view (it may be on another page).
+  const listSelectedSessionId = focus.selectedSessionId ?? work.selectedSessionId;
+
+  /**
+   * The session roster. It lives in the project sidebar in list mode, stays
+   * there beside the board in board mode, and fills the main area only when
+   * the board has no sidebar to sit next to.
+   *
+   * One element, not two call sites: the toolbar it owns — search, the
+   * List/Board toggle, filters, new chat — must be the same control in every
+   * mode, and the pane's cross-machine subscription must not run twice.
+   */
   const sessionListPane = useMemo(
     () => (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
@@ -1804,13 +1893,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setFilterLaneId={work.setFilterLaneId}
             q={work.q}
             setQ={work.setQ}
-            selectedSessionId={work.selectedSessionId}
+            selectedSessionId={listSelectedSessionId}
             selectedSessionIds={selectedSessionIds}
             gridSets={work.gridSets}
             activeItemId={work.activeItemId}
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
-            onShowDraftKind={work.showDraftKind}
+            onShowDraftKind={listShowDraftKind}
             onSelectSession={listSelectSession}
             onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
             onClearSelection={listClearSelection}
@@ -1839,6 +1928,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setWorkLaneSortMode={work.setWorkLaneSortMode}
             workFoldBusyLanes={work.workFoldBusyLanes}
             setWorkFoldBusyLanes={work.setWorkFoldBusyLanes}
+            workFocusGrid={work.workFocusGrid}
+            setWorkFocusGrid={work.setWorkFocusGrid}
+            onFocusQueueChange={focus.setQueueItems}
+            focusMarks={focus.marks}
+            focusPager={focus.pager}
             workSeenAtBySessionId={work.workSeenAtBySessionId}
             workLaneOrder={work.workLaneOrder}
             reorderWorkLanes={work.reorderWorkLanes}
@@ -1848,6 +1942,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       </div>
     ),
     [
+      listShowDraftKind,
       work,
       active,
       sortedLanes,
@@ -1855,6 +1950,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       listSelectForeignRuntimeSession,
       listClearSelection,
       selectedSessionIds,
+      listSelectedSessionId,
       listBulkClose,
       listBulkDelete,
       listBulkStopAndDelete,
@@ -1863,6 +1959,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handoffLaunchJobs,
       boardBesideList,
       boardHost,
+      focus.marks,
+      focus.pager,
+      focus.setQueueItems,
     ],
   );
 
@@ -1875,7 +1974,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   let mainArea: React.ReactNode;
-  if (boardBesideList) {
+  if (focusGridMode && hasProjectSidebar) {
+    mainArea = (
+      <div className="ade-work-surface flex min-h-0 min-w-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+        {focusGrid}
+      </div>
+    );
+  } else if (boardBesideList) {
     /* Board mode never renders the chat beside the board. That also keeps
        `workSidebarWidthPct`, the user's LIST-mode tools width, untouched on
        the round trip. Clicking a card selects the session and flips back to
@@ -2033,10 +2138,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onClose={() => setBulkMenu(null)}
         pinnedSessionIds={work.pinnedSessionIds}
         onSetPinned={(sessionIds, pinned) => {
-          const current = new Set(work.pinnedSessionIds);
-          for (const id of sessionIds) {
-            if (current.has(id) !== pinned) work.togglePinnedSession(id);
-          }
+          const ids = new Set(sessionIds);
+          void work.setSessionsPinned(selectedSessionsInSidebarOrder.filter((session) => ids.has(session.id)), pinned);
         }}
         gridSessionIds={gridSessionIds}
         gridableSessionIds={gridableSessionIds}

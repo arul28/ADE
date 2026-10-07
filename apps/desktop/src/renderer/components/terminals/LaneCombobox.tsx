@@ -1,4 +1,5 @@
 import type React from "react";
+import { Z_LAYERS } from "../ui/zLayers";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "motion/react";
@@ -313,7 +314,11 @@ type LaneComboboxProps = {
   /** Optional trailing text on the "all" row, e.g. a total count. */
   allDetail?: string | null;
   placeholder?: string;
-  compact?: boolean;
+  /**
+   * Trigger height: 30px by default, 28px `compact`, or 24px `dense` to sit in
+   * a form of 24px menu buttons (the Work filter panel).
+   */
+  size?: "default" | "compact" | "dense";
   /**
    * When provided, the popover search row gains a trailing borderless "+" that
    * opens the full create-lane dialog. The lane is configured there and only
@@ -329,6 +334,12 @@ type LaneComboboxProps = {
   "aria-label"?: string;
 };
 
+const LANE_COMBOBOX_TRIGGER_SIZE_CLASS = {
+  default: "h-[30px] px-2.5",
+  compact: "h-7 px-2",
+  dense: "h-6 px-2",
+} as const;
+
 export function LaneCombobox({
   lanes,
   machines,
@@ -338,7 +349,7 @@ export function LaneCombobox({
   allLabel = "All lanes",
   allDetail = null,
   placeholder = "Select lane...",
-  compact = false,
+  size = "default",
   onCreateLane = null,
   variant = "default",
   fullWidth = false,
@@ -509,7 +520,7 @@ export function LaneCombobox({
     // Owns `position: fixed` and the upward `translateY`. `.ade-lane-popover`
     // is `position: relative` so framer-motion's `y` cannot overwrite it.
     position: "fixed",
-    zIndex: 9999,
+    zIndex: Z_LAYERS.contextMenu,
     left: placement?.left ?? 0,
     width: placement?.width ?? POPOVER_MIN_WIDTH,
     top: placement?.top ?? 0,
@@ -532,7 +543,7 @@ export function LaneCombobox({
     "transition-colors duration-100 hover:border-fg/[0.13] hover:bg-fg/[0.06]",
     "data-[open=true]:border-fg/[0.16] data-[open=true]:bg-fg/[0.07]",
     variant === "pill" ? "rounded-full" : "rounded-md",
-    compact ? "h-7 px-2" : "h-[30px] px-2.5",
+    LANE_COMBOBOX_TRIGGER_SIZE_CLASS[size],
     fullWidth
       ? "w-full"
       // fullWidth means "fill the container" — only the free-standing form caps.

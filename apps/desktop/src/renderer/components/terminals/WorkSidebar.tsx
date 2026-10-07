@@ -24,7 +24,8 @@ import {
 import { useLanesForPin } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
+import { isChatToolType, isPtyContextInsertableToolType, primarySessionLabel } from "../../lib/sessions";
+import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
@@ -137,6 +138,7 @@ export function WorkSidebar({
   runtimePin = null,
   maximized = false,
   onMaximizedChange,
+  showOwner = false,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -161,6 +163,12 @@ export function WorkSidebar({
   /** The pane fills the Work page, tabs and all. Owned by the page. */
   maximized?: boolean;
   onMaximizedChange?: (next: boolean) => void;
+  /**
+   * Name the chat and lane the pane serves. A grid shows several chats at once
+   * and the pane belongs to the focused one; without this line nothing says
+   * which.
+   */
+  showOwner?: boolean;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<LaneDiffMode | null>(null);
@@ -700,6 +708,26 @@ export function WorkSidebar({
         onCloseTool={closeTool}
         onClose={closePane}
       />
+      {showOwner && activeSession ? (
+        <div
+          className="flex h-7 shrink-0 items-center gap-1.5 border-b border-fg/[0.06] px-3 text-[11px]"
+          data-testid="work-tools-owner"
+        >
+          <span className="shrink-0 text-muted-fg/70">For</span>
+          {activeLane ? (
+            <>
+              <span
+                aria-hidden
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: resolveLaneAccentColor(activeLane) ?? "var(--color-muted-fg)" }}
+              />
+              <span className="min-w-0 max-w-[45%] shrink truncate text-muted-fg">{activeLane.name}</span>
+              <span aria-hidden className="shrink-0 text-muted-fg/50">·</span>
+            </>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate font-medium text-fg/85">{primarySessionLabel(activeSession)}</span>
+        </div>
+      ) : null}
       {/* A true crossfade, so the two surfaces overlap rather than the pane
           blanking between them: both children are absolutely positioned and
           the outgoing one stops taking pointer events the moment it starts to

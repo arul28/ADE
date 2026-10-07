@@ -941,9 +941,12 @@ export function detachedDevRuntimeEnv(
     // the agent shell we just stripped.
     ...devRuntimeEnv(socketPath, projectRoot, inherited),
     // An explicit value wins: a developer debugging a quiet brain can raise or
-    // disable the budget without editing this file.
+    // disable the budget (`0`) without editing this file. It is read from its
+    // own name, because `ADE_RUNTIME_IDLE_EXIT_MS` is stripped above (an ADE
+    // shell can carry another runtime's timer), so reading it from the
+    // sanitized env could never see the developer's value.
     ADE_RUNTIME_IDLE_EXIT_MS:
-      inherited.ADE_RUNTIME_IDLE_EXIT_MS?.trim()
+      parentEnv.ADE_DEV_RUNTIME_IDLE_EXIT_MS?.trim()
       || String(DEV_RUNTIME_IDLE_EXIT_MS),
   };
 }

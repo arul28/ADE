@@ -10,6 +10,8 @@ import {
 } from "../../shared/sessionCanonicalState";
 import {
   sessionStatusPresentation,
+  sessionTurnStallMs,
+  turnSilenceAnchorMs,
   SESSION_TONE_DOT_CLASS,
   type SessionStatusOverlay,
   type SessionStatusPresentation,
@@ -139,6 +141,8 @@ export type SessionCanonicalUiInput = {
   currentTurnStartedAt?: TerminalSessionSummary["currentTurnStartedAt"];
   activeBackgroundTaskCount?: number;
   backgroundWork?: SessionBackgroundWork | null;
+  /** Live-turn open work (host fold); see `sessionTurnStallMs`. */
+  turnOpenWorkCount?: number;
   nowMs?: number;
 };
 
@@ -168,6 +172,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     currentTurnStartedAt: session.currentTurnStartedAt,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount,
     backgroundWork: backgroundWorkFromSummary(session),
+    turnOpenWorkCount: session.turnOpenWorkCount,
   };
 }
 
@@ -260,6 +265,34 @@ export function sessionStatusDisplay(
     nowMs: session.nowMs,
     usageLimitResume: session.usageLimitResume ?? null,
   });
+}
+
+/**
+ * The "No output" status for a live turn that went quiet with no open work,
+ * or null when the turn is not stalled. Amber and prominent: the row stops
+ * claiming "Working" and asks the user to look. The elapsed counts from when
+ * the turn went silent: its last output, or its start when the last output
+ * belongs to an earlier turn (the same anchor the stall rule uses).
+ */
+export function sessionStalledPresentation(
+  session: SessionCanonicalUiInput,
+  nowMs: number = Date.now(),
+): SessionStatusPresentation | null {
+  // The cheap timestamp check first: most rows have no live turn at all, and
+  // this runs for every sidebar row on every render.
+  if (sessionTurnStallMs(session, nowMs) === null) return null;
+  const state = sessionCanonicalUiState(session);
+  if (state.phase !== "running" || (state.liveness && state.liveness !== "turn")) return null;
+  const silentSinceMs = turnSilenceAnchorMs(session);
+  return {
+    label: "No output",
+    tone: "amber",
+    glyph: "stale",
+    showsElapsed: true,
+    prominent: true,
+    activityDetail: true,
+    ...(silentSinceMs != null ? { activityUpdatedAt: new Date(silentSinceMs).toISOString() } : {}),
+  };
 }
 
 /** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */

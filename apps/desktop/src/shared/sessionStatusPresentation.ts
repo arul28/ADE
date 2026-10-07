@@ -506,15 +506,66 @@ export function turnStallSilenceMs(
   session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
   nowMs: number = Date.now(),
 ): number | null {
+  const anchorMs = turnSilenceAnchorMs(session);
+  if (anchorMs == null) return null;
+  const silentForMs = nowMs - anchorMs;
+  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+}
+
+/** When the turn's silence started: the later of its last output and its start. */
+export function turnSilenceAnchorMs(session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null }): number | null {
   const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
   const turnMs = session.currentTurnStartedAt ? Date.parse(session.currentTurnStartedAt) : Number.NaN;
   const anchorMs = Math.max(
     Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
     Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
   );
-  if (!Number.isFinite(anchorMs)) return null;
-  const silentForMs = nowMs - anchorMs;
-  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+  return Number.isFinite(anchorMs) ? anchorMs : null;
+}
+
+export type TurnStallInput = {
+  lastActivityAt?: string | null;
+  currentTurnStartedAt?: string | null;
+  turnOpenWorkCount?: number | null;
+};
+
+/**
+ * How long a live turn has been stalled, or null when it is not stalled.
+ *
+ * Stalled means: a turn is live, it owns no open work (no running command,
+ * tool, foreground subagent or pending approval, per the host's fold), and it
+ * has been silent past `TURN_STALL_AFTER_MS`. A turn waiting on a long test run
+ * owns open work, so it is never called stalled. The caller decides the turn
+ * is live (its canonical phase is running); this answers only the stall.
+ */
+export function sessionTurnStallMs(session: TurnStallInput, nowMs: number = Date.now()): number | null {
+  return turnCanStall(session) ? turnStallSilenceMs(session, nowMs) : null;
+}
+
+/**
+ * A live turn known to own no open work, so silence alone can stall it. A
+ * missing count is unknown (a host older than the count), never zero: such a
+ * turn may be waiting on a long command, so it is not called stalled.
+ */
+function turnCanStall(session: TurnStallInput): boolean {
+  return Boolean(session.currentTurnStartedAt) && session.turnOpenWorkCount === 0;
+}
+
+/**
+ * The next instant one of these live turns crosses the stall bar, so a
+ * surface can re-evaluate exactly then instead of polling. Null when none can.
+ */
+export function nextTurnStallDeadlineMs(sessions: Iterable<TurnStallInput>, nowMs: number = Date.now()): number | null {
+  let next: number | null = null;
+  for (const session of sessions) {
+    if (!turnCanStall(session)) continue;
+    const anchorMs = turnSilenceAnchorMs(session);
+    if (anchorMs == null) continue;
+    const deadline = anchorMs + TURN_STALL_AFTER_MS;
+    if (deadline <= nowMs) continue;
+    if (next === null || deadline < next) next = deadline;
+  }
+  return next;
 }
 
 export function formatFutureDuration(timestampMs: number, nowMs: number): string {

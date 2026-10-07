@@ -742,3 +742,29 @@ of native layout and paint; `useWorkSessions` polls `session.list` every 5 s
 for a hidden project too (~6 ms of brain time each round); opening a long
 chat still forces layout in `ThreadCommentLayer` and re-parses markdown
 (~45 ms).
+
+### Focus grid and many live chats (sixth pass)
+
+Measured in the dev app on a real project, App Control detached, `ps`
+cputime over 15 s windows, one chat streaming throughout.
+
+- **Measure with App Control detached.** An attached `ade app-control` session
+  kept the Electron main process at ~86% of a core and the GPU near 60%,
+  independent of the UI on screen. Detach (`ade app-control stop`) before
+  sampling; toggle UI with a CDP `eval` click instead.
+- **The window backdrop must not wake on other elements' scrolls.** The top
+  bar's `WorkToolPickerBackdrop` listened to capture-phase `scroll` on the
+  window and treated every layout read as "someone is looking", so any
+  streaming chat (which scrolls itself) kept the gradient drawing at 12–30 fps
+  forever, and each frame re-layered the whole page. With six chat tiles that
+  was ~2.4 s of `Layerize` in 10 s. Now a scroll counts only when its target
+  contains the canvas, and only a canvas that actually moved restarts the
+  freeze clock. Six-tile grid: GPU 30% → 8%, renderer 44% → 7–8%; single
+  chat: GPU 46% → 9.5%, renderer 26% → 6.6%.
+- **Do not pulse an SVG element.** `ContextUsageDial` pulsed its `<circle>`
+  while a turn ran; the pulse now runs on an HTML wrapper (same look).
+- **Per-pane network reads multiply in a grid.** `useCursorCloudDraftState`
+  ran in every chat pane and called Cursor's repositories endpoint (5/min per
+  account) on mount; six tiles hit the limit. It now runs only for a chat that
+  can still launch to Cursor Cloud (no output yet), and the repo list is
+  shared in flight and cached for 5 minutes.

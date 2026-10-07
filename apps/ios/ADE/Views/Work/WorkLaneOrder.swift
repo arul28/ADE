@@ -117,8 +117,8 @@ private func compareByMode(
 
 /// Full ordering key, in priority order:
 ///
-///   1. the primary lane, always first — in every mode
-///   2. tier: pinned → active → quiet
+///   1. pinned lanes, then the primary lane — in every mode
+///   2. tier: active → quiet
 ///   3. the active sort mode
 ///   4. createdAt desc, then id — a total, stable tiebreak
 ///
@@ -130,9 +130,10 @@ func compareWorkLanes(
   mode: WorkLaneSortMode = .created,
   manualIndex: [String: Int] = [:]
 ) -> Int {
-  let aPrimary = a.laneType == "primary" ? 0 : 1
-  let bPrimary = b.laneType == "primary" ? 0 : 1
-  if aPrimary != bPrimary { return aPrimary - bPrimary }
+  // Pins lead, then the primary lane. Mirrors desktop `compareWorkLanes`.
+  let aLead = a.tier == .pinned ? 0 : a.laneType == "primary" ? 1 : 2
+  let bLead = b.tier == .pinned ? 0 : b.laneType == "primary" ? 1 : 2
+  if aLead != bLead { return aLead - bLead }
 
   let tierDelta = a.tier.rawValue - b.tier.rawValue
   if tierDelta != 0 { return tierDelta }

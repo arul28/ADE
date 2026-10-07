@@ -235,6 +235,7 @@ export function CliSessionWorkSurfaceHeader({
   onContextMenu,
   onStopRunningSession,
   onToggleToolsPane,
+  onOpenFullView,
   toolsPaneOpen,
   onTogglePrPane,
   prPaneOpen,
@@ -249,6 +250,8 @@ export function CliSessionWorkSurfaceHeader({
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   onToggleToolsPane?: () => void;
+  /** Focus grid: replaces the Tools toggle with "open in full view". */
+  onOpenFullView?: () => void;
   toolsPaneOpen?: boolean;
   /** When set, the PR pill opens the PR tools tab. */
   onTogglePrPane?: () => void;
@@ -303,6 +306,7 @@ export function CliSessionWorkSurfaceHeader({
           : undefined
       }
       onToggleToolsPane={onToggleToolsPane}
+      onOpenFullView={onOpenFullView}
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>

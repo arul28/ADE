@@ -3650,6 +3650,7 @@ export function AgentChatPane({
   initialDraftMachineId = null,
   onDraftMachineChange,
   onToggleToolsPane,
+  onOpenFullView,
   toolsPaneOpen,
   onToggleTerminalPane,
   onOpenTerminalPane,
@@ -3744,6 +3745,8 @@ export function AgentChatPane({
   /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
+  /** Focus grid: an "open in full view" button replaces the Tools toggle. */
+  onOpenFullView?: () => void;
   /** Work tab: terminal pane toggle rendered in this chat's header. */
   onToggleTerminalPane?: () => void;
   /** Work tab: open-only terminal pane action used when a tool reveals a terminal. */
@@ -6766,7 +6769,14 @@ export function AgentChatPane({
     cursorCloudUnavailableReason,
     refetchCursorCloudRepos,
   } = useCursorCloudDraftState({
-    cursorCloudAvailable: cursorCloudPanelAvailable,
+    // Only a chat that can still launch to Cursor Cloud reads Cursor's repo
+    // list, the lane's remembered secrets and its open PR. Every other chat
+    // pane on screen skipped nothing before: a grid of six existing chats made
+    // six calls to Cursor's repositories endpoint on mount, which Cursor limits
+    // to five a minute. `lastOutputPreview` rules out an existing chat on the
+    // first render, before its history has loaded and `selectedEvents` fills.
+    cursorCloudAvailable: cursorCloudCanLaunch && !selectedSession?.lastOutputPreview,
+    cursorAccountKey: providerConnections?.cursor?.accountEmail ?? null,
     laneId: cloudReadinessLaneId,
     laneGitRemote,
     laneGitBranch,
@@ -15034,7 +15044,7 @@ export function AgentChatPane({
           title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "Go to parent thread"}
         >
           <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
-          <span className="min-w-0 truncate">Go to parent thread</span>
+          <span className="ade-header-collapsible-label min-w-0 truncate">Go to parent thread</span>
         </button>
       ) : null}
       {chatTerminalVisible && selectedSessionId ? (
@@ -15292,6 +15302,7 @@ export function AgentChatPane({
         actionsToggle={chatActionsToggle}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onOpenFullView={onOpenFullView}
         className="h-8 space-y-0 p-0"
         testId="work-chat-session-header"
       />
@@ -16743,7 +16754,7 @@ export function AgentChatPane({
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
-                                compact
+                                size="compact"
                                 // A machine whose lanes have not been read yet
                                 // has no lane to show — say so rather than
                                 // leaving the previous machine's lane on screen.

@@ -158,6 +158,28 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(phaseLabel(exactly.phase), "Stale")
   }
 
+  func testRestingSessionIsStaleOnlyWhileItClaimsBackgroundWork() {
+    let silent = silentFor(sessionStaleAfterSeconds + 60)
+    // A reply waiting on the user does not age into "Stale".
+    XCTAssertEqual(
+      workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex-chat", lastActivityAt: silent, now: now).phase,
+      .ready
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex", lastActivityAt: silent, now: now).phase,
+      .idle
+    )
+    // A resting chat that still claims background work, silent past the bar,
+    // is stale: the claim is what went quiet.
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "idle", toolType: "codex-chat",
+        lastActivityAt: silent, backgroundTaskCount: 1, now: now
+      ).phase,
+      .stale
+    )
+  }
+
   func testStaleBeatsRunningPreviewHeuristic() {
     // Silent past threshold AND a prompt-like preview → stale wins (heuristic is
     // consulted only for otherwise-plain running sessions).
@@ -1904,6 +1926,27 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertTrue(framed.contains("lane:other"), "unrelated lane state must be preserved")
     XCTAssertTrue(framed.contains("status:settled"), "unrelated section state must be preserved")
     XCTAssertTrue(saved.contains("lane:lane-7"), "transient framing must not mutate the saved base")
+  }
+
+  /// The iOS mirror of desktop's turn-stall rule, which holds a silent live
+  /// turn's lane out of the Working fold.
+  func testTurnStallMatchesDesktop() {
+    func ago(_ minutes: Double) -> String { iso(now.addingTimeInterval(-minutes * 60)) }
+    let cases: [(String, String?, String?, Int?, Bool)] = [
+      ("silent past five minutes with no open work", ago(20), ago(6), 0, true),
+      ("last output from an earlier turn counts from the turn start", ago(6), ago(120), 0, true),
+      ("waiting on open work", ago(20), ago(6), 1, false),
+      ("an older host that reports no count", ago(20), ago(6), nil, false),
+      ("silent for less than five minutes", ago(20), ago(4), 0, false),
+      ("no live turn", nil, ago(60), 0, false),
+    ]
+    for (name, turnStart, lastActivity, openWork, stalled) in cases {
+      XCTAssertEqual(
+        workTurnIsStalled(currentTurnStartedAt: turnStart, lastActivityAt: lastActivity, turnOpenWorkCount: openWork, now: now),
+        stalled,
+        name
+      )
+    }
   }
 
   /// The iOS mirror of desktop's `summarizeLaneFocus` fold rule: a raised hand

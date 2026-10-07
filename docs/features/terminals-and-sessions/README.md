@@ -729,6 +729,22 @@ IPC registration:
 
 Renderer surfaces:
 
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusGrid.ts` — the
+  Focus grid's state: tile order, the page size measured from the grid's box,
+  the pages, the focused tile (whose page wins when the pages re-spread), the
+  unseen marks, swipe paging, the saved-layout key, and the sidebar-roster marks
+  and toolbar pager. `TerminalsPage` renders the grid from it.
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusQueueReport.ts` —
+  the sidebar's half: every chat the Focus grid shows (this machine's, then
+  other machines' unfolded lanes with their binding), reported up only when
+  what a tile shows can change.
+- `apps/desktop/src/renderer/components/terminals/WorkFocusGrid.tsx` — the
+  Focus grid's pure page math (`focusFit`, `focusEvenPages`,
+  `focusPageColumns`, `focusPageSummary`) and its UI: the empty state, the
+  bottom roster strip, the toolbar pager, and the Focus pill.
+- `apps/desktop/src/renderer/lib/useTurnStallClock.ts` — "now" for the
+  turn-stall rule, re-rendering exactly at the next stall deadline; used by the
+  sidebar fold and `SessionStatusSlot`.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
   entry surface with `PaneTilingLayout` (sessions list + work view).
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
@@ -1112,14 +1128,19 @@ Renderer surfaces:
   `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
-  The funnel's by-lane **Fold busy lanes** chip (`workFoldBusyLanes`) adds a
+  The toolbar's **Focus** pill (`workFoldBusyLanes`; it also switches the
+  grouping to by-lane) adds a
   third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
   after the user has left them) folds onto a collapsed **Working** shelf, the
   first shelf inside the quiet zone (only the user opens or closes it; the open
   chat's lane folds too), and the lane unfolds when something needs the user or
   finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
-  hand, a stale run, or an unseen finish holds the lane out with its rows
-  visible, a finished nested row never does, and pins/primaries never fold. Each
+  hand, a stale run, a stalled turn (`sessionTurnStallMs`: a live turn silent
+  for five minutes that owns no open work), or an unseen finish holds the lane
+  out with its rows visible, a finished nested row never does, and pinned lanes
+  never fold. The primary lane folds like any other lane. The pill's second
+  half turns on the **Focus grid** (see
+  [ui-surfaces.md](ui-surfaces.md#focus-grid)). Each
   lane header draws one rolled-up status dot (`LaneFocusStatusDot`, Needs you >
   Working > Waiting > Done) from the same derivation. A finished row counts as
   seen only once the user leaves it — `useWorkSessions` stamps

@@ -337,6 +337,12 @@ export type WorkProjectViewState = {
    */
   workFoldBusyLanes?: boolean;
   /**
+   * Focus grid: while Focus (`workFoldBusyLanes`) is on, the work area shows
+   * every chat that waits for the user as a live tile instead of one open
+   * chat. Optional and off by default.
+   */
+  workFocusGrid?: boolean;
+  /**
    * When the user last looked at each session, keyed by session id. A finished
    * row seen after it finished no longer keeps its lane out of the Working
    * shelf. Bounded by `stampWorkSeenAt`.
@@ -433,6 +439,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
     workFoldBusyLanes: false,
+    workFocusGrid: false,
     workSeenAtBySessionId: {},
     lanesFilter: "",
     lanesGroupBy: "state",
@@ -554,6 +561,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     // Additive, no version bump: an older blob has neither key and lands on the
     // unfolded list with nothing seen, which is the behaviour it already had.
     workFoldBusyLanes: candidate.workFoldBusyLanes === true,
+    workFocusGrid: candidate.workFocusGrid === true,
     workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     // Additive like the other lanes keys: an older blob has no grouping and

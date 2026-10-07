@@ -17,7 +17,9 @@
  * Pure on purpose: the sidebar hands over plain data and the rules stay
  * testable without mounting a list.
  */
-import type { TerminalSessionSummary } from "../../../shared/types";
+import { isTrackedAgentCliToolType, type TerminalSessionSummary } from "../../../shared/types";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { sessionTurnStallMs } from "../../../shared/sessionStatusPresentation";
 import { canonicalInputFromSummary, sessionCanonicalUiState, type SessionFilingBucket } from "../../lib/terminalAttention";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 
@@ -75,6 +77,7 @@ function workRowFocus(args: {
   filingBucket: SessionFilingBucket | null | undefined;
   laneWaiting: boolean;
   seen: boolean;
+  nowMs?: number;
 }): WorkRowFocus | null {
   if (args.filingBucket === "snoozed" || args.filingBucket === "settled") return null;
   const phase = sessionCanonicalUiState(canonicalInputFromSummary(args.session)).phase;
@@ -83,6 +86,10 @@ function workRowFocus(args: {
       return { status: "needs_you", holdsOut: true };
     case "starting":
     case "running":
+      // A live turn that went silent with no open work may be stuck. It stays
+      // filed as running, but like a stale run it holds its lane out of the
+      // fold, so the user sees it instead of trusting a dead "Working".
+      if (sessionTurnStallMs(args.session, args.nowMs) !== null) return { status: "working", holdsOut: true };
       return { status: args.laneWaiting ? "waiting" : "working", holdsOut: false };
     case "stale":
       // Still filed as running, but a run that stopped producing output may be
@@ -125,6 +132,8 @@ export function summarizeLaneFocus(args: {
   seenAtBySessionId: Readonly<Record<string, string>>;
   nestedSessionIds: ReadonlySet<string>;
   launching?: number;
+  /** The clock for the stall rule; the caller re-runs this when a stall deadline passes. */
+  nowMs?: number;
 }): WorkLaneFocus {
   const launching = args.launching ?? 0;
   let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
@@ -136,6 +145,7 @@ export function summarizeLaneFocus(args: {
       filingBucket: args.filingBuckets.get(session.id),
       laneWaiting: args.laneWaiting,
       seen: isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+      nowMs: args.nowMs,
     });
     if (!row || (row.status === "done" && args.nestedSessionIds.has(session.id))) continue;
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
@@ -240,4 +250,49 @@ export function stampWorkSeenAt(
   const trimmed: Record<string, string> = {};
   for (const key of keys.slice(keys.length - WORK_SEEN_AT_LIMIT)) trimmed[key] = next[key]!;
   return trimmed;
+}
+
+/**
+ * The chats the Focus grid shows: every agent chat that waits for the user,
+ * from every lane Focus left unfolded.
+ *
+ * Built from the same per-row rule as the fold, so the grid and the sidebar
+ * cannot disagree: a lane is unfolded exactly because one of these rows holds
+ * it out. A Working or Waiting row stays out of the grid even when its lane is
+ * unfolded; the sidebar still shows it, which is where the user sees why it is
+ * not a tile. Plain shells are not agents and never get a tile. A nested row
+ * (subagent, attached shell) gets a tile only while it asks for the user; a
+ * finished one is the parent's business.
+ */
+export function workFocusQueue(args: {
+  sessions: readonly TerminalSessionSummary[];
+  filingBuckets: ReadonlyMap<string, SessionFilingBucket>;
+  foldedLaneIds: ReadonlySet<string>;
+  laneWaiting: (laneId: string) => boolean;
+  nestedSessionIds: ReadonlySet<string>;
+  nowMs?: number;
+}): string[] {
+  const ids: string[] = [];
+  for (const session of args.sessions) {
+    if (args.foldedLaneIds.has(session.laneId)) continue;
+    if (!isChatToolType(session.toolType) && !isTrackedAgentCliToolType(session.toolType)) continue;
+    const row = workRowFocus({
+      session,
+      filingBucket: args.filingBuckets.get(session.id),
+      laneWaiting: args.laneWaiting(session.laneId),
+      seen: false,
+      nowMs: args.nowMs,
+    });
+    if (!row) continue;
+    const nested = args.nestedSessionIds.has(session.id);
+    if (row.status === "needs_you") {
+      ids.push(session.id);
+      continue;
+    }
+    if (nested) continue;
+    // A stale or stalled run is filed as working but holds its lane out: it
+    // may be stuck, so the user is the one who has to look.
+    if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);
+  }
+  return ids;
 }

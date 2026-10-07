@@ -1,6 +1,6 @@
 import { SETTLE_TEARDOWN_STOP_MODE, type AgentChatStopMode } from "../../../shared/chatStopModes";
 import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./sessionSettleTeardown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 
 /**
@@ -37,6 +37,8 @@ export type SettleTeardownChatService = {
   hasLiveClaudeBackgroundJob: (
     short: string | null | undefined,
   ) => Promise<"alive" | "gone" | "unknown">;
+  /** Subagents of these sessions, so a settled parent can settle its subagents. */
+  listSubagentLinks?: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
 };
 
 export type SettleTeardownWiringDeps = {
@@ -58,6 +60,7 @@ export type SettleTeardownWiring = {
   runSettleTeardown: (sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>;
   onRemoteSettleWrite: (args: { columns: string[]; changesetSessionCount: number }) => void;
   onSettleResidue: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
+  listSubagentLinks: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
 };
 
 export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): SettleTeardownWiring {
@@ -109,6 +112,8 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
 
   return {
     runSettleTeardown,
+    listSubagentLinks: async (parentSessionIds) =>
+      (await deps.agentChatService.listSubagentLinks?.(parentSessionIds)) ?? [],
     onSettleResidue: ({ provider, items }) => {
       // One event per settle that had residue, not one per failed job: a fleet
       // that fails to stop must not become a burst. Coarse properties only —

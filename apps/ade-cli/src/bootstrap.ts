@@ -37,6 +37,7 @@ import type {
   SettleResidueItem,
   SettleTeardownContext,
   SettleTeardownOutcome,
+  SubagentLink,
 } from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
@@ -1092,13 +1093,16 @@ export async function createAdeRuntime(args: {
       run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
       residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-    } = { run: null, report: null, residue: null };
+      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
+    } = { run: null, report: null, residue: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
       runSettleTeardown: async (sessionId, ctx) =>
         settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
       onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
       onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      listSubagentLinks: async (parentSessionIds) =>
+        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -2315,6 +2319,7 @@ export async function createAdeRuntime(args: {
       settleTeardownRef.run = settleWiring.runSettleTeardown;
       settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
       settleTeardownRef.residue = settleWiring.onSettleResidue;
+      settleTeardownRef.subagentLinks = settleWiring.listSubagentLinks;
     }
     autoRebaseActivityReady = true;
     void autoRebaseService

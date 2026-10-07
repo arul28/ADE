@@ -1514,7 +1514,8 @@ declare global {
         cursorAuthLogout: (pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
         cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
         onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
+        /** `refresh` skips the host's few-minute cache (Retry). */
+        cursorCloudListRepositories: (args?: { refresh?: boolean }) => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
           limit?: number;

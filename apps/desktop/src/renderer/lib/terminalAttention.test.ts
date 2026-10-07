@@ -4,6 +4,7 @@ import {
   effectiveSessionFilingBuckets,
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
+  sessionStalledPresentation,
   sessionStatusBucket,
   sessionStatusDisplay,
   sessionStatusDot,
@@ -463,6 +464,41 @@ describe("terminalAttention", () => {
       expect(stale?.label).toBe("Stale");
       expect(stale?.tone).toBe("neutral");
     });
+  });
+});
+
+describe("sessionStalledPresentation", () => {
+  // Real "now": the canonical phase reads the wall clock for its stale bar.
+  const nowMs = Date.now();
+  const ago = (minutes: number) => new Date(nowMs - minutes * 60_000).toISOString();
+  const liveTurn = {
+    status: "running" as const,
+    runtimeState: "running" as const,
+    toolType: "claude-chat" as const,
+    lastOutputPreview: null,
+    currentTurnStartedAt: ago(20),
+    lastActivityAt: ago(6),
+    turnOpenWorkCount: 0,
+  };
+
+  it.each([
+    ["a live turn silent past five minutes with no open work", {}, ago(6)],
+    // The last output belongs to an earlier turn: silence counts from this turn's start.
+    ["a turn whose last output predates it, counted from the turn start", { lastActivityAt: ago(120), currentTurnStartedAt: ago(6) }, ago(6)],
+    ["a turn waiting on open work (a command, a tool, a subagent)", { turnOpenWorkCount: 1 }, null],
+    // An older host sends no count: unknown is not zero, so no false alarm.
+    ["a turn whose host does not report open work", { turnOpenWorkCount: undefined }, null],
+    ["a turn silent for less than five minutes", { lastActivityAt: ago(4) }, null],
+    ["a session with no live turn", { currentTurnStartedAt: null }, null],
+  ] as const)("%s", (_name, overrides, silentSince) => {
+    const stalled = sessionStalledPresentation({ ...liveTurn, ...overrides }, nowMs);
+    if (silentSince == null) {
+      expect(stalled).toBeNull();
+      return;
+    }
+    expect(stalled?.label).toBe("No output");
+    expect(stalled?.tone).toBe("amber");
+    expect(stalled?.activityUpdatedAt).toBe(silentSince);
   });
 });
 

@@ -5818,11 +5818,14 @@ export function registerIpc({
     return ctx.projectSecretService.exportEnv();
   });
 
-  ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-    return ctx.aiIntegrationService.listCursorCloudRepositories();
-  });
+  ipcMain.handle(
+    IPC.aiCursorCloudListRepositories,
+    async (_event, arg?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return ctx.aiIntegrationService.listCursorCloudRepositories({ refresh: arg?.refresh === true });
+    },
+  );
 
   ipcMain.handle(
     IPC.aiCursorCloudListAgents,

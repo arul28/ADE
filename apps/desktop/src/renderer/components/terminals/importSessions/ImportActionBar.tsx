@@ -192,7 +192,7 @@ export function ImportActionBar({
               value={plan.targetLaneId ?? ""}
               onChange={onTargetLaneChange}
               variant="pill"
-              compact
+              size="compact"
               aria-label="Import into lane"
             />
           )}

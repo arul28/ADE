@@ -620,6 +620,20 @@ existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
 untouched: no card asks this yet.
 
+The Work tab's Focus view (busy lanes folded) and its Focus grid (every
+waiting chat side by side) report adoption on the same event, emitted by the two
+setters every entry point goes through (`setWorkFoldBusyLanes`,
+`setWorkFocusGrid` in `useWorkSessions.ts`) and only when a mode turns on:
+`feature: "work"`, `action: "focus_mode"`, `outcome` `mode_focus` or
+`mode_focus_grid`, and `source: "renderer_route"`. Nothing finer crosses the
+boundary: no lane, chat, waiting count, page, or layout. Turning a mode off,
+paging, and roster clicks stay untracked by the high-frequency rule. A per-mode
+`work_focus_mode:<mode>` key with a 24-hour minimum interval bounds this to at
+most two accepted events per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling; no ceiling was raised. The dashboard spec is deliberately untouched:
+no card asks this yet.
+
 A per-tool `work_tool_opened:<id>` deduplication key with a 24-hour minimum
 interval bounds this to at most six accepted events per installation per UTC
 day no matter how often the user flips between panes, which is well inside the

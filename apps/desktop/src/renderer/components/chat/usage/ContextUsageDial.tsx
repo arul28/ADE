@@ -182,6 +182,10 @@ export function ContextUsageDial({
       </span>
     ) : ratio != null ? (
       <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center">
+        {/* The pulse runs on this HTML wrapper, never on the SVG circle:
+            Chromium repaints an animated SVG element on the main thread every
+            frame, and a Work grid can show several working chats at once. */}
+        <span className={cn("inline-flex", (active || compactionPulse) && "motion-safe:animate-pulse")}>
         <svg viewBox="0 0 20 20" className="h-5 w-5 -rotate-90" aria-hidden>
           <circle cx="10" cy="10" r={RING_RADIUS} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-fg/[0.09]" />
           <circle
@@ -195,9 +199,9 @@ export function ContextUsageDial({
             strokeDasharray={RING_CIRCUMFERENCE}
             strokeDashoffset={dashOffset}
             style={{ transition: "stroke-dashoffset 320ms ease, stroke 320ms ease" }}
-            className={active || compactionPulse ? "motion-safe:animate-pulse" : undefined}
           />
         </svg>
+        </span>
         <span
           className={cn(
             "absolute inset-0 flex items-center justify-center font-semibold leading-none tabular-nums text-fg/75",

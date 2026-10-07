@@ -1876,6 +1876,25 @@ describe("product analytics producers", () => {
     });
   });
 
+  it("keeps the two Work Focus modes through the sanitizer and nothing else", () => {
+    for (const outcome of ["mode_focus", "mode_focus_grid"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "focus_mode",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "work", action: "focus_mode", outcome, source: "renderer_route" });
+    }
+    // A third mode, or anything about what the grid shows, does not cross.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "focus_mode",
+      outcome: "mode_focus_board",
+      waiting_count: 7,
+      lane_id: "lane-1",
+    })).toEqual({ feature: "work", action: "focus_mode" });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

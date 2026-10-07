@@ -48,6 +48,27 @@ func workIsRowSeen(session: TerminalSessionSummary, seenAt: Date?) -> Bool {
   return seenAt >= finished
 }
 
+/// How long a live turn may produce no output before it counts as stalled.
+/// Mirrors desktop `TURN_STALL_AFTER_MS`.
+let workTurnStallAfterSeconds: TimeInterval = 5 * 60
+
+/// A live turn known to own no open work, silent past the stall bar. Silence
+/// counts from the later of the last output and the turn's start, so a turn
+/// never inherits the previous turn's quiet stretch. A missing open-work count
+/// (an older host) is unknown, not zero, so it never stalls. Mirrors desktop
+/// `sessionTurnStallMs`.
+func workTurnIsStalled(
+  currentTurnStartedAt: String?,
+  lastActivityAt: String?,
+  turnOpenWorkCount: Int?,
+  now: Date
+) -> Bool {
+  guard turnOpenWorkCount == 0, let turnStart = workParsedDate(currentTurnStartedAt) else { return false }
+  var silentSince = turnStart
+  if let activity = workParsedDate(lastActivityAt), activity > silentSince { silentSince = activity }
+  return now.timeIntervalSince(silentSince) >= workTurnStallAfterSeconds
+}
+
 /// One row's place in its lane's focus, or nil for a snoozed, settled or
 /// archived row (those have their own shelves).
 func workRowFocus(
@@ -65,6 +86,18 @@ func workRowFocus(
   case .needsYou:
     return WorkRowFocus(status: .needsYou, holdsOut: true)
   case .starting, .running:
+    // A live turn that went silent with no open work may be stuck. It stays
+    // filed as running, but like a stale run it holds its lane out of the
+    // fold, so the user sees it instead of trusting a dead "Working".
+    if workTurnIsStalled(
+      currentTurnStartedAt: summary?.currentTurnStartedAt,
+      // Same clock as the stale check: the chat summary moves on every event.
+      lastActivityAt: summary?.lastActivityAt ?? session.lastActivityAt,
+      turnOpenWorkCount: summary?.turnOpenWorkCount,
+      now: now
+    ) {
+      return WorkRowFocus(status: .working, holdsOut: true)
+    }
     return WorkRowFocus(status: laneWaiting ? .waiting : .working, holdsOut: false)
   case .stale:
     // Still filed as running, but it may be stuck: never hide it.

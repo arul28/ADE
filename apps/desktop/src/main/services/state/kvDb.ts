@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
+import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
@@ -892,6 +893,8 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 }
 
 const LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE = "local_crr_change_suppressions";
+/** Incoming changes for a column this build lacks, kept until it has it. */
+const SYNC_DEFERRED_COLUMN_CHANGES_TABLE = "sync_deferred_column_changes";
 
 /**
  * Append-only event logs that had no retention at all, with the column each one
@@ -954,6 +957,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // rows to phones whose schema may not have the table — a changeset that an
   // older client hard-rejects, freezing its sync cursor entirely.
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
+  // A newer peer's changes for columns this build does not have yet, kept for
+  // replay. It describes this device's own schema gap, so a peer must never
+  // receive it.
+  SYNC_DEFERRED_COLUMN_CHANGES_TABLE,
   "github_pr_projections",
   "github_pr_stacks",
   "github_pr_stack_entries",
@@ -1978,6 +1985,130 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
   return null;
 }
 
+/**
+ * Keep a change for a column this build lacks, for `replayDeferredColumnChanges`.
+ * One row per cell per peer: a later write from the same peer replaces the
+ * kept one (cr-sqlite's order, causal length then column version), so the
+ * table cannot grow with every write while this device waits for an update.
+ * Peers are kept apart because cr-sqlite breaks an exact tie by value and site,
+ * not by arrival; the replay hands every peer's change to cr-sqlite to decide.
+ */
+function deferColumnChange(db: DatabaseSyncType, change: CrsqlChangeRow): void {
+  const changeKey = JSON.stringify([change.table, change.pk, change.cid, change.site_id]);
+  runStatement(
+    db,
+    `insert into ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}(change_key, table_name, cid, cl, col_version, change_json, deferred_at)
+     values (?, ?, ?, ?, ?, ?, ?)
+     on conflict(change_key) do update set
+       cl = excluded.cl,
+       col_version = excluded.col_version,
+       change_json = excluded.change_json,
+       deferred_at = excluded.deferred_at
+     where excluded.cl > ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.cl
+        or (excluded.cl = ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.cl
+            and excluded.col_version >= ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}.col_version)`,
+    [changeKey, change.table, change.cid, change.cl, change.col_version, JSON.stringify(change), new Date().toISOString()],
+  );
+}
+
+/** A lock, busy timeout or read-only database: the write may work later. */
+function isTransientSqliteError(error: unknown): boolean {
+  return isSqliteBusyOrLockedError(error) || isReadonlyDatabaseError(error);
+}
+
+/** Whether `table` has column `cid`, with one `pragma table_info` per table. */
+function createTableColumnLookup(db: DatabaseSyncType): (tableName: string, columnName: string) => boolean {
+  const columnsByTable = new Map<string, Set<string>>();
+  return (tableName, columnName) => {
+    let columns = columnsByTable.get(tableName);
+    if (!columns) {
+      columns = new Set(
+        allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`).map((column) => column.name),
+      );
+      columnsByTable.set(tableName, columns);
+    }
+    return columns.has(columnName);
+  };
+}
+
+/**
+ * Apply one peer change through cr-sqlite. `insert or ignore` because a change
+ * that loses to the local clock (a re-delivered batch) is dropped, not an error.
+ * Returns how many rows SQLite reported changed.
+ */
+function applyCrsqlChange(db: DatabaseSyncType, rawChange: CrsqlChangeRow): number {
+  const change = normalizeIncomingCrsqlChange(db, rawChange);
+  return runStatement(
+    db,
+    `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      change.table,
+      change.pk,
+      change.cid,
+      change.val,
+      change.col_version,
+      change.db_version,
+      Buffer.from(change.site_id, "hex"),
+      change.cl,
+      change.seq,
+    ],
+  ).changes;
+}
+
+/**
+ * Apply the changes kept by `deferColumnChange` whose column now exists (this
+ * build added it). Same insert as a live batch, so cr-sqlite's clocks decide:
+ * a value written here since then wins over the older deferred one. A change
+ * for a column still missing stays kept. Each row runs in its own savepoint: a
+ * row that cannot be read or applied is dropped (logged), so one bad row never
+ * blocks the rest. Never throws.
+ */
+function replayDeferredColumnChanges(db: DatabaseSyncType, logger: Logger): void {
+  if (!rawHasTable(db, SYNC_DEFERRED_COLUMN_CHANGES_TABLE)) return;
+  const rows = allRows<{ changeKey: string; tableName: string; cid: string; changeJson: string }>(
+    db,
+    `select change_key as changeKey, table_name as tableName, cid, change_json as changeJson
+     from ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE}`,
+  );
+  if (!rows.length) return;
+  const hasColumn = createTableColumnLookup(db);
+  const ready = rows.filter((row) => rawHasTable(db, row.tableName) && hasColumn(row.tableName, row.cid));
+  if (!ready.length) return;
+  let replayed = 0;
+  let dropped = 0;
+  try {
+    for (const row of ready) {
+      runStatement(db, "savepoint ade_replay_deferred_column");
+      try {
+        applyCrsqlChange(db, JSON.parse(row.changeJson) as CrsqlChangeRow);
+        replayed += 1;
+      } catch (error) {
+        // A busy or read-only database is not this row's fault: stop, and
+        // keep it and the rest for the next open.
+        if (isTransientSqliteError(error)) throw error;
+        runStatement(db, "rollback to ade_replay_deferred_column");
+        dropped += 1;
+        logger.warn("sync.deferred_column_replay_dropped", { table: row.tableName, column: row.cid, err: String(error) });
+      }
+      runStatement(db, `delete from ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE} where change_key = ?`, [row.changeKey]);
+      runStatement(db, "release ade_replay_deferred_column");
+    }
+  } catch (error) {
+    // The bookkeeping itself failed (a locked or read-only database). What was
+    // released is applied; the rest stays kept for the next open.
+    try {
+      runStatement(db, "rollback to ade_replay_deferred_column");
+      runStatement(db, "release ade_replay_deferred_column");
+    } catch {
+      // No open savepoint left to unwind.
+    }
+    logger.warn("sync.deferred_columns_replay_failed", { replayed, err: String(error) });
+    return;
+  }
+  logger.info("sync.deferred_columns_replayed", { replayed, dropped });
+}
+
 function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {
   const tableInfo = allRows<{ pk: number }>(
     db,
@@ -2110,6 +2241,22 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       through_db_version integer not null,
       created_at text not null,
       primary key(table_name, site_id)
+    )
+  `);
+
+  // Changes a newer peer sent for a column this build lacks. Kept, not dropped:
+  // cr-sqlite syncs per column, so a value written once (at row creation)
+  // would otherwise never arrive after this device gains the column.
+  // `replayDeferredColumnChanges` applies them on open once the column exists.
+  db.run(`
+    create table if not exists ${SYNC_DEFERRED_COLUMN_CHANGES_TABLE} (
+      change_key text primary key,
+      table_name text not null,
+      cid text not null,
+      cl integer not null,
+      col_version integer not null,
+      change_json text not null,
+      deferred_at text not null
     )
   `);
 
@@ -4377,6 +4524,7 @@ export async function openKvDb(
       loadCrsqliteIfAvailable();
       ensureCrrTables(db, logger);
       forceSiteId(db, desiredSiteId);
+      replayDeferredColumnChanges(db, logger);
 
       if (readCurrentSiteId(db) !== desiredSiteId) {
         closeDatabase(db);
@@ -4649,6 +4797,8 @@ export async function openKvDb(
 
   // Registered by the session layer once the settle chokepoint exists.
   let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
+  /** Columns a newer peer sent that this build lacks; each is logged once per process. */
+  const deferredUnknownSyncColumns = new Set<string>();
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
@@ -4843,6 +4993,8 @@ export async function openKvDb(
       // settle notice and abort.
       const candidateSettleTuple: RemoteSettleTupleChange[] = [];
       const settleTupleBefore = new Map<string, string | null>();
+      // One `pragma table_info` per table per batch, not per change.
+      const hasIncomingColumn = createTableColumnLookup(db);
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
@@ -4862,6 +5014,26 @@ export async function openKvDb(
           // Reachable whenever a table is moved local-only while a paired peer
           // is still on a build that replicates it — i.e. during every rollout.
           if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(rawChange.table)) continue;
+          // A column this build does not have (a newer peer added it) is
+          // kept aside, not applied. cr-sqlite rejects the insert with "SQL
+          // logic error", which rolls back the whole batch; the peer's outbound
+          // cursor only advances on an ok ack, so every later batch replays
+          // the same poison and ALL sync with that peer stops until this
+          // machine updates. Deferring keeps every other change flowing, and
+          // the kept change is applied on the first open of a build that has
+          // the column (`replayDeferredColumnChanges`). cr-sqlite syncs per
+          // column, so without that a value written once (at creation) would
+          // never arrive. `-1` is cr-sqlite's row sentinel (create/delete),
+          // never a real column.
+          if (rawChange.cid !== "-1" && !hasIncomingColumn(rawChange.table, rawChange.cid)) {
+            deferColumnChange(db, rawChange);
+            const key = `${rawChange.table}.${rawChange.cid}`;
+            if (!deferredUnknownSyncColumns.has(key)) {
+              deferredUnknownSyncColumns.add(key);
+              logger.warn("sync.unknown_column_deferred", { table: rawChange.table, column: rawChange.cid });
+            }
+            continue;
+          }
           // Decoded before the apply, reported only after it: an undecodable
           // key still applies, it is simply not reconciled.
           let settleTupleChange: RemoteSettleTupleChange | null = null;
@@ -4875,25 +5047,8 @@ export async function openKvDb(
               }
             }
           }
-          const change = normalizeIncomingCrsqlChange(db, rawChange);
-          const result = runStatement(
-            db,
-            `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              change.table,
-              change.pk,
-              change.cid,
-              change.val,
-              change.col_version,
-              change.db_version,
-              Buffer.from(change.site_id, "hex"),
-              change.cl,
-              change.seq,
-            ]
-          );
-          appliedCount += result.changes;
-          touchedTables.add(change.table);
+          appliedCount += applyCrsqlChange(db, rawChange);
+          touchedTables.add(rawChange.table);
           // `insert or ignore` silently drops a change whose col_version does
           // not beat the local clock, which is exactly what a re-delivered
           // batch looks like. Reporting one of those would bump the revision

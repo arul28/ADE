@@ -698,7 +698,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                         lanes={laneOptions}
                         value={form.targetLaneId}
                         placeholder="Select lane…"
-                        compact
+                        size="compact"
                         onChange={(laneId) => setForm((current) => ({ ...current, targetLaneId: laneId }))}
                       />
                       {form.targetLaneId.trim() ? null : (
