@@ -115,7 +115,11 @@ async function authorizeCursorEventsRead(
       .bind(bearer)
       .first<CursorWebhookSecretRow & { last_polled_at: string | null }>();
     if (match && constantTimeEqual(bearer, match.webhook_secret)) {
-      await touchCursorWebhookSecret(env, match.id, match.last_polled_at);
+      try {
+        await touchCursorWebhookSecret(env, match.id, match.last_polled_at);
+      } catch {
+        // Bookkeeping only; a failed stamp must not fail a valid poll.
+      }
       return { accountId: match.account_id, secretId: match.id };
     }
   }
