@@ -122,13 +122,13 @@ export function createWindowAutoStartScheduler({
         configHome: state.configHome,
       }),
     };
-    const model = state.provider === "claude" ? "claude-haiku-4-5" : "gpt-5.6-luna";
+    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-5.6-luna";
     try {
       const resolved = state.provider === "claude"
         ? resolveClaudeExecutable({ env })
         : resolveCodexExecutableFn({ env });
       const args = state.provider === "claude"
-        ? ["-p", "Reply with OK.", "--model", model, "--output-format", "text"]
+        ? ["-p", "Reply with OK.", "--model", model, "--effort", "low", "--output-format", "text"]
         : ["exec", "-m", model, "--skip-git-repo-check", "Reply with OK."];
       const invocation = resolveCliSpawnInvocation(resolved.path, args, env);
       const options: SpawnOptions = {
@@ -185,7 +185,7 @@ export function createWindowAutoStartScheduler({
       : { ...state, configHome: instance.configHome };
     const ok = await runRequest(runState);
     const durationMs = Math.max(0, nowMs() - startedAt);
-    const model = state.provider === "claude" ? "claude-haiku-4-5" : "gpt-5.6-luna";
+    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-5.6-luna";
     logger.info("usage.window_autostart", {
       provider: state.provider,
       instanceId: state.instanceId,

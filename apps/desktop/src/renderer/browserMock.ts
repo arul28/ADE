@@ -3871,7 +3871,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     models: { claude: [], codex: [], cursor: [], droid: [] },
     availableModelIds: [
       "anthropic/claude-sonnet-5",
-      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-haiku-5-5",
       "openai/gpt-5-codex",
     ],
     features: [

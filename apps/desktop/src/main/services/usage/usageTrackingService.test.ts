@@ -1290,6 +1290,13 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("gpt-6-sol").input).toBe(2 / 1_000_000);
     expect(resolveTokenPrice("gemini-2.5-pro").input).toBe(0);
     expect(tokenPriceSource("gemini-2.5-pro")).toBe("fallback");
+
+    // A retired row keeps its own rate in the fallback, not the cheaper
+    // successor its alias now resolves to (Haiku 4.5 $1/$5, not 5.5's $0.10/$0.50).
+    expect(resolveTokenPrice("claude-haiku-4-5").input).toBe(1 / 1_000_000);
+    expect(resolveTokenPrice("claude-haiku-4-5").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("claude-4.5-haiku").input).toBe(1 / 1_000_000);
+    expect(tokenPriceSource("claude-haiku-4-5")).toBe("fallback");
   });
 
   it("keeps the Codex list price when another runtime shares the wire id", () => {
@@ -1372,8 +1379,8 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("opus").input).toBe(4 / 1_000_000);
     expect(resolveTokenPrice("opus").cacheRead).toBe(0.2 / 1_000_000);
     expect(tokenPriceSource("opus")).toBe("list");
-    expect(resolveTokenPrice("haiku").input).toBe(1 / 1_000_000);
-    expect(resolveTokenPrice("haiku").output).toBe(5 / 1_000_000);
+    expect(resolveTokenPrice("haiku").input).toBe(0.1 / 1_000_000);
+    expect(resolveTokenPrice("haiku").output).toBe(0.5 / 1_000_000);
   });
 
   it("prices every spelling of Sonnet 4.6 at Sonnet 4.6's row, not Sonnet 5's", () => {

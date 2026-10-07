@@ -1540,7 +1540,7 @@ private enum WorkModelPickerPreviewData {
       id: "hp_haiku_sweeps",
       name: "Haiku sweeps",
       harness: "claude",
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-5-5",
       logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "claude"),
       accentColor: nil,
       bound: false

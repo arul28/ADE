@@ -170,8 +170,11 @@ Claude's global quick-pick vocabulary is `low | medium | high | max`
 descriptors advertise their provider-native ladders to model-specific
 pickers. Opus 5.5 and Opus 5 expose `low|medium|high|xhigh|max`;
 Fable 5.1 adds `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
-Sonnet 5 exposes `low|medium|high|max`; Haiku 4.5 has no reasoning control.
-The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5,
+Sonnet 5 exposes `low|medium|high|max`; Haiku 5.5 exposes
+`low|medium|high|xhigh|max` and defaults to `medium`. Haiku 4.5 is retired:
+every Haiku 4.5 id on the Claude route resolves to Haiku 5.5, while OpenCode,
+Droid and Copilot keep the Haiku rows their own catalogs serve.
+The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5,
 then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
 whose default is not hoisted to the front of `listModelDescriptorsForProvider`,
 so the desktop picker catalog, Settings, ADE Code, and the CTO picker all show
@@ -1788,7 +1791,7 @@ ADE names chats and auto-created lanes from the ADE provider that owns
 the session, not from a Settings picker and not from the model's
 registry family:
 
-- Claude → Haiku 4.5, then this session's model, then a deterministic slug
+- Claude → Haiku 5.5 (`low`), then this session's model, then a deterministic slug
 - Codex → GPT-5.6 Luna (`low`), then this session's model, then a slug
 - Cursor → Composer 2.5, then this session's model, then a slug
 - OpenCode, Droid, Pi, ACP, local → this session's model, then a slug

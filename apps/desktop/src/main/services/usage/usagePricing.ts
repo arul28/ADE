@@ -18,11 +18,12 @@ export type TokenRates = {
  * Per-token rates plus the long-context tiers some vendors charge.
  *
  * OpenAI (GPT-5.4 and later, 272k), xAI (Grok, 200k), Google (Gemini Pro,
- * 200k), Alibaba (Qwen Plus 200k; Qwen3 Coder 32k and 128k) and MiniMax bill a
- * whole request at a higher rate once its prompt passes a threshold. `tiers`
- * are sorted by `aboveContextTokens`, ascending; the base rates apply at or
- * below the first threshold. Anthropic, DeepSeek, Moonshot, Z.ai and Mistral
- * are flat and carry no tiers.
+ * 200k), Anthropic (Claude Haiku 5.5, 100k), Alibaba (Qwen Plus 200k; Qwen3
+ * Coder 32k and 128k) and MiniMax bill a whole request at a higher rate once
+ * its prompt passes a threshold. `tiers` are sorted by `aboveContextTokens`,
+ * ascending; the base rates apply at or below the first threshold. Other
+ * Claude models, DeepSeek, Moonshot, Z.ai and Mistral are flat and carry no
+ * tiers.
  */
 export type TokenPrice = TokenRates & {
   tiers?: Array<{ aboveContextTokens: number } & TokenRates>;
@@ -660,10 +661,23 @@ export function resolveTokenPriceWithSource(model: string): { price: TokenPrice;
   return { price: ZERO_PRICE, source: "fallback" };
 }
 
+/**
+ * Rates for registry rows ADE retired. A successor can bill a different price
+ * (Haiku 4.5's $1/$5 vs Haiku 5.5's $0.10/$0.50), so historical usage keeps the
+ * retired row's own rate when models.dev is unavailable instead of falling
+ * through to the cheaper successor its alias now resolves to.
+ */
+const HISTORICAL_REGISTRY_PRICES: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5": { input: 1, output: 5 },
+};
+
 function exactOrRegistryPrice(model: string): { price: TokenPrice; source: TokenPriceSource } | null {
   const exact = findDynamicPrice(model, { exactOnly: true });
   if (exact) return { price: exact, source: "list" };
-  const registryPrice = getModelListPrice(resolveAlias(canonicalPricingName(model)));
+  const pricingName = resolveAlias(canonicalPricingName(model));
+  const historical = HISTORICAL_REGISTRY_PRICES[pricingName];
+  if (historical) return { price: tokenPrice(historical.input, historical.output), source: "fallback" };
+  const registryPrice = getModelListPrice(pricingName);
   return registryPrice ? { price: tokenPrice(registryPrice.input, registryPrice.output), source: "fallback" } : null;
 }
 

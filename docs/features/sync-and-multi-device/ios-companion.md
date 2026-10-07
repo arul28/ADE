@@ -4661,7 +4661,7 @@ the stats and shows update guidance.
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
   together; the phone's Claude fallback catalog leads with Opus 5.5 (its
-  positional default), then Fable 5.1, Sonnet 5.5, Sonnet 5, Haiku 4.5, Opus 5,
+  positional default), then Fable 5.1, Sonnet 5.5, Sonnet 5, Haiku 5.5, Opus 5,
   and legacy Sonnet 4.6 /
   Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
   appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the
