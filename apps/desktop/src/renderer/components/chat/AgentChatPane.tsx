@@ -4621,6 +4621,17 @@ export function AgentChatPane({
   const turnActiveBySessionRef = useRef<Record<string, boolean>>({});
   const detachedHistorySessionsRef = useRef<Set<string>>(new Set());
   const detachedLiveEventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  /**
+   * Reactive mirror of `detachedHistorySessionsRef`, read only by the stall
+   * banner. A detached view's resident window is a historical slice, and live
+   * events buffer in `detachedLiveEventsBySessionRef` instead — so the window's
+   * newest progress timestamp stops moving and the banner would report silence
+   * over work that is still running. The ref stays the hot-path source; this
+   * state exists so the suppression re-renders when detachment changes.
+   */
+  const [detachedHistorySessionIds, setDetachedHistorySessionIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const olderHistoryCursorRef = useRef<Record<string, number>>({});
   const olderHistoryInFlightRef = useRef<Map<string, number>>(new Map());
   const olderHistoryRequestSequenceRef = useRef(0);
@@ -5722,7 +5733,15 @@ export function AgentChatPane({
   // calls. `latestTurnProgressAt` stops at the first hit from the end, so on a
   // streaming turn it costs one step. A turn waiting on the user is not silent.
   const selectedSessionEvents = composerSessionId ? eventsBySession[composerSessionId] : undefined;
+  // A detached view (older-history paging hit the resident cap) shows a
+  // historical window; its newest progress event predates the live tail, so the
+  // banner would report silence while a live tool still runs. Stay quiet until
+  // the tail is restored, and fold the same detached state the flush path uses.
+  const selectedSessionHistoryDetached = composerSessionId
+    ? detachedHistorySessionIds.has(composerSessionId)
+    : false;
   const turnSilenceMs = turnActive && selectedSession && !selectedSessionAwaitingInput
+    && !selectedSessionHistoryDetached
     ? turnStallSilenceMs(
         selectedSession,
         stallNowMs,
@@ -7324,6 +7343,7 @@ export function AgentChatPane({
       setSessions([]);
       eventsBySessionRef.current = {};
       detachedHistorySessionsRef.current.clear();
+      setDetachedHistorySessionIds(new Set());
       detachedLiveEventsBySessionRef.current = {};
       loadedHistoryRef.current.clear();
       setEventsBySession({});
@@ -7357,8 +7377,12 @@ export function AgentChatPane({
       detachedLiveEventsBySessionRef.current,
       retainedSessionIds,
     );
+    const detachedBefore = detachedHistorySessionsRef.current.size;
     for (const sessionId of [...detachedHistorySessionsRef.current]) {
       if (!retainedSessionIds.has(sessionId)) detachedHistorySessionsRef.current.delete(sessionId);
+    }
+    if (detachedHistorySessionsRef.current.size !== detachedBefore) {
+      setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
     }
     for (const sessionId of [...backfillCappedSessionsRef.current]) {
       if (!retainedSessionIds.has(sessionId)) backfillCappedSessionsRef.current.delete(sessionId);
@@ -7535,7 +7559,9 @@ export function AgentChatPane({
     // for a chat that is being cleared or has just been deleted.
     releaseRetainedChatSession(sessionId);
     deleteAgentChatSessionViewCache(sessionId);
-    detachedHistorySessionsRef.current.delete(sessionId);
+    if (detachedHistorySessionsRef.current.delete(sessionId)) {
+      setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
+    }
     backfillCappedSessionsRef.current.delete(sessionId);
     missingHistorySessionsRef.current.delete(sessionId);
     setSyncPendingBySession((prev) => (sessionId in prev ? { ...prev, [sessionId]: false } : prev));
@@ -7709,7 +7735,9 @@ export function AgentChatPane({
         : null;
       // A successful hydrate reattaches the view to the live tail, so drop the
       // detached marker BEFORE caching — the merged window is cacheable again.
-      detachedHistorySessionsRef.current.delete(sessionId);
+      if (detachedHistorySessionsRef.current.delete(sessionId)) {
+        setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
+      }
       backfillCappedSessionsRef.current.delete(sessionId);
       missingHistorySessionsRef.current.delete(sessionId);
       delete detachedLiveEventsBySessionRef.current[sessionId];
@@ -7867,7 +7895,10 @@ export function AgentChatPane({
           return true;
         }
         if (hitResidentCap) {
-          detachedHistorySessionsRef.current.add(sessionId);
+          if (!detachedHistorySessionsRef.current.has(sessionId)) {
+            detachedHistorySessionsRef.current.add(sessionId);
+            setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
+          }
           delete detachedLiveEventsBySessionRef.current[sessionId];
         }
         if (merged !== existing) {

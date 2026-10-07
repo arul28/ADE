@@ -105,7 +105,10 @@ export function isTurnProgressEvent(event: AgentChatEvent): boolean {
     case "ade_card":
       return false;
     case "user_message":
-      return !isDroppedSteerDeliveryState(event.deliveryState);
+      // A queued steer is staged, not delivered — the model has not read it,
+      // so counting it would reset the stall clock over a still-quiet turn.
+      return event.deliveryState !== "queued"
+        && !isDroppedSteerDeliveryState(event.deliveryState);
     default:
       return true;
   }
