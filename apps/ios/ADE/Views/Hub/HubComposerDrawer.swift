@@ -378,35 +378,35 @@ struct HubInlineComposer: View {
     Button {
       destinationPickerPresented = true
     } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "folder.fill")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
+      HStack(spacing: 7) {
+        HubProjectIcon(iconDataUrl: pickedProject?.iconDataUrl, isActive: false, size: 18)
 
         Text(hubComposerDestinationTitle(
           projectName: pickedProject?.displayName,
           machineName: pickedRemoteMachine?.name
         ))
-          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+          .font(.system(size: 13.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
 
-        Image(systemName: "chevron.compact.right")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
 
         laneTag
 
         Spacer(minLength: 4)
 
         Image(systemName: "chevron.up.chevron.down")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.horizontal, 12)
-      .padding(.vertical, 9)
-      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+      .frame(minHeight: 36)
+      // Floats over the list behind the scrim, so it sits on the solid kit
+      // surface rather than a translucent track.
+      .background(ADEKit.surface, in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
@@ -437,23 +437,17 @@ struct HubInlineComposer: View {
     if isAutoCreateLane {
       HStack(spacing: 4) {
         Image(systemName: "sparkles")
-          .font(.system(size: 10, weight: .bold))
+          .font(.system(size: 10, weight: .semibold))
         Text("Auto-create lane")
-          .font(.system(.caption, design: .rounded).weight(.medium))
+          .font(.system(size: 12.5, weight: .medium))
           .lineLimit(1)
       }
-      .foregroundStyle(
-        LinearGradient(
-          colors: [ADEColor.accent, ADEColor.purpleAccent],
-          startPoint: .leading,
-          endPoint: .trailing
-        )
-      )
+      .foregroundStyle(ADEColor.textSecondary)
     } else {
       HStack(spacing: 5) {
         Circle().fill(selectedLaneTint).frame(width: 7, height: 7)
         Text(selectedLaneName)
-          .font(.system(.caption, design: .rounded).weight(.medium))
+          .font(.system(size: 12.5, weight: .medium))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
       }
@@ -473,7 +467,7 @@ struct HubInlineComposer: View {
 
   private var destinationPicker: some View {
     VStack(spacing: 0) {
-      sectionLabel("PROJECT")
+      sectionLabel("Project")
       ScrollView {
         LazyVStack(spacing: 2) {
           if !machineFleet.composerDestinationMachines.isEmpty {
@@ -497,9 +491,9 @@ struct HubInlineComposer: View {
       }
       .frame(maxHeight: .infinity)
 
-      Divider().overlay(ADEColor.glassBorder)
+      Rectangle().fill(ADEKit.rule).frame(height: 0.75)
 
-      sectionLabel("LANE")
+      sectionLabel("Lane")
       ScrollView {
         LazyVStack(spacing: 2) {
           autoCreateLaneRow
@@ -512,17 +506,12 @@ struct HubInlineComposer: View {
       .frame(maxHeight: .infinity)
     }
     .frame(width: 320, height: destinationPickerHeight)
-    .background(ADEColor.cardBackground.opacity(0.98))
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.8))
+    .background(ADEKit.surface)
   }
 
   private func sectionLabel(_ text: String) -> some View {
     HStack {
-      Text(text)
-        .font(.system(.caption2, design: .rounded).weight(.bold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
+      ADEEyebrow(text)
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 12)
@@ -532,7 +521,7 @@ struct HubInlineComposer: View {
 
   private func emptyPickerRow(_ text: String) -> some View {
     Text(text)
-      .font(.system(.caption, design: .rounded))
+      .font(.system(size: 12.5))
       .foregroundStyle(ADEColor.textMuted)
       .frame(maxWidth: .infinity)
       .padding(.vertical, 12)
@@ -551,7 +540,7 @@ struct HubInlineComposer: View {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: isSelected)
         Text(project.displayName)
-          .font(.system(.footnote, design: .rounded).weight(isSelected ? .semibold : .regular))
+          .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -564,7 +553,7 @@ struct HubInlineComposer: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 6)
       .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isSelected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -579,17 +568,12 @@ struct HubInlineComposer: View {
     } label: {
       HStack(spacing: 8) {
         Image(systemName: "sparkles")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
+          .font(.system(size: 12, weight: .regular))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 22)
         Text("Auto-create lane")
-          .font(.system(.footnote, design: .rounded).weight(.medium))
-          .foregroundStyle(
-            LinearGradient(
-              colors: [ADEColor.accent, ADEColor.purpleAccent],
-              startPoint: .leading,
-              endPoint: .trailing
-            )
-          )
+          .font(.system(size: 14, weight: isAutoCreateLane ? .semibold : .regular))
+          .foregroundStyle(ADEColor.textPrimary)
           .frame(maxWidth: .infinity, alignment: .leading)
         if isAutoCreateLane {
           Image(systemName: "checkmark")
@@ -600,7 +584,7 @@ struct HubInlineComposer: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 7)
       .background(
-        isAutoCreateLane ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isAutoCreateLane ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -619,8 +603,9 @@ struct HubInlineComposer: View {
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 8) {
           Circle().fill(tint).frame(width: 8, height: 8)
+            .frame(width: 22)
           Text(lane.name)
-            .font(.system(.footnote, design: .rounded).weight(isSelected ? .semibold : .regular))
+            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -636,17 +621,17 @@ struct HubInlineComposer: View {
               .font(.system(size: 9, weight: .regular))
               .foregroundStyle(ADEColor.textMuted.opacity(0.6))
             Text(branch)
-              .font(.system(size: 10, design: .rounded))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.9))
+              .font(.adeMono(10.5))
+              .foregroundStyle(ADEColor.textMuted)
               .lineLimit(1)
           }
-          .padding(.leading, 16)
+          .padding(.leading, 30)
         }
       }
       .padding(.horizontal, 8)
       .padding(.vertical, branch.isEmpty ? 6 : 5)
       .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
+        isSelected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())

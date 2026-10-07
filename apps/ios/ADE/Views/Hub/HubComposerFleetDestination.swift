@@ -23,14 +23,14 @@ struct HubComposerMachineHeader: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 10, weight: .semibold))
+      Image(systemName: machineSymbol(machineKey: nil, name: name))
+        .font(.system(size: 11, weight: .regular))
       Text(name)
-        .font(.system(.caption2, design: .rounded).weight(.semibold))
+        .font(.system(size: 12, weight: .semibold))
         .lineLimit(1)
       Spacer(minLength: 0)
     }
-    .foregroundStyle(ADEColor.textMuted)
+    .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 8)
     .padding(.top, 8)
     .padding(.bottom, 2)
