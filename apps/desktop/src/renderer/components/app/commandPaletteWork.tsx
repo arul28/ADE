@@ -29,7 +29,7 @@ import {
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import { promptDialog } from "../ui/dialog/confirm";
-import { chatDraftMachineId } from "../../lib/workDraft";
+import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   canonicalInputFromSummary,
@@ -390,6 +390,7 @@ export function useWorkSessionActions({
     async (entry: ThreadIndexEntry, action: ThreadRowAction) => {
       const { session, binding } = entry;
       if (action === "new-chat") {
+        if (!entry.machineOnline) return;
         // Persist the draft before navigation. Work can be unmounted while the
         // palette is open, so an ephemeral window event would be lost before
         // the destination page gets a chance to consume it. Every thread here
@@ -401,15 +402,11 @@ export function useWorkSessionActions({
         );
         setWorkViewState(currentProjectKey, (previous) => ({
           ...previous,
-          draftKind: "chat",
-          draftLaneId: session.laneId || null,
-          draftMachineId: chatDraftMachineId(
-            machineIdForBinding(binding),
-            machineIdForBinding(projectBinding),
+          ...startChatDraftPatch(
+            session.laneId,
+            chatDraftMachineId(entry.machineId, machineIdForBinding(projectBinding)),
           ),
-          activeItemId: null,
-          selectedItemId: null,
-          workSidebarOpen: false,
+          draftLaneId: session.laneId || null,
         }));
         navigate("/work");
         onOpenChange(false);

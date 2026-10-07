@@ -219,6 +219,12 @@ type TabSection = {
   render: () => React.ReactNode;
   /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
+  /**
+   * A link to this section with no `?machine=` opens the tab's machine rather
+   * than This computer: it is about the project tab's own connection (a banner
+   * or a PR reporting that machine's GitHub, say). Implied by `bound`.
+   */
+  linksToTabMachine?: true;
   /** How the section is named in "not available here" notes. */
   title?: string;
   /** The block it sits in on a section-list page (`TAB_GROUPS`). */
@@ -416,8 +422,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // and changes that machine's own GitHub and Linear connections. Browser
   // steps (device codes, OAuth pages) still open on This computer.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
+    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", linksToTabMachine: true, title: "Linear", group: "linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
@@ -469,10 +475,10 @@ export const STANDALONE_TAB_IDS: ReadonlySet<SettingsTabId> = new Set(
   }),
 );
 
-/** Manifest entries whose section only works on the tab's own machine. */
+/** Manifest entries whose links open the tab's own machine page. */
 export const BOUND_MACHINE_ENTRY_IDS: ReadonlySet<string> = new Set(
   Object.values(TAB_SECTIONS).flatMap((sections) =>
-    (sections ?? []).filter((section) => section.machine === "bound")
+    (sections ?? []).filter((section) => section.machine === "bound" || section.linksToTabMachine)
       .flatMap((section) => (section.entryIds === "tab" ? [] : [...section.entryIds]))),
 );
 

@@ -2162,6 +2162,26 @@ async function callPinnedRuntimeAction<T>(
   return response.result as T;
 }
 
+/**
+ * A Linear credential write, then the connection status it produced, both on
+ * one machine: the pinned one, else the tab's bound runtime. With no runtime,
+ * the local IPC handler does both and returns the status itself.
+ */
+async function writeLinearCredentialThenStatus(
+  pin: OpenProjectBinding | null | undefined,
+  action: "setToken" | "clearToken",
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  ipcFallback: () => Promise<LinearConnectionStatus>,
+): Promise<LinearConnectionStatus> {
+  if (pin) {
+    await callPinnedRuntimeAction<void>(pin, "linear_credentials", action, request);
+    return callPinnedRuntimeAction<LinearConnectionStatus>(pin, "linear_issue_tracker", "getConnectionStatus");
+  }
+  const runtime = await callProjectRuntimeActionIfBound<void>("linear_credentials", action, request);
+  if (!runtime.handled) return ipcFallback();
+  return callProjectRuntimeActionOr("linear_issue_tracker", "getConnectionStatus", {}, ipcFallback);
+}
+
 // Per-session runtime routing: a chat, CLI, or shell inherits its machine from
 // its lane, so a session on another machine carries an explicit pin and must
 // reach THAT runtime without rebinding this window's project tab. Without a pin
@@ -11813,8 +11833,8 @@ const adeBridge = {
         );
       }
       const cacheKey = serializeIpcCacheArgs(cacheArgs);
-      if (args.forceRefresh) githubAppInstallationStatusCache.clear(cacheKey);
       if (args.forceRefresh) {
+        githubAppInstallationStatusCache.clear(cacheKey);
         return callProjectRuntimeActionOr(
           "github",
           "getAppInstallationStatus",
@@ -13114,48 +13134,14 @@ const adeBridge = {
     setLinearToken: async (
       args: CtoSetLinearTokenArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<LinearConnectionStatus> => {
-      // Pinned: the same two runtime steps as the bound path below, both on
-      // the pinned machine — store the key, then read back its status.
-      if (pin) {
-        await callPinnedRuntimeAction<void>(pin, "linear_credentials", "setToken", { arg: args.token });
-        return callPinnedRuntimeAction<LinearConnectionStatus>(pin, "linear_issue_tracker", "getConnectionStatus");
-      }
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "linear_credentials",
-        "setToken",
-        { arg: args.token },
-      );
-      if (runtime.handled) {
-        return callProjectRuntimeActionOr(
-          "linear_issue_tracker",
-          "getConnectionStatus",
-          {},
-          () => ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
-        );
-      }
-      return ipcRenderer.invoke(IPC.ctoSetLinearToken, args);
-    },
-    clearLinearToken: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> => {
-      if (pin) {
-        await callPinnedRuntimeAction<void>(pin, "linear_credentials", "clearToken");
-        return callPinnedRuntimeAction<LinearConnectionStatus>(pin, "linear_issue_tracker", "getConnectionStatus");
-      }
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "linear_credentials",
-        "clearToken",
-        {},
-      );
-      if (runtime.handled) {
-        return callProjectRuntimeActionOr(
-          "linear_issue_tracker",
-          "getConnectionStatus",
-          {},
-          () => ipcRenderer.invoke(IPC.ctoClearLinearToken),
-        );
-      }
-      return ipcRenderer.invoke(IPC.ctoClearLinearToken);
-    },
+    ): Promise<LinearConnectionStatus> =>
+      writeLinearCredentialThenStatus(pin, "setToken", { arg: args.token }, () =>
+        ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
+      ),
+    clearLinearToken: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> =>
+      writeLinearCredentialThenStatus(pin, "clearToken", {}, () =>
+        ipcRenderer.invoke(IPC.ctoClearLinearToken),
+      ),
     getOnboardingState: async (pin?: OpenProjectBinding | null): Promise<CtoOnboardingState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getOnboardingState", {}, () =>
         ipcRenderer.invoke(IPC.ctoGetOnboardingState),

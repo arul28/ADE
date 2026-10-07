@@ -61,7 +61,6 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
-  localCheckoutForRemote,
   recentProjectLocationKey,
   remoteBindingFromRecent,
   resolveProjectTabFallback,
@@ -72,6 +71,7 @@ import {
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
+import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -529,6 +529,14 @@ function HeaderActionPill({
     </SmartTooltip>
   );
 }
+
+const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
+  connected: "Connected",
+  connecting: "Reconnecting",
+  parked: "Parked",
+  idle: "Disconnected",
+  error: "Disconnected",
+};
 
 function ProjectTabIcon({
   rootPath,
@@ -1098,48 +1106,21 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
-  // A tab runs on this computer's checkout whenever this computer has the
-  // repo. When the active tab is on another machine's copy of a repo that is
-  // also here, it moves back here in place: same tab position, no second tab.
-  // Other machines' lanes and chats stay reachable from Lanes and Work, which
-  // list every machine. The Chats page is the one surface that picks a
-  // machine on purpose, so it is left alone.
-  const localFallbackAttemptRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (webMode || !windowSessionRestored || personalChatsRouteActive) return;
-    if (!remoteBinding || isProjectBusy) return;
-    if (localFallbackAttemptRef.current === remoteBinding.key) return;
-    const rootPath = localCheckoutForRemote({
-      remoteOrigin: remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null,
-      openLocalTabs: projectTabs,
-      knownLocalTabs: localRecentProjects,
-    });
-    if (!rootPath) return;
-    // One attempt per binding: a checkout that fails to open must not loop.
-    localFallbackAttemptRef.current = remoteBinding.key;
-    const remoteKey = remoteBinding.key;
-    void switchProjectToPath(rootPath)
-      .then(() => {
-        setOpenRemoteProjectTabs((prev) => prev.filter((entry) => entry.key !== remoteKey));
-        setTabOrder((prev) => {
-          if (!prev.includes(remoteKey)) return prev;
-          const without = prev.filter((key) => key !== rootPath);
-          return without.map((key) => (key === remoteKey ? rootPath : key));
-        });
-      })
-      .catch(() => {});
-  }, [
-    isProjectBusy,
-    localRecentProjects,
-    personalChatsRouteActive,
-    projectTabs,
+  usePreferLocalCheckout({
+    enabled: !webMode
+      && windowSessionRestored
+      && !personalChatsRouteActive
+      && !isProjectBusy
+      && !isNewTabOpen,
     remoteBinding,
-    remoteOriginByKey,
+    remoteOrigin: remoteBinding
+      ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
+      : null,
+    openLocalTabs: projectTabs,
+    knownLocalTabs: localRecentProjects,
     setOpenRemoteProjectTabs,
-    switchProjectToPath,
-    webMode,
-    windowSessionRestored,
-  ]);
+    setTabOrder,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1160,20 +1141,17 @@ export function TopBar({
             });
           }
         }
-        // Every local tab root the window had, loaded or not. A project whose
-        // context was released while idle still has its tab; dropping it here
-        // is what left a remote-bound window with only the other machine's tab.
-        const restoredRoots = [
-          ...session.openProjectTabs.map((entry) => entry.rootPath),
-          ...(session.openProjectTabRoots ?? []),
-        ].filter((root, index, all) => all.indexOf(root) === index);
-        if (restoredRoots.length > 0) {
+        // Restore every local tab root, loaded or not: an idle project's
+        // context may be released while its tab stays open. Hosted web sends
+        // only the loaded list.
+        const restored = session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
           // Merge, don't replace: keep any extra local roots the renderer
           // already knows about after the restored ones.
-          const restored = restoredRoots;
           setOpenProjectTabRoots((prev) => {
             const merged = [...restored];
             for (const root of prev) {
@@ -2044,18 +2022,10 @@ export function TopBar({
                 if (!remoteTab) return null;
                 const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);
-                const remoteTabConnected = remoteTabState === "connected";
                 const remoteTabConnecting = remoteTabState === "connecting";
-                const remoteTabParked = remoteTabState === "parked";
                 const remoteTabDisconnected =
                   remoteTabState === "error" || remoteTabState === "idle";
-                const remoteTabStatusLabel = remoteTabConnected
-                  ? "Connected"
-                  : remoteTabConnecting
-                    ? "Reconnecting"
-                    : remoteTabParked
-                      ? "Parked"
-                      : "Disconnected";
+                const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                 const remoteTabKey = tabOrderKey(group);
                 return (
                   <div
@@ -2136,7 +2106,7 @@ export function TopBar({
                         e.stopPropagation();
                         handleCloseRemoteTab(remoteTab);
                       }}
-                      title="Close remote project"
+                      title="Close project"
                     >
                       <X size={13} weight="regular" />
                     </button>

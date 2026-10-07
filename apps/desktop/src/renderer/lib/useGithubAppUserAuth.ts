@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { GitHubAppUserAuthStatus, OpenProjectBinding } from "../../shared/types";
 
 /**
@@ -16,7 +16,6 @@ import type { GitHubAppUserAuthStatus, OpenProjectBinding } from "../../shared/t
  */
 type MachineAuthState = {
   cachedStatus: GitHubAppUserAuthStatus | null;
-  hasLoaded: boolean;
   inFlight: Promise<GitHubAppUserAuthStatus | null> | null;
   /**
    * Only the newest-started read may publish.
@@ -27,15 +26,15 @@ type MachineAuthState = {
    * added to avoid.
    */
   readSeq: number;
+  /** Zero until the first status lands, which is not the same as "no token". */
   publishedSeq: number;
   listeners: Set<(status: GitHubAppUserAuthStatus | null) => void>;
 };
 
 /**
- * One state per machine. Settings shows a page per machine, and each machine
- * has its own credential: a shared slot let This computer's status land on the
- * Mac Studio page (and the other way round) whenever both had been visited.
- * Unpinned callers (the tab's own machine, onboarding) share one key.
+ * One state per machine: each machine has its own credential, and Settings
+ * shows a page per machine, so one machine's status never shows on another's
+ * page. Unpinned callers (the tab's own machine, onboarding) share one key.
  */
 const UNPINNED_KEY = "\u0000unpinned";
 const machines = new Map<string, MachineAuthState>();
@@ -49,7 +48,6 @@ function machineState(key: string): MachineAuthState {
   if (!state) {
     state = {
       cachedStatus: null,
-      hasLoaded: false,
       inFlight: null,
       readSeq: 0,
       publishedSeq: 0,
@@ -64,7 +62,6 @@ function publish(state: MachineAuthState, status: GitHubAppUserAuthStatus | null
   if (seq < state.publishedSeq) return;
   state.publishedSeq = seq;
   state.cachedStatus = status;
-  state.hasLoaded = true;
   for (const listener of state.listeners) listener(status);
 }
 
@@ -96,9 +93,7 @@ export function refreshGithubAppUserAuth(
     publish(state, null, seq);
     return Promise.resolve(null);
   }
-  const pending: Promise<GitHubAppUserAuthStatus | null> = (pin
-    ? window.ade.github.getAppUserAuthStatus!(pin)
-    : window.ade.github.getAppUserAuthStatus!())
+  const pending: Promise<GitHubAppUserAuthStatus | null> = read(pin)
     .then((status) => status ?? null)
     .catch(() => null)
     .then((status) => {
@@ -133,11 +128,7 @@ export type UseGithubAppUserAuthResult = {
 export function useGithubAppUserAuth(pin: OpenProjectBinding | null = null): UseGithubAppUserAuthResult {
   const key = machineKey(pin);
   const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(() => machineState(key).cachedStatus);
-  const [loaded, setLoaded] = useState<boolean>(() => machineState(key).hasLoaded);
-  // The pin's identity can change while its key does not; reads use the
-  // latest one without re-subscribing.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
+  const [loaded, setLoaded] = useState<boolean>(() => machineState(key).publishedSeq > 0);
 
   useEffect(() => {
     const state = machineState(key);
@@ -146,26 +137,26 @@ export function useGithubAppUserAuth(pin: OpenProjectBinding | null = null): Use
       setLoaded(true);
     };
     state.listeners.add(listener);
-    if (!state.hasLoaded) {
+    if (state.publishedSeq === 0) {
       // Another machine's answer must not stay on screen while this one loads.
       setAppAuth(null);
       setLoaded(false);
-      void refreshGithubAppUserAuth({ pin: pinRef.current });
+      void refreshGithubAppUserAuth({ pin });
     } else {
       listener(state.cachedStatus);
     }
     return () => {
       state.listeners.delete(listener);
     };
-  }, [key]);
+  }, [key, pin]);
 
-  // Keyed on the machine so a caller that loads on `refresh` reloads when the
-  // page's machine changes.
+  // A new identity when the machine changes, so a caller that loads on
+  // `refresh` reloads with the page's machine. Settings pins keep their
+  // identity while their key is unchanged.
   const refresh = useCallback(
     (options: RefreshGithubAppUserAuthOptions = {}) =>
-      refreshGithubAppUserAuth({ ...options, pin: pinRef.current }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key],
+      refreshGithubAppUserAuth({ ...options, pin }),
+    [pin],
   );
 
   const set = useCallback((status: GitHubAppUserAuthStatus | null) => {

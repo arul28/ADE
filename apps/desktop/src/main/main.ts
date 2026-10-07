@@ -8306,10 +8306,9 @@ app.whenReady().then(async () => {
     const knownLocalProjectRoots = Array.from(
       windowKnownLocalProjectRoots.get(windowId) ?? [],
     );
-    // Every tab the window shows, loaded or not. `openProjectTabs` only lists
-    // projects with a live context, and an idle local project's context is
-    // released while the window sits on another machine's checkout, so a
-    // reload restored the remote tab and dropped the local one.
+    // Every local tab the window shows, loaded or not. `openProjectTabs` lists
+    // only projects with a live context, and an idle project's context can be
+    // released while its tab stays open.
     const openProjectTabRoots = Array.from(windowProjectTabRoots.get(windowId) ?? []);
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {

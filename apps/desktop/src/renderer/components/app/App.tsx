@@ -35,7 +35,7 @@ import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
@@ -1268,7 +1268,7 @@ function AppNavigationBridge() {
       const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
-        navigate(`${openLaneInLanesTabPath(target.laneId, target.sessionId)}&machineId=${encodeURIComponent(laneMachineId)}`);
+        navigate(openLaneOnMachinePath(target.laneId, laneMachineId, target.sessionId));
         return true;
       }
       if (!lane && !options.forceLocal) {

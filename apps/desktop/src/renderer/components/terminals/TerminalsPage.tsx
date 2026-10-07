@@ -92,7 +92,7 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import {
   buildHandoffLaunchJobsScopeKey,
   type HandoffLaunchJob,
@@ -568,25 +568,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => {
-      // A chat on another machine opens its lane in this tab's Lanes list,
-      // which already shows every machine's lanes. Moving the whole tab to
-      // that machine made the tab look like a different project.
+      // A session on another machine opens its lane in this tab's Lanes list,
+      // which lists every machine's lanes. The project tab never changes
+      // machine to show one lane.
       if (binding) {
-        const params = new URLSearchParams({
-          laneId: session.laneId,
-          machineId: machineIdForBinding(binding),
-        });
-        work.navigate(`/lanes?${params.toString()}`);
+        work.navigate(openLaneOnMachinePath(session.laneId, machineIdForBinding(binding), session.id));
         return;
       }
       work.selectLane(session.laneId);
       work.focusSession(session.id);
-      const params = new URLSearchParams({
-        laneId: session.laneId,
-        focus: "single",
-        sessionId: session.id,
-      });
-      work.navigate(`/lanes?${params.toString()}`);
+      work.navigate(openLaneInLanesTabPath(session.laneId, session.id));
     },
     [work],
   );

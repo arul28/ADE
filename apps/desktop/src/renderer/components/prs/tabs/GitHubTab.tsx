@@ -51,14 +51,14 @@ import {
   patchSnapshotWithMappedPr,
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
-import { openLaneOnMachinePath, useCreateLaneFromPrBranch } from "./useCreateLaneFromPrBranch";
+import { useCreateLaneFromPrBranch } from "./useCreateLaneFromPrBranch";
 import { GitHubTabView } from "./GitHubTabView";
 import { normalizeGitHubTabSort, type GitHubTabSort } from "./prBlockedSort";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
-import { openLaneInLanesTabPath } from "../../../lib/laneNavigation";
+import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../../lib/laneNavigation";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import {
   PrMachineIndexProvider,

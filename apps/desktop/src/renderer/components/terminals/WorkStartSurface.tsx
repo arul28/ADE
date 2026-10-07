@@ -109,18 +109,19 @@ export function WorkStartSurface({
   }, [boundMachineId, draftMachineId, onDraftLaneChange, selectLaneGlobal]);
 
   useEffect(() => {
-    if (!lanes.length) {
+    // `lanes` is this tab's machine only. A draft lane on another machine does
+    // not depend on it, so an empty local list must not clear that choice.
+    const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
+    if (!lanes.length && !foreignDraft) {
       setSelectedLaneId("");
       return;
     }
     if (draftLaneId && draftLaneId !== selectedLaneId) {
       setSelectedLaneId(draftLaneId);
-      if (!draftMachineId || draftMachineId === boundMachineId) {
-        selectLaneGlobal(draftLaneId);
-      }
+      if (!foreignDraft) selectLaneGlobal(draftLaneId);
       return;
     }
-    if (!selectedLaneId) {
+    if (!selectedLaneId && lanes.length) {
       const fallbackLaneId =
         draftLaneId && isKnownLaneId(draftLaneId)
           ? draftLaneId

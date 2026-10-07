@@ -44,7 +44,7 @@ import { ProjectlessHero } from "./ProjectlessHero";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
-import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
+import { projectOnOtherMachine, switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import {
   agentChatModelCatalogHasAvailableModels,
@@ -61,7 +61,8 @@ import {
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
-import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
+import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 
 type ToolPanel = "browser" | "terminal" | null;
 
@@ -714,10 +715,19 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const machineId = webMachines
     ? webMachines.machineId ?? ""
     : isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
-  // Every connected machine that has a project ADE can bind to, not only the
-  // ones with an open project tab: a tab now runs on this computer's checkout
-  // whenever it can, so other machines rarely have a tab of their own.
+  // Every connected machine with a project the picker can bind to, whether or
+  // not it has an open project tab.
   const { snapshot: remoteSnapshot } = useRemoteConnectionSnapshot(!webMachines);
+  const remoteProjectFor = useCallback(
+    (targetId: string) =>
+      projectOnOtherMachine({
+        currentOrigin: projectBinding?.gitOriginUrl,
+        openTabProjectId: openRemoteProjectTabs.find((entry) => entry.targetId === targetId)?.projectId,
+        machineProjects: remoteSnapshot?.connections
+          .find((connection) => connection.target.id === targetId)?.projects ?? [],
+      }),
+    [openRemoteProjectTabs, projectBinding?.gitOriginUrl, remoteSnapshot],
+  );
   const desktopMachineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
     const options: PersonalChatsMachineOption[] = [
       { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
@@ -727,11 +737,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     };
     for (const tab of openRemoteProjectTabs) add(tab.targetId, tab.runtimeName);
     for (const connection of remoteSnapshot?.connections ?? []) {
-      if (connection.state !== "connected" || (connection.projects ?? []).length === 0) continue;
+      if (connection.state !== "connected" || !remoteProjectFor(connection.target.id)) continue;
       add(connection.target.id, connection.target.name || connection.target.hostname);
     }
     return options;
-  }, [openRemoteProjectTabs, remoteSnapshot]);
+  }, [openRemoteProjectTabs, remoteProjectFor, remoteSnapshot]);
   const machineOptions = webMachines ? webMachines.options : desktopMachineOptions;
   const selectMachine = useCallback(
     (nextMachineId: string) => {
@@ -753,16 +763,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         }).then(setError);
         return;
       }
-      const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);
-      const projects = remoteSnapshot?.connections
-        .find((connection) => connection.target.id === nextMachineId)?.projects ?? [];
-      const origin = cachedGitRemoteIdentity(projectBinding?.gitOriginUrl ?? null);
-      const projectId = tab?.projectId
-        ?? (origin
-          ? projects.find((entry) => cachedGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin)?.projectId
-          : undefined)
-        ?? projects[0]?.projectId;
+      const projectId = remoteProjectFor(nextMachineId);
       if (!projectId) return;
+      // A machine picked here is a choice, so the tab keeps it rather than
+      // moving back to this computer's checkout.
+      rememberExplicitRemotePick(remoteProjectBindingKey(nextMachineId, projectId));
       void switchRemoteProject(nextMachineId, projectId).catch((reason) => {
         setError(reason instanceof Error ? reason.message : String(reason));
       });
@@ -771,9 +776,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       localProjectRootPath,
       machineId,
       openProjectTabRoots,
-      openRemoteProjectTabs,
       projectBinding,
-      remoteSnapshot,
+      remoteProjectFor,
       switchProjectToPath,
       switchRemoteProject,
       webMachines,

@@ -12,6 +12,7 @@ import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { historyCommitsPath } from "../history/historyUrlHydration";
+import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
@@ -226,11 +227,8 @@ export function useWorkLaneContextMenu(options?: {
     const { lane, machineId } = foreignMenuState;
     close();
     // The Lanes list shows every machine's lanes, so the lane opens in this
-    // tab. Switching the tab to the lane's machine made it look like another
-    // project (remote border, missing icon, settings for the wrong machine).
-    void navigate(
-      `/lanes?laneId=${encodeURIComponent(lane.id)}&machineId=${encodeURIComponent(machineId)}`,
-    );
+    // tab. The project tab never changes machine to show one lane.
+    void navigate(openLaneOnMachinePath(lane.id, machineId));
   }, [
     close,
     foreignMachineOnline,
