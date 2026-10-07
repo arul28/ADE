@@ -451,12 +451,21 @@ describe("a resting chat that will run again, dragged to Done", () => {
   });
 
   const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
-  type ChatLink = { sessionId: string; nextWakeAt?: string | null; orchestrationParentSessionId?: string; spawnKind?: string };
+  type ChatLink = { sessionId: string; status?: "active" | "idle" | "ended"; nextWakeAt?: string | null; orchestrationParentSessionId?: string; spawnKind?: string };
 
   // The board files these in Waiting ("Wake scheduled" / "Subagent working"),
   // so the host must start the move from Waiting too, or a drag to Done
   // answers "already there" while the card visibly stays put.
-  it.each<[string, { wake?: string | null; chats: ChatLink[]; rows: Row[] }, { from: string; changed: boolean }]>([
+  it.each<[string, { wake?: string | null; parentStatus?: "active" | "idle"; parent?: Partial<Row>; chats: ChatLink[]; rows: Row[] }, { from: string; changed: boolean }]>([
+    // The stored row still reads running; the chat summary says idle with a wake.
+    ["its stored row reads running but its chat is idle with a wake ahead",
+      { wake: inMinutes(12), parentStatus: "idle", parent: { runtimeState: "running" }, chats: [], rows: [] },
+      { from: "waiting", changed: true }],
+    ["its subagent's stored row reads running but that chat is idle", {
+      parentStatus: "idle",
+      chats: [{ sessionId: "child", status: "idle", spawnKind: "subagent", orchestrationParentSessionId: "chat-1" }],
+      rows: [row({ id: "child", runtimeState: "running" })],
+    }, { from: "done", changed: false }],
     ["its own wake is still to come", { wake: inMinutes(12), chats: [], rows: [] }, { from: "waiting", changed: true }],
     ["a grandchild subagent is mid-turn", {
       chats: [
@@ -486,7 +495,7 @@ describe("a resting chat that will run again, dragged to Done", () => {
       rows: [row({ id: "child" })],
     }, { from: "done", changed: false }],
   ])("starts from the column the board shows when %s", async (_label, setup, expected) => {
-    const sessions = makeSessionService(row());
+    const sessions = makeSessionService(row(setup.parent));
     const actions = createSessionBoardMoveActions({
       sessionService: {
         ...sessions.service,
@@ -494,7 +503,11 @@ describe("a resting chat that will run again, dragged to Done", () => {
         list: () => [sessions.current, ...setup.rows],
       },
       agentChatService: {
-        getSessionSummary: async () => ({ awaitingInput: false, nextWakeAt: setup.wake ?? null }),
+        getSessionSummary: async () => ({
+          awaitingInput: false,
+          nextWakeAt: setup.wake ?? null,
+          ...(setup.parentStatus ? { status: setup.parentStatus } : {}),
+        }),
         listSessions: async () => setup.chats,
       },
       logger: silentLogger,

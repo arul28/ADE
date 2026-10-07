@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AgentChatSessionSummary,
   SessionAttentionSource,
   SessionBoardMoveResult,
   SessionBoardMoveUndoResult,
@@ -21,7 +22,7 @@ import {
 } from "../../../shared/sessionCanonicalState";
 import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
-import { isChatToolType } from "../sessions/chatSessionProjection";
+import { isChatToolType, projectChatOntoSession } from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
 import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
@@ -371,7 +372,7 @@ export type BoardMoveSessionService = Pick<
    * the row (resume metadata), not on a chat. Optional so a host without it
    * still answers from the chats alone.
    */
-  list?: (args?: { laneId?: string }) => TerminalSessionSummary[];
+  list?: (args?: { laneId?: string; limit?: number | null }) => TerminalSessionSummary[];
 };
 
 /**
@@ -572,17 +573,46 @@ export type BoardMoveChatService = {
    * `hasLivePendingInput`, the same check `chat.sendMessage` refuses on.
    * `nextWakeAt` is read for the same reason: it is projected, never a column.
    */
-  getSessionSummary?(sessionId: string): Promise<{ awaitingInput?: boolean; nextWakeAt?: string | null } | null>;
+  getSessionSummary?(sessionId: string): Promise<BoardMoveChatSummary | null>;
   /** The lane's chats, to find this row's subagents and their wakes. */
   listSessions?(laneId?: string): Promise<BoardMoveChatLink[]>;
 };
 
-type BoardMoveChatLink = {
-  sessionId: string;
+/** What a move reads from a chat summary. A full summary carries `status`. */
+type BoardMoveChatSummary = Partial<AgentChatSessionSummary> & {
+  awaitingInput?: boolean;
   nextWakeAt?: string | null;
+};
+
+type BoardMoveChatLink = Omit<BoardMoveChatSummary, "orchestrationParentSessionId" | "spawnKind"> & {
+  sessionId: string;
   orchestrationParentSessionId?: string | null;
   spawnKind?: string | null;
 };
+
+/**
+ * The row as the board files it. A chat's runtime state, wake and lineage live
+ * on its chat summary, and the stored row can still read `running` for a chat
+ * that is idle, so a full summary is projected exactly as the session list
+ * projects it (`projectChatOntoSession`). A partial summary (an older host)
+ * contributes only the fields it carries.
+ */
+function boardMoveRow(
+  session: TerminalSessionSummary,
+  summary: BoardMoveChatSummary | BoardMoveChatLink | null | undefined,
+): TerminalSessionSummary {
+  if (!summary) return session;
+  if (typeof summary.status === "string") {
+    return projectChatOntoSession(session, summary as AgentChatSessionSummary);
+  }
+  const link = summary as BoardMoveChatLink;
+  return {
+    ...session,
+    ...(link.nextWakeAt !== undefined ? { nextWakeAt: link.nextWakeAt } : {}),
+    ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
+    ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),
+  };
+}
 
 /**
  * Whether a subagent nested under this chat still keeps it busy, by the same
@@ -608,7 +638,8 @@ async function hasBusySubagent(
   }
   let laneRows: TerminalSessionSummary[] = [];
   try {
-    laneRows = sessionService.list?.({ laneId: row.laneId }) ?? [];
+    // The whole lane, like the board: the default page would drop older rows.
+    laneRows = sessionService.list?.({ laneId: row.laneId, limit: null }) ?? [];
   } catch {
     laneRows = [];
   }
@@ -619,12 +650,7 @@ async function hasBusySubagent(
   for (const link of chats) {
     const linked = rowsById.get(link.sessionId) ?? sessionService.get(link.sessionId);
     if (!linked || linked.laneId !== row.laneId) continue;
-    rowsById.set(link.sessionId, {
-      ...linked,
-      nextWakeAt: link.nextWakeAt ?? null,
-      ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
-      ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),
-    });
+    rowsById.set(link.sessionId, boardMoveRow(linked, link));
   }
   if (rowsById.size < 2) return false;
   return parentsWithBusySubagents([...rowsById.values()], nowMs).has(row.id);
@@ -643,7 +669,7 @@ async function hasBusySubagent(
 async function readBoardMoveChatSummary(
   chat: BoardMoveChatService | null | undefined,
   sessionId: string,
-): Promise<{ awaitingInput?: boolean; nextWakeAt?: string | null } | null> {
+): Promise<BoardMoveChatSummary | null> {
   if (typeof chat?.getSessionSummary !== "function") return null;
   try {
     return await chat.getSessionSummary(sessionId);
@@ -696,9 +722,7 @@ export function createSessionBoardMoveActions(deps: {
       const rawRow = sessionService.get(sessionId);
       if (!rawRow) throw new Error(`Session '${sessionId}' was not found.`);
       const chatSummary = await readBoardMoveChatSummary(deps.agentChatService, sessionId);
-      const withWake = (session: TerminalSessionSummary): TerminalSessionSummary => (
-        chatSummary?.nextWakeAt !== undefined ? { ...session, nextWakeAt: chatSummary.nextWakeAt } : session
-      );
+      const withWake = (session: TerminalSessionSummary): TerminalSessionSummary => boardMoveRow(session, chatSummary);
       const row = withWake(rawRow);
       // Only a row that would otherwise file as Done can be held in Waiting by
       // a subagent, so the lane's chats are listed only then.
