@@ -544,7 +544,30 @@ export type HandoffBundleLane = {
  * this machine, and a move must not rewrite it. The caller passes no primary
  * lane, and one handed in anyway is refused.
  */
-export async function landHandoffGitBundle<Lane extends HandoffBundleLane>(args: {
+/**
+ * One landing at a time per destination branch. Two moves of the same branch
+ * into one checkout would otherwise interleave their clean checks, applies and
+ * `reset --hard` rollbacks, and one rollback could erase the other's arriving
+ * changes. Acceptance runs in this one brain, so an in-process queue is the
+ * whole lock.
+ */
+const landingQueues = new Map<string, Promise<unknown>>();
+
+export async function landHandoffGitBundle<Lane extends HandoffBundleLane>(
+  args: LandHandoffGitBundleArgs<Lane>,
+): Promise<Lane> {
+  const key = `${path.resolve(args.projectRoot)}\0${args.branchRef}`;
+  const previous = landingQueues.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => {}).then(() => landHandoffGitBundleNow(args));
+  landingQueues.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (landingQueues.get(key) === run) landingQueues.delete(key);
+  }
+}
+
+type LandHandoffGitBundleArgs<Lane extends HandoffBundleLane> = {
   projectRoot: string;
   capsule: AgentChatCrossMachineHandoffCapsule;
   handoffId: string;
@@ -553,15 +576,24 @@ export async function landHandoffGitBundle<Lane extends HandoffBundleLane>(args:
   fetchEnv?: NodeJS.ProcessEnv;
   importLane: (input: { branchRef: string; name: string; description: string }) => Promise<Lane>;
   deleteLane: (laneId: string) => Promise<void>;
-  /** Called the moment a new lane exists, before any change lands in it. */
+  /**
+   * Called the moment the lane is chosen (an existing one, or a new one as
+   * soon as it exists), before any change lands in it, so a crash mid-apply
+   * retries into that lane instead of refusing it as someone else's work.
+   */
   onLaneImported: (laneId: string) => void;
-}): Promise<Lane> {
+};
+
+async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
+  args: LandHandoffGitBundleArgs<Lane>,
+): Promise<Lane> {
   const bundle = args.capsule.gitBundle;
   if (!bundle) throw new Error("The handoff carries no branch changes to land.");
   if (args.existingLane?.laneType === "primary") {
     throw new Error("Handed-off changes never land in this machine's primary checkout.");
   }
   if (args.existingLane) {
+    args.onLaneImported(args.existingLane.id);
     await applyHandoffGitBundle({
       projectRoot: args.projectRoot,
       handoffId: args.handoffId,

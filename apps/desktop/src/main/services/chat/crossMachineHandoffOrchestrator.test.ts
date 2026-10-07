@@ -30,7 +30,7 @@ import {
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
-import { applyHandoffGitBundle, packHandoffGitBundle } from "./handoffGitBundle";
+import { applyHandoffGitBundle, landHandoffGitBundle, packHandoffGitBundle } from "./handoffGitBundle";
 
 const SESSION = "chat-1";
 const ORIGIN = "https://github.com/example/ade.git";
@@ -609,6 +609,56 @@ async function packIsolated(args: Parameters<typeof packHandoffGitBundle>[0]) {
 }
 
 describe("handoff git bundle", () => {
+  it("lands one move at a time into a destination lane, so a second can't undo the first", async () => {
+    const { source, clone } = makeRepos();
+    const other = clone("other-source");
+    git(other, "checkout", "--quiet", "-b", "feature", "origin/feature");
+    fs.writeFileSync(path.join(source, "edit.txt"), "from the first move\n");
+    fs.writeFileSync(path.join(other, "edit.txt"), "from the second move\n");
+    const first = await packHandoffGitBundle({ worktreePath: source, branchRef: "feature", handoffId: "handoff:race-1" });
+    const second = await packHandoffGitBundle({ worktreePath: other, branchRef: "feature", handoffId: "handoff:race-2" });
+    if (!first || !second) throw new Error("both dirty lanes must pack");
+
+    const destination = clone("race-destination");
+    const lanePath = path.join(path.dirname(destination), "race-lane");
+    git(destination, "worktree", "add", "--quiet", "-b", "feature", lanePath, "origin/feature");
+    const lane = { id: "lane-race", worktreePath: lanePath, laneType: "worktree" };
+    const capsuleFor = (gitBundle: typeof first) =>
+      ({ gitBundle, source: { laneName: "feature", machineName: "MacBook" } }) as unknown as AgentChatCrossMachineHandoffCapsule;
+    const land = (handoffId: string, gitBundle: typeof first, onLaneImported: () => void) => landHandoffGitBundle({
+      projectRoot: destination,
+      capsule: capsuleFor(gitBundle),
+      handoffId,
+      branchRef: "feature",
+      existingLane: lane,
+      importLane: async () => {
+        throw new Error("the lane exists");
+      },
+      deleteLane: async () => {},
+      onLaneImported,
+    });
+
+    const events: string[] = [];
+    let secondRun: Promise<unknown> | null = null;
+    const firstRun = land("handoff:race-1", first, () => {
+      events.push("first bound");
+      // The second move arrives while the first is landing.
+      secondRun = land("handoff:race-2", second, () => events.push("second bound")).catch((error: Error) => {
+        events.push("second refused");
+        return error;
+      });
+    });
+    await firstRun;
+    events.push("first landed");
+    await secondRun;
+
+    // The second never touched the lane before the first finished, and the
+    // first move's arriving change survived the second's refusal.
+    expect(events.indexOf("first landed")).toBeLessThan(events.indexOf("second bound"));
+    expect(events).toContain("second refused");
+    expect(fs.readFileSync(path.join(lanePath, "edit.txt"), "utf8")).toBe("from the first move\n");
+  });
+
   it("carries unpushed commits and every working-tree change, unstaged, without touching the source", async () => {
     const { source, clone } = makeRepos();
     fs.writeFileSync(path.join(source, "committed.txt"), "unpushed\n");

@@ -12688,14 +12688,17 @@ export function AgentChatPane({
     // send would reach this machine's brain with the other machine's chat id.
     // A pinned route needs the lane on that machine's list; a lane on the
     // tab's own binding is routed unpinned.
+    // A lane id alone can name a row on more than one machine (a project's
+    // lanes sync), so the destination machine's own entry decides: the one
+    // that has the lane and carries the move's destination name.
     const laneOnActiveBinding = lanes.some((lane) => lane.id === continuation.targetLaneId);
-    const laneKnownElsewhere = Object.values(crossMachineLanesByMachineId).some((machine) =>
-      machine.lanes.some((lane) => lane.id === continuation.targetLaneId));
-    const pin = laneKnownElsewhere || laneOnActiveBinding
-      ? chatMachineRouter.pinForLane(continuation.targetLaneId)
-      : null;
-    const routesPinned = pin != null && laneKnownElsewhere;
-    const routesUnpinned = pin == null && laneOnActiveBinding;
+    const holders = Object.values(crossMachineLanesByMachineId).filter((machine) =>
+      machine.binding && machine.lanes.some((lane) => lane.id === continuation.targetLaneId));
+    const destination = holders.find((machine) => machine.machineName === continuation.targetMachineName)
+      ?? (holders.length === 1 && !laneOnActiveBinding ? holders[0] : null);
+    const pin = destination?.binding ?? null;
+    const routesPinned = pin != null;
+    const routesUnpinned = !routesPinned && laneOnActiveBinding;
     const routable = routesPinned || routesUnpinned;
     /**
      * Hand the words over rather than lose them: files and attached context
@@ -12772,7 +12775,6 @@ export function AgentChatPane({
     appControlContextItems.length,
     attachments.length,
     builtInBrowserContextItems.length,
-    chatMachineRouter,
     contextAttachments.length,
     crossMachineLanesByMachineId,
     draft,
