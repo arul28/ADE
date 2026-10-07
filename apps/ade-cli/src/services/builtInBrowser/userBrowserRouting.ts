@@ -73,16 +73,14 @@ export function trackIssuedBrowserActorCapabilities(
   const tracked: BrowserActorCapabilityIssuer = {
     issue: async (capability) => {
       const chatSessionId = capability.chatSessionId.trim();
-      try {
-        const token = (await issuer.issue(capability))?.trim() || null;
-        // The desktop keeps one token per chat: a new one replaces the last.
-        if (token) tokens.set(chatSessionId, token);
-        else tokens.delete(chatSessionId);
-        return token;
-      } catch (error) {
-        tokens.delete(chatSessionId);
-        throw error;
-      }
+      // A failed re-issue throws before touching the map: the chat stays held
+      // to the capability it was last issued. Forgetting it would let any
+      // caller naming the chat act in the user's browser without one.
+      const token = (await issuer.issue(capability))?.trim() || null;
+      // The desktop keeps one token per chat: a new one replaces the last.
+      if (token) tokens.set(chatSessionId, token);
+      else tokens.delete(chatSessionId);
+      return token;
     },
     revoke: async (chatSessionId) => {
       const normalized = chatSessionId.trim();

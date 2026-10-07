@@ -17,6 +17,15 @@ describe("computer-use command summary", () => {
   it.each<[string, ComputerUseCommandInput, Expected]>([
     ["a non-ADE shell command keeps its shell row", ok("ls -la"), null],
     ["two acting commands in one call are not guessed at", ok("ade screen click --label Save && ade screen type hello"), null],
+    // Beside `||` the action may never have run, or the exit code is someone else's.
+    ["an action after `||` may never have run", ok("true || ade screen click --label Save"), null],
+    ["an action before `||` has its failure masked", ok("ade screen click --label Save 2>&1 || true"), null],
+    ["an action after `&&` in a failed call may never have run", { command: "cd app && ade screen click --label Save", output: "", status: "failed", exitCode: 1 }, null],
+    [
+      "an action after `&&` in a successful call ran",
+      ok('cd app && A="$ADE_CLI_PATH"; $A screen click --label Save', 'hit: AXButton "Save" (e1)\neffect: observed'),
+      { text: "Clicked “Save” using the lane screen", surface: "lane_screen", outcome: "observed" },
+    ],
     [
       "the element actually hit wins over the label asked for",
       ok("ade screen click --label Save", 'hit: AXButton "Save As…" (e12)\neffect: observed — the window changed'),

@@ -402,6 +402,8 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     return next;
   };
   const pendingAttaches = new Set<string>();
+  /** Set by `dispose`: every pending attach is superseded and no new one starts. */
+  let disposed = false;
 
   const detachChat = async (chatSessionId: string): Promise<Attachment | null> => {
     const existing = attachments.get(chatSessionId) ?? null;
@@ -413,8 +415,11 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
 
   const attach = async (input: UserBrowserAttachInput = {}): Promise<UserBrowserAttachResult> => {
     const chatSessionId = requireChat(input);
+    if (disposed) {
+      throw new UserBrowserAttachError("ADE's runtime is shutting down, so it cannot attach to the user's browser.");
+    }
     const generation = nextAttachGeneration(chatSessionId);
-    const superseded = (): boolean => attachGenerations.get(chatSessionId) !== generation;
+    const superseded = (): boolean => disposed || attachGenerations.get(chatSessionId) !== generation;
     pendingAttaches.add(chatSessionId);
     try {
       return await attachChat(chatSessionId, input, superseded);
@@ -729,6 +734,37 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     }
   };
 
+  /**
+   * The viewport in CSS pixels: the layout metrics, else the page's own
+   * `innerWidth` / `innerHeight`. Never 0×0 — a wheel at the origin scrolls
+   * whatever sits in the corner, not the page.
+   */
+  const viewportSize = async (attachment: Attachment): Promise<{ width: number; height: number }> => {
+    const positive = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+    await ensurePageEnabled(attachment);
+    const metrics = await attachment.page.send<{ cssVisualViewport?: { clientWidth?: number; clientHeight?: number } }>(
+      "Page.getLayoutMetrics",
+    ).catch(() => null);
+    let width = positive(metrics?.cssVisualViewport?.clientWidth);
+    let height = positive(metrics?.cssVisualViewport?.clientHeight);
+    if (width == null || height == null) {
+      const evaluated = await attachment.page.send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        expression: "({ width: window.innerWidth, height: window.innerHeight })",
+        returnByValue: true,
+      }).catch(() => null);
+      const value = isRecord(evaluated?.result?.value) ? evaluated.result.value : {};
+      width = positive(value.width);
+      height = positive(value.height);
+    }
+    if (width == null || height == null) {
+      throw new UserBrowserAttachError(
+        "Could not read the tab's viewport size to scroll at its center. Pass --x and --y to scroll at a point.",
+      );
+    }
+    return { width, height };
+  };
+
   const pseudoSession = (attachment: Attachment) => ({
     id: attachment.session.id,
     tabId: attachment.targetId,
@@ -776,11 +812,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     scroll: async (attachment, args) => {
       if (args.x == null || args.y == null) {
         // No point given: wheel at the middle of the viewport, as a person would.
-        const metrics = await attachment.page.send<{ cssVisualViewport?: { clientWidth?: number; clientHeight?: number } }>(
-          "Page.getLayoutMetrics",
-        ).catch(() => null);
-        const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
-        const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
+        const { width, height } = await viewportSize(attachment);
         return await attachment.actions.agentScroll({ ...args, x: width / 2, y: height / 2, coordinateSpace: "viewport" });
       }
       return await attachment.actions.agentScroll({ coordinateSpace: "viewport", ...args });
@@ -870,6 +902,10 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
   };
 
   const dispose = (): void => {
+    // An attach still waiting on the browser's prompt sees itself superseded
+    // and closes its connection instead of storing it on a disposed service.
+    disposed = true;
+    pendingAttaches.clear();
     for (const attachment of attachments.values()) void closeAttachment(attachment);
     attachments.clear();
   };

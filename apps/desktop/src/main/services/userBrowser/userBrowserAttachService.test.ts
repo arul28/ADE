@@ -61,7 +61,14 @@ afterEach(() => {
 });
 
 describe("userBrowserAttachService attach lifecycle", () => {
-  it("a detach while the attach waits on the browser's prompt leaves the chat on ADE's browser", async () => {
+  it.each([
+    ["a detach", async (service: ReturnType<typeof createService>) => {
+      expect((await service.detach({ chatSessionId: "chat-1" })).detached).toBe(true);
+    }],
+    ["disposing the service", async (service: ReturnType<typeof createService>) => {
+      service.dispose();
+    }],
+  ])("%s while the attach waits on the browser's prompt leaves the chat on ADE's browser", async (_label, cancel) => {
     const userDataDir = chromeProfileWithDebugging();
     const connected = deferred<CdpClient>();
     const connect = vi.spyOn(CdpClient, "connect").mockReturnValue(connected.promise);
@@ -70,8 +77,7 @@ describe("userBrowserAttachService attach lifecycle", () => {
     const attaching = service.attach({ chatSessionId: "chat-1", userDataDir });
     await vi.waitFor(() => expect(connect).toHaveBeenCalledWith("ws://127.0.0.1:9222/devtools/browser/abc-123", expect.anything()));
 
-    const detached = await service.detach({ chatSessionId: "chat-1" });
-    expect(detached.detached).toBe(true);
+    await cancel(service);
 
     // The user clicks Allow only after the chat gave up.
     const browser = fakeBrowserConnection({ targetId: "t-1", title: "Inbox", url: "https://mail.test/" });

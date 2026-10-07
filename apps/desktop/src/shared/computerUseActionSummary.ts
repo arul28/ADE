@@ -165,28 +165,51 @@ type ParsedInvocation = {
   /** Positional arguments after the verb. */
   positionals: string[];
   flags: Map<string, string | true>;
+  /**
+   * Whether it surely ran: `or` beside a `||` (it may have been skipped, or
+   * the exit code is another command's), `and` after a `&&` (skipped when the
+   * command before it failed), null otherwise.
+   */
+  conditional: ShellConditional;
 };
 
+type ShellConditional = "or" | "and" | null;
+
+/** One simple command and the operators on either side of it. */
+type ShellCommand = { tokens: string[]; conditional: ShellConditional };
+
 /**
- * Split a shell command into simple-command token lists. Quote-aware, with
- * `&&`, `||`, `;`, `|`, `&` and newlines as separators. Tokens are unquoted
- * but variables are left as written (`$ADE_CLI_PATH`).
+ * Split a shell command into simple commands. Quote-aware, with `&&`, `||`,
+ * `;`, `|`, `&` and newlines as separators; each command notes whether a
+ * `||` or `&&` makes it conditional. Tokens are unquoted but variables are
+ * left as written (`$ADE_CLI_PATH`).
  */
-function splitShellCommands(source: string): string[][] {
-  const commands: string[][] = [];
+function splitShellCommands(source: string): ShellCommand[] {
+  const commands: ShellCommand[] = [];
   let tokens: string[] = [];
   let current = "";
   let hasToken = false;
   let quote: "'" | "\"" | null = null;
+  // The operator before the command being read; a newline after `||` / `&&`
+  // continues it.
+  let before: string | null = null;
   const pushToken = () => {
     if (hasToken) tokens.push(current);
     current = "";
     hasToken = false;
   };
-  const pushCommand = () => {
+  const pushCommand = (after: string | null) => {
     pushToken();
-    if (tokens.length) commands.push(tokens);
-    tokens = [];
+    if (tokens.length) {
+      const conditional: ShellConditional = before === "||" || after === "||"
+        ? "or"
+        : before === "&&" ? "and" : null;
+      commands.push({ tokens, conditional });
+      tokens = [];
+      before = after;
+    } else if (after !== "\n" || before === null) {
+      before = after;
+    }
   };
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index]!;
@@ -222,8 +245,17 @@ function splitShellCommands(source: string): string[][] {
       index += 1;
       continue;
     }
+    // `2>&1` and `&>file` are redirections, not the background operator: a
+    // split there would cut `ade … 2>&1 || true` off from its `||`.
+    if (char === "&" && (/[<>]$/.test(current) || source[index + 1] === ">")) {
+      current += char;
+      hasToken = true;
+      continue;
+    }
     if (char === "\n" || char === ";" || char === "|" || char === "&") {
-      pushCommand();
+      const doubled = (char === "|" || char === "&") && source[index + 1] === char;
+      if (doubled) index += 1;
+      pushCommand(doubled ? `${char}${char}` : char);
       continue;
     }
     if (char === " " || char === "\t" || char === "\r") {
@@ -233,7 +265,7 @@ function splitShellCommands(source: string): string[][] {
     current += char;
     hasToken = true;
   }
-  pushCommand();
+  pushCommand(null);
   return commands;
 }
 
@@ -323,7 +355,7 @@ function parseInvocation(tokens: readonly string[], aliasVars: ReadonlySet<strin
     }
     positionals.push(token);
   }
-  return { domain, alias: domainToken!, words, positionals, flags };
+  return { domain, alias: domainToken!, words, positionals, flags, conditional: null };
 }
 
 /** The second word of a two-word verb (`record start`, `proof capture`). */
@@ -499,10 +531,16 @@ function collectAliasVars(source: string): Set<string> {
   return vars;
 }
 
+/** The less certain of two: `or` over `and` over unconditional. */
+function strongerConditional(left: ShellConditional, right: ShellConditional): ShellConditional {
+  if (left === "or" || right === "or") return "or";
+  return left ?? right;
+}
+
 function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
   const aliasVars = collectAliasVars(source);
   const found: ParsedInvocation[] = [];
-  for (const tokens of splitShellCommands(source)) {
+  for (const { tokens, conditional } of splitShellCommands(source)) {
     const head = basename(tokens[0] ?? "");
     // `bash -lc '<script>'`: read the script.
     if (SHELLS.has(head) && depth < 2) {
@@ -511,13 +549,15 @@ function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
       if (script) {
         const inner = findInvocations(script, depth + 1);
         if (inner === null) return null;
+        // A script behind `||` or `&&` is as conditional as its own commands.
+        for (const entry of inner) entry.conditional = strongerConditional(entry.conditional, conditional);
         found.push(...inner);
         continue;
       }
     }
     const invocation = parseInvocation(tokens, aliasVars);
     if (invocation === "control") return null;
-    if (invocation) found.push(invocation);
+    if (invocation) found.push({ ...invocation, conditional });
   }
   return found;
 }
@@ -678,8 +718,14 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   /* Outcome. */
   const exitFailed = typeof input.exitCode === "number" && input.exitCode !== 0;
   const outputFailed = parsed.okFalse || (parsed.errorMessage !== null && parsed.hitName === null && parsed.effect === null);
+  const commandFailed = input.status === "failed" || input.status === "interrupted" || exitFailed || outputFailed;
+  // Beside a `||` it may never have run, and the exit code may be the other
+  // command's. After a `&&` it ran only if the command before it succeeded,
+  // which a failed call cannot tell apart from the action failing. Either way
+  // the row would state something the call does not show: keep the shell row.
+  if (invocation.conditional === "or" || (invocation.conditional === "and" && commandFailed)) return null;
   let outcome: ComputerUseActionOutcome;
-  if (input.status === "failed" || input.status === "interrupted" || exitFailed || outputFailed) outcome = "failed";
+  if (commandFailed) outcome = "failed";
   else if (input.status === "running" && !parsed.effect) outcome = "running";
   else if (parsed.effect === "observed") outcome = "observed";
   else if (parsed.effect === "unconfirmed" || parsed.effect === "waiting") outcome = "unconfirmed";

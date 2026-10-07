@@ -143,6 +143,10 @@ private struct CUInvocation {
   var words: [String]
   var positionals: [String]
   var flags: [String: String?]
+  /// Whether it surely ran: `.or` beside a `||` (it may have been skipped, or
+  /// the exit code is another command's), `.and` after a `&&` (skipped when
+  /// the command before it failed), nil otherwise.
+  var conditional: CUShellConditional? = nil
 
   func flag(_ names: String...) -> String? {
     for name in names {
@@ -157,29 +161,49 @@ private struct CUInvocation {
   func has(_ name: String) -> Bool { flags.keys.contains(name) }
 }
 
+private enum CUShellConditional { case or, and }
+
+/// One simple command and whether a `||` or `&&` makes it conditional.
+private struct CUShellCommand {
+  let tokens: [String]
+  let conditional: CUShellConditional?
+}
+
 private enum CUParseResult {
   case none
   case control
   case invocation(CUInvocation)
 }
 
-/// Quote-aware split into simple commands on `&&`, `||`, `;`, `|`, `&`, newlines.
-private func cuSplitShellCommands(_ source: String) -> [[String]] {
-  var commands: [[String]] = []
+/// Quote-aware split into simple commands on `&&`, `||`, `;`, `|`, `&`,
+/// newlines; each notes whether a `||` or `&&` makes it conditional.
+private func cuSplitShellCommands(_ source: String) -> [CUShellCommand] {
+  var commands: [CUShellCommand] = []
   var tokens: [String] = []
   var current = ""
   var hasToken = false
   var quote: Character? = nil
+  // The operator before the command being read; a newline after `||` / `&&`
+  // continues it.
+  var before: String? = nil
   let chars = Array(source)
   func pushToken() {
     if hasToken { tokens.append(current) }
     current = ""
     hasToken = false
   }
-  func pushCommand() {
+  func pushCommand(_ after: String?) {
     pushToken()
-    if !tokens.isEmpty { commands.append(tokens) }
-    tokens = []
+    if !tokens.isEmpty {
+      let conditional: CUShellConditional? = before == "||" || after == "||"
+        ? .or
+        : before == "&&" ? .and : nil
+      commands.append(CUShellCommand(tokens: tokens, conditional: conditional))
+      tokens = []
+      before = after
+    } else if after != "\n" || before == nil {
+      before = after
+    }
   }
   var index = 0
   while index < chars.count {
@@ -211,8 +235,16 @@ private func cuSplitShellCommands(_ source: String) -> [[String]] {
         hasToken = true
       }
       index += 1
+    } else if char == "&", current.hasSuffix(">") || current.hasSuffix("<")
+                || (index + 1 < chars.count && chars[index + 1] == ">") {
+      // `2>&1` and `&>file` are redirections, not the background operator: a
+      // split there would cut `ade … 2>&1 || true` off from its `||`.
+      current.append(char)
+      hasToken = true
     } else if char == "\n" || char == ";" || char == "|" || char == "&" {
-      pushCommand()
+      let doubled = (char == "|" || char == "&") && index + 1 < chars.count && chars[index + 1] == char
+      if doubled { index += 1 }
+      pushCommand(doubled ? "\(char)\(char)" : String(char))
     } else if char == " " || char == "\t" || char == "\r" {
       pushToken()
     } else {
@@ -221,7 +253,7 @@ private func cuSplitShellCommands(_ source: String) -> [[String]] {
     }
     index += 1
   }
-  pushCommand()
+  pushCommand(nil)
   return commands
 }
 
@@ -635,22 +667,36 @@ private func cuFindInvocations(_ source: String, depth: Int = 0) -> [CUInvocatio
     }
   }
   var found: [CUInvocation] = []
-  for tokens in cuSplitShellCommands(source) {
+  for command in cuSplitShellCommands(source) {
+    let tokens = command.tokens
     let head = cuBasename(tokens.first ?? "")
     if cuShells.contains(head), depth < 2,
        let flagIndex = tokens.indices.first(where: { $0 > 0 && cuTests(#"^-[a-z]*c$"#, tokens[$0], [.caseInsensitive]) }),
        flagIndex + 1 < tokens.count {
       guard let inner = cuFindInvocations(tokens[flagIndex + 1], depth: depth + 1) else { return nil }
-      found.append(contentsOf: inner)
+      // A script behind `||` or `&&` is as conditional as its own commands.
+      found.append(contentsOf: inner.map { entry in
+        var entry = entry
+        entry.conditional = cuStrongerConditional(entry.conditional, command.conditional)
+        return entry
+      })
       continue
     }
     switch cuParseInvocation(tokens, aliasVars: aliasVars) {
     case .control: return nil
-    case .invocation(let invocation): found.append(invocation)
+    case .invocation(var invocation):
+      invocation.conditional = command.conditional
+      found.append(invocation)
     case .none: break
     }
   }
   return found
+}
+
+/// The less certain of two: `.or` over `.and` over unconditional.
+private func cuStrongerConditional(_ left: CUShellConditional?, _ right: CUShellConditional?) -> CUShellConditional? {
+  if left == .or || right == .or { return .or }
+  return left ?? right
 }
 
 // MARK: - Summary
@@ -794,8 +840,14 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   // Outcome.
   let exitFailed = exitCode.map { $0 != 0 } ?? false
   let outputFailed = parsed.okFalse || (parsed.errorMessage != nil && parsed.hitName == nil && parsed.effect == nil)
+  let commandFailed = status == "failed" || status == "interrupted" || exitFailed || outputFailed
+  // Beside a `||` it may never have run, and the exit code may be the other
+  // command's. After a `&&` it ran only if the command before it succeeded,
+  // which a failed call cannot tell apart from the action failing. Either way
+  // the row would state something the call does not show: keep the shell row.
+  if invocation.conditional == .or || (invocation.conditional == .and && commandFailed) { return nil }
   let outcome: WorkComputerUseOutcome
-  if status == "failed" || status == "interrupted" || exitFailed || outputFailed { outcome = .failed }
+  if commandFailed { outcome = .failed }
   else if status == "running", parsed.effect == nil { outcome = .running }
   else if parsed.effect == "observed" { outcome = .observed }
   else if parsed.effect == "unconfirmed" || parsed.effect == "waiting" { outcome = .unconfirmed }

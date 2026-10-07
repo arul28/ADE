@@ -5830,11 +5830,23 @@ describe("adeRpcServer", () => {
       "chat-ended": { id: "chat-ended", laneId: "lane-1", status: "completed" },
     };
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => chats[sessionId] ?? null);
+    let issueFails = false;
     const tracked = trackIssuedBrowserActorCapabilities(
-      { issue: async ({ chatSessionId }) => `issued-${chatSessionId}`, revoke: async () => {} },
+      {
+        issue: async ({ chatSessionId }) => {
+          if (issueFails) throw new Error("desktop bridge unreachable");
+          return `issued-${chatSessionId}`;
+        },
+        revoke: async () => {},
+      },
       { onRevoke: () => {} },
     );
-    await tracked.issuer.issue({ chatSessionId: "chat-1", laneId: "lane-1", projectRoot: null, tabCollection: null } as any);
+    const chat1Capability = { chatSessionId: "chat-1", laneId: "lane-1", projectRoot: null, tabCollection: null } as any;
+    await tracked.issuer.issue(chat1Capability);
+    // A failed re-issue must not lower the bar: chat-1 stays held to its token.
+    issueFails = true;
+    await expect(tracked.issuer.issue(chat1Capability)).rejects.toThrow("desktop bridge unreachable");
+    issueFails = false;
     (fixture.runtime as any).issuedBrowserActorTokens = tracked.issued;
     // Only chat-1 is attached to the user's browser; everyone else's page
     // commands belong to ADE's browser.

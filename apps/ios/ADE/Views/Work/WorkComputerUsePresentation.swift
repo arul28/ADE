@@ -101,7 +101,8 @@ enum WorkComputerUseRunItem: Identifiable, Hashable {
 }
 
 /// Desktop `layoutComputerUseRun`: earlier actions compact (consecutive
-/// confirmed actions in one app folded), the latest one in full.
+/// confirmed actions in one app, through the same surface, folded), the
+/// latest one in full.
 func workComputerUseRunLayout(_ actions: [WorkComputerUseAction]) -> (earlier: [WorkComputerUseRunItem], latest: WorkComputerUseAction?) {
   guard !actions.isEmpty else { return ([], nil) }
   var lastDevice: (String?, String?)? = nil
@@ -121,17 +122,23 @@ func workComputerUseRunLayout(_ actions: [WorkComputerUseAction]) -> (earlier: [
   func foldable(_ action: WorkComputerUseAction) -> Bool {
     action.appName != nil && action.outcome != .failed && action.outcome != .unconfirmed
   }
+  // The surface label carries the screen product, the user browser and its
+  // machine, and the Apple device: two actions fold only when every part matches.
+  func foldKey(_ action: WorkComputerUseAction) -> String? {
+    guard let appName = action.appName else { return nil }
+    return "\(appName.lowercased())\u{0}\(action.surface.rawValue)\u{0}\(workComputerUseSurfaceLabel(action).label)"
+  }
   var earlier: [WorkComputerUseRunItem] = []
   var index = 0
   while index < compact.count {
     let first = compact[index]
-    guard foldable(first), let key = first.appName?.lowercased() else {
+    guard foldable(first), let key = foldKey(first) else {
       earlier.append(.action(first))
       index += 1
       continue
     }
     var end = index + 1
-    while end < compact.count, foldable(compact[end]), compact[end].appName?.lowercased() == key { end += 1 }
+    while end < compact.count, foldable(compact[end]), foldKey(compact[end]) == key { end += 1 }
     if end - index >= 2 {
       earlier.append(.appFold(appName: first.appName ?? "", actions: Array(compact[index..<end])))
     } else {

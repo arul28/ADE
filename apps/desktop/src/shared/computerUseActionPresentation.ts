@@ -126,8 +126,10 @@ export type ComputerUseRunItem<T> =
 
 /**
  * Lay out one run of actions: every earlier action as a compact line, with
- * consecutive confirmed actions in the same app folded into one
- * "Notes · 4 actions" line, and the latest action drawn in full. A failed or
+ * consecutive confirmed actions in the same app, through the same surface,
+ * folded into one "Notes · 4 actions" line, and the latest action drawn in
+ * full. The fold names one surface, so a run that changed machine, browser,
+ * screen product or device mid-way does not fold across the change. A failed or
  * unconfirmed action never folds: it is the line a reader must see.
  *
  * Apple actions that named no device borrow the last device named earlier in
@@ -152,6 +154,10 @@ export function layoutComputerUseRun<T>(
   const earlier: Array<ComputerUseRunItem<T>> = [];
   const foldable = (summary: ComputerUseActionSummary) =>
     Boolean(summary.appName) && summary.outcome !== "failed" && summary.outcome !== "unconfirmed";
+  // The surface label carries the screen product, the user browser and its
+  // machine, and the Apple device: two actions fold only when every part matches.
+  const foldKey = (summary: ComputerUseActionSummary) =>
+    `${summary.appName!.toLowerCase()}\u0000${summary.surface}\u0000${computerUseSurfaceLabel(summary).label}`;
   let index = 0;
   const compact = withDevices.slice(0, -1);
   while (index < compact.length) {
@@ -161,9 +167,9 @@ export function layoutComputerUseRun<T>(
       index += 1;
       continue;
     }
-    const key = first.summary.appName!.toLowerCase();
+    const key = foldKey(first.summary);
     let end = index + 1;
-    while (end < compact.length && foldable(compact[end]!.summary) && compact[end]!.summary.appName!.toLowerCase() === key) end += 1;
+    while (end < compact.length && foldable(compact[end]!.summary) && foldKey(compact[end]!.summary) === key) end += 1;
     if (end - index >= 2) {
       earlier.push({ kind: "app_fold", appName: first.summary.appName!, actions: compact.slice(index, end) });
     } else {
