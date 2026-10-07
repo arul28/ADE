@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.93] - 2026-10-06
+
+### Desktop
+
+- Webhook automations: any service can start an agent; secrets from chat (#1498).
+- Work Focus, the Focus grid, and stall detection for every provider (#1494, #1496).
+- Visual refresh: home dashboard, picture backgrounds, redesigned Settings (#1497).
+- Account moves keep the real Claude thread (#1490).
+- Mac Desktop input without moving the user's pointer; unstaged-change moves on pinned lanes (#1493, #1492).
+
 ## [1.2.92] - 2026-10-06
 
 ### Desktop
@@ -2352,7 +2362,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.92...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.93...HEAD
+[1.2.93]: https://github.com/arul28/ADE/compare/v1.2.92...v1.2.93
 [1.2.92]: https://github.com/arul28/ADE/compare/v1.2.91...v1.2.92
 [1.2.91]: https://github.com/arul28/ADE/compare/v1.2.90...v1.2.91
 [1.2.90]: https://github.com/arul28/ADE/compare/v1.2.89...v1.2.90
