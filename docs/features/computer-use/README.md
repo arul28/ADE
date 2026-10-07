@@ -55,10 +55,12 @@ Shared modules:
 
 ### The user's own browser (apps/desktop/src/main/services/userBrowser/)
 
-- `userBrowserDiscovery.ts` — which supported Chromium browsers (Chrome, Edge, Brave, Arc, Helium, Chromium) have remote debugging on, read from each profile's `DevToolsActivePort` file on macOS, Windows and Linux. It reads files only and never connects.
+- `userBrowserDiscovery.ts` — which supported Chromium browsers (Chrome, Edge, Brave, Arc, Helium, Chromium) have remote debugging on, read from each profile's `DevToolsActivePort` file on macOS, Windows and Linux. That part reads files only and never connects. Once `attach` has connected, it also picks the tab (`chooseUserBrowserTab`): the tab the query names, or the one the user is looking at.
 - `userBrowserAttachService.ts` — `attach` / `detach` / `status` and the per-chat attachment: one browser-level CDP connection, a flattened session on the chosen tab, and App Control's agent action engine (`appControl/appControlAgentActions.ts`) running the page commands.
 - `apps/desktop/src/main/services/shared/cdpClient.ts` — the one CDP WebSocket client, shared with App Control. `session(id)` scopes commands and events to a flattened target session.
-- `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends an attached chat's page commands to the attachment.
+- `apps/desktop/src/main/services/shared/cdpPageDiagnostics.ts` — the console, network and navigation tracking `observe` and `wait` read, shared with App Control. Each caller's policy (which console levels, `Log.entryAdded`, uncaught exceptions) is an explicit option.
+- `apps/desktop/src/shared/userBrowserLabels.ts` — the words attach prints (`attached:`, `detached:`, `target:`), shared by the code that prints them and the transcript that reads them back.
+- `apps/ade-cli/src/services/builtInBrowser/userBrowserRouting.ts` — wraps the runtime's `built_in_browser` bridge client: serves `attachUserBrowser` / `detachUserBrowser` and sends the page commands `adeRpcServer` routed to the user's browser to the attachment. It also records the browser capability the runtime had the desktop issue each chat, which `adeRpcServer` checks user-browser calls against.
 
 ### Direct Codex Computer Use
 
@@ -345,7 +347,21 @@ on connect, and the user answers it there.
 - **Ending it.** `ade browser detach` closes the connection. The attachment
   also ends when the tab closes, the browser quits, or it sits unused for 30
   minutes; the chat's next browser command says which, and later commands go
-  to ADE's browser again. `ade browser status` shows the attachment.
+  to ADE's browser again. Ending or deleting the chat releases it too.
+  `ade browser status` shows the attachment.
+- **Who may act in it.** Only the chat that attached. The runtime decides once
+  whether a call goes to the user's browser, authorizes it for that, and the
+  router obeys that decision, so an attachment that ends mid-call never sends
+  the call to ADE's browser unchecked. A user-browser call must come from a
+  chat of this project that has not ended, may name only its own chat, and —
+  when a desktop was attached as the chat launched, so ADE issued the chat a
+  browser capability (`ADE_BROWSER_ACTOR_TOKEN`) — must present that
+  capability, the same proof ADE's own browser asks for. Anything else is
+  refused (`run_ade_action:built_in_browser.observe is not permitted for this
+  caller: …`). The limit: a chat launched with no desktop attached has no
+  capability, and its id is self-reported, so another process running as the
+  same OS user (which can already read that chat's environment) could act as
+  it.
 
 ## Mac Desktop and Windows Desktop
 

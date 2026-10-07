@@ -129,13 +129,13 @@ import {
   dedupeChatToolActivityEntries,
 } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
+import { ChatComputerUseActionRun } from "./ChatComputerUseActions";
 import {
   arrangeComputerUseRuns,
-  ChatComputerUseActionRun,
   computerUseSummaryForEntry,
   estimateComputerUseRunHeight,
   hasComputerUseEntries,
-} from "./ChatComputerUseActions";
+} from "./chatComputerUseRows";
 import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,

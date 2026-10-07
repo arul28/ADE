@@ -25,6 +25,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { isRecord, stringOrNull } from "../../../shared/agentObservationNormalizers";
 import type {
   AppControlAgentPressArgs,
   AppControlAgentTypeArgs,
@@ -33,6 +34,11 @@ import type {
   AppControlNetworkDiagnostic,
   AppControlSession,
 } from "../../../shared/types";
+import {
+  USER_BROWSER_ATTACHED_PREFIX,
+  USER_BROWSER_DETACHED_PREFIX,
+  userBrowserTargetLabel,
+} from "../../../shared/userBrowserLabels";
 import { createAppControlAgentActions, type AppControlAgentActions } from "../appControl/appControlAgentActions";
 import {
   MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS,
@@ -40,9 +46,14 @@ import {
 } from "../appControl/appControlObservations";
 import type { Logger } from "../logging/logger";
 import { CdpClient, type CdpCommandChannel } from "../shared/cdpClient";
+import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/cdpPageDiagnostics";
 import { imageDimensions } from "../shared/imageDimensions";
+import { withTimeout } from "../shared/withTimeout";
 import { nowIso } from "../shared/utils";
 import {
+  UserBrowserAttachError,
+  chooseUserBrowserTab,
+  describeTab,
   discoverUserBrowsers,
   isUserBrowserId,
   userBrowserLabel,
@@ -50,25 +61,16 @@ import {
   type UserBrowserId,
 } from "./userBrowserDiscovery";
 
+export { UserBrowserAttachError };
+
 /** Long enough for the user to read and answer Chrome's "Allow remote debugging?" prompt. */
 const CONNECT_TIMEOUT_MS = 60_000;
-/** One visibility probe per tab while picking the tab the user is looking at. */
-const TAB_PROBE_TIMEOUT_MS = 1_500;
-const MAX_PROBED_TABS = 40;
 /** An attachment nobody used for this long is dropped, closing the connection. */
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const TAB_CLOSE_SETTLE_MS = 500;
 const MAX_PENDING_REQUESTS = 500;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "user-browser-observations");
-
-/** The first line of a successful attach; the transcript keys on it. */
-export const USER_BROWSER_ATTACHED_PREFIX = "attached:";
-export const USER_BROWSER_DETACHED_PREFIX = "detached:";
-
-export class UserBrowserAttachError extends Error {}
-
-type PageTarget = { targetId: string; title: string; url: string };
 
 export type UserBrowserTab = { targetId: string; title: string; url: string };
 
@@ -110,8 +112,6 @@ export type UserBrowserStatus = {
   available: Array<{ id: UserBrowserId; label: string; remoteDebugging: boolean; inspectUrl: string }>;
 };
 
-type PendingRequest = { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number };
-
 type Attachment = {
   chatSessionId: string;
   browser: UserBrowserId;
@@ -131,7 +131,7 @@ type Attachment = {
   pageEnabled: boolean;
   console: AppControlConsoleDiagnostic[];
   network: AppControlNetworkDiagnostic[];
-  pendingRequests: Map<string, PendingRequest>;
+  pendingRequests: Map<string, CdpPendingRequest>;
   lastNetworkActivityAtMs: number;
 };
 
@@ -142,51 +142,8 @@ export type UserBrowserAttachServiceDeps = {
   machineName: () => string | Promise<string>;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringOrNull(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : null;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
-    timer.unref?.();
-    promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      () => { clearTimeout(timer); resolve(null); },
-    );
-  });
-}
-
-function quoteTitle(title: string): string {
-  const trimmed = title.trim() || "(untitled)";
-  return `"${trimmed.length > 80 ? `${trimmed.slice(0, 79)}…` : trimmed}"`;
-}
-
-function describeTab(tab: { title: string; url: string }): string {
-  return `${quoteTitle(tab.title)} (${tab.url})`;
-}
-
-function tabList(tabs: readonly PageTarget[]): string {
-  return tabs.slice(0, 15).map((tab) => `  - ${describeTab(tab)}`).join("\n")
-    + (tabs.length > 15 ? `\n  - …and ${tabs.length - 15} more` : "");
-}
-
-/**
- * The words every command prints first while attached, so neither the agent
- * nor the user can mistake the user's browser for ADE's.
- */
-export function userBrowserTargetLabel(browserLabel: string, machine: string): string {
-  return `your ${browserLabel} on ${machine}`;
 }
 
 /** Schemes an agent may navigate the user's tab to. Never the browser's own settings pages. */
@@ -212,30 +169,6 @@ function navigableUrl(raw: string): string {
   }
   return parsed.href;
 }
-
-/** Built-in browser methods that act on the attached tab, by the name the runtime calls. */
-const ROUTED_METHODS = new Set([
-  "getStatus",
-  "observe",
-  "click",
-  "typeText",
-  "fill",
-  "clear",
-  "dispatchKey",
-  "scroll",
-  "wait",
-  "hover",
-  "getTrace",
-  "captureScreenshot",
-  "navigate",
-  "reload",
-  "goBack",
-  "goForward",
-  "stop",
-  "startSession",
-  "listSessions",
-  "endSession",
-]);
 
 /**
  * Methods that keep going to ADE's own browser machinery even while attached:
@@ -365,91 +298,6 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     return `No browser on ${host} has remote debugging on, so ADE cannot reach the user's tabs. Ask the user to turn it on and try again — ${steps}, and turn on remote debugging there. Chrome then asks them once to allow the connection.`;
   };
 
-  const listPageTargets = async (client: CdpClient): Promise<PageTarget[]> => {
-    const response = await client.send<{ targetInfos?: unknown[] }>("Target.getTargets");
-    const infos = Array.isArray(response?.targetInfos) ? response.targetInfos : [];
-    return infos
-      .filter(isRecord)
-      .filter((info) => info.type === "page")
-      .map((info) => ({
-        targetId: stringOrNull(info.targetId) ?? "",
-        title: typeof info.title === "string" ? info.title : "",
-        url: typeof info.url === "string" ? info.url : "",
-      }))
-      .filter((tab) => tab.targetId && !tab.url.startsWith("devtools://"));
-  };
-
-  /** Which tabs are on screen, and which one has focus. Best effort per tab. */
-  const probeVisibility = async (
-    client: CdpClient,
-    tabs: readonly PageTarget[],
-  ): Promise<Map<string, { visible: boolean; focused: boolean }>> => {
-    const probes = await Promise.all(tabs.slice(0, MAX_PROBED_TABS).map(async (tab) => {
-      const attached = await withTimeout(
-        client.send<{ sessionId?: string }>("Target.attachToTarget", { targetId: tab.targetId, flatten: true }),
-        TAB_PROBE_TIMEOUT_MS,
-      );
-      const sessionId = stringOrNull(attached?.sessionId);
-      if (!sessionId) return [tab.targetId, { visible: false, focused: false }] as const;
-      const evaluated = await withTimeout(
-        client.session(sessionId).send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
-          expression: "({ visible: document.visibilityState === 'visible', focused: document.hasFocus() })",
-          returnByValue: true,
-        }),
-        TAB_PROBE_TIMEOUT_MS,
-      );
-      void withTimeout(client.send("Target.detachFromTarget", { sessionId }), TAB_PROBE_TIMEOUT_MS);
-      const value = isRecord(evaluated?.result?.value) ? evaluated.result.value : {};
-      return [tab.targetId, { visible: value.visible === true, focused: value.focused === true }] as const;
-    }));
-    return new Map(probes);
-  };
-
-  const chooseTab = async (
-    client: CdpClient,
-    query: string | null,
-    browserLabel: string,
-  ): Promise<{ tab: PageTarget; visible: boolean }> => {
-    const tabs = await listPageTargets(client);
-    if (!tabs.length) {
-      throw new UserBrowserAttachError(`${browserLabel} has no open tabs to attach to.`);
-    }
-    if (query) {
-      const needle = query.toLowerCase();
-      const matches = tabs.filter((tab) =>
-        tab.title.toLowerCase().includes(needle) || tab.url.toLowerCase().includes(needle));
-      const exact = matches.filter((tab) => tab.title.trim().toLowerCase() === needle);
-      const picked = matches.length === 1 ? matches[0] : exact.length === 1 ? exact[0] : null;
-      if (picked) {
-        const visibility = await probeVisibility(client, [picked]);
-        return { tab: picked, visible: visibility.get(picked.targetId)?.visible ?? false };
-      }
-      if (!matches.length) {
-        throw new UserBrowserAttachError(
-          `No ${browserLabel} tab matches "${query}". Open tabs:\n${tabList(tabs)}\nPass --tab with part of one title or URL.`,
-        );
-      }
-      throw new UserBrowserAttachError(
-        `${matches.length} ${browserLabel} tabs match "${query}":\n${tabList(matches)}\nPass --tab with more of the title or URL.`,
-      );
-    }
-    const visibility = await probeVisibility(client, tabs);
-    const focused = tabs.filter((tab) => visibility.get(tab.targetId)?.focused);
-    const visible = tabs.filter((tab) => visibility.get(tab.targetId)?.visible);
-    const picked = focused.length === 1
-      ? focused[0]
-      : visible.length === 1
-        ? visible[0]
-        : tabs.length === 1
-          ? tabs[0]
-          : null;
-    if (picked) return { tab: picked, visible: visibility.get(picked.targetId)?.visible ?? false };
-    const plausible = visible.length ? visible : tabs;
-    throw new UserBrowserAttachError(
-      `${browserLabel} has ${plausible.length} tabs that could be the one the user means:\n${tabList(plausible)}\nAsk the user which one, then pass --tab with part of its title or URL.`,
-    );
-  };
-
   // ── Page state the action engine reads ───────────────────────────────────
 
   const pushBounded = <T,>(list: T[], entry: T, max: number): void => {
@@ -457,96 +305,31 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     if (list.length > max) list.splice(0, list.length - max);
   };
 
+  /** Errors and warnings only: what an agent acting in someone else's tab needs to see. */
+  const KEPT_CONSOLE_LEVELS: ReadonlySet<AppControlConsoleDiagnostic["level"]> = new Set(["error", "warning"]);
+
   const subscribePage = (attachment: Attachment): void => {
-    const { page } = attachment;
-    const consoleLevel = (value: unknown): AppControlConsoleDiagnostic["level"] =>
-      value === "error" || value === "assert" ? "error" : value === "warning" || value === "warn" ? "warning" : value === "debug" ? "debug" : "info";
-    page.on("Runtime.consoleAPICalled", (params) => {
-      if (!isRecord(params)) return;
-      const level = consoleLevel(params.type);
-      if (level !== "error" && level !== "warning") return;
-      const message = (Array.isArray(params.args) ? params.args : [])
-        .map((entry) => (isRecord(entry) ? (typeof entry.value === "string" ? entry.value : stringOrNull(entry.description) ?? "") : ""))
-        .filter(Boolean)
-        .join(" ")
-        .slice(0, 2_000);
-      if (!message) return;
-      pushBounded(attachment.console, { level, message, sourceId: null, line: null, column: null, timestamp: nowIso() }, MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS);
+    subscribeCdpPageDiagnostics(attachment.page, {
+      pushConsole: (entry) => pushBounded(attachment.console, entry, MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS),
+      pushNetwork: (entry: AppControlNetworkDiagnostic) =>
+        pushBounded(attachment.network, entry, MAX_APP_CONTROL_NETWORK_DIAGNOSTICS),
+      pendingRequests: attachment.pendingRequests,
+      noteNetworkActivity: () => { attachment.lastNetworkActivityAtMs = Date.now(); },
+      onMainFrameNavigated: (frame) => {
+        attachment.url = frame.url ?? attachment.url;
+        attachment.console = [];
+        attachment.network = [];
+        attachment.pendingRequests.clear();
+      },
+    }, {
+      consoleLevels: KEPT_CONSOLE_LEVELS,
+      consoleValues: "description",
+      logEntries: false,
+      exceptions: true,
+      failedRequestFields: "request-first",
+      httpErrorIsActivity: true,
+      maxPendingRequests: MAX_PENDING_REQUESTS,
     });
-    page.on("Runtime.exceptionThrown", (params) => {
-      const details = isRecord(params) && isRecord(params.exceptionDetails) ? params.exceptionDetails : null;
-      if (!details) return;
-      const exception = isRecord(details.exception) ? details.exception : null;
-      const message = stringOrNull(exception?.description) ?? stringOrNull(details.text) ?? "Uncaught exception";
-      pushBounded(attachment.console, {
-        level: "error",
-        message: message.slice(0, 2_000),
-        sourceId: stringOrNull(details.url),
-        line: typeof details.lineNumber === "number" ? details.lineNumber + 1 : null,
-        column: typeof details.columnNumber === "number" ? details.columnNumber + 1 : null,
-        timestamp: nowIso(),
-      }, MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS);
-    });
-    page.on("Network.requestWillBeSent", (params) => {
-      if (!isRecord(params)) return;
-      const requestId = stringOrNull(params.requestId);
-      const request = isRecord(params.request) ? params.request : {};
-      const url = stringOrNull(request.url);
-      if (!requestId || !url) return;
-      attachment.lastNetworkActivityAtMs = Date.now();
-      if (attachment.pendingRequests.size >= MAX_PENDING_REQUESTS) {
-        const oldest = attachment.pendingRequests.keys().next();
-        if (!oldest.done) attachment.pendingRequests.delete(oldest.value);
-      }
-      attachment.pendingRequests.set(requestId, {
-        url,
-        method: stringOrNull(request.method),
-        resourceType: stringOrNull(params.type),
-        startedAt: nowIso(),
-        startedAtMs: Date.now(),
-      });
-    });
-    const settle = (params: unknown, failure: { statusCode: number | null; error: string | null } | null): void => {
-      attachment.lastNetworkActivityAtMs = Date.now();
-      const requestId = isRecord(params) ? stringOrNull(params.requestId) : null;
-      const pending = requestId ? attachment.pendingRequests.get(requestId) ?? null : null;
-      if (requestId && (failure?.error != null || !failure)) attachment.pendingRequests.delete(requestId);
-      if (!failure) return;
-      pushBounded(attachment.network, {
-        url: pending?.url ?? (isRecord(params) && isRecord(params.response) ? stringOrNull(params.response.url) : null) ?? "about:blank",
-        method: pending?.method ?? null,
-        resourceType: pending?.resourceType ?? (isRecord(params) ? stringOrNull(params.type) : null),
-        statusCode: failure.statusCode,
-        error: failure.error,
-        startedAt: pending?.startedAt ?? null,
-        endedAt: nowIso(),
-        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
-      }, MAX_APP_CONTROL_NETWORK_DIAGNOSTICS);
-    };
-    page.on("Network.responseReceived", (params) => {
-      const status = isRecord(params) && isRecord(params.response) ? params.response.status : null;
-      if (typeof status === "number" && status >= 400) settle(params, { statusCode: status, error: null });
-      else attachment.lastNetworkActivityAtMs = Date.now();
-    });
-    page.on("Network.loadingFinished", (params) => settle(params, null));
-    page.on("Network.loadingFailed", (params) => {
-      if (isRecord(params) && params.canceled === true) {
-        settle(params, null);
-        return;
-      }
-      settle(params, { statusCode: null, error: (isRecord(params) ? stringOrNull(params.errorText) : null) ?? "Request failed." });
-    });
-    page.on("Page.frameNavigated", (params) => {
-      const frame = isRecord(params) && isRecord(params.frame) ? params.frame : null;
-      if (!frame || stringOrNull(frame.parentId)) return;
-      attachment.url = stringOrNull(frame.url) ?? attachment.url;
-      attachment.console = [];
-      attachment.network = [];
-      attachment.pendingRequests.clear();
-    });
-    // Best effort: a page that refuses one still serves input and screenshots.
-    void page.send("Runtime.enable").catch(() => {});
-    void page.send("Network.enable").catch(() => {});
   };
 
   const buildActions = (attachment: Attachment): AppControlAgentActions =>
@@ -599,6 +382,20 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
 
   // ── Attach / detach / status ─────────────────────────────────────────────
 
+  /**
+   * One number per chat, raised by every attach and every detach. An attach
+   * waits on the user's "Allow remote debugging?" prompt; if a detach (or a
+   * newer attach) ran meanwhile, the number moved and the attach must not
+   * store its connection.
+   */
+  const attachGenerations = new Map<string, number>();
+  const nextAttachGeneration = (chatSessionId: string): number => {
+    const next = (attachGenerations.get(chatSessionId) ?? 0) + 1;
+    attachGenerations.set(chatSessionId, next);
+    return next;
+  };
+  const pendingAttaches = new Set<string>();
+
   const detachChat = async (chatSessionId: string): Promise<Attachment | null> => {
     const existing = attachments.get(chatSessionId) ?? null;
     if (!existing) return null;
@@ -609,6 +406,21 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
 
   const attach = async (input: UserBrowserAttachInput = {}): Promise<UserBrowserAttachResult> => {
     const chatSessionId = requireChat(input);
+    const generation = nextAttachGeneration(chatSessionId);
+    const superseded = (): boolean => attachGenerations.get(chatSessionId) !== generation;
+    pendingAttaches.add(chatSessionId);
+    try {
+      return await attachChat(chatSessionId, input, superseded);
+    } finally {
+      if (!superseded()) pendingAttaches.delete(chatSessionId);
+    }
+  };
+
+  const attachChat = async (
+    chatSessionId: string,
+    input: UserBrowserAttachInput,
+    superseded: () => boolean,
+  ): Promise<UserBrowserAttachResult> => {
     const host = await machine();
     const requestedRaw = stringOrNull(input.browser)?.toLowerCase() ?? null;
     if (requestedRaw && !isUserBrowserId(requestedRaw)) {
@@ -663,7 +475,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     }
 
     try {
-      const { tab, visible } = await chooseTab(client, stringOrNull(input.tab), chosen.label);
+      const { tab, visible } = await chooseUserBrowserTab(client, stringOrNull(input.tab), chosen.label);
       const attachedTarget = await client.send<{ sessionId?: string }>("Target.attachToTarget", {
         targetId: tab.targetId,
         flatten: true,
@@ -718,9 +530,20 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
         lastNetworkActivityAtMs: Date.now(),
       };
       attachment.actions = buildActions(attachment);
+      if (superseded()) {
+        throw new UserBrowserAttachError(
+          "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
+        );
+      }
       // A fresh attach replaces this chat's old one — only once it succeeded,
       // so a refused re-attach leaves the working attachment alone.
       await detachChat(chatSessionId);
+      // Closing the old attachment awaited; a detach may have run meanwhile.
+      if (superseded()) {
+        throw new UserBrowserAttachError(
+          "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.",
+        );
+      }
       attachments.set(chatSessionId, attachment);
       subscribePage(attachment);
       // A quitting browser closes its tabs a moment before its socket drops.
@@ -763,8 +586,19 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
 
   const detach = async (input: { chatSessionId?: string | null } = {}): Promise<UserBrowserDetachResult> => {
     const chatSessionId = requireChat(input);
+    // Cancel an attach still waiting on the browser's prompt. A chat that
+    // never attached has no generation and nothing to cancel; leave it out of
+    // the map so detaching every ending chat stays free.
+    if (attachGenerations.has(chatSessionId)) nextAttachGeneration(chatSessionId);
+    const cancelledPending = pendingAttaches.delete(chatSessionId);
     const existing = await detachChat(chatSessionId);
     if (!existing) {
+      if (cancelledPending) {
+        return {
+          detached: true,
+          message: `${USER_BROWSER_DETACHED_PREFIX} cancelled the attach that was waiting. This chat stays on ADE's browser.`,
+        };
+      }
       return {
         detached: false,
         message: "not attached: this chat already uses ADE's browser.",
@@ -860,7 +694,17 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     };
   };
 
+  /** `Page` events (load, screenshots) need the domain on; attach turns on only `Runtime` and `Network`. */
+  const ensurePageEnabled = async (attachment: Attachment): Promise<void> => {
+    if (attachment.pageEnabled) return;
+    await attachment.page.send("Page.enable").catch(() => {});
+    attachment.pageEnabled = true;
+  };
+
   const waitForLoad = async (attachment: Attachment, action: () => Promise<unknown>): Promise<void> => {
+    // Without `Page.enable`, `Page.loadEventFired` never arrives and every
+    // first navigation waits out the whole timeout.
+    await ensurePageEnabled(attachment);
     let stop: (() => void) | null = null;
     const loaded = new Promise<void>((resolve) => {
       stop = attachment.page.on("Page.loadEventFired", () => resolve());
@@ -883,110 +727,100 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     lastTraceEntryId: attachment.session.lastTraceEntryId,
   });
 
-  const run = async (attachment: Attachment, method: string, input: Record<string, unknown>): Promise<unknown> => {
-    const { actions } = attachment;
-    const args = engineArgs(input);
-    switch (method) {
-      case "observe":
-        return { ...(await actions.observe(args)), tabId: attachment.targetId };
-      case "click":
-        return await actions.agentClick({ coordinateSpace: "viewport", ...args });
-      case "hover":
-        return await actions.agentHover({ coordinateSpace: "viewport", ...args });
-      case "typeText":
-        // The engine checks `text` itself and answers with the reason.
-        return await actions.agentType(args as AppControlAgentTypeArgs);
-      case "fill": {
-        // The CLI sends the payload as `text` unless `text` is the element match.
-        const value = typeof args.value === "string"
-          ? args.value
-          : typeof args.text === "string" ? args.text : null;
-        const { text: _text, ...rest } = args;
-        return await actions.agentFill(typeof args.value === "string" ? args : { ...rest, value });
-      }
-      case "clear":
-        return await actions.agentClear(args);
-      case "dispatchKey":
-        return await actions.agentPress(args as AppControlAgentPressArgs);
-      case "scroll": {
-        if (args.x == null || args.y == null) {
-          // No point given: wheel at the middle of the viewport, as a person would.
-          const metrics = await attachment.page.send<{ cssVisualViewport?: { clientWidth?: number; clientHeight?: number } }>(
-            "Page.getLayoutMetrics",
-          ).catch(() => null);
-          const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
-          const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
-          return await actions.agentScroll({ ...args, x: width / 2, y: height / 2, coordinateSpace: "viewport" });
-        }
-        return await actions.agentScroll({ coordinateSpace: "viewport", ...args });
-      }
-      case "wait":
-        return await actions.agentWait(args);
-      case "getTrace": {
-        const trace = actions.getTrace(args);
-        return {
-          ...trace,
-          entries: trace.entries.map((entry) =>
-            entry.error ? { ...entry, error: entry.error.replace(/App Control /g, "") } : entry),
-          tabId: attachment.targetId,
-        };
-      }
-      case "captureScreenshot": {
-        if (!attachment.pageEnabled) {
-          await attachment.page.send("Page.enable").catch(() => {});
-          attachment.pageEnabled = true;
-        }
-        const shot = await attachment.page.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
-        const dimensions = imageDimensions(Buffer.from(shot.data, "base64")) ?? { width: 0, height: 0 };
-        return {
-          capturedAt: nowIso(),
-          width: dimensions.width,
-          height: dimensions.height,
-          dataUrl: `data:image/png;base64,${shot.data}`,
-        };
-      }
-      case "navigate": {
-        if (input.newTab === true || input.isolated === true || stringOrNull(input.profile)) {
-          throw new UserBrowserAttachError(
-            "New and isolated tabs open only in ADE's browser. This chat navigates the attached tab; run `ade browser detach` first to use ADE's browser.",
-          );
-        }
-        const url = navigableUrl(stringOrNull(input.url) ?? "");
-        await waitForLoad(attachment, async () => {
-          const response = await attachment.page.send<{ errorText?: string }>("Page.navigate", { url });
-          if (response?.errorText) throw new UserBrowserAttachError(`Navigation failed: ${response.errorText}`);
-        });
-        return await tabStatus(attachment, "navigated");
-      }
-      case "reload":
-        await waitForLoad(attachment, () => attachment.page.send("Page.reload"));
-        return await tabStatus(attachment, "status");
-      case "goBack":
-      case "goForward": {
-        const history = await attachment.page.send<{ currentIndex?: number; entries?: Array<{ id?: number }> }>(
-          "Page.getNavigationHistory",
-        );
-        const index = (history.currentIndex ?? 0) + (method === "goBack" ? -1 : 1);
-        const entry = history.entries?.[index];
-        if (!entry || typeof entry.id !== "number") {
-          throw new UserBrowserAttachError(`The tab has no page to go ${method === "goBack" ? "back" : "forward"} to.`);
-        }
-        await waitForLoad(attachment, () => attachment.page.send("Page.navigateToHistoryEntry", { entryId: entry.id }));
-        return await tabStatus(attachment, "status");
-      }
-      case "stop":
-        await attachment.page.send("Page.stopLoading");
-        return await tabStatus(attachment, "status");
-      case "startSession":
-        return { session: pseudoSession(attachment) };
-      case "listSessions":
-        return { sessions: [pseudoSession(attachment)] };
-      case "endSession":
-        // The attachment is the session; `detach` ends it.
-        return { session: { ...pseudoSession(attachment), endedAt: null } };
-      default:
-        throw new UserBrowserAttachError(`Unsupported user-browser method ${method}.`);
+  const history = async (attachment: Attachment, step: -1 | 1) => {
+    const entries = await attachment.page.send<{ currentIndex?: number; entries?: Array<{ id?: number }> }>(
+      "Page.getNavigationHistory",
+    );
+    const entry = entries.entries?.[(entries.currentIndex ?? 0) + step];
+    if (!entry || typeof entry.id !== "number") {
+      throw new UserBrowserAttachError(`The tab has no page to go ${step < 0 ? "back" : "forward"} to.`);
     }
+    await waitForLoad(attachment, () => attachment.page.send("Page.navigateToHistoryEntry", { entryId: entry.id }));
+    return await tabStatus(attachment, "status");
+  };
+
+  /**
+   * The built-in browser methods that act on the attached tab, by the name the
+   * runtime calls. `args` has ADE's-browser routing ids taken out; `input` is
+   * the call as sent. `getStatus` is answered by `dispatch` itself.
+   */
+  type RoutedHandler = (attachment: Attachment, args: Record<string, unknown>, input: Record<string, unknown>) => Promise<unknown>;
+  const ROUTED_HANDLERS: Readonly<Record<string, RoutedHandler>> = {
+    observe: async (attachment, args) => ({ ...(await attachment.actions.observe(args)), tabId: attachment.targetId }),
+    click: (attachment, args) => attachment.actions.agentClick({ coordinateSpace: "viewport", ...args }),
+    hover: (attachment, args) => attachment.actions.agentHover({ coordinateSpace: "viewport", ...args }),
+    // The engine checks `text` itself and answers with the reason.
+    typeText: (attachment, args) => attachment.actions.agentType(args as AppControlAgentTypeArgs),
+    fill: (attachment, args) => {
+      // The CLI sends the payload as `text` unless `text` is the element match.
+      const value = typeof args.value === "string"
+        ? args.value
+        : typeof args.text === "string" ? args.text : null;
+      const { text: _text, ...rest } = args;
+      return attachment.actions.agentFill(typeof args.value === "string" ? args : { ...rest, value });
+    },
+    clear: (attachment, args) => attachment.actions.agentClear(args),
+    dispatchKey: (attachment, args) => attachment.actions.agentPress(args as AppControlAgentPressArgs),
+    scroll: async (attachment, args) => {
+      if (args.x == null || args.y == null) {
+        // No point given: wheel at the middle of the viewport, as a person would.
+        const metrics = await attachment.page.send<{ cssVisualViewport?: { clientWidth?: number; clientHeight?: number } }>(
+          "Page.getLayoutMetrics",
+        ).catch(() => null);
+        const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
+        const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
+        return await attachment.actions.agentScroll({ ...args, x: width / 2, y: height / 2, coordinateSpace: "viewport" });
+      }
+      return await attachment.actions.agentScroll({ coordinateSpace: "viewport", ...args });
+    },
+    wait: (attachment, args) => attachment.actions.agentWait(args),
+    getTrace: async (attachment, args) => {
+      const trace = attachment.actions.getTrace(args);
+      return {
+        ...trace,
+        entries: trace.entries.map((entry) =>
+          entry.error ? { ...entry, error: entry.error.replace(/App Control /g, "") } : entry),
+        tabId: attachment.targetId,
+      };
+    },
+    captureScreenshot: async (attachment) => {
+      await ensurePageEnabled(attachment);
+      const shot = await attachment.page.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
+      const dimensions = imageDimensions(Buffer.from(shot.data, "base64")) ?? { width: 0, height: 0 };
+      return {
+        capturedAt: nowIso(),
+        width: dimensions.width,
+        height: dimensions.height,
+        dataUrl: `data:image/png;base64,${shot.data}`,
+      };
+    },
+    navigate: async (attachment, _args, input) => {
+      if (input.newTab === true || input.isolated === true || stringOrNull(input.profile)) {
+        throw new UserBrowserAttachError(
+          "New and isolated tabs open only in ADE's browser. This chat navigates the attached tab; run `ade browser detach` first to use ADE's browser.",
+        );
+      }
+      const url = navigableUrl(stringOrNull(input.url) ?? "");
+      await waitForLoad(attachment, async () => {
+        const response = await attachment.page.send<{ errorText?: string }>("Page.navigate", { url });
+        if (response?.errorText) throw new UserBrowserAttachError(`Navigation failed: ${response.errorText}`);
+      });
+      return await tabStatus(attachment, "navigated");
+    },
+    reload: async (attachment) => {
+      await waitForLoad(attachment, () => attachment.page.send("Page.reload"));
+      return await tabStatus(attachment, "status");
+    },
+    goBack: (attachment) => history(attachment, -1),
+    goForward: (attachment) => history(attachment, 1),
+    stop: async (attachment) => {
+      await attachment.page.send("Page.stopLoading");
+      return await tabStatus(attachment, "status");
+    },
+    startSession: async (attachment) => ({ session: pseudoSession(attachment) }),
+    listSessions: async (attachment) => ({ sessions: [pseudoSession(attachment)] }),
+    // The attachment is the session; `detach` ends it.
+    endSession: async (attachment) => ({ session: { ...pseudoSession(attachment), endedAt: null } }),
   };
 
   /**
@@ -1005,14 +839,15 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     }
     const attachment = requireAttachment(chatSessionId);
     const target = targetLabelFor(attachment);
-    if (!ROUTED_METHODS.has(method)) {
+    const handler = Object.hasOwn(ROUTED_HANDLERS, method) ? ROUTED_HANDLERS[method] : null;
+    if (!handler) {
       const word = METHOD_COMMAND_WORDS[method] ?? method;
       throw new UserBrowserAttachError(
         `\`ade browser ${word}\` works only in ADE's browser, and this chat is attached to ${target}. Run \`ade browser detach\` first, or do the step with observe/click/fill/type/press/scroll/wait.`,
       );
     }
     try {
-      const result = await run(attachment, method, record);
+      const result = await handler(attachment, engineArgs(record), record);
       rememberPage(attachment, result);
       return isRecord(result) ? { ...result, userBrowserTarget: target } : result;
     } catch (error) {

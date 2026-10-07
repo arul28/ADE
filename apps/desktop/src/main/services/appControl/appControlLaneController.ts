@@ -43,8 +43,6 @@ import {
   MAX_APP_CONTROL_CONSOLE_DIAGNOSTICS,
   MAX_APP_CONTROL_NETWORK_DIAGNOSTICS,
   isRecord,
-  normalizePositiveInteger,
-  optionalFiniteNumber,
   stringOrNull,
 } from "./appControlObservations";
 import { createAppControlAgentActions } from "./appControlAgentActions";
@@ -59,6 +57,7 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
 import type { ComputerUseArtifactIngestionRequest, ComputerUseArtifactIngestionResult } from "../../../shared/types/computerUseArtifacts";
 import { killWindowsProcessTreeAsync } from "../shared/processExecution";
+import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/cdpPageDiagnostics";
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
 import { base64ImageDimensions, imageDimensions } from "../shared/imageDimensions";
@@ -1257,7 +1256,7 @@ export function createAppControlLaneController(context: AppControlLaneController
   // and in-flight request count without opening another socket per call.
   let consoleDiagnostics: AppControlConsoleDiagnostic[] = [];
   let networkDiagnostics: AppControlNetworkDiagnostic[] = [];
-  const pendingNetworkRequests = new Map<string, { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number }>();
+  const pendingNetworkRequests = new Map<string, CdpPendingRequest>();
   let lastNetworkActivityAtMs = Date.now();
   // Trace before/after context. The controlled app has no tab bar to read, so
   // observations and waits keep the last known document identity here.
@@ -1424,14 +1423,6 @@ export function createAppControlLaneController(context: AppControlLaneController
     }
   };
 
-  const consoleLevelFor = (value: unknown): AppControlConsoleDiagnostic["level"] => {
-    const raw = typeof value === "string" ? value.toLowerCase() : "";
-    if (raw === "error" || raw === "assert") return "error";
-    if (raw === "warning" || raw === "warn") return "warning";
-    if (raw === "debug" || raw === "verbose") return "debug";
-    return "info";
-  };
-
   /**
    * Console + network capture for `observe`. Registered on the long-lived
    * screencast client so observations carry the same diagnostics the built-in
@@ -1449,123 +1440,20 @@ export function createAppControlLaneController(context: AppControlLaneController
     };
     client.on("Page.frameStartedLoading", noteLoad("start"));
     client.on("Page.frameStoppedLoading", noteLoad("end"));
-    client.on("Runtime.consoleAPICalled", (params) => {
-      if (!isRecord(params)) return;
-      const argsList = Array.isArray(params.args) ? params.args : [];
-      const message = argsList
-        .map((entry) => {
-          if (!isRecord(entry)) return "";
-          if (typeof entry.value === "string") return entry.value;
-          if (entry.value !== undefined) return JSON.stringify(entry.value);
-          return stringOrNull(entry.description) ?? "";
-        })
-        .filter(Boolean)
-        .join(" ")
-        .slice(0, 2_000);
-      if (!message) return;
-      pushConsoleDiagnostic({
-        level: consoleLevelFor(params.type),
-        message,
-        sourceId: null,
-        line: null,
-        column: null,
-        timestamp: nowIso(),
-      });
+    subscribeCdpPageDiagnostics(client, {
+      pushConsole: pushConsoleDiagnostic,
+      pushNetwork: pushNetworkDiagnostic,
+      pendingRequests: pendingNetworkRequests,
+      noteNetworkActivity: () => { lastNetworkActivityAtMs = Date.now(); },
+      onMainFrameNavigated: () => resetDiagnostics(),
+    }, {
+      consoleValues: "json",
+      logEntries: true,
+      exceptions: false,
+      failedRequestFields: "event-first",
+      httpErrorIsActivity: false,
+      maxPendingRequests: MAX_PENDING_NETWORK_REQUESTS,
     });
-    client.on("Log.entryAdded", (params) => {
-      const entry = isRecord(params) && isRecord(params.entry) ? params.entry : null;
-      if (!entry) return;
-      const message = stringOrNull(entry.text);
-      if (!message) return;
-      pushConsoleDiagnostic({
-        level: consoleLevelFor(entry.level),
-        message: message.slice(0, 2_000),
-        sourceId: stringOrNull(entry.url),
-        line: normalizePositiveInteger(entry.lineNumber),
-        column: null,
-        timestamp: nowIso(),
-      });
-    });
-    client.on("Network.requestWillBeSent", (params) => {
-      if (!isRecord(params)) return;
-      const requestId = stringOrNull(params.requestId);
-      const request = isRecord(params.request) ? params.request : {};
-      const url = stringOrNull(request.url);
-      if (!requestId || !url) return;
-      lastNetworkActivityAtMs = Date.now();
-      // A long-lived app can start requests that never emit a finished/failed
-      // event (streams, aborted sockets). Bound the map so `pendingRequestCount`
-      // stays meaningful and the session cannot leak entries.
-      if (pendingNetworkRequests.size >= MAX_PENDING_NETWORK_REQUESTS) {
-        const oldest = pendingNetworkRequests.keys().next();
-        if (!oldest.done) pendingNetworkRequests.delete(oldest.value);
-      }
-      pendingNetworkRequests.set(requestId, {
-        url,
-        method: stringOrNull(request.method),
-        resourceType: stringOrNull(params.type),
-        startedAt: nowIso(),
-        startedAtMs: Date.now(),
-      });
-    });
-    const settleRequest = (requestId: string | null): { url: string; method: string | null; resourceType: string | null; startedAt: string; startedAtMs: number } | null => {
-      lastNetworkActivityAtMs = Date.now();
-      if (!requestId) return null;
-      const pending = pendingNetworkRequests.get(requestId) ?? null;
-      pendingNetworkRequests.delete(requestId);
-      return pending;
-    };
-    client.on("Network.responseReceived", (params) => {
-      if (!isRecord(params)) return;
-      const response = isRecord(params.response) ? params.response : {};
-      const statusCode = optionalFiniteNumber(response.status);
-      if (statusCode == null || statusCode < 400) {
-        lastNetworkActivityAtMs = Date.now();
-        return;
-      }
-      const requestId = stringOrNull(params.requestId);
-      const pending = requestId ? pendingNetworkRequests.get(requestId) ?? null : null;
-      pushNetworkDiagnostic({
-        url: stringOrNull(response.url) ?? pending?.url ?? "about:blank",
-        method: pending?.method ?? null,
-        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
-        statusCode,
-        error: null,
-        startedAt: pending?.startedAt ?? null,
-        endedAt: nowIso(),
-        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
-      });
-    });
-    client.on("Network.loadingFinished", (params) => {
-      settleRequest(isRecord(params) ? stringOrNull(params.requestId) : null);
-    });
-    client.on("Network.loadingFailed", (params) => {
-      if (!isRecord(params)) return;
-      const pending = settleRequest(stringOrNull(params.requestId));
-      if (params.canceled === true) return;
-      pushNetworkDiagnostic({
-        url: pending?.url ?? "about:blank",
-        method: pending?.method ?? null,
-        resourceType: stringOrNull(params.type) ?? pending?.resourceType ?? null,
-        statusCode: null,
-        error: stringOrNull(params.errorText) ?? "Request failed.",
-        startedAt: pending?.startedAt ?? null,
-        endedAt: nowIso(),
-        durationMs: pending ? Math.max(0, Date.now() - pending.startedAtMs) : null,
-      });
-    });
-    client.on("Page.frameNavigated", (params) => {
-      // Main frame only: an iframe swapping documents is not a new page, and
-      // zeroing the tally on one would hide errors the app just logged.
-      const frame = isRecord(params) && isRecord(params.frame) ? params.frame : null;
-      if (!frame || stringOrNull(frame.parentId)) return;
-      resetDiagnostics();
-    });
-    // Best-effort: a target that refuses one of these still streams frames and
-    // serves input, it just reports fewer diagnostics.
-    void client.send("Runtime.enable").catch(() => {});
-    void client.send("Log.enable").catch(() => {});
-    void client.send("Network.enable").catch(() => {});
   };
 
   /** Starts the frame stream on `client`. Streaming is marked first, so the first frame is kept. */

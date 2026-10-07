@@ -56,7 +56,8 @@ import {
 } from "../../../shared/editorTargets";
 import { detectInstalledEditorTargets } from "../editors/editorDetection";
 import { detectBrowsersCached } from "../browsers/browserDetection";
-import { appIconDataUrlByName, browserIconDataUrl } from "../browsers/browserIcons";
+import { browserIconDataUrl } from "../browsers/browserIcons";
+import { appIconDataUrlByName } from "../apps/appIcons";
 import { openUrlInBrowser } from "../browsers/browserLauncher";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import {

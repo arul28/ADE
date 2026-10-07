@@ -916,8 +916,9 @@ implements a two-layer transform:
    whenever it is unsure (unknown verb, two acting commands in one call, shell
    control flow), which keeps the plain shell row. The latest action of a run
    draws in full (app icon, surface line — Lane screen, App Control, ADE
-   browser, Your browser in amber when the output marks it `attached:` or "your
-   Chrome", or the Apple device — and the failure reason); earlier ones are one
+   browser, Your browser in amber when the output marks it with an `attached:`
+   or `target: your … on …` line (or their `--json` fields), or the Apple
+   device — and the failure reason); earlier ones are one
    muted line with a status dot (amber when `effect: unconfirmed`, red when it
    failed), and consecutive confirmed actions in one app fold into
    "Notes · 4 actions". Clicking a compact line opens its full row under a thin
@@ -925,8 +926,12 @@ implements a two-layer transform:
    both processes); browsers use the installed-browser icons; everything else
    draws a glyph. In the tools list the same commands read as their sentence.
    The rows are history, so a finished turn folds them like any tool group.
-   iOS ports the parser to `WorkComputerUseActions.swift` and keeps the
-   cluster in `workPresentedTimelineEntries` with `computerUseActions` set.
+   `shared/computerUseActionPresentation.ts` turns a summary into words, and
+   `chat/chatComputerUseRows.ts` decides which entries are actions and how runs
+   sit in the timeline. iOS ports the parser and the words to
+   `WorkComputerUseSummary.swift` (rows in `WorkComputerUseActions.swift`) and
+   keeps the cluster in `workPresentedTimelineEntries` with
+   `computerUseActions` set.
 
    This is capability preserving: clients show only events and file data the
    selected provider actually emitted, without synthesizing Claude-style file

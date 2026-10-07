@@ -6,8 +6,10 @@
  * The transcript used to show those as generic shell rows. This module reads
  * the command and its output and returns a small structured summary — the verb,
  * the element actually hit, the app, the surface, and whether the screen
- * changed — that the desktop/web transcript and the iOS app (which ports this
- * file to Swift in `WorkComputerUseSummary.swift`) draw as an action row.
+ * changed — that the desktop/web transcript draws as an action row
+ * (`computerUseActionPresentation.ts` turns it into words). The iOS app ports
+ * both files to Swift: the parser in `apps/ios/ADE/Views/Work/WorkComputerUseSummary.swift`,
+ * the words in `WorkComputerUsePresentation.swift`. Keep them in step.
  *
  * Pure and platform-neutral: no DOM, no Node, no renderer imports. It must
  * never throw. Whenever it is unsure (not an ADE computer-use command, a verb
@@ -21,8 +23,20 @@
  *   - `renderKeyValues` rows: `<label>  <value>` (two or more spaces)
  *   - the Mac Desktop windows footer: `  #12 Notes — Untitled`
  *   - errors on stderr: `ade: <message>`
+ *   - the user's own browser: `attached: Google Chrome on <machine>, tab …` and
+ *     `target: your Google Chrome on <machine>` (`userBrowserLabels.ts`)
  *   - `--json` (the default when `--text` is absent): the result object.
  */
+
+import {
+  clip,
+  parseOutput,
+  readAppleDevice,
+  readString,
+  readUserBrowser,
+  type ParsedOutput,
+} from "./computerUseActionOutput";
+import { readRecord } from "./readRecord";
 
 export type ComputerUseSurfaceKind =
   | "lane_screen"
@@ -58,8 +72,12 @@ export type ComputerUseActionSummary = {
   target: string | null;
   /** True when `target` is a name to quote ("Checkout"); false for a URL or host. */
   targetQuoted: boolean;
-  /** Where it happened: "in Xcode", "on localhost:5173", "in your Chrome". */
-  where: string | null;
+  /**
+   * Where it happened, when that is not already the surface: "in Xcode",
+   * "on localhost:5173". Null for the user's browser and the lane screen
+   * itself, which the "using …" part names.
+   */
+  place: ComputerUseActionPlace | null;
   /** App the action drove, for its icon and for folding a run by app. */
   appName: string | null;
   /** The user's own browser, when the action targeted it: "Chrome". */
@@ -75,6 +93,13 @@ export type ComputerUseActionSummary = {
   reason: string | null;
   /** A filed proof record. */
   proof: { caption: string | null; prNumber: number | null } | null;
+};
+
+/** Where the action happened: an app ("in TextEdit") or a site ("on localhost:5173"). */
+export type ComputerUseActionPlace = {
+  preposition: "in" | "on";
+  label: string;
+  kind: "app" | "site" | "other";
 };
 
 export type ComputerUseDomain = "screen" | "app-control" | "browser" | "apple" | "proof";
@@ -319,7 +344,7 @@ type VerbSpec = {
   progressive: string;
   infinitive: string;
   /** How the target is read when the output names no element. */
-  target: "element" | "typed" | "key" | "app" | "url" | "caption" | "direction" | "file" | "command" | "page" | "none";
+  target: "element" | "typed" | "key" | "app" | "url" | "caption" | "direction" | "file" | "page" | "none";
   /** An observation, not an action: compact rows still read well. */
   passive?: boolean;
 };
@@ -407,178 +432,6 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
   return spec ? { key: first, spec } : null;
 }
 
-/* ── Output parsing ──────────────────────────────────────────────────────── */
-
-type ParsedOutput = {
-  hitName: string | null;
-  hitNone: boolean;
-  effect: "observed" | "unconfirmed" | "not_checked" | "waiting" | null;
-  effectReason: string | null;
-  values: Map<string, string>;
-  windows: Array<{ id: string; app: string; title: string | null }>;
-  errorMessage: string | null;
-  okFalse: boolean;
-  openedUrl: string | null;
-  json: Record<string, unknown> | null;
-  attached: { line: string } | null;
-  prNumber: number | null;
-};
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
-}
-
-/** A JSON-quoted name right after the role: `AXButton "Sign in" (obs-1:e:3)`. */
-function readQuotedName(text: string): string | null {
-  const start = text.indexOf("\"");
-  if (start < 0) return null;
-  let index = start + 1;
-  while (index < text.length) {
-    const char = text[index]!;
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-    if (char === "\"") break;
-    index += 1;
-  }
-  const literal = text.slice(start, Math.min(index + 1, text.length));
-  try {
-    const parsed = JSON.parse(literal);
-    return typeof parsed === "string" && parsed.trim().length ? parsed.trim() : null;
-  } catch {
-    const raw = text.slice(start + 1, index).trim();
-    return raw.length ? raw : null;
-  }
-}
-
-function elementName(element: Record<string, unknown> | null): string | null {
-  if (!element) return null;
-  for (const key of ["title", "label", "text", "name", "value", "placeholder", "identifier", "ariaLabel"]) {
-    const value = readString(element[key]);
-    if (value) return value;
-  }
-  return null;
-}
-
-function tryParseJson(output: string): Record<string, unknown> | null {
-  const trimmed = output.trim();
-  const start = trimmed.indexOf("{");
-  if (start < 0 || start > 200) return null;
-  const end = trimmed.lastIndexOf("}");
-  if (end <= start) return null;
-  try {
-    const parsed = readRecord(JSON.parse(trimmed.slice(start, end + 1)));
-    if (!parsed) return null;
-    // An action envelope (`{ domain, action, result }`) wraps the result.
-    const inner = typeof parsed.domain === "string" ? readRecord(parsed.result) : null;
-    return inner ?? parsed;
-  } catch {
-    return null;
-  }
-}
-
-const KEY_VALUE_LINE = /^([a-z][a-z0-9 ]{0,30}?)\s{2,}(\S.*)$/;
-const WINDOW_LINE = /^\s+#(\d+)\s+(.+?)(?:\s+—\s+(.*))?$/;
-
-function parseOutput(output: string): ParsedOutput {
-  const parsed: ParsedOutput = {
-    hitName: null,
-    hitNone: false,
-    effect: null,
-    effectReason: null,
-    values: new Map(),
-    windows: [],
-    errorMessage: null,
-    okFalse: false,
-    openedUrl: null,
-    json: null,
-    attached: null,
-    prNumber: null,
-  };
-  if (!output) return parsed;
-  const lines = output.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\s+$/, "");
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const lower = trimmed.toLowerCase();
-    if (lower.startsWith("hit:") && parsed.hitName === null && !parsed.hitNone) {
-      const rest = trimmed.slice(4).trim();
-      if (/^no element/i.test(rest)) parsed.hitNone = true;
-      else parsed.hitName = readQuotedName(rest);
-      continue;
-    }
-    if (lower.startsWith("effect:") && parsed.effect === null) {
-      const rest = trimmed.slice(7).trim();
-      const [head, ...tail] = rest.split(/\s+—\s+|\s+-\s+/);
-      const status = (head ?? "").toLowerCase();
-      parsed.effect = status.startsWith("observed")
-        ? "observed"
-        : status.startsWith("unconfirmed")
-          ? "unconfirmed"
-          : status.startsWith("waiting")
-            ? "waiting"
-            : status.startsWith("not checked") || status.startsWith("not_checked")
-              ? "not_checked"
-              : null;
-      parsed.effectReason = tail.join(" — ").trim() || null;
-      continue;
-    }
-    if (/^ade:\s/.test(trimmed) && parsed.errorMessage === null) {
-      parsed.errorMessage = trimmed.slice(4).trim().replace(/^[A-Z][A-Z0-9_]{3,}:\s*/, "") || null;
-      continue;
-    }
-    if (/^attached:\s*/i.test(trimmed) && !parsed.attached) {
-      parsed.attached = { line: trimmed.replace(/^attached:\s*/i, "") };
-      continue;
-    }
-    const opened = /^(?:opened|navigated):\s+\S+\s+(\S+)/i.exec(trimmed);
-    if (opened && !parsed.openedUrl) {
-      parsed.openedUrl = opened[1]!;
-      continue;
-    }
-    const pr = /\/pull\/(\d+)\b/.exec(trimmed);
-    if (pr && parsed.prNumber === null && /^posted\b/i.test(trimmed)) parsed.prNumber = Number(pr[1]);
-    const windowLine = WINDOW_LINE.exec(line);
-    if (windowLine) {
-      parsed.windows.push({ id: windowLine[1]!, app: windowLine[2]!.trim(), title: windowLine[3]?.trim() || null });
-      continue;
-    }
-    const kv = KEY_VALUE_LINE.exec(trimmed);
-    if (kv && !parsed.values.has(kv[1]!)) parsed.values.set(kv[1]!, kv[2]!.trim());
-  }
-  if (parsed.values.get("ok") === "false") parsed.okFalse = true;
-  const json = tryParseJson(output);
-  if (json) {
-    parsed.json = json;
-    const match = readRecord(json.match);
-    const resolved = readRecord(json.resolved) ?? readRecord(json.matched) ?? readRecord(match?.element);
-    if (parsed.hitName === null) parsed.hitName = elementName(resolved);
-    const effect = readRecord(json.effect);
-    const status = readString(effect?.status);
-    if (parsed.effect === null && status) {
-      parsed.effect = status === "observed" || status === "unconfirmed" || status === "not_checked"
-        ? status
-        : status === "waiting_for_approval" ? "waiting" : null;
-      parsed.effectReason = readString(effect?.reason);
-    }
-    if (json.ok === false) parsed.okFalse = true;
-    const error = json.error;
-    if (parsed.errorMessage === null) {
-      parsed.errorMessage = readString(error) ?? readString(readRecord(error)?.message) ?? null;
-    }
-    if (json.attached === true || readString(json.browserKind) === "user" || readRecord(json.attached)) {
-      parsed.attached = parsed.attached ?? { line: readString(readRecord(json.attached)?.label) ?? "" };
-    }
-  }
-  return parsed;
-}
-
 /* ── Field readers ───────────────────────────────────────────────────────── */
 
 function flagValue(invocation: ParsedInvocation, ...names: string[]): string | null {
@@ -587,11 +440,6 @@ function flagValue(invocation: ParsedInvocation, ...names: string[]): string | n
     if (typeof value === "string" && value.trim().length) return value.trim();
   }
   return null;
-}
-
-function clip(value: string, max = 60): string {
-  const oneLine = value.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 function urlHost(value: string | null): string | null {
@@ -604,71 +452,6 @@ function urlHost(value: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-const USER_BROWSER_NAMES: ReadonlyArray<[RegExp, string]> = [
-  [/\bchrome\b/i, "Chrome"],
-  [/\bedge\b/i, "Edge"],
-  [/\bbrave\b/i, "Brave"],
-  [/\barc\b/i, "Arc"],
-  [/\bhelium\b/i, "Helium"],
-  [/\bsafari\b/i, "Safari"],
-  [/\bfirefox\b/i, "Firefox"],
-  [/\bvivaldi\b/i, "Vivaldi"],
-  [/\bopera\b/i, "Opera"],
-  [/\bchromium\b/i, "Chromium"],
-  [/\bzen\b/i, "Zen"],
-];
-
-function readUserBrowser(parsed: ParsedOutput, output: string): { browserName: string | null; hostLabel: string | null } | null {
-  // `ade browser attach` prints `attached: Google Chrome on Arul's Mac Studio, tab "…" (…)`;
-  // every command made while attached leads with `target: your Google Chrome on Arul's Mac Studio`.
-  const targetMatch = /^\s*target:\s*your\s+(.+?)\s+on\s+(.+?)\s*$/im.exec(output);
-  const attachedMatch = parsed.attached ? /^(.+?)\s+on\s+(.+?)(?:,\s*tab\b.*)?$/i.exec(parsed.attached.line) : null;
-  const yourMatch = /\byour (chrome|edge|brave|arc|helium|safari|firefox|vivaldi|opera|chromium|zen|browser)\b/i.exec(output);
-  if (!parsed.attached && !targetMatch && !yourMatch) return null;
-  const source = targetMatch?.[1] ?? attachedMatch?.[1] ?? parsed.attached?.line ?? yourMatch?.[0] ?? "";
-  const browserName = USER_BROWSER_NAMES.find(([pattern]) => pattern.test(source))?.[1]
-    ?? USER_BROWSER_NAMES.find(([pattern]) => pattern.test(parsed.values.get("browser") ?? ""))?.[1]
-    ?? null;
-  const hostFromLine = targetMatch?.[2] ?? attachedMatch?.[2] ?? null;
-  const hostLabel = hostFromLine
-    ?? parsed.values.get("machine")
-    ?? parsed.values.get("host")
-    ?? readString(parsed.json?.machine)
-    ?? null;
-  return { browserName, hostLabel: hostLabel ? clip(hostLabel, 40) : null };
-}
-
-const APPLE_DEVICE_PATTERN = /\b(iPhone|iPad|Apple Watch|Apple TV|Apple Vision Pro)\b((?:[ ](?!(?:iOS|iPadOS|watchOS|tvOS|visionOS|xrOS)\b)[A-Za-z0-9-]+){0,4})/;
-const APPLE_OS_PATTERN = /\b(iOS|iPadOS|watchOS|tvOS|visionOS|xrOS)[ -](\d+(?:[.-]\d+)?)/;
-
-function readAppleDevice(invocation: ParsedInvocation, output: string): { name: string | null; os: string | null } | null {
-  const sources = [
-    flagValue(invocation, "--device-type", "--device-name", "--simulator"),
-    output,
-  ]
-    .filter((value): value is string => Boolean(value))
-    // Simulator type ids spell the name with hyphens: `SimDeviceType.iPhone-16-Pro`.
-    .map((value) => value.replace(/\b(iPhone|iPad)((?:-[A-Za-z0-9]+)+)/g, (match) => match.replace(/-/g, " ")));
-  let name: string | null = null;
-  let os: string | null = null;
-  for (const source of sources) {
-    if (!name) {
-      const match = APPLE_DEVICE_PATTERN.exec(source);
-      if (match) name = `${match[1]}${match[2] ?? ""}`.trim();
-    }
-    if (!os) {
-      const match = APPLE_OS_PATTERN.exec(source);
-      if (match) os = `${match[1]} ${match[2]!.replace("-", ".")}`;
-    }
-  }
-  const runtime = flagValue(invocation, "--runtime");
-  if (!os && runtime) {
-    const match = APPLE_OS_PATTERN.exec(runtime);
-    if (match) os = `${match[1]} ${match[2]!.replace("-", ".")}`;
-  }
-  return name || os ? { name, os } : null;
 }
 
 function appNameFromBundleId(bundleId: string | null): string | null {
@@ -700,7 +483,8 @@ function surfaceFor(domain: ComputerUseDomain): ComputerUseSurfaceKind {
   }
 }
 
-function commandText(command: ComputerUseCommandInput["command"]): string | null {
+/** The command as one line of shell: an argv array is joined with its spaced parts quoted. */
+export function computerUseCommandText(command: ComputerUseCommandInput["command"]): string | null {
   if (typeof command === "string") return command;
   if (Array.isArray(command)) return command.map((part) => (/\s/.test(part) ? `'${part.replace(/'/g, "'\\''")}'` : part)).join(" ");
   return null;
@@ -738,34 +522,145 @@ function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
   return found;
 }
 
-const SUMMARY_CACHE_LIMIT = 2000;
+/**
+ * A cheap first look: the command names an `ade` executable (`ade`,
+ * `/usr/local/bin/ade`, `ade.exe`, …) or the ADE CLI path variable. Everything
+ * else is an ordinary shell command and is not parsed at all.
+ */
+const ADE_COMMAND_HINT = /(?:^|[\s"'`/\\;&|(=])ade(?:\.(?:exe|cmd|ps1))?(?=$|[\s"'`;&|)])|ADE_CLI_PATH/i;
+
+const SUMMARY_CACHE_LIMIT = 300;
+const SUMMARY_CACHE_OUTPUT_EDGE = 2048;
 const summaryCache = new Map<string, ComputerUseActionSummary | null>();
+
+/**
+ * The output's length plus its head and tail, not the whole text: two runs can
+ * share a long observation and differ only in a later `effect:` or error line,
+ * which lands in the tail.
+ */
+function summaryCacheKey(input: ComputerUseCommandInput, source: string, output: string): string {
+  const edges = output.length <= SUMMARY_CACHE_OUTPUT_EDGE * 2
+    ? output
+    : `${output.slice(0, SUMMARY_CACHE_OUTPUT_EDGE)}\u0000${output.slice(-SUMMARY_CACHE_OUTPUT_EDGE)}`;
+  return `${input.status}\u0000${input.exitCode ?? ""}\u0000${source}\u0000${output.length}\u0000${edges}`;
+}
 
 /**
  * Summarize one shell command, or null when it is not an ADE computer-use
  * action this module can describe with confidence.
  */
 export function summarizeComputerUseCommand(input: ComputerUseCommandInput): ComputerUseActionSummary | null {
-  const source = commandText(input.command);
-  if (!source || !/ade|ADE_CLI_PATH/i.test(source)) return null;
+  const source = computerUseCommandText(input.command);
+  if (!source || !ADE_COMMAND_HINT.test(source)) return null;
   const output = typeof input.output === "string" ? input.output : "";
-  const cacheKey = `${input.status}\u0000${input.exitCode ?? ""}\u0000${source}\u0000${output.length}\u0000${output.slice(0, 2048)}`;
-  const cached = summaryCache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  // A running command's output still grows; summarize it fresh every time.
+  const cacheable = input.status !== "running";
+  const cacheKey = cacheable ? summaryCacheKey(input, source, output) : "";
+  if (cacheable) {
+    const cached = summaryCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+  }
+  let invocations: ParsedInvocation[] | null;
+  try {
+    invocations = findInvocations(source);
+  } catch {
+    invocations = null;
+  }
+  // No ADE invocation at all: not worth a cache slot.
+  if (!invocations || invocations.length === 0) return null;
   let summary: ComputerUseActionSummary | null = null;
   try {
-    summary = buildSummary(source, output, input);
+    summary = buildSummary(invocations, output, input);
   } catch {
     summary = null;
   }
+  if (!cacheable) return summary;
   if (summaryCache.size >= SUMMARY_CACHE_LIMIT) summaryCache.clear();
   summaryCache.set(cacheKey, summary);
   return summary;
 }
 
-function buildSummary(source: string, output: string, input: ComputerUseCommandInput): ComputerUseActionSummary | null {
-  const invocations = findInvocations(source);
-  if (!invocations || invocations.length === 0) return null;
+/** The object of the sentence, and how the verb reads around it. */
+type TargetShape = {
+  target: string | null;
+  quoted: boolean;
+  /** "up", "down", …: "Scrolled down in “Notes list”". */
+  direction: string | null;
+  /** A screen point, not a name: "Clicked at 412, 300". */
+  point: boolean;
+};
+
+const DIRECTIONS = new Set(["up", "down", "left", "right"]);
+const NUMBER = /^-?\d+(\.\d+)?$/;
+
+function describeTarget(
+  spec: VerbSpec,
+  verbKey: string,
+  invocation: ParsedInvocation,
+  parsed: ParsedOutput,
+  appName: string | null,
+): TargetShape {
+  const shape: TargetShape = { target: null, quoted: true, direction: null, point: false };
+  const elementFlag = flagValue(invocation, "--label", "--text-match", "--text", "--name", "--title", "--test-id", "--element", "--placeholder", "--role-name");
+  switch (spec.target) {
+    case "element": {
+      shape.target = parsed.hitName
+        ?? elementFlag
+        ?? (verbKey === "wait" || verbKey === "wait-for-element" ? flagValue(invocation, "--selector", "--window-title") : null)
+        ?? flagValue(invocation, "--selector");
+      if (!shape.target && (verbKey === "fill" || verbKey === "select" || verbKey === "select-option")) {
+        shape.target = flagValue(invocation, "--value", "--option") ?? invocation.positionals.at(-1) ?? null;
+      }
+      const x = flagValue(invocation, "--x");
+      const y = flagValue(invocation, "--y");
+      if (!shape.target && x && y && NUMBER.test(x) && NUMBER.test(y)) {
+        return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
+      }
+      return shape;
+    }
+    case "typed":
+      shape.target = invocation.positionals.join(" ") || flagValue(invocation, "--value", "--string");
+      return shape;
+    case "key":
+      shape.target = invocation.positionals[0] ?? flagValue(invocation, "--key", "--button");
+      return shape;
+    case "direction": {
+      const direction = (invocation.positionals[0] ?? flagValue(invocation, "--direction") ?? "").toLowerCase();
+      shape.direction = DIRECTIONS.has(direction) ? direction : null;
+      shape.target = parsed.hitName ?? elementFlag;
+      return shape;
+    }
+    case "app": {
+      let target: string | null = verbKey === "launch" && invocation.domain === "app-control"
+        ? flagValue(invocation, "--command", "--app") ?? invocation.positionals.join(" ")
+        : invocation.positionals[0] ?? flagValue(invocation, "--app", "--bundle-id") ?? appName;
+      if (invocation.domain === "apple" && target && /^[\w-]+(\.[\w-]+){2,}$/.test(target)) target = appNameFromBundleId(target);
+      shape.target = target;
+      return shape;
+    }
+    case "url": {
+      const url = invocation.positionals[0] ?? flagValue(invocation, "--url") ?? parsed.openedUrl;
+      return { target: urlHost(url) ?? (url ? clip(url, 48) : null), quoted: false, direction: null, point: false };
+    }
+    case "caption":
+      shape.target = flagValue(invocation, "--caption", "--title", "--description");
+      return shape;
+    case "file": {
+      const file = flagValue(invocation, "--file") ?? invocation.positionals[0] ?? null;
+      shape.target = file ? file.split(/[\\/]/).pop() ?? file : null;
+      return shape;
+    }
+    case "page":
+      shape.target = invocation.domain === "browser"
+        ? parsed.values.get("title") ?? readString(readRecord(parsed.json?.observation)?.title) ?? null
+        : null;
+      return shape;
+    case "none":
+      return shape;
+  }
+}
+
+function buildSummary(invocations: ParsedInvocation[], output: string, input: ComputerUseCommandInput): ComputerUseActionSummary | null {
   const described = invocations
     .map((invocation) => ({ invocation, verb: resolveVerb(invocation) }))
     .filter((entry): entry is { invocation: ParsedInvocation; verb: { key: string; spec: VerbSpec } } => entry.verb !== null);
@@ -803,7 +698,7 @@ function buildSummary(source: string, output: string, input: ComputerUseCommandI
   let browserName: string | null = null;
   let hostLabel: string | null = null;
   if (domain === "browser") {
-    const user = readUserBrowser(parsed, output);
+    const user = readUserBrowser(parsed);
     if (user || verb.key === "attach") {
       surface = "user_browser";
       browserName = user?.browserName ?? null;
@@ -837,151 +732,69 @@ function buildSummary(source: string, output: string, input: ComputerUseCommandI
   }
   if (appName) appName = clip(appName, 48);
 
-  /* Target. */
-  let target: string | null = null;
-  let targetQuoted = true;
-  const elementFlag = flagValue(invocation, "--label", "--text-match", "--text", "--name", "--title", "--test-id", "--element", "--placeholder", "--role-name");
-  switch (spec.target) {
-    case "element":
-      target = parsed.hitName
-        ?? elementFlag
-        ?? (verb.key === "wait" || verb.key === "wait-for-element" ? flagValue(invocation, "--selector", "--window-title") : null)
-        ?? flagValue(invocation, "--selector");
-      if (!target && (verb.key === "fill" || verb.key === "select" || verb.key === "select-option")) {
-        target = flagValue(invocation, "--value", "--option") ?? invocation.positionals.at(-1) ?? null;
-      }
-      if (!target) {
-        const x = flagValue(invocation, "--x");
-        const y = flagValue(invocation, "--y");
-        if (x && y && /^-?\d+(\.\d+)?$/.test(x) && /^-?\d+(\.\d+)?$/.test(y)) {
-          // "Clicked at 412, 300": a point, not a name.
-          return finish(null, `${Math.round(Number(x))}, ${Math.round(Number(y))}`);
-        }
-      }
-      break;
-    case "typed":
-      target = invocation.positionals.join(" ") || flagValue(invocation, "--value", "--string");
-      break;
-    case "key":
-      target = invocation.positionals[0] ?? flagValue(invocation, "--key", "--button");
-      break;
-    case "direction": {
-      const direction = (invocation.positionals[0] ?? flagValue(invocation, "--direction") ?? "").toLowerCase();
-      target = parsed.hitName ?? elementFlag;
-      return finish(direction && ["up", "down", "left", "right"].includes(direction) ? direction : null);
-    }
-    case "app":
-      target = verb.key === "launch" && domain === "app-control"
-        ? flagValue(invocation, "--command", "--app") ?? invocation.positionals.join(" ") ?? null
-        : invocation.positionals[0] ?? flagValue(invocation, "--app", "--bundle-id") ?? appName;
-      if (domain === "apple" && target && /^[\w-]+(\.[\w-]+){2,}$/.test(target)) target = appNameFromBundleId(target);
-      break;
-    case "url": {
-      const url = invocation.positionals[0] ?? flagValue(invocation, "--url") ?? parsed.openedUrl;
-      target = urlHost(url) ?? (url ? clip(url, 48) : null);
-      targetQuoted = false;
-      break;
-    }
-    case "caption":
-      target = flagValue(invocation, "--caption", "--title", "--description");
-      break;
-    case "file": {
-      const file = flagValue(invocation, "--file") ?? invocation.positionals[0] ?? null;
-      target = file ? file.split(/[\\/]/).pop() ?? file : null;
-      break;
-    }
-    case "page":
-      target = domain === "browser"
-        ? parsed.values.get("title") ?? readString(readRecord(json?.observation)?.title) ?? null
-        : null;
-      break;
-    case "command":
-    case "none":
-      target = null;
-      break;
+  /* Target and the words around it. */
+  const device = domain === "apple" ? readAppleDevice(
+      flagValue(invocation, "--device-type", "--device-name", "--simulator"),
+      flagValue(invocation, "--runtime"),
+      output,
+    ) : null;
+  // `apple start` names the device it booted.
+  const shape: TargetShape = verb.key === "start" && domain === "apple"
+    ? { target: device?.name ?? null, quoted: false, direction: null, point: false }
+    : describeTarget(spec, verb.key, invocation, parsed, appName);
+  let target = shape.target ? clip(shape.target) : null;
+  let targetQuoted = shape.quoted;
+  const at = shape.point ? " at" : "";
+  // "Scrolled down in “Notes list”", or plain "Scrolled down".
+  const toward = shape.direction ? (target ? ` ${shape.direction} in` : ` ${shape.direction}`) : "";
+
+  /* Where, when the surface does not already say it. */
+  let place: ComputerUseActionPlace | null = null;
+  if (surface === "user_browser") {
+    place = null;
+  } else if (domain === "browser") {
+    const host = urlHost(parsed.values.get("url") ?? readString(readRecord(json?.observation)?.url) ?? readString(json?.url) ?? parsed.openedUrl);
+    if (host && host !== target) place = { preposition: "on", label: host, kind: "site" };
+  } else if (domain === "screen" || domain === "app-control" || domain === "apple") {
+    // `screen open` happens on the lane screen, which "using …" names.
+    const opensApp = domain === "screen" && verb.key === "open";
+    if (!opensApp && appName && appName !== target) place = { preposition: "in", label: appName, kind: "app" };
   }
-  return finish(null);
-
-  function finish(direction: string | null, point: string | null = null): ComputerUseActionSummary {
-    let past = spec.past;
-    let progressive = spec.progressive;
-    let infinitive = spec.infinitive;
-    if (point) {
-      target = point;
-      targetQuoted = false;
-      past += " at";
-      progressive += " at";
-      infinitive += " at";
-    }
-    if (verb.key === "start" && domain === "apple") {
-      target = readAppleDevice(invocation, output)?.name ?? null;
-      targetQuoted = false;
-    }
-    const cleanTarget = target ? clip(target) : null;
-    if (direction) {
-      // "Scrolled down in “Notes list”", or plain "Scrolled down".
-      const suffix = cleanTarget ? ` ${direction} in` : ` ${direction}`;
-      past += suffix;
-      progressive += suffix;
-      infinitive += suffix;
-    }
-
-    /* Where. */
-    let where: string | null = null;
-    if (surface === "user_browser") {
-      where = verb.key === "attach" ? null : `in your ${browserName ?? "browser"}`;
-    } else if (domain === "browser") {
-      const host = urlHost(parsed.values.get("url") ?? readString(readRecord(json?.observation)?.url) ?? readString(json?.url) ?? parsed.openedUrl);
-      if (host && host !== cleanTarget) where = `on ${host}`;
-    } else if (domain === "screen") {
-      if (verb.key === "open") where = "on the lane screen";
-      else if (appName && appName !== cleanTarget) where = `in ${appName}`;
-    } else if ((domain === "app-control" || domain === "apple") && appName && appName !== cleanTarget) {
-      where = `in ${appName}`;
-    }
-    // "Scrolled down in “Notes list”" already says where.
-    if (direction && cleanTarget) where = null;
-    /* Connected to your browser: the browser is the object. */
-    let finalTarget = cleanTarget;
-    let finalQuoted = targetQuoted;
-    if (verb.key === "attach") {
-      finalTarget = `your ${browserName ?? "browser"}`;
-      finalQuoted = false;
-    }
-    /* A look at the whole screen names the app, not a page: "Looked at TextEdit". */
-    if ((verb.key === "observe" || verb.key === "snapshot") && !finalTarget && appName && domain !== "browser") {
-      finalTarget = appName;
-      finalQuoted = false;
-      where = null;
-    }
-
-    const proof = verb.key.startsWith("proof")
-      ? {
-          caption: cleanTarget,
-          prNumber: parsed.prNumber ?? numberFlag(invocation, "--pr"),
-        }
-      : null;
-
-    return {
-      surface,
-      domain,
-      verb: verb.key,
-      past,
-      progressive,
-      infinitive,
-      target: finalTarget,
-      targetQuoted: finalQuoted,
-      where,
-      appName,
-      browserName,
-      hostLabel,
-      device: domain === "apple" ? readAppleDevice(invocation, output) : null,
-      screenProduct: /^windows/.test(invocation.alias) ? "windows" : /^(mac|desk)/.test(invocation.alias) ? "mac" : null,
-      outcome,
-      reason: reason ? clip(reason, 240) : null,
-      proof,
-    };
+  // "Scrolled down in “Notes list”" already says where.
+  if (shape.direction && target) place = null;
+  // Connected to your browser: the browser is the object.
+  if (verb.key === "attach") {
+    target = `your ${browserName ?? "browser"}`;
+    targetQuoted = false;
   }
+  // A look at the whole screen names the app, not a page: "Looked at TextEdit".
+  if ((verb.key === "observe" || verb.key === "snapshot") && !target && appName && domain !== "browser") {
+    target = appName;
+    targetQuoted = false;
+    place = null;
+  }
+
+  return {
+    surface,
+    domain,
+    verb: verb.key,
+    past: `${spec.past}${at}${toward}`,
+    progressive: `${spec.progressive}${at}${toward}`,
+    infinitive: `${spec.infinitive}${at}${toward}`,
+    target,
+    targetQuoted,
+    place,
+    appName,
+    browserName,
+    hostLabel,
+    device,
+    screenProduct: /^windows/.test(invocation.alias) ? "windows" : /^(mac|desk)/.test(invocation.alias) ? "mac" : null,
+    outcome,
+    reason: reason ? clip(reason, 240) : null,
+    proof: verb.key.startsWith("proof")
+      ? { caption: shape.target ? clip(shape.target) : null, prNumber: parsed.prNumber ?? numberFlag(invocation, "--pr") }
+      : null,
+  };
 }
 
 function numberFlag(invocation: ParsedInvocation, name: string): number | null {
@@ -989,205 +802,4 @@ function numberFlag(invocation: ParsedInvocation, name: string): number | null {
   if (!value) return null;
   const match = /(\d+)\s*$/.exec(value);
   return match ? Number(match[1]) : null;
-}
-
-/* ── Presentation helpers (shared with iOS) ─────────────────────────────── */
-
-export type ComputerUseSentence = {
-  /** "Clicked", "Clicking", "Couldn't click". */
-  lead: string;
-  target: string | null;
-  targetQuoted: boolean;
-  /** Muted tail: "in Xcode", "on localhost:5173 · on PR #12". */
-  trailing: string | null;
-};
-
-/** The sentence for one action: what it did, to what, and where. */
-export function computerUseActionSentence(summary: ComputerUseActionSummary): ComputerUseSentence {
-  const lead = summary.outcome === "running"
-    ? summary.progressive
-    : summary.outcome === "failed"
-      ? `Couldn't ${summary.infinitive}`
-      : summary.past;
-  const tails: string[] = [];
-  if (summary.where) tails.push(summary.where);
-  let trailing = tails.length ? tails.join(" ") : null;
-  if (summary.proof?.prNumber != null) {
-    trailing = [trailing, `· on PR #${summary.proof.prNumber}`].filter(Boolean).join(" ");
-  }
-  return { lead, target: summary.target, targetQuoted: summary.targetQuoted, trailing };
-}
-
-/** The sentence as plain text, for titles, labels, and accessibility. */
-export function computerUseActionText(summary: ComputerUseActionSummary): string {
-  const parts = computerUseActionParts(summary);
-  const target = parts.target ? (parts.targetQuoted ? `“${parts.target}”` : parts.target) : null;
-  const place = parts.place ? `${parts.place.preposition} ${parts.place.label}` : null;
-  const using = parts.using ? `using ${parts.using.label}` : null;
-  const text = [parts.lead, target, place, using, parts.suffix].filter(Boolean).join(" ");
-  return summary.outcome === "running" ? `${text}…` : text;
-}
-
-/** Where the action happened: an app ("in TextEdit") or a site ("on localhost:5173"). */
-export type ComputerUseActionPlace = {
-  preposition: "in" | "on";
-  label: string;
-  kind: "app" | "site" | "other";
-};
-
-/**
- * One action as one line: "Clicked “Save” in TextEdit using Mac Desktop".
- * Each part carries what a renderer needs to draw its icon.
- */
-export type ComputerUseActionParts = {
-  lead: string;
-  target: string | null;
-  targetQuoted: boolean;
-  place: ComputerUseActionPlace | null;
-  using: { label: string; glyph: ComputerUseSurfaceGlyph; warning: boolean } | null;
-  /** "· on PR #12". */
-  suffix: string | null;
-};
-
-export function computerUseActionParts(summary: ComputerUseActionSummary): ComputerUseActionParts {
-  const sentence = computerUseActionSentence(summary);
-  let place: ComputerUseActionPlace | null = null;
-  const where = summary.where?.trim() ?? "";
-  const placeMatch = /^(in|on)\s+(.+)$/.exec(where);
-  // "on the lane screen" and "in your Chrome" say what the "using" part says.
-  if (placeMatch && summary.surface !== "user_browser" && where !== "on the lane screen") {
-    const preposition = placeMatch[1] as "in" | "on";
-    const label = placeMatch[2]!;
-    const kind = label === summary.appName ? "app" : preposition === "on" ? "site" : "other";
-    place = { preposition, label, kind };
-  }
-  const surface = computerUseSurfaceLabel(summary);
-  // "Connected to your Chrome on studio-mac": the browser is already the object.
-  if (summary.verb === "attach") {
-    return {
-      lead: sentence.lead,
-      target: sentence.target,
-      targetQuoted: sentence.targetQuoted,
-      place: summary.hostLabel ? { preposition: "on", label: summary.hostLabel, kind: "other" } : null,
-      using: null,
-      suffix: null,
-    };
-  }
-  return {
-    lead: sentence.lead,
-    target: sentence.target,
-    targetQuoted: sentence.targetQuoted,
-    place,
-    using: surface,
-    suffix: summary.proof?.prNumber != null ? `· on PR #${summary.proof.prNumber}` : null,
-  };
-}
-
-export type ComputerUseSurfaceGlyph = "screen" | "app" | "globe" | "user" | "apple" | "proof";
-
-/** The "using …" part of a row: which surface, in whose hands. */
-export function computerUseSurfaceLabel(summary: ComputerUseActionSummary): {
-  label: string;
-  glyph: ComputerUseSurfaceGlyph;
-  /** The user's own browser: amber, because the agent acted outside its lane. */
-  warning: boolean;
-} {
-  switch (summary.surface) {
-    case "lane_screen":
-      return {
-        label: summary.screenProduct === "windows"
-          ? "Windows Desktop"
-          : summary.screenProduct === "mac" ? "Mac Desktop" : "the lane screen",
-        glyph: "screen",
-        warning: false,
-      };
-    case "app_control":
-      return { label: "App Control", glyph: "app", warning: false };
-    case "ade_browser":
-      return { label: "ADE browser", glyph: "globe", warning: false };
-    case "user_browser": {
-      const browser = `your ${summary.browserName ?? "browser"}`;
-      return {
-        label: summary.hostLabel ? `${browser} on ${summary.hostLabel}` : browser,
-        glyph: "user",
-        warning: true,
-      };
-    }
-    case "apple_device":
-      return { label: summary.device?.name || "the simulator", glyph: "apple", warning: false };
-    case "proof":
-      return { label: "ADE proof", glyph: "proof", warning: false };
-  }
-}
-
-/** The one-line note under a full row, when there is something to say. */
-export function computerUseOutcomeNote(summary: ComputerUseActionSummary): { text: string; tone: "danger" | "warning" } | null {
-  if (summary.outcome === "failed") {
-    return summary.reason ? { text: summary.reason, tone: "danger" } : null;
-  }
-  if (summary.outcome === "unconfirmed") {
-    return { text: "Sent, but no change seen yet", tone: "warning" };
-  }
-  return null;
-}
-
-/** Status dot of a compact row. */
-export function computerUseDotState(summary: ComputerUseActionSummary): "neutral" | "warn" | "crit" {
-  if (summary.outcome === "failed") return "crit";
-  if (summary.outcome === "unconfirmed") return "warn";
-  return "neutral";
-}
-
-export type ComputerUseRunItem<T> =
-  | { kind: "action"; action: T; summary: ComputerUseActionSummary }
-  | { kind: "app_fold"; appName: string; actions: Array<{ action: T; summary: ComputerUseActionSummary }> };
-
-/**
- * Lay out one run of actions: every earlier action as a compact line, with
- * consecutive confirmed actions in the same app folded into one
- * "Notes · 4 actions" line, and the latest action drawn in full. A failed or
- * unconfirmed action never folds: it is the line a reader must see.
- *
- * Apple actions that named no device borrow the last device named earlier in
- * the run (the device is usually printed once, by `apple start`).
- */
-export function layoutComputerUseRun<T>(
-  actions: ReadonlyArray<{ action: T; summary: ComputerUseActionSummary }>,
-): { earlier: Array<ComputerUseRunItem<T>>; latest: { action: T; summary: ComputerUseActionSummary } | null } {
-  if (actions.length === 0) return { earlier: [], latest: null };
-  let lastDevice: ComputerUseActionSummary["device"] = null;
-  const withDevices = actions.map((entry) => {
-    const { summary } = entry;
-    if (summary.surface !== "apple_device") return entry;
-    if (summary.device?.name) {
-      lastDevice = summary.device;
-      return entry;
-    }
-    if (!lastDevice) return entry;
-    return { ...entry, summary: { ...summary, device: { name: lastDevice.name, os: summary.device?.os ?? lastDevice.os } } };
-  });
-  const latest = withDevices[withDevices.length - 1]!;
-  const earlier: Array<ComputerUseRunItem<T>> = [];
-  const foldable = (summary: ComputerUseActionSummary) =>
-    Boolean(summary.appName) && summary.outcome !== "failed" && summary.outcome !== "unconfirmed";
-  let index = 0;
-  const compact = withDevices.slice(0, -1);
-  while (index < compact.length) {
-    const first = compact[index]!;
-    if (!foldable(first.summary)) {
-      earlier.push({ kind: "action", ...first });
-      index += 1;
-      continue;
-    }
-    const key = first.summary.appName!.toLowerCase();
-    let end = index + 1;
-    while (end < compact.length && foldable(compact[end]!.summary) && compact[end]!.summary.appName!.toLowerCase() === key) end += 1;
-    if (end - index >= 2) {
-      earlier.push({ kind: "app_fold", appName: first.summary.appName!, actions: compact.slice(index, end) });
-    } else {
-      earlier.push({ kind: "action", ...first });
-    }
-    index = end;
-  }
-  return { earlier, latest };
 }

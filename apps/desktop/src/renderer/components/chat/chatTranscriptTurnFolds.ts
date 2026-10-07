@@ -7,7 +7,7 @@ import {
   type TurnFoldRow,
 } from "../../../shared/chatTurnFold";
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
-import { hasComputerUseEntries } from "./ChatComputerUseActions";
+import { hasComputerUseEntries } from "./chatComputerUseRows";
 
 export function groupedEnvelopeTurnId(row: ChatTranscriptGroupedEnvelope): string | null {
   const event = row.event;

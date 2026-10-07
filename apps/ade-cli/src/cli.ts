@@ -76,6 +76,7 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
+import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -31622,7 +31623,7 @@ function formatOutput(
 function userBrowserTargetLine(value: unknown): string {
   if (!isRecord(value) || value.attached === true) return "";
   const target = asString(value.userBrowserTarget);
-  return target ? `target: ${target}\n` : "";
+  return target ? `${USER_BROWSER_TARGET_PREFIX} ${target}\n` : "";
 }
 
 function appendOutputSuffix(output: string, suffix: string): string {

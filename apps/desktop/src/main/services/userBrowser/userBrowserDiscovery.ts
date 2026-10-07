@@ -13,15 +13,24 @@
  * `%LOCALAPPDATA%\<vendor>\User Data` and `$XDG_CONFIG_HOME` (or
  * `~/.config`).
  *
+ * Once `attach` has connected, the same module picks the tab: it lists the
+ * browser's page targets and probes which one the user is looking at.
+ *
  * @module userBrowser/userBrowserDiscovery
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const USER_BROWSER_IDS = ["chrome", "edge", "brave", "arc", "helium", "chromium"] as const;
+import { USER_BROWSER_IDS, type UserBrowserId } from "../../../shared/userBrowserLabels";
+import { isRecord, stringOrNull } from "../../../shared/agentObservationNormalizers";
+import type { CdpClient } from "../shared/cdpClient";
+import { withTimeout } from "../shared/withTimeout";
 
-export type UserBrowserId = (typeof USER_BROWSER_IDS)[number];
+export type { UserBrowserId };
+
+/** An attach failure whose message is written for the agent to act on. */
+export class UserBrowserAttachError extends Error {}
 
 export function isUserBrowserId(value: unknown): value is UserBrowserId {
   return typeof value === "string" && (USER_BROWSER_IDS as readonly string[]).includes(value);
@@ -234,4 +243,132 @@ export function discoverUserBrowsers(
     const rightAt = right.debugging?.writtenAt.getTime() ?? -1;
     return rightAt - leftAt;
   });
+}
+
+// ── Picking the tab (after `attach` connected) ──────────────────────────────
+
+/** One visibility probe per tab while picking the tab the user is looking at. */
+const TAB_PROBE_TIMEOUT_MS = 1_500;
+const MAX_PROBED_TABS = 40;
+
+export type UserBrowserPageTarget = { targetId: string; title: string; url: string };
+
+function quoteTitle(title: string): string {
+  const trimmed = title.trim() || "(untitled)";
+  return `"${trimmed.length > 80 ? `${trimmed.slice(0, 79)}…` : trimmed}"`;
+}
+
+export function describeTab(tab: { title: string; url: string }): string {
+  return `${quoteTitle(tab.title)} (${tab.url})`;
+}
+
+function tabList(tabs: readonly UserBrowserPageTarget[]): string {
+  return tabs.slice(0, 15).map((tab) => `  - ${describeTab(tab)}`).join("\n")
+    + (tabs.length > 15 ? `\n  - …and ${tabs.length - 15} more` : "");
+}
+
+async function listPageTargets(client: CdpClient): Promise<UserBrowserPageTarget[]> {
+  const response = await client.send<{ targetInfos?: unknown[] }>("Target.getTargets");
+  const infos = Array.isArray(response?.targetInfos) ? response.targetInfos : [];
+  return infos
+    .filter(isRecord)
+    .filter((info) => info.type === "page")
+    .map((info) => ({
+      targetId: stringOrNull(info.targetId) ?? "",
+      title: typeof info.title === "string" ? info.title : "",
+      url: typeof info.url === "string" ? info.url : "",
+    }))
+    .filter((tab) => tab.targetId && !tab.url.startsWith("devtools://"));
+}
+
+/**
+ * Attach to a tab for a probe. When the browser answers only after the probe
+ * gave up, the late session is detached then, so a slow tab cannot leave a
+ * debugger session behind on the user's page.
+ */
+async function attachForProbe(client: CdpClient, targetId: string): Promise<string | null> {
+  const pending = client.send<{ sessionId?: string }>("Target.attachToTarget", { targetId, flatten: true });
+  const attached = await withTimeout(pending, TAB_PROBE_TIMEOUT_MS);
+  if (attached) return stringOrNull(attached.sessionId);
+  void pending.then(
+    (late) => {
+      const sessionId = stringOrNull(late?.sessionId);
+      if (sessionId && !client.isClosed()) {
+        void withTimeout(client.send("Target.detachFromTarget", { sessionId }), TAB_PROBE_TIMEOUT_MS);
+      }
+    },
+    () => {},
+  );
+  return null;
+}
+
+/** Which tabs are on screen, and which one has focus. Best effort per tab. */
+async function probeVisibility(
+  client: CdpClient,
+  tabs: readonly UserBrowserPageTarget[],
+): Promise<Map<string, { visible: boolean; focused: boolean }>> {
+  const probes = await Promise.all(tabs.slice(0, MAX_PROBED_TABS).map(async (tab) => {
+    const sessionId = await attachForProbe(client, tab.targetId);
+    if (!sessionId) return [tab.targetId, { visible: false, focused: false }] as const;
+    const evaluated = await withTimeout(
+      client.session(sessionId).send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        expression: "({ visible: document.visibilityState === 'visible', focused: document.hasFocus() })",
+        returnByValue: true,
+      }),
+      TAB_PROBE_TIMEOUT_MS,
+    );
+    void withTimeout(client.send("Target.detachFromTarget", { sessionId }), TAB_PROBE_TIMEOUT_MS);
+    const value = isRecord(evaluated?.result?.value) ? evaluated.result.value : {};
+    return [tab.targetId, { visible: value.visible === true, focused: value.focused === true }] as const;
+  }));
+  return new Map(probes);
+}
+
+/**
+ * The tab `query` names (a title or URL substring), or the one the user is
+ * looking at. Throws with the candidate list when it cannot tell.
+ */
+export async function chooseUserBrowserTab(
+  client: CdpClient,
+  query: string | null,
+  browserLabel: string,
+): Promise<{ tab: UserBrowserPageTarget; visible: boolean }> {
+  const tabs = await listPageTargets(client);
+  if (!tabs.length) {
+    throw new UserBrowserAttachError(`${browserLabel} has no open tabs to attach to.`);
+  }
+  if (query) {
+    const needle = query.toLowerCase();
+    const matches = tabs.filter((tab) =>
+      tab.title.toLowerCase().includes(needle) || tab.url.toLowerCase().includes(needle));
+    const exact = matches.filter((tab) => tab.title.trim().toLowerCase() === needle);
+    const picked = matches.length === 1 ? matches[0] : exact.length === 1 ? exact[0] : null;
+    if (picked) {
+      const visibility = await probeVisibility(client, [picked]);
+      return { tab: picked, visible: visibility.get(picked.targetId)?.visible ?? false };
+    }
+    if (!matches.length) {
+      throw new UserBrowserAttachError(
+        `No ${browserLabel} tab matches "${query}". Open tabs:\n${tabList(tabs)}\nPass --tab with part of one title or URL.`,
+      );
+    }
+    throw new UserBrowserAttachError(
+      `${matches.length} ${browserLabel} tabs match "${query}":\n${tabList(matches)}\nPass --tab with more of the title or URL.`,
+    );
+  }
+  const visibility = await probeVisibility(client, tabs);
+  const focused = tabs.filter((tab) => visibility.get(tab.targetId)?.focused);
+  const visible = tabs.filter((tab) => visibility.get(tab.targetId)?.visible);
+  const picked = focused.length === 1
+    ? focused[0]
+    : visible.length === 1
+      ? visible[0]
+      : tabs.length === 1
+        ? tabs[0]
+        : null;
+  if (picked) return { tab: picked, visible: visibility.get(picked.targetId)?.visible ?? false };
+  const plausible = visible.length ? visible : tabs;
+  throw new UserBrowserAttachError(
+    `${browserLabel} has ${plausible.length} tabs that could be the one the user means:\n${tabList(plausible)}\nAsk the user which one, then pass --tab with part of its title or URL.`,
+  );
 }

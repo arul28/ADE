@@ -11,7 +11,6 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { macApplicationDirectories } from "./browserDetection";
 import {
   isBrowserTargetPlatform,
   type BrowserTargetPlatform,
@@ -180,44 +179,6 @@ export async function browserIconDataUrl(
   }
   iconCache.set(cacheKey, url);
   return url;
-}
-
-/**
- * An installed app's icon by the name the transcript knows it by ("Xcode",
- * "Notes", "Google Chrome"), as a data URL, or null.
- *
- * The name comes from agent output, so it is only ever joined onto the fixed
- * application folders as `<name>.app`: a name with a path separator, `..`, or
- * an unreasonable length is refused outright. macOS only — Windows has no
- * name-to-executable map this process can trust, and Linux has no per-app
- * icon — so other systems answer null and the row draws its glyph.
- */
-export async function appIconDataUrlByName(
-  rawName: string,
-  deps: { platform?: string; applicationDirectories?: readonly string[]; fileExists?: (candidate: string) => boolean } = {},
-): Promise<string | null> {
-  const name = typeof rawName === "string" ? rawName.trim() : "";
-  if (!name || name.length > 80 || /[\\/\u0000]/.test(name) || name.includes("..")) return null;
-  const platform = deps.platform ?? process.platform;
-  if (platform !== "darwin") return null;
-  const cacheKey = `by-name\u0000${name.toLowerCase()}`;
-  if (iconCache.has(cacheKey)) return iconCache.get(cacheKey) ?? null;
-  const directories = deps.applicationDirectories ?? appSearchDirectories();
-  const exists = deps.fileExists ?? ((candidate: string) => fs.existsSync(candidate));
-  let url: string | null = null;
-  for (const directory of directories) {
-    const candidate = path.join(directory, `${name}.app`);
-    if (!exists(candidate)) continue;
-    url = await browserIconDataUrl(candidate, { platform: "darwin" });
-    if (url) break;
-  }
-  iconCache.set(cacheKey, url);
-  return url;
-}
-
-function appSearchDirectories(): string[] {
-  const base = macApplicationDirectories(process.env);
-  return [...base, "/Applications/Utilities", "/System/Applications/Utilities"];
 }
 
 export const _testing = {

@@ -2369,6 +2369,10 @@ private func workTurnFoldRow(for entry: WorkTimelineEntry) -> WorkTurnFoldFacts 
     return WorkTurnFoldFacts(role: .text, turnId: messageTurnId, trivial: empty)
   case .turnEndMarker:
     return WorkTurnFoldFacts(role: .turnEnd, turnId: turnId, trivial: true)
+  case .toolGroup(let group) where !group.computerUseActions.isEmpty:
+    // Computer-use actions stay in the thread when the turn folds, as on
+    // desktop: they are the record of what the agent did on a screen.
+    return WorkTurnFoldFacts(role: .keep, turnId: turnId, trivial: false)
   case .toolCard, .commandCard, .fileChangeCard, .toolGroup, .changedFiles:
     return WorkTurnFoldFacts(role: .history, turnId: turnId, trivial: false)
   case .eventCard(let card):

@@ -9,8 +9,11 @@
  * line, failure reason); earlier ones are one muted line with a status dot,
  * and consecutive confirmed actions in one app fold into "Notes · 4 actions".
  *
- * The words come from `shared/computerUseActionSummary.ts`, which the iOS app
- * mirrors. Every shell command it cannot describe keeps its plain shell row.
+ * The words come from `shared/computerUseActionSummary.ts` and
+ * `shared/computerUseActionPresentation.ts`, which the iOS app mirrors; which
+ * entries are actions and how runs sit in the timeline is
+ * `chatComputerUseRows.ts`. Every shell command the parser cannot describe
+ * keeps its plain shell row.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -33,7 +36,6 @@ import {
   Plugs,
   Seal,
   TextT,
-  User,
   Warning,
   XCircle,
 } from "@phosphor-icons/react";
@@ -42,215 +44,16 @@ import type { Icon } from "@phosphor-icons/react";
 import {
   computerUseActionParts,
   computerUseActionText,
-  computerUseDotState,
   computerUseOutcomeNote,
   computerUseSurfaceLabel,
   layoutComputerUseRun,
-  summarizeComputerUseCommand,
-  type ComputerUseActionSummary,
-  type ComputerUseCommandInput,
   type ComputerUseSurfaceGlyph,
-} from "../../../shared/computerUseActionSummary";
+} from "../../../shared/computerUseActionPresentation";
+import type { ComputerUseActionOutcome, ComputerUseActionSummary } from "../../../shared/computerUseActionSummary";
 import type { InstalledBrowser } from "../../../shared/browserTargets";
 import { cn } from "../ui/cn";
-import { getToolMeta } from "./chatToolAppearance";
-import { readRecord, type ChatWorkLogEntry, type ChatWorkLogGroupEvent } from "./chatTranscriptRows";
-
-/* ── Reading a work-log entry ─────────────────────────────────────────────── */
-
-function textOfContent(value: unknown, depth = 0): string {
-  if (depth > 3 || value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((part) => textOfContent(part, depth + 1)).filter(Boolean).join("\n");
-  const record = readRecord(value);
-  if (!record) return "";
-  const parts: string[] = [];
-  for (const key of ["stdout", "stderr", "output", "text", "content", "aggregated_output", "formatted_output"]) {
-    const text = textOfContent(record[key], depth + 1);
-    if (text) parts.push(text);
-  }
-  if (!parts.length) {
-    const error = typeof record.error === "string" ? record.error : readRecord(record.error)?.message;
-    if (typeof error === "string") parts.push(`ade: ${error}`);
-  }
-  return parts.join("\n");
-}
-
-function readExitCode(result: unknown): number | null {
-  const record = readRecord(result);
-  for (const key of ["exitCode", "exit_code", "returncode"]) {
-    const value = record?.[key];
-    if (typeof value === "number") return value;
-  }
-  return null;
-}
-
-/**
- * The parse inputs of one work-log entry. The live transcript updates an entry
- * in place as its events stream (a Claude `tool_call` arrives first with empty
- * args, then with the command, then its result), so a cache keyed on the entry
- * object alone would keep the "not computer use" answer from the empty call.
- */
-function computerUseInputForEntry(entry: ChatWorkLogEntry): ComputerUseCommandInput | null {
-  if (entry.entryKind === "command") {
-    return { command: entry.command ?? null, output: entry.output ?? null, status: entry.status };
-  }
-  if (entry.entryKind !== "tool" || !entry.toolName || entry.mcp || getToolMeta(entry.toolName).label !== "Shell") return null;
-  const args = readRecord(entry.args) ?? {};
-  const command = typeof args.command === "string" || Array.isArray(args.command)
-    ? args.command as string | string[]
-    : typeof args.cmd === "string" || Array.isArray(args.cmd)
-      ? args.cmd as string | string[]
-      : null;
-  if (!command) return null;
-  const hasResult = entry.result !== undefined;
-  return {
-    command,
-    output: hasResult ? textOfContent(entry.result) : entry.output ?? null,
-    status: entry.status === "running" && hasResult ? "completed" : entry.status,
-    exitCode: readExitCode(entry.result),
-  };
-}
-
-const summaryByEntry = new WeakMap<ChatWorkLogEntry, {
-  command: ChatWorkLogEntry["command"] | unknown;
-  args: unknown;
-  output: unknown;
-  result: unknown;
-  status: ChatWorkLogEntry["status"];
-  summary: ComputerUseActionSummary | null;
-}>();
-
-/**
- * The computer-use summary of one work-log entry, or null for anything that
- * is not an ADE computer-use shell command. Cached per entry, and re-read when
- * the entry's command, output or status changed (the parser keeps its own
- * content-keyed cache too).
- */
-export function computerUseSummaryForEntry(entry: ChatWorkLogEntry): ComputerUseActionSummary | null {
-  const cached = summaryByEntry.get(entry);
-  if (
-    cached
-    && cached.command === entry.command
-    && cached.args === entry.args
-    && cached.output === entry.output
-    && cached.result === entry.result
-    && cached.status === entry.status
-  ) return cached.summary;
-  const input = computerUseInputForEntry(entry);
-  const summary = input ? summarizeComputerUseCommand(input) : null;
-  summaryByEntry.set(entry, {
-    command: entry.command,
-    args: entry.args,
-    output: entry.output,
-    result: entry.result,
-    status: entry.status,
-    summary,
-  });
-  return summary;
-}
-
-export function hasComputerUseEntries(entries: readonly ChatWorkLogEntry[]): boolean {
-  return entries.some((entry) => computerUseSummaryForEntry(entry) !== null);
-}
-
-/** Pairs every computer-use entry of a group with its summary, in order. */
-export function collectComputerUseActions(
-  entries: readonly ChatWorkLogEntry[],
-): Array<{ action: ChatWorkLogEntry; summary: ComputerUseActionSummary }> {
-  const actions: Array<{ action: ChatWorkLogEntry; summary: ComputerUseActionSummary }> = [];
-  for (const entry of entries) {
-    const summary = computerUseSummaryForEntry(entry);
-    if (summary) actions.push({ action: entry, summary });
-  }
-  return actions;
-}
-
-/**
- * Height estimate for the virtualizer: compact lines, plus the full row with
- * its surface line.
- */
-export function estimateComputerUseRunHeight(entries: readonly ChatWorkLogEntry[], compactAll = false): number {
-  const { earlier, latest } = layoutComputerUseRun(collectComputerUseActions(entries));
-  if (!latest) return 0;
-  if (compactAll) return (earlier.length + 1) * 22;
-  const note = computerUseOutcomeNote(latest.summary) ? 18 : 0;
-  return earlier.length * 22 + 46 + note;
-}
-
-type ArrangeableRow = { key: string; timestamp: string; event: { type: string } };
-type GroupRow<Row> = Row & { event: ChatWorkLogGroupEvent };
-
-function isComputerUseGroup<Row extends ArrangeableRow>(row: Row): row is GroupRow<Row> {
-  return row.event.type === "work_log_group" && hasComputerUseEntries((row.event as ChatWorkLogGroupEvent).entries);
-}
-
-function groupTurnId(event: ChatWorkLogGroupEvent): string | null {
-  return event.turnId ?? event.entries[0]?.turnId ?? null;
-}
-
-/**
- * The drawn timeline's computer-use runs, arranged so only the newest action
- * of a turn is drawn in full:
- *
- * - Computer-use groups of one turn that end up next to each other (the
- *   narration between them folded away) join one run, keyed by the first, so
- *   same-app actions fold together.
- * - Every run but the turn's last is marked `computerUseCompact`.
- *
- * Rows that do not change keep their envelope; `previous` reuses the envelopes
- * this function built last time, so a streaming delta elsewhere does not
- * re-render every run.
- */
-export function arrangeComputerUseRuns<Row extends ArrangeableRow>(
-  rows: Row[],
-  previous: ReadonlyMap<string, Row>,
-): { rows: Row[]; built: Map<string, Row> } {
-  const built = new Map<string, Row>();
-  if (!rows.some((row) => isComputerUseGroup(row))) return { rows, built };
-  // Join adjacent runs of one turn.
-  const joined: Array<{ row: Row; entries: ChatWorkLogEntry[] | null }> = [];
-  for (const row of rows) {
-    const last = joined[joined.length - 1];
-    if (
-      last
-      && isComputerUseGroup(row)
-      && isComputerUseGroup(last.row)
-      && groupTurnId(row.event) != null
-      && groupTurnId(row.event) === groupTurnId(last.row.event)
-    ) {
-      last.entries = [...(last.entries ?? last.row.event.entries), ...row.event.entries];
-      continue;
-    }
-    joined.push({ row, entries: null });
-  }
-  // The last run of each turn stays full.
-  const lastRunIndexByTurn = new Map<string, number>();
-  joined.forEach(({ row }, index) => {
-    if (!isComputerUseGroup(row)) return;
-    lastRunIndexByTurn.set(groupTurnId(row.event) ?? `row:${row.key}`, index);
-  });
-  const out = joined.map(({ row, entries }, index) => {
-    if (!isComputerUseGroup(row)) return row;
-    const compact = lastRunIndexByTurn.get(groupTurnId(row.event) ?? `row:${row.key}`) !== index;
-    if (!entries && Boolean(row.event.computerUseCompact) === compact) return row;
-    const nextEntries = entries ?? row.event.entries;
-    const reused = previous.get(row.key) as GroupRow<Row> | undefined;
-    if (
-      reused
-      && Boolean(reused.event.computerUseCompact) === compact
-      && reused.event.entries.length === nextEntries.length
-      && reused.event.entries.every((entry, i) => entry === nextEntries[i])
-    ) {
-      built.set(row.key, reused);
-      return reused;
-    }
-    const next = { ...row, event: { ...row.event, entries: nextEntries, computerUseCompact: compact } } as Row;
-    built.set(row.key, next);
-    return next;
-  });
-  return { rows: out, built };
-}
+import { collectComputerUseActions } from "./chatComputerUseRows";
+import type { ChatWorkLogEntry } from "./chatTranscriptRows";
 
 /* ── App icons ───────────────────────────────────────────────────────────── */
 
@@ -346,19 +149,19 @@ function adeIconUrl(): string {
   return `./${path}`;
 }
 
-const SURFACE_GLYPH: Record<ComputerUseSurfaceGlyph, Icon> = {
+/** The "using" glyphs drawn as one icon; `user` and `apple` draw their own (`UsingGlyph`). */
+const SURFACE_GLYPH: Record<Exclude<ComputerUseSurfaceGlyph, "user" | "apple">, Icon> = {
   screen: Monitor,
   app: AppWindow,
   globe: Globe,
-  user: User,
-  apple: AppleLogo,
   proof: Seal,
 };
 
 function fallbackGlyph(summary: ComputerUseActionSummary): Icon {
   switch (summary.surface) {
-    case "lane_screen": return AppWindow;
-    case "app_control": return AppWindow;
+    case "lane_screen":
+    case "app_control":
+      return AppWindow;
     case "ade_browser": return Globe;
     case "user_browser": return Browser;
     case "apple_device": return DeviceMobile;
@@ -433,7 +236,6 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
       return TextT;
     case "press":
     case "key":
-    case "hotkey":
       return Keyboard;
     case "scroll":
     case "swipe":
@@ -442,7 +244,6 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
       return HandGrabbing;
     case "observe":
     case "snapshot":
-    case "read":
       return Eye;
     case "screenshot":
       return Camera;
@@ -469,7 +270,7 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
 
 /** The "using" icon: the device for an Apple row, else the surface's glyph. */
 function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummary; glyph: ComputerUseSurfaceGlyph; size: number }) {
-  if (summary.surface === "apple_device") {
+  if (glyph === "apple") {
     return (
       <span aria-hidden className="inline-flex items-center gap-px">
         <AppleLogo size={size} weight="fill" />
@@ -477,7 +278,7 @@ function UsingGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummar
       </span>
     );
   }
-  if (summary.surface === "user_browser") {
+  if (glyph === "user") {
     return <ComputerUseAppIcon summary={summary} size={14} inline />;
   }
   const Glyph = SURFACE_GLYPH[glyph];
@@ -556,28 +357,30 @@ function ActionLine({ summary, emphasize }: { summary: ComputerUseActionSummary;
   );
 }
 
+/** How each outcome shows: the full row's status icon, and the compact row's dot. */
+const OUTCOME_STATUS: Record<ComputerUseActionOutcome, {
+  label: string;
+  icon: Icon | null;
+  iconClass: string;
+  dot: "warn" | "crit" | undefined;
+}> = {
+  running: { label: "Running", icon: null, iconClass: "", dot: undefined },
+  observed: { label: "Done", icon: CheckCircle, iconClass: "text-success", dot: undefined },
+  not_checked: { label: "Done", icon: CheckCircle, iconClass: "text-success", dot: undefined },
+  unconfirmed: { label: "No change seen", icon: Warning, iconClass: "text-warning", dot: "warn" },
+  failed: { label: "Failed", icon: XCircle, iconClass: "text-error", dot: "crit" },
+};
+
 function StatusIcon({ summary }: { summary: ComputerUseActionSummary }) {
-  switch (summary.outcome) {
-    case "running":
-      return <span aria-hidden className="size-[14px]" />;
-    case "failed":
-      return <XCircle size={14} weight="regular" className="text-error" aria-label="Failed" />;
-    case "unconfirmed":
-      return <Warning size={14} weight="regular" className="text-warning" aria-label="No change seen" />;
-    default:
-      return <CheckCircle size={14} weight="regular" className="text-success" aria-label="Done" />;
-  }
+  const status = OUTCOME_STATUS[summary.outcome];
+  const StatusGlyph = status.icon;
+  if (!StatusGlyph) return <span aria-hidden className="size-[14px]" />;
+  return <StatusGlyph size={14} weight="regular" className={status.iconClass} aria-label={status.label} />;
 }
 
-function Dot({ summary }: { summary: ComputerUseActionSummary }) {
-  const state = computerUseDotState(summary);
-  return (
-    <span
-      className="kit-dot"
-      data-state={state === "neutral" ? undefined : state}
-      aria-label={state === "crit" ? "Failed" : state === "warn" ? "No change seen" : "Done"}
-    />
-  );
+function Dot({ outcome }: { outcome: ComputerUseActionOutcome }) {
+  const status = OUTCOME_STATUS[outcome];
+  return <span className="kit-dot" data-state={status.dot} aria-label={status.label} />;
 }
 
 function ActionGlyph({ summary, emphasize }: { summary: ComputerUseActionSummary; emphasize: boolean }) {
@@ -639,7 +442,7 @@ function CompactActionRow({ summary, interactive }: { summary: ComputerUseAction
           />
         ) : null}
       </span>
-      <Dot summary={summary} />
+      <Dot outcome={summary.outcome} />
     </>
   );
   if (!interactive) {
@@ -701,7 +504,7 @@ function AppFoldRow({
             className={cn("ml-1 shrink-0 text-muted-fg transition-transform", open && "rotate-90")}
           />
         </span>
-        <span className="kit-dot" aria-label="Done" />
+        <Dot outcome="observed" />
       </button>
       {open ? (
         <div className="mb-1.5 ml-7 border-l border-border pl-3">

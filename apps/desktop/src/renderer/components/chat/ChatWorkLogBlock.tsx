@@ -23,8 +23,9 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinKey } from "../../state/projectMachines";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
-import { ComputerUseInlineIcon, computerUseSummaryForEntry } from "./ChatComputerUseActions";
-import { computerUseActionText } from "../../../shared/computerUseActionSummary";
+import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
+import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
+import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -639,7 +640,8 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     if (!out) return null;
     // A computer-use row reads as its action, so the command it ran leads
     // the detail.
-    return computerUseSummaryForEntry(entry) && entry.command ? `$ ${entry.command}\n${out}` : out;
+    const command = computerUseEntryCommand(entry);
+    return command ? `$ ${command}\n${out}` : out;
   }
   if (entry.entryKind === "hook") {
     const out = entry.output?.trim();
@@ -651,8 +653,8 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     return action && action.length ? action : null;
   }
   if (entry.entryKind === "tool") {
-    const command = computerUseSummaryForEntry(entry) ? readRecord(entry.args)?.command : null;
-    if (typeof command === "string" && command.trim()) {
+    const command = computerUseEntryCommand(entry);
+    if (command?.trim()) {
       const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(entry.result));
       return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
     }

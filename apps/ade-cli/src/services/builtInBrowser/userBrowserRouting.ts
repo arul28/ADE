@@ -1,5 +1,9 @@
+import { timingSafeEqual } from "node:crypto";
+
+import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import type { UserBrowserAttachService } from "../../../../desktop/src/main/services/userBrowser/userBrowserAttachService";
 import {
+  BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
   BUILT_IN_BROWSER_ATTACH_USER_BROWSER_METHOD,
   BUILT_IN_BROWSER_DETACH_USER_BROWSER_METHOD,
   USER_BROWSER_RUNTIME_METHODS,
@@ -14,10 +18,95 @@ export function isUserBrowserRuntimeMethod(value: string): boolean {
   return USER_BROWSER_RUNTIME_METHOD_SET.has(value);
 }
 
-function chatOf(input: unknown): string | null {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
-  const value = (input as Record<string, unknown>).chatSessionId;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+/**
+ * Where `adeRpcServer` decided a `built_in_browser` call goes, stamped on the
+ * scoped args after it authorized the call for that destination: `true` for
+ * the user's browser; anything else is ADE's. The router below obeys it instead of
+ * asking again, so an attachment that ends (or begins) between the check and
+ * the dispatch cannot send a call somewhere it was not authorized for. A
+ * caller's own copy is overwritten by the scoping, never trusted.
+ */
+export const USER_BROWSER_ROUTE_PARAM = "__adeUserBrowserRoute";
+
+/** Split the routing decision off the args the destination sees. */
+function takeRoute(input: unknown): { toUserBrowser: boolean; args: unknown } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { toUserBrowser: false, args: input };
+  const { [USER_BROWSER_ROUTE_PARAM]: route, ...args } = input as Record<string, unknown>;
+  return { toUserBrowser: route === true, args };
+}
+
+/**
+ * The args the user's browser sees: no routing decision, and never ADE's
+ * browser capability. A call nobody authorized for the user's browser is
+ * refused rather than served.
+ */
+function userBrowserArgs(input: unknown): Record<string, unknown> {
+  const { toUserBrowser, args } = takeRoute(input ?? {});
+  if (!toUserBrowser) throw new Error("This call was not authorized for the user's browser.");
+  if (!args || typeof args !== "object" || Array.isArray(args)) return {};
+  const { [BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]: _capability, ...rest } = args as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * The browser actor capability this runtime had the desktop issue each chat,
+ * so a user-browser call can be checked here — the user's browser never
+ * reaches the desktop bridge, which is where ADE's own browser checks it.
+ */
+export type IssuedBrowserActorTokens = {
+  /** The capability last issued for the chat, or null when none was (no desktop at launch). */
+  tokenFor: (chatSessionId: string) => string | null;
+  /** True when `presented` is exactly the capability issued for the chat. */
+  matches: (chatSessionId: string, presented: string | null) => boolean;
+};
+
+/**
+ * Wrap the runtime's capability issuer so it remembers what it issued, and so
+ * revoking a chat's capability — which every chat end and delete does, for
+ * chats and agent terminals alike — also releases what the chat holds here.
+ */
+export function trackIssuedBrowserActorCapabilities(
+  issuer: BrowserActorCapabilityIssuer,
+  hooks: { onRevoke: (chatSessionId: string) => void },
+): { issuer: BrowserActorCapabilityIssuer; issued: IssuedBrowserActorTokens } {
+  const tokens = new Map<string, string>();
+  const tracked: BrowserActorCapabilityIssuer = {
+    issue: async (capability) => {
+      const chatSessionId = capability.chatSessionId.trim();
+      try {
+        const token = (await issuer.issue(capability))?.trim() || null;
+        // The desktop keeps one token per chat: a new one replaces the last.
+        if (token) tokens.set(chatSessionId, token);
+        else tokens.delete(chatSessionId);
+        return token;
+      } catch (error) {
+        tokens.delete(chatSessionId);
+        throw error;
+      }
+    },
+    revoke: async (chatSessionId) => {
+      const normalized = chatSessionId.trim();
+      tokens.delete(normalized);
+      try {
+        hooks.onRevoke(normalized);
+      } finally {
+        await issuer.revoke(chatSessionId);
+      }
+    },
+  };
+  return {
+    issuer: tracked,
+    issued: {
+      tokenFor: (chatSessionId) => tokens.get(chatSessionId.trim()) ?? null,
+      matches: (chatSessionId, presented) => {
+        const expected = tokens.get(chatSessionId.trim());
+        if (!expected || !presented) return false;
+        const left = Buffer.from(expected);
+        const right = Buffer.from(presented.trim());
+        return left.length === right.length && timingSafeEqual(left, right);
+      },
+    },
+  };
 }
 
 /**
@@ -25,13 +114,12 @@ function chatOf(input: unknown): string | null {
  * the user's browser.
  *
  * - `attachUserBrowser` / `detachUserBrowser` are served here.
- * - While the calling chat is attached, every page method goes to the
- *   attachment instead of ADE's browser (or is refused with the reason).
- * - `getStatus` adds the chat's attachment beside ADE's browser status; when
- *   no desktop answers, an attached chat still gets its attachment.
- *
- * Every other call, and every call from a chat that is not attached, passes
- * through untouched.
+ * - A page method `adeRpcServer` routed to the user's browser (see
+ *   {@link USER_BROWSER_ROUTE_PARAM}) goes to the attachment, which acts or
+ *   says why it cannot. Everything else goes to ADE's browser.
+ * - `getStatus` routed here adds the chat's attachment beside ADE's browser
+ *   status; when no desktop answers, an attached chat still gets its
+ *   attachment.
  */
 export function withUserBrowserAttachment(
   bridge: BuiltInBrowserDesktopBridgeClient,
@@ -40,10 +128,12 @@ export function withUserBrowserAttachment(
   return new Proxy(bridge, {
     get(target, property, receiver) {
       if (property === BUILT_IN_BROWSER_ATTACH_USER_BROWSER_METHOD) {
-        return (input?: unknown) => userBrowser.attach((input ?? {}) as Parameters<UserBrowserAttachService["attach"]>[0]);
+        return (input?: unknown) =>
+          userBrowser.attach(userBrowserArgs(input) as Parameters<UserBrowserAttachService["attach"]>[0]);
       }
       if (property === BUILT_IN_BROWSER_DETACH_USER_BROWSER_METHOD) {
-        return (input?: unknown) => userBrowser.detach((input ?? {}) as Parameters<UserBrowserAttachService["detach"]>[0]);
+        return (input?: unknown) =>
+          userBrowser.detach(userBrowserArgs(input) as Parameters<UserBrowserAttachService["detach"]>[0]);
       }
       const inner = Reflect.get(target, property, receiver) as unknown;
       // Only browser actions route. The capability lifecycle, the runtime
@@ -59,11 +149,11 @@ export function withUserBrowserAttachment(
       const call = inner as (input?: unknown) => unknown;
       if (property === "getStatus") {
         return async (input?: unknown) => {
-          const chatSessionId = chatOf(input);
-          if (!userBrowser.isAttached(chatSessionId)) return await call.call(target, input);
-          const attached = await userBrowser.dispatch("getStatus", input) as Record<string, unknown>;
+          const { toUserBrowser, args } = takeRoute(input);
+          if (!toUserBrowser) return await call.call(target, args);
+          const attached = await userBrowser.dispatch("getStatus", userBrowserArgs(input)) as Record<string, unknown>;
           try {
-            const status = await call.call(target, input);
+            const status = await call.call(target, args);
             return status && typeof status === "object" ? { ...(status as object), ...attached } : attached;
           } catch (error) {
             return { ...attached, builtInUnavailable: error instanceof Error ? error.message : String(error) };
@@ -71,9 +161,8 @@ export function withUserBrowserAttachment(
         };
       }
       return (input?: unknown) => {
-        const chatSessionId = chatOf(input);
-        if (userBrowser.routes(chatSessionId, property)) return userBrowser.dispatch(property, input);
-        return call.call(target, input);
+        const { toUserBrowser, args } = takeRoute(input);
+        return toUserBrowser ? userBrowser.dispatch(property, userBrowserArgs(input)) : call.call(target, args);
       };
     },
   }) as BuiltInBrowserDesktopBridgeClient;
