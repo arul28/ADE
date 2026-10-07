@@ -1360,6 +1360,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   case accountSignInClaude = "account-signin-claude"
   case accountSignInCodex = "account-signin-codex"
   case accountSignInDone = "account-signin-done"
+  /// "Continue on another machine" with fixture machines and blockers. See
+  /// `WorkCrossMachineHandoffPreviewHost`.
+  case handoffSheet = "handoff-sheet"
+  /// Every in-chat handoff card state stacked, plus the soft-lock prompt.
+  case handoffCard = "handoff-card"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1489,6 +1494,107 @@ struct ADEPreviewScreenHost: View {
       WorkModelPickerPreviewHost()
     case .hubComposer:
       HubComposerPreviewHost()
+    case .handoffSheet:
+      WorkCrossMachineHandoffSheet(
+        target: WorkCrossMachineHandoffPreviewData.target,
+        previewOptions: WorkCrossMachineHandoffPreviewData.options
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    case .handoffCard:
+      WorkCrossMachineHandoffCardsPreviewHost()
+    }
+  }
+}
+
+@MainActor
+enum WorkCrossMachineHandoffPreviewData {
+  static let target = WorkCrossMachineHandoffTarget(
+    sessionId: "preview-chat",
+    laneId: "preview-lane",
+    title: "Fix the sync reconnect",
+    provider: "claude",
+    modelId: "anthropic/claude-sonnet-5",
+    reasoningEffort: "high",
+    runtimeMode: "edit",
+    busy: true
+  )
+
+  static let options = AgentChatCrossMachineHandoffOptions(
+    machines: [
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "studio", name: "Mac Studio", online: true, unavailableReason: nil, hasRepository: true),
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "air", name: "MacBook Air", online: true, unavailableReason: nil, hasRepository: false),
+      AgentChatCrossMachineHandoffMachineOption(machineKey: "mini", name: "Mac mini", online: false, unavailableReason: "Offline since yesterday", hasRepository: true),
+    ],
+    blockers: [
+      AgentChatCrossMachineHandoffBlocker(id: "dirty", title: "Uncommitted changes", detail: "4 files changed in this lane are not committed.", clearedByIncludeChanges: true, fixHint: nil),
+      AgentChatCrossMachineHandoffBlocker(id: "no_upstream", title: "Branch not published", detail: "ade/sync-reconnect has no upstream on origin.", clearedByIncludeChanges: true, fixHint: "ade git push --lane preview-lane"),
+      AgentChatCrossMachineHandoffBlocker(id: "turn_active", title: "A turn is running", detail: "The agent is working right now.", clearedByIncludeChanges: false, fixHint: nil),
+    ],
+    changes: AgentChatCrossMachineHandoffChanges(unpushedCommits: 2, changedFiles: 4)
+  )
+
+  static func record(_ state: AgentChatCrossMachineHandoffState, checkpoint: String? = nil, reason: String? = nil) -> AgentChatCrossMachineHandoffRecord {
+    AgentChatCrossMachineHandoffRecord(
+      handoffId: "h-\(state.wire)",
+      state: state,
+      checkpoint: checkpoint,
+      targetMachineKey: "studio",
+      targetMachineName: "Mac Studio",
+      mode: "brief",
+      reason: reason,
+      targetSessionId: state == .continued || state == .unknown ? "remote-chat" : nil
+    )
+  }
+
+  static let records: [AgentChatCrossMachineHandoffRecord] = [
+    record(.pending),
+    record(.awaitingApproval, reason: "The agent asked to move to the machine with the GPU."),
+    record(.sending, checkpoint: "destination_ready"),
+    record(.continued),
+    record(.failed, reason: "Mac Studio does not have Claude signed in."),
+    record(.unknown, reason: "The connection dropped after Mac Studio accepted."),
+  ]
+}
+
+private struct WorkCrossMachineHandoffCardsPreviewHost: View {
+  @StateObject private var gate = WorkHandoffSendGate()
+
+  private var actions: WorkCrossMachineHandoffActions {
+    WorkCrossMachineHandoffActions(
+      keepHere: {},
+      resolveApproval: { _ in },
+      acknowledge: { true },
+      retry: {},
+      open: {}
+    )
+  }
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 10) {
+        ForEach(WorkCrossMachineHandoffPreviewData.records, id: \.handoffId) { record in
+          if let model = workCrossMachineHandoffCardModel(record) {
+            WorkCrossMachineHandoffCard(record: record, model: model, actions: actions)
+          }
+        }
+        Button("Send on a continued chat") {
+          Task { _ = await gate.ask(machine: "Mac Studio", branch: "ade/sync-reconnect") }
+        }
+        .padding(.top, 12)
+      }
+      .padding(16)
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .confirmationDialog(
+      "This chat continues on \(gate.prompt?.machine ?? "another machine").",
+      isPresented: Binding(get: { gate.prompt != nil }, set: { if !$0 { gate.answer(.cancel) } }),
+      titleVisibility: .visible
+    ) {
+      Button("Continue on \(gate.prompt?.machine ?? "")") { gate.answer(.continueThere) }
+      Button("Work here instead") { gate.answer(.workHere) }
+      Button("Cancel", role: .cancel) { gate.answer(.cancel) }
+    } message: {
+      Text(gate.prompt?.branch.map { "Both may change \($0)." } ?? "")
     }
   }
 }
@@ -1779,6 +1885,17 @@ struct WorkListPreviewHost: View {
       fixture.pushChatAfter = pushAfter
     }
     WorkRootPreviewFixture.active = fixture
+    // `-adeWorkFixtureMenuActions 1`: advertise every session-menu command, so
+    // the long-press menu renders whole (desktop parity screenshots).
+    if defaults.string(forKey: "adeWorkFixtureMenuActions") == "1" {
+      syncService.seedRemoteCommandActionsForPreview([
+        "chat.updateSession", "chat.regenerateSessionMetadata", "chat.restartSession", "chat.setSpawnKind",
+        "chat.handoff", "chat.getCrossMachineHandoffOptions", "chat.startCrossMachineHandoff",
+        "chat.cancelCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
+        "session.settleSessions", "session.unsettleSessions", "session.setSettleOverride",
+        "session.snoozeSession", "session.wakeSession", "work.deleteSession", "lanes.rename", "lanes.updateAppearance",
+      ])
+    }
     WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
     if defaults.object(forKey: "adeWorkFixtureUnread") as? String != "0" {
       seedUnreadActivity()

@@ -201,6 +201,9 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
   /// one and only reason the resume pill renders.
   let usageLimitResume: WorkUsageLimitResumeModel?
+  /// This chat's move to another machine, when there is one (drives the card
+  /// above the composer and the first-send confirmation).
+  let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -230,6 +233,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
       self.usageLimitResume = nil
+      self.crossMachineHandoff = nil
       return
     }
 
@@ -259,6 +263,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
+    self.crossMachineHandoff = summary.crossMachineHandoff
   }
 
   var currentModelId: String {
@@ -609,8 +614,12 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
+  /// Cross-machine handoff card actions and the soft lock. Nil hides the
+  /// card's buttons and sends without asking (an older host has no record).
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
 
   @State private var threadCommentsSheetPresented = false
+  @StateObject var handoffSendGate = WorkHandoffSendGate()
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
@@ -1432,6 +1441,39 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// After a move the work lives on the other machine, so a send here asks
+  /// where it goes: "Continue on <machine>" copies the message and opens that
+  /// chat; "Work here instead" records `resumedHere` (acknowledge) and sends
+  /// here, after which sends go straight through.
+  var gatedOnSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool {
+    let record = chatSummaryContext.crossMachineHandoff
+    guard let actions = crossMachineHandoffActions,
+          let record,
+          workCrossMachineHandoffNeedsSendConfirmation(record)
+    else { return onSend }
+    let gate = handoffSendGate
+    let send = onSend
+    let branch = lanes.first { $0.id == session.laneId }?.branchRef
+      .replacingOccurrences(of: "refs/heads/", with: "")
+    let machine = record.sendsElsewhere?.targetMachineName ?? record.machineLabel
+    return { text, attachments, mode in
+      switch await gate.ask(machine: machine, branch: branch) {
+      case .workHere:
+        guard await actions.acknowledge() else { return false }
+        return await send(text, attachments, mode)
+      case .continueThere:
+        // This phone can't send to a chat on another machine from here, so
+        // the words travel by clipboard into the chat that opens.
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { UIPasteboard.general.string = trimmed }
+        actions.open()
+        return false
+      case .cancel:
+        return false
+      }
+    }
+  }
+
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
@@ -1562,6 +1604,17 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
+      if let record = chatSummaryContext.crossMachineHandoff,
+         let model = workCrossMachineHandoffCardModel(record) {
+        WorkCrossMachineHandoffCard(
+          record: record,
+          model: model,
+          enabled: !hostUnreachable,
+          actions: crossMachineHandoffActions
+        )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
       if chatSummaryContext.spawnKind == .subagent,
          let parentId = chatSummaryContext.orchestrationParentSessionId,
          !parentId.isEmpty,
@@ -1639,7 +1692,7 @@ struct WorkChatSessionView: View {
             await onSelectRuntimeMode(mode)
           }
         },
-        onSend: onSend,
+        onSend: gatedOnSend,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
         },
@@ -1647,6 +1700,26 @@ struct WorkChatSessionView: View {
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    .confirmationDialog(
+      "This chat continues on \(handoffSendGate.prompt?.machine ?? "another machine")",
+      isPresented: Binding(
+        get: { handoffSendGate.prompt != nil },
+        set: { if !$0 { handoffSendGate.answer(.cancel) } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Continue on \(handoffSendGate.prompt?.machine ?? "the other machine")") {
+        handoffSendGate.answer(.continueThere)
+      }
+      Button("Work here instead") { handoffSendGate.answer(.workHere) }
+      Button("Cancel", role: .cancel) { handoffSendGate.answer(.cancel) }
+    } message: {
+      Text(
+        "Continue there takes your message to that chat (it's copied, paste it there). "
+          + (handoffSendGate.prompt?.branch.map { "Working here instead means both machines may change \($0)." }
+            ?? "Working here instead means both machines may change the same branch.")
+      )
+    }
   }
 
   /// The transcript.

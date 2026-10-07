@@ -1,10 +1,44 @@
 import type {
   AgentChatAcceptCrossMachineHandoffResult,
+  AgentChatCrossMachineContinuation,
   AgentChatCrossMachineDestinationPreflightResult,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatSession,
   RemoteRuntimeHandoffStoragePreflightResult,
   RemoteRuntimeRouteKind,
 } from "./types";
+
+/**
+ * Where a source chat continues, if anywhere. Records written before
+ * `continuedOn` existed fall back to a `continued` record's own target.
+ */
+export function crossMachineContinuation(
+  record: AgentChatCrossMachineHandoffRecord | null | undefined,
+): AgentChatCrossMachineContinuation | null {
+  if (!record) return null;
+  if (record.continuedOn) return record.continuedOn;
+  if (record.state !== "continued" || !record.targetLaneId || !record.targetSessionId) return null;
+  return {
+    handoffId: record.handoffId,
+    targetMachineKey: record.targetMachineKey,
+    targetMachineName: record.targetMachineName,
+    targetLaneId: record.targetLaneId,
+    targetSessionId: record.targetSessionId,
+    continuedAt: record.updatedAt,
+  };
+}
+
+/**
+ * New messages in the source chat go to the destination: it continued there,
+ * no move is under way, and the person hasn't chosen to work here instead.
+ */
+export function crossMachineSendsElsewhere(
+  record: AgentChatCrossMachineHandoffRecord | null | undefined,
+): AgentChatCrossMachineContinuation | null {
+  if (!record || record.resumedHere) return null;
+  if (record.state === "awaiting_approval" || record.state === "pending" || record.state === "sending") return null;
+  return crossMachineContinuation(record);
+}
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -138,6 +172,8 @@ export function decodeCrossMachineDestinationPreflightResult(
     warnings: requireStringList(record.warnings, "Destination handoff warnings"),
     ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
     ...(laneFastForward ? { laneFastForward } : {}),
+    // Absent on older destinations; only an explicit true means support.
+    ...(record.gitBundleSupport === true ? { gitBundleSupport: true } : {}),
   };
 }
 

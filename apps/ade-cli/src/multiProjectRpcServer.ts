@@ -962,7 +962,9 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
         blockingErrors.push(`The destination cannot read the published repository with its own Git credentials: ${detail}`);
       } else {
         const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0] ?? "";
-        if (remoteHeadSha !== sourceHeadSha) {
+        // A move that carries its own commits (`hasGitBundle`) only needs the
+        // repository to be readable; the branch may be behind or unpublished.
+        if (params.hasGitBundle !== true && remoteHeadSha !== sourceHeadSha) {
           blockingErrors.push("The destination sees a different published branch commit than the source machine.");
         }
       }

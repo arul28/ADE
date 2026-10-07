@@ -483,6 +483,13 @@ import type {
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCancelCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -8910,6 +8917,49 @@ export function registerIpc({
       const ctx = ensureAgentChatContext();
       await ctx.agentChatService.markCrossMachineHandoff(arg);
     },
+  );
+
+  // The brain-owned move. These handlers only answer when no runtime is bound
+  // (the preload routes a bound or pinned chat to its brain first); the
+  // desktop's in-process service has no transport, so `start` refuses there
+  // with a plain message rather than pretending to move anything.
+  ipcMain.handle(
+    IPC.agentChatGetCrossMachineHandoffOptions,
+    async (_event, arg: AgentChatCrossMachineHandoffOptionsArgs): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
+      await ensureAgentChatContext().agentChatService.getCrossMachineHandoffOptions(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatGetCrossMachineHandoffState,
+    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.getCrossMachineHandoffState(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatStartCrossMachineHandoff,
+    async (_event, arg: AgentChatStartCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> => {
+      // Who asked is never taken from the renderer: a window is the person.
+      const { requestedBy: _ignored, ...startArgs } = (arg ?? {}) as AgentChatStartCrossMachineHandoffArgs & { requestedBy?: unknown };
+      return await ensureAgentChatContext().agentChatService.startCrossMachineHandoff({ ...startArgs, requestedBy: "user" });
+    },
+  );
+  ipcMain.handle(
+    IPC.agentChatCancelCrossMachineHandoff,
+    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.cancelCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatRetryCrossMachineHandoff,
+    async (_event, arg: AgentChatCancelCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> =>
+      await ensureAgentChatContext().agentChatService.retryCrossMachineHandoff(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatResolveCrossMachineHandoffApproval,
+    async (_event, arg: AgentChatResolveCrossMachineHandoffApprovalArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.resolveCrossMachineHandoffApproval(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatAcknowledgeCrossMachineHandoff,
+    async (_event, arg: AgentChatAcknowledgeCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
+      await ensureAgentChatContext().agentChatService.acknowledgeCrossMachineHandoff(arg),
   );
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {

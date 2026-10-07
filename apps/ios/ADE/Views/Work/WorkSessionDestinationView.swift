@@ -1638,7 +1638,8 @@ struct WorkSessionDestinationView: View {
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
-      onDeleteThreadComment: deleteThreadCommentAction
+      onDeleteThreadComment: deleteThreadCommentAction,
+      crossMachineHandoffActions: crossMachineHandoffActions
     )
   }
 

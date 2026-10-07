@@ -192,14 +192,18 @@ export function createProjectScaffoldService({
       }
     }
 
-    const cloneArgs: string[] = ["clone"];
+    // `git -c … clone`, never `git clone -c …`: the clone's own `-c` is
+    // written into the new repository's .git/config, which persisted the token
+    // there and made every later ADE fetch (which adds its own header) fail
+    // with GitHub's "Duplicate header: Authorization".
+    const cloneArgs: string[] = [];
     if (authHeader) {
       cloneArgs.push(
         "-c",
         `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
       );
     }
-    cloneArgs.push(url, rootPath);
+    cloneArgs.push("clone", url, rootPath);
 
     try {
       const cloneRes = await runGit(cloneArgs, {

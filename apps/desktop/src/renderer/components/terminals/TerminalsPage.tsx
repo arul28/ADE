@@ -413,12 +413,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       session: TerminalSessionSummary,
       intent: ChatHandoffIntent,
       binding?: OpenProjectBinding | null,
+      options?: { machine?: string | null },
     ) => {
       // The menu carries the row's complete binding. Re-remember it before the
       // selection so a cross-machine slice reload between menu-open and select
       // cannot drop the entry and fall back to the tab's bound machine.
       if (binding) machineRouter.rememberSessionPin(session, binding);
-      openChatHandoff(session.id, intent);
+      openChatHandoff(session.id, intent, options);
       // Pass the row's binding through: selecting a foreign-machine chat must
       // clear its woke marker on that machine, exactly like a plain row click.
       handleSelectSession(session.id, undefined, undefined, binding);

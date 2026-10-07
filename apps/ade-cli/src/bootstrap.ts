@@ -1,3 +1,4 @@
+import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -831,6 +832,8 @@ export async function createAdeRuntime(args: {
   /** Disable project-oriented push/deep-link events for machine-scoped runtimes. */
   publishPushEvents?: boolean;
   syncRuntime?: AdeRuntimeSyncOptions;
+  /** The brain's way to another machine, for moving a chat there. */
+  crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -2305,6 +2308,24 @@ export async function createAdeRuntime(args: {
         // repository there. Built on first use: most CTO turns never leave the
         // home machine, and a project with no CTO turns never pays for it.
         getCtoCrossMachine,
+        ...(typeof args !== "string" && args.crossMachineHandoffTransport
+          ? { crossMachineHandoffTransport: args.crossMachineHandoffTransport }
+          : {}),
+        // An agent-started or queued move ended while the person may be away.
+        onCrossMachineHandoffLanded: ({ sessionId, record, title }) => {
+          const subject = title?.trim() || "Your chat";
+          const machine = record.targetMachineName;
+          const copy = record.state === "awaiting_approval"
+            ? { title: `${subject}: the agent wants to continue on ${machine}`, body: "Approve or deny it in the chat." }
+            : record.state === "continued"
+              ? { title: `${subject} continues on ${machine}`, body: "Open it there to keep going." }
+              : { title: `${subject} couldn't move to ${machine}`, body: record.reason };
+          pushPublisherForPtySignals?.handleSessionNotice({
+            sessionId,
+            dedupeKey: `cross-machine-move:${record.handoffId}:${record.state}`,
+            ...copy,
+          });
+        },
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
@@ -3270,6 +3291,15 @@ export async function createAdeRuntime(args: {
           webhooks: automationIngressService?.webhooks,
           projectSecrets: projectSecretService,
         }),
+        // Same service methods the desktop menu's Auto handoff reaches through
+        // the action bus; null (nothing advertised) when automations are off.
+        getAutomationRules: () => (automationService && automationPlannerService
+          ? {
+              list: () => automationService.list(),
+              saveDraft: (req) => automationPlannerService.saveDraft(req),
+              deleteRule: (input) => automationService.deleteRule(input),
+            }
+          : null),
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,

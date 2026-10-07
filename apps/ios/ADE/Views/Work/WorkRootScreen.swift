@@ -198,6 +198,12 @@ struct WorkRootSyncInputs: Equatable {
   var spawnKindUpdateAvailable = false
   var deleteSessionAvailable = false
   var generateNamesAvailable = false
+  /// Session-menu parity with desktop: Set tag, Restart agent, Hand off ▸.
+  var chatTagAvailable = false
+  var restartAgentAvailable = false
+  var localHandoffAvailable = false
+  var crossMachineHandoffAvailable = false
+  var autoHandoffAvailable = false
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
@@ -244,6 +250,12 @@ struct WorkRootSyncInputs: Equatable {
     spawnKindUpdateAvailable = sync.supportsSpawnKindUpdate
     deleteSessionAvailable = sync.supportsWorkSessionDeletion
     generateNamesAvailable = sync.canInvokeRemoteAction("chat.regenerateSessionMetadata")
+    chatTagAvailable = sync.canInvokeRemoteAction("chat.updateSession")
+    restartAgentAvailable = sync.canInvokeRemoteAction("chat.restartSession")
+    localHandoffAvailable = sync.canInvokeRemoteAction("chat.handoff")
+    crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
+      && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
+    autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
     // Only machines the user keeps connected; a disconnected one stays off.
     if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
@@ -379,6 +391,17 @@ struct WorkRootListScreen: View, Equatable {
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var stopRuntimeTarget: TerminalSessionSummary?
+  /// Session-menu sheets and prompts added for desktop parity.
+  @State var tagTarget: TerminalSessionSummary?
+  @State var tagText = ""
+  @State var restartStopTurnTarget: TerminalSessionSummary?
+  @State var localHandoffSubject: WorkSessionHandoffSubject?
+  @State var autoHandoffSubject: WorkSessionHandoffSubject?
+  @State var crossMachineHandoffTarget: WorkCrossMachineHandoffTarget?
+  /// Auto-handoff rule ids scoped to each chat, read once per list load so the
+  /// menu can say "Edit auto handoff…" / "Remove auto handoff" without
+  /// waiting on the host when it opens. Absent key = unknown.
+  @State var autoHandoffRuleIdsBySession: [String: [String]] = [:]
   @State var optimisticSessions: [String: TerminalSessionSummary] = [:] {
     didSet { projectionDataRevision &+= 1 }
   }
@@ -1254,6 +1277,54 @@ struct WorkRootListScreen: View, Equatable {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+      .alert("Set tag", isPresented: Binding(
+        get: { tagTarget != nil },
+        set: { if !$0 { tagTarget = nil } }
+      )) {
+        TextField("Tag (empty clears)", text: $tagText)
+        Button("Cancel", role: .cancel) { tagTarget = nil }
+        Button("Save") {
+          let target = tagTarget
+          let tag = tagText
+          tagTarget = nil
+          if let target { submitTag(target, tag: tag) }
+        }
+      } message: {
+        Text("Tags the Claude session so you can find it in Claude's own session list.")
+      }
+      .alert("Stop the turn and restart?", isPresented: Binding(
+        get: { restartStopTurnTarget != nil },
+        set: { if !$0 { restartStopTurnTarget = nil } }
+      ), presenting: restartStopTurnTarget) { session in
+        Button("Cancel", role: .cancel) { restartStopTurnTarget = nil }
+        Button("Stop and restart", role: .destructive) {
+          restartStopTurnTarget = nil
+          restartAgentSession(session, stopFirst: true)
+        }
+      } message: { _ in
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
+      }
+      .sheet(item: $localHandoffSubject) { subject in
+        WorkLocalHandoffSheet(subject: subject)
+          .environmentObject(syncService)
+      }
+      .sheet(item: $autoHandoffSubject) { subject in
+        WorkAutoHandoffSheet(
+          subject: subject,
+          lanes: lanes,
+          onChanged: { rules in autoHandoffRuleIdsBySession[subject.sessionId] = rules.map(\.id) }
+        )
+        .environmentObject(syncService)
+      }
+      .sheet(item: $crossMachineHandoffTarget) { target in
+        WorkCrossMachineHandoffSheet(target: target)
+          .environmentObject(syncService)
+      }
+      // Once per project (and when the host starts advertising the rules): the
+      // menu only needs "does this chat have rules", and the editor re-reads.
+      .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")") {
+        await refreshAutoHandoffRuleIds()
+      }
       .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
         Button("Cancel", role: .cancel) {
           stopRuntimeTarget = nil
@@ -1596,10 +1667,18 @@ struct WorkRootListScreen: View, Equatable {
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
-      onOpenInWeb: openSessionInWeb,
       laneMenu: workLaneMenuActions,
       generateNamesAvailable: inputs.generateNamesAvailable,
-      onGenerateNames: generateSessionNames
+      onGenerateNames: generateSessionNames,
+      tagAvailable: inputs.chatTagAvailable,
+      onSetTag: beginSetTag,
+      restartAvailable: inputs.restartAgentAvailable,
+      onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
+      localHandoffAvailable: inputs.localHandoffAvailable,
+      crossMachineHandoffAvailable: inputs.crossMachineHandoffAvailable,
+      autoHandoffAvailable: inputs.autoHandoffAvailable,
+      autoHandoffRuleCount: autoHandoffRuleIdsBySession[session.id]?.count,
+      onHandoff: handleSessionHandoff
     )
   }
 

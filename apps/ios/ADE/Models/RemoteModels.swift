@@ -1245,6 +1245,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var spawnKind: AgentChatSpawnKind? = nil
   /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
   var subagentTakeoverPromptShownAt: String? = nil
+  /// This chat's move to another machine, owned by the source brain. Absent on
+  /// older hosts and for a chat that never moved.
+  var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
@@ -1318,6 +1321,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
+      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
   }
 }
 
@@ -5243,6 +5247,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
   /// read back from the database, which has no column for it.
   var activeGoal: SessionActiveGoal? = nil
+  /// Claude session tag (desktop "Set tag…"). Absent on older hosts.
+  var claudeTag: String? = nil
+  /// This chat's move to another machine; see `AgentChatCrossMachineHandoffRecord`.
+  var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
   /// Client-only: the segmented setup rail of a chat launch that still owns
   /// this row (`workOverlayChatLaunches`). Never on the wire — not in
   /// `CodingKeys` — and nil for every ordinary session.
@@ -5308,6 +5316,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.activeGoal == rhs.activeGoal
+      && lhs.claudeTag == rhs.claudeTag
+      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
       && lhs.launchRail == rhs.launchRail
   }
 }
@@ -5362,6 +5372,8 @@ extension TerminalSessionSummary {
     case orchestrationParentSessionId
     case spawnKind
     case activeGoal
+    case claudeTag
+    case crossMachineHandoff
   }
 
   init(from decoder: Decoder) throws {
@@ -5416,6 +5428,8 @@ extension TerminalSessionSummary {
     // Tolerant: a goal shape this build does not know drops the decoration,
     // never the row.
     activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)
+    claudeTag = try? container.decodeIfPresent(String.self, forKey: .claudeTag)
+    crossMachineHandoff = try? container.decodeIfPresent(AgentChatCrossMachineHandoffRecord.self, forKey: .crossMachineHandoff)
   }
 }
 
@@ -7924,5 +7938,366 @@ struct AppControlStreamEnded: Equatable {
     self.subscriptionId = subscriptionId
     self.reason = reason
     self.message = payload["message"] as? String
+  }
+}
+
+// MARK: - Cross-machine handoff (`chat.*CrossMachineHandoff*`)
+
+/// Where a chat's move to another machine stands. Mirrors
+/// `AgentChatCrossMachineHandoffState` in `apps/desktop/src/shared/types/chat.ts`.
+/// A state this build does not know decodes as `.other` and renders nothing,
+/// so a newer brain can add one without breaking the chat summary.
+enum AgentChatCrossMachineHandoffState: Equatable, Hashable {
+  case awaitingApproval
+  case pending
+  case sending
+  case continued
+  case failed
+  case cancelled
+  case unknown
+  case other(String)
+
+  init(wire: String) {
+    switch wire {
+    case "awaiting_approval": self = .awaitingApproval
+    case "pending": self = .pending
+    case "sending": self = .sending
+    case "continued": self = .continued
+    case "failed": self = .failed
+    case "cancelled": self = .cancelled
+    case "unknown": self = .unknown
+    default: self = .other(wire)
+    }
+  }
+
+  var wire: String {
+    switch self {
+    case .awaitingApproval: return "awaiting_approval"
+    case .pending: return "pending"
+    case .sending: return "sending"
+    case .continued: return "continued"
+    case .failed: return "failed"
+    case .cancelled: return "cancelled"
+    case .unknown: return "unknown"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+/// Where a source chat continues after a move (`continuedOn`).
+struct AgentChatCrossMachineContinuation: Codable, Equatable, Hashable {
+  var handoffId: String
+  var targetMachineKey: String
+  var targetMachineName: String
+  var targetLaneId: String
+  var targetSessionId: String
+  var continuedAt: String
+
+  private enum CodingKeys: String, CodingKey {
+    case handoffId, targetMachineKey, targetMachineName, targetLaneId, targetSessionId, continuedAt
+  }
+
+  init(
+    handoffId: String,
+    targetMachineKey: String,
+    targetMachineName: String,
+    targetLaneId: String,
+    targetSessionId: String,
+    continuedAt: String
+  ) {
+    self.handoffId = handoffId
+    self.targetMachineKey = targetMachineKey
+    self.targetMachineName = targetMachineName
+    self.targetLaneId = targetLaneId
+    self.targetSessionId = targetSessionId
+    self.continuedAt = continuedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    func string(_ key: CodingKeys) -> String { ((try? c.decodeIfPresent(String.self, forKey: key)) ?? nil) ?? "" }
+    self.init(
+      handoffId: string(.handoffId),
+      targetMachineKey: string(.targetMachineKey),
+      targetMachineName: string(.targetMachineName),
+      targetLaneId: string(.targetLaneId),
+      targetSessionId: string(.targetSessionId),
+      continuedAt: string(.continuedAt)
+    )
+  }
+}
+
+/// A move of this chat to another machine, owned by the SOURCE brain and
+/// projected onto the chat's summary (`crossMachineHandoff`). Decoding never
+/// throws: a malformed record must not drop the summary it rides on, so a
+/// record without a `handoffId` is simply treated as absent by the UI.
+struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
+  var handoffId: String
+  var state: AgentChatCrossMachineHandoffState
+  /// Last durable step passed: checked, prepared, destination_ready, accepted, marked.
+  var checkpoint: String?
+  var targetMachineKey: String
+  var targetMachineName: String
+  /// "brief" or "fork".
+  var mode: String
+  var targetModelId: String
+  var includeChanges: Bool
+  /// "user" or "agent".
+  var requestedBy: String
+  var requestedAt: String
+  var updatedAt: String
+  var reason: String?
+  var targetLaneId: String?
+  var targetSessionId: String?
+  /// Where the chat last landed, kept across later move attempts.
+  var continuedOn: AgentChatCrossMachineContinuation?
+  var resumedHere: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case handoffId, state, checkpoint, targetMachineKey, targetMachineName, mode, targetModelId
+    case includeChanges, requestedBy, requestedAt, updatedAt, reason, targetLaneId, targetSessionId, continuedOn, resumedHere
+  }
+
+  init(
+    handoffId: String,
+    state: AgentChatCrossMachineHandoffState,
+    checkpoint: String? = nil,
+    targetMachineKey: String,
+    targetMachineName: String,
+    mode: String = "brief",
+    targetModelId: String = "",
+    includeChanges: Bool = false,
+    requestedBy: String = "user",
+    requestedAt: String = "",
+    updatedAt: String = "",
+    reason: String? = nil,
+    targetLaneId: String? = nil,
+    targetSessionId: String? = nil,
+    continuedOn: AgentChatCrossMachineContinuation? = nil,
+    resumedHere: Bool = false
+  ) {
+    self.handoffId = handoffId
+    self.state = state
+    self.checkpoint = checkpoint
+    self.targetMachineKey = targetMachineKey
+    self.targetMachineName = targetMachineName
+    self.mode = mode
+    self.targetModelId = targetModelId
+    self.includeChanges = includeChanges
+    self.requestedBy = requestedBy
+    self.requestedAt = requestedAt
+    self.updatedAt = updatedAt
+    self.reason = reason
+    self.targetLaneId = targetLaneId
+    self.targetSessionId = targetSessionId
+    self.continuedOn = continuedOn
+    self.resumedHere = resumedHere
+  }
+
+  init(from decoder: Decoder) throws {
+    guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+      self.init(handoffId: "", state: .other(""), targetMachineKey: "", targetMachineName: "")
+      return
+    }
+    func string(_ key: CodingKeys) -> String? {
+      (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil
+    }
+    func bool(_ key: CodingKeys) -> Bool {
+      ((try? c.decodeIfPresent(Bool.self, forKey: key)) ?? nil) ?? false
+    }
+    self.init(
+      handoffId: string(.handoffId) ?? "",
+      state: AgentChatCrossMachineHandoffState(wire: string(.state) ?? ""),
+      checkpoint: string(.checkpoint),
+      targetMachineKey: string(.targetMachineKey) ?? "",
+      targetMachineName: string(.targetMachineName) ?? "",
+      mode: string(.mode) ?? "brief",
+      targetModelId: string(.targetModelId) ?? "",
+      includeChanges: bool(.includeChanges),
+      requestedBy: string(.requestedBy) ?? "user",
+      requestedAt: string(.requestedAt) ?? "",
+      updatedAt: string(.updatedAt) ?? "",
+      reason: string(.reason),
+      targetLaneId: string(.targetLaneId),
+      targetSessionId: string(.targetSessionId),
+      continuedOn: ((try? c.decodeIfPresent(AgentChatCrossMachineContinuation.self, forKey: .continuedOn)) ?? nil)
+        .flatMap { $0.targetSessionId.isEmpty ? nil : $0 },
+      resumedHere: bool(.resumedHere)
+    )
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(handoffId, forKey: .handoffId)
+    try c.encode(state.wire, forKey: .state)
+    try c.encodeIfPresent(checkpoint, forKey: .checkpoint)
+    try c.encode(targetMachineKey, forKey: .targetMachineKey)
+    try c.encode(targetMachineName, forKey: .targetMachineName)
+    try c.encode(mode, forKey: .mode)
+    try c.encode(targetModelId, forKey: .targetModelId)
+    try c.encode(includeChanges, forKey: .includeChanges)
+    try c.encode(requestedBy, forKey: .requestedBy)
+    try c.encode(requestedAt, forKey: .requestedAt)
+    try c.encode(updatedAt, forKey: .updatedAt)
+    try c.encodeIfPresent(reason, forKey: .reason)
+    try c.encodeIfPresent(targetLaneId, forKey: .targetLaneId)
+    try c.encodeIfPresent(targetSessionId, forKey: .targetSessionId)
+    try c.encodeIfPresent(continuedOn, forKey: .continuedOn)
+    try c.encode(resumedHere, forKey: .resumedHere)
+  }
+
+  /// Where the chat continues, if anywhere. Records from before `continuedOn`
+  /// existed fall back to a `continued` record's own target (mirrors
+  /// `crossMachineContinuation` in shared/crossMachineHandoff.ts).
+  var continuation: AgentChatCrossMachineContinuation? {
+    if let continuedOn { return continuedOn }
+    guard state == .continued, let lane = targetLaneId, let session = targetSessionId,
+          !lane.isEmpty, !session.isEmpty else { return nil }
+    return AgentChatCrossMachineContinuation(
+      handoffId: handoffId,
+      targetMachineKey: targetMachineKey,
+      targetMachineName: targetMachineName,
+      targetLaneId: lane,
+      targetSessionId: session,
+      continuedAt: updatedAt
+    )
+  }
+
+  /// New messages go to the destination: it continued there, no move is under
+  /// way, and the person hasn't chosen to work here instead.
+  var sendsElsewhere: AgentChatCrossMachineContinuation? {
+    if resumedHere { return nil }
+    switch state {
+    case .awaitingApproval, .pending, .sending: return nil
+    default: return continuation
+    }
+  }
+
+  /// The machine's display name, falling back to its key.
+  var machineLabel: String {
+    let name = targetMachineName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? targetMachineKey : name
+  }
+}
+
+/// One machine the chat may move to (`chat.getCrossMachineHandoffOptions`).
+struct AgentChatCrossMachineHandoffMachineOption: Decodable, Equatable, Identifiable {
+  var id: String { machineKey }
+  var machineKey: String
+  var name: String
+  var online: Bool
+  /// Nil when this machine can take the chat now.
+  var unavailableReason: String?
+  /// False offers a clone; nil means the brain could not tell.
+  var hasRepository: Bool?
+}
+
+/// Something on the source that blocks the move, with how to clear it.
+struct AgentChatCrossMachineHandoffBlocker: Decodable, Equatable, Identifiable {
+  var id: String
+  var title: String
+  var detail: String
+  var clearedByIncludeChanges: Bool
+  var fixHint: String?
+}
+
+struct AgentChatCrossMachineHandoffChanges: Decodable, Equatable {
+  var unpushedCommits: Int
+  var changedFiles: Int
+}
+
+struct AgentChatCrossMachineHandoffOptions: Decodable, Equatable {
+  var machines: [AgentChatCrossMachineHandoffMachineOption]
+  var blockers: [AgentChatCrossMachineHandoffBlocker]
+  var changes: AgentChatCrossMachineHandoffChanges?
+  var current: AgentChatCrossMachineHandoffRecord?
+
+  private enum CodingKeys: String, CodingKey { case machines, blockers, changes, current }
+
+  init(
+    machines: [AgentChatCrossMachineHandoffMachineOption],
+    blockers: [AgentChatCrossMachineHandoffBlocker],
+    changes: AgentChatCrossMachineHandoffChanges? = nil,
+    current: AgentChatCrossMachineHandoffRecord? = nil
+  ) {
+    self.machines = machines
+    self.blockers = blockers
+    self.changes = changes
+    self.current = current
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    machines = (try? c.decodeIfPresent([AgentChatCrossMachineHandoffMachineOption].self, forKey: .machines)) ?? []
+    blockers = (try? c.decodeIfPresent([AgentChatCrossMachineHandoffBlocker].self, forKey: .blockers)) ?? []
+    changes = (try? c.decodeIfPresent(AgentChatCrossMachineHandoffChanges.self, forKey: .changes)) ?? nil
+    current = (try? c.decodeIfPresent(AgentChatCrossMachineHandoffRecord.self, forKey: .current)) ?? nil
+  }
+}
+
+/// Providers whose fork can travel to another machine. Mirrors
+/// `providerSupportsCrossMachineHandoffFork` in `shared/types/chat.ts`:
+/// `HANDOFF_FORK_PROVIDERS` minus droid (machine-local session index) and
+/// cursor (an ADE-side transcript replay with nothing to package).
+func workProviderSupportsCrossMachineHandoffFork(_ provider: String?) -> Bool {
+  guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+  return ["claude", "codex", "opencode"].contains(provider)
+}
+
+// MARK: - Automation rules (auto handoff)
+
+/// The slice of `AutomationRuleSummary` the phone's Auto handoff editor reads.
+/// Everything else in the rule is left untouched by decoding — the editor
+/// rewrites its own rules wholesale through `automations.saveDraft`.
+struct WorkAutomationRuleSummary: Decodable, Equatable, Identifiable {
+  struct Trigger: Decodable, Equatable {
+    var type: String
+    var sessionId: String?
+  }
+  struct Scope: Decodable, Equatable {
+    var sessionId: String?
+  }
+  struct Action: Decodable, Equatable {
+    var type: String
+    var handoffMode: String?
+    var targetModelId: String?
+    var reasoningEffort: String?
+    var promptTemplate: String?
+    var targetLaneMode: String?
+    var targetLaneId: String?
+  }
+  struct Execution: Decodable, Equatable {
+    struct BuiltIn: Decodable, Equatable { var actions: [Action]? }
+    var kind: String?
+    var builtIn: BuiltIn?
+  }
+
+  var id: String
+  var name: String?
+  var scope: Scope?
+  var triggers: [Trigger]?
+  var maxRuns: Int?
+  var actions: [Action]?
+  var execution: Execution?
+
+  private enum CodingKeys: String, CodingKey { case id, name, scope, triggers, maxRuns, actions, execution }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil
+    scope = (try? c.decodeIfPresent(Scope.self, forKey: .scope)) ?? nil
+    triggers = (try? c.decodeIfPresent([Trigger].self, forKey: .triggers)) ?? nil
+    maxRuns = (try? c.decodeIfPresent(Int.self, forKey: .maxRuns)) ?? nil
+    actions = (try? c.decodeIfPresent([Action].self, forKey: .actions)) ?? nil
+    execution = (try? c.decodeIfPresent(Execution.self, forKey: .execution)) ?? nil
+  }
+
+  /// The handoff action, read where desktop's `handoffActionOf` reads it:
+  /// built-in execution first, then the legacy top-level list.
+  var handoffAction: Action? {
+    let fromExecution = execution?.kind == "built-in" ? execution?.builtIn?.actions : nil
+    let list = (fromExecution?.isEmpty == false ? fromExecution : nil) ?? actions ?? []
+    return list.first { $0.type == "handoff" }
   }
 }

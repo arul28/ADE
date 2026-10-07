@@ -2203,6 +2203,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
+    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+                                                    Move the chat to another machine on your account (brief by
+                                                    default; --fork carries full history). --machine names the
+                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    --permissions, --include-changes (bring uncommitted and unpushed
+                                                    work), --clone (set the repo up there), --when-turn-ends (queue
+                                                    it; a newer user message cancels it). An agent moving a chat
+                                                    that isn't full-auto waits for the person's approval.
+    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
+    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here
+    $ ade chat handoff <session> --retry            Retry a failed move with the same choices
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -10132,6 +10143,74 @@ function buildChatPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "chat clear Codex goal",
       steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
+    };
+  }
+  if (sub === "handoff" && readFlag(args, ["--cancel"])) {
+    return {
+      kind: "execute",
+      label: "chat handoff cancel",
+      steps: [actionStep("result", "chat", "cancelCrossMachineHandoff", { sourceSessionId: requireSession() })],
+    };
+  }
+  if (sub === "handoff" && readFlag(args, ["--retry"])) {
+    return {
+      kind: "execute",
+      label: "chat handoff retry",
+      steps: [actionStep("result", "chat", "retryCrossMachineHandoff", { sourceSessionId: requireSession() })],
+    };
+  }
+  if (sub === "handoff" && readFlag(args, ["--options", "--where"])) {
+    return {
+      kind: "execute",
+      label: "chat handoff options",
+      steps: [actionStep("result", "chat", "getCrossMachineHandoffOptions", { sourceSessionId: requireSession() })],
+    };
+  }
+  const handoffMachine = sub === "handoff" ? readValue(args, ["--machine", "--to-machine"]) : null;
+  if (handoffMachine !== null) {
+    // Move the chat to another machine on the account. The brain runs the
+    // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
+    const forkFlag = readFlag(args, ["--fork"]);
+    const briefFlag = readFlag(args, ["--brief"]);
+    const modeArg = readValue(args, ["--mode"]);
+    if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
+      throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
+    }
+    const mode = forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
+    if (mode !== "brief" && mode !== "fork") throw new CliUsageError("chat handoff --mode must be brief or fork.");
+    if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
+      throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
+    }
+    const targetModelId = requireValue(
+      readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id"]),
+      "targetModelId (--model)",
+    );
+    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+    const fastMode = readFastModeFlag(args);
+    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
+    const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
+    const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
+    return {
+      kind: "execute",
+      label: "chat handoff to another machine",
+      steps: [
+        actionStep("result", "chat", "startCrossMachineHandoff", {
+          sourceSessionId: requireSession(),
+          machine: handoffMachine,
+          mode,
+          targetModelId,
+          ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+          ...(fastMode !== undefined ? { fastMode } : {}),
+          ...(permissionMode !== null ? { permissionMode } : {}),
+          ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
+          ...(codexSandbox !== null ? { codexSandbox } : {}),
+          ...(continuationPrompt !== null ? { continuationPrompt } : {}),
+          ...(readFlag(args, ["--include-changes", "--bring-changes"]) ? { includeChanges: true } : {}),
+          ...(readFlag(args, ["--clone"]) ? { clone: true } : {}),
+          ...(readFlag(args, ["--when-turn-ends", "--after-turn"]) ? { whenTurnEnds: true } : {}),
+        }),
+      ],
     };
   }
   if (sub === "handoff" || sub === "fork") {
@@ -23787,8 +23866,12 @@ async function runServe(
         logger: headlessProjectLogger,
       }),
   };
+  // Bound once the agents' machine bridge exists (below); a move asked for
+  // before then is refused as "can't reach other machines".
+  let crossMachineHandoffTransport: import("../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator").CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    crossMachineHandoffTransport: () => crossMachineHandoffTransport,
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -23892,6 +23975,36 @@ async function runServe(
       call: async (input) => (await getAgentMachineBridge()).call(input),
       listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
     };
+
+  // Moving a chat to another machine rides the same paired connection. The
+  // destination applies its own action policy to every step.
+  if (!embedded) {
+    const { normalizeGitRemoteIdentity } = await import("../../desktop/src/shared/crossMachineHandoff");
+    crossMachineHandoffTransport = {
+      listMachines: async (options) => {
+        const roster = await (await getAgentMachineBridge()).listMachines({ includeProjects: options?.includeProjects === true });
+        return roster.machines.map((machine) => ({
+          machineKey: machine.machineKey,
+          name: machine.name,
+          online: machine.online,
+          isThisMachine: machine.isThisMachine,
+          ...(machine.projects
+            ? { projects: machine.projects.map((project) => ({ origin: normalizeGitRemoteIdentity(project.origin) })) }
+            : {}),
+          note: machine.note ?? null,
+        }));
+      },
+      callAction: async (input) => (await getAgentMachineBridge()).call({
+        machine: input.machine,
+        scope: { kind: "repo", originUrl: input.originUrl },
+        method: "ade/actions/call",
+        params: { name: "run_ade_action", arguments: { domain: "chat", action: input.action, args: input.args } },
+        caller: { chatSessionId: null, permissionLevel: null },
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.clone ? { clone: true } : {}),
+      }),
+    };
+  }
 
   // Children reporting to parents outside their own scope: another project,
   // the personal scope, or another machine. The brain owns the outbox; each

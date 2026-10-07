@@ -487,6 +487,13 @@ import type {
   AgentChatMessageSessionKind,
   AgentChatMessageSessionResult,
   AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCancelCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffBlocker,
+  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatEmitAdeCardArgs,
   AgentChatCursorModelSource,
   AgentChatModelCatalog,
@@ -721,6 +728,21 @@ import {
   runCliCapture,
   validateForkTransport,
 } from "./crossMachineForkTransport";
+import {
+  HANDOFF_GIT_BUNDLE_MAX_BYTES,
+  HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE,
+  applyHandoffGitBundle,
+  packHandoffGitBundle,
+  readHandoffWorkingTreeSha,
+} from "./handoffGitBundle";
+import {
+  createCrossMachineHandoffOrchestrator,
+  isCrossMachineHandoffActive,
+  type CrossMachineHandoffOrchestrator,
+  type CrossMachineHandoffPersisted,
+  type CrossMachineHandoffTransport,
+  type CrossMachineSourceInspection,
+} from "./crossMachineHandoffOrchestrator";
 import {
   buildChatContextAttachmentPrompt,
   normalizeChatContextAttachments,
@@ -9870,6 +9892,21 @@ export function createAgentChatService(args: {
    * it; every other host leaves it unset and the CTO stays on its own machine.
    */
   getCtoCrossMachine?: () => CtoOperatorToolDeps["crossMachine"];
+  /**
+   * How this brain reaches the account's other machines to move a chat there
+   * (`crossMachineHandoffOrchestrator`). Only the brain wires it; elsewhere a
+   * move is refused with "This ADE runtime can't reach other machines."
+   */
+  crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /**
+   * Tell the person (phone push): an agent asked to move a chat, or a move
+   * they weren't watching (agent-started or queued) landed or failed.
+   */
+  onCrossMachineHandoffLanded?: (event: {
+    sessionId: string;
+    record: AgentChatCrossMachineHandoffRecord;
+    title: string | null;
+  }) => void;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
@@ -10030,6 +10067,8 @@ export function createAgentChatService(args: {
     getAppControlService,
     getBuiltInBrowserService,
     getCtoCrossMachine,
+    crossMachineHandoffTransport,
+    onCrossMachineHandoffLanded,
     getGitService,
     conflictService,
     computerUseArtifactBrokerService,
@@ -11031,6 +11070,8 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /** Assigned once the handoff helpers below exist; hooks before that no-op. */
+  let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   /**
    * When each chat's latest turn started. `currentTurnStartedAt` clears when
    * the turn settles, and the proof broker still needs the time afterwards to
@@ -19538,6 +19579,12 @@ export function createAgentChatService(args: {
     options: CommitChatEventOptions = {},
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    if (decoratedEvent.type === "user_message") {
+      // Before the write: a queued move is cancelled by a NEW user message,
+      // and the orchestrator tells new from a delivery update by checking the
+      // transcript, which must not contain this message yet.
+      crossMachineHandoff?.onUserMessage(managed.session.id, decoratedEvent.messageId ?? null);
+    }
     if (decoratedEvent.type === "error") {
       // Every provider's failed turn reaches the transcript through here, but
       // not every provider logs it on its way: an OpenCode turn that failed in
@@ -19798,6 +19845,9 @@ export function createAgentChatService(args: {
       // After the done event commits: the move stops this runtime.
       queueMicrotask(() => runPendingUsageLimitMove(managed));
     }
+    // A move queued "when this turn ends" goes now, after the done commits.
+    const settledSessionId = managed.session.id;
+    queueMicrotask(() => crossMachineHandoff?.onTurnSettled(settledSessionId));
     try {
       recordTurnUsage(managed, event);
     } catch (error) {
@@ -42771,9 +42821,44 @@ export function createAgentChatService(args: {
         throw new Error("The handoff capsule has an invalid transcript history truncation flag.");
       }
     }
+
+    if (capsule.gitBundle !== undefined) {
+      const bundle = capsule.gitBundle;
+      if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+        throw new Error("The handoff capsule has malformed branch changes.");
+      }
+      const validCount = (value: unknown): boolean =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000;
+      if (
+        typeof bundle.contentBase64 !== "string"
+        || bundle.contentBase64.length > CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES
+        || !base64Pattern.test(bundle.contentBase64)
+        || !validPositiveByteCount(bundle.bytes, HANDOFF_GIT_BUNDLE_MAX_BYTES)
+        || Math.ceil(bundle.bytes / 3) * 4 !== bundle.contentBase64.length
+      ) {
+        throw new Error("The handoff capsule has invalid branch changes content.");
+      }
+      if (
+        typeof bundle.branchHeadSha !== "string"
+        || bundle.branchHeadSha !== capsule.source.headSha
+        || (bundle.snapshotSha !== null
+          && (typeof bundle.snapshotSha !== "string" || !/^[0-9a-f]{40,64}$/i.test(bundle.snapshotSha)))
+        || !validCount(bundle.unpushedCommitCount)
+        || !validCount(bundle.changedFileCount)
+      ) {
+        throw new Error("The handoff capsule has invalid branch changes metadata.");
+      }
+      // The whole capsule rides one transport frame.
+      const forkEncodedBytes = (capsule.forkTransport?.mainFile.contentBase64Gzip.length ?? 0)
+        + (capsule.forkTransport?.sideFiles ?? []).reduce((total, file) => total + file.contentBase64Gzip.length, 0)
+        + (capsule.transcriptEnvelopes?.contentBase64Gzip.length ?? 0);
+      if (forkEncodedBytes + bundle.contentBase64.length > CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES) {
+        throw new Error(HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE);
+      }
+    }
   };
 
-  const persistCrossMachineHandoffRecord = (record: CrossMachineHandoffRecord): void => {
+  const persistCrossMachineHandoffRecord =(record: CrossMachineHandoffRecord): void => {
     db?.setJson(crossMachineHandoffRecordKey(record.handoffId), record);
   };
 
@@ -42807,7 +42892,16 @@ export function createAgentChatService(args: {
     };
   };
 
-  const requireCrossMachineSourceReady = async (managed: ManagedChatSession) => {
+  /**
+   * `includeChanges` relaxes the clean/published requirement: uncommitted
+   * work and commits origin lacks travel as a git bundle. A rebase or merge in
+   * progress still blocks, and divergence from origin is refused when packing.
+   */
+  const requireCrossMachineSourceReady = async (
+    managed: ManagedChatSession,
+    options: { includeChanges?: boolean } = {},
+  ) => {
+    const includeChanges = options.includeChanges === true;
     // Same wedge settlement as the local handoff: a quota-wedged source must
     // not refuse the cross-machine send either.
     await recoverWedgedClaudeSessionForHandoff(managed);
@@ -42824,8 +42918,17 @@ export function createAgentChatService(args: {
     if (porcelain.exitCode !== 0) {
       throw new Error(`ADE could not inspect the source lane. ${porcelain.stderr.trim()}`.trim());
     }
-    if (porcelain.stdout.trim()) {
+    if (porcelain.stdout.trim() && !includeChanges) {
       throw new Error("Commit or discard every source lane change before sending this chat.");
+    }
+    if (includeChanges) {
+      const merging = await runGit(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 8_000,
+      });
+      if (merging.exitCode === 0) {
+        throw new Error("Finish or abort the current merge before sending this chat.");
+      }
     }
 
     const branchRef = await requireGitBranchForHandoff(lane.branchRef, lane.worktreePath);
@@ -42834,13 +42937,15 @@ export function createAgentChatService(args: {
       lane.worktreePath,
       "ADE could not resolve the source commit.",
     );
-    const upstreamSha = await requireGitOutputForHandoff(
-      ["rev-parse", "@{upstream}"],
-      lane.worktreePath,
-      "Publish this branch and configure its upstream before sending the chat.",
-    );
-    if (upstreamSha !== headSha) {
-      throw new Error("Push the source branch until its upstream exactly matches the current commit.");
+    if (!includeChanges) {
+      const upstreamSha = await requireGitOutputForHandoff(
+        ["rev-parse", "@{upstream}"],
+        lane.worktreePath,
+        "Publish this branch and configure its upstream before sending the chat.",
+      );
+      if (upstreamSha !== headSha) {
+        throw new Error("Push the source branch until its upstream exactly matches the current commit.");
+      }
     }
     const rawOriginUrl = await requireGitOutputForHandoff(
       ["remote", "get-url", "origin"],
@@ -42850,6 +42955,19 @@ export function createAgentChatService(args: {
     const originUrl = sanitizePortableGitRemote(rawOriginUrl);
     if (!normalizeGitRemoteIdentity(originUrl) || originUrl.length > 2_048 || originUrl.includes("\0")) {
       throw new Error("The project's origin URL is not portable.");
+    }
+    if (includeChanges) {
+      // A never-pushed branch is fine here: its base commits come from
+      // origin's history or the bundle.
+      const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+        cwd: lane.worktreePath,
+        timeoutMs: 30_000,
+      });
+      if (remote.exitCode !== 0) {
+        throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${remote.stderr.trim()}`.trim());
+      }
+      const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
+      return { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha };
     }
     const remoteBranchLine = await requireGitOutputForHandoff(
       ["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`],
@@ -42861,7 +42979,7 @@ export function createAgentChatService(args: {
     if (remoteHeadSha !== headSha) {
       throw new Error("The remote branch does not point at the source lane's current commit. Push again, then retry.");
     }
-    return { lane, branchRef, headSha, rawOriginUrl, originUrl };
+    return { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha: remoteHeadSha as string | null };
   };
 
   const readCrossMachineForkMainFile = (filePath: string): Buffer => {
@@ -43040,7 +43158,25 @@ export function createAgentChatService(args: {
     if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
       throw new Error("Only Work chats can be sent to another machine.");
     }
-    const { lane, branchRef, headSha, rawOriginUrl, originUrl } = await requireCrossMachineSourceReady(managed);
+    const includeChanges = args.includeChanges === true;
+    const { lane, branchRef, headSha, rawOriginUrl, originUrl, remoteHeadSha } = await requireCrossMachineSourceReady(
+      managed,
+      { includeChanges },
+    );
+    // Leave room in the ~20 MiB transport frame for the rest of the capsule.
+    const gitBundle = includeChanges
+      ? await packHandoffGitBundle({
+          worktreePath: lane.worktreePath,
+          branchRef,
+          handoffId,
+          remoteBranchSha: remoteHeadSha,
+          maxEncodedBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - 1024 * 1024,
+        })
+      : null;
+    if (includeChanges && !gitBundle && remoteHeadSha !== headSha) {
+      // Nothing to carry, yet origin lacks the branch at this commit.
+      throw new Error("Publish this branch so origin has the current commit, then hand off again.");
+    }
 
     const targetId = args.targetModelId?.trim();
     const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
@@ -43106,7 +43242,21 @@ export function createAgentChatService(args: {
     const transcriptEnvelopes = mode === "fork"
       ? packageCrossMachineTranscriptEnvelopes(managed)
       : undefined;
-    if (forkTransport && enforceCrossMachineForkEncodedBudget(forkTransport, transcriptEnvelopes)) {
+    const bundleEncodedBytes = gitBundle?.contentBase64.length ?? 0;
+    let sideFilesDropped = false;
+    try {
+      sideFilesDropped = Boolean(forkTransport) && enforceCrossMachineForkEncodedBudget(
+        forkTransport!,
+        transcriptEnvelopes,
+        CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - bundleEncodedBytes,
+      );
+    } catch (error) {
+      // Name the bundle when it is what tipped the history over budget.
+      if (!gitBundle || !forkTransport) throw error;
+      enforceCrossMachineForkEncodedBudget(forkTransport, transcriptEnvelopes);
+      throw new Error(HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE);
+    }
+    if (sideFilesDropped) {
       logger.warn("agent_chat.cross_machine_fork_sidefiles_dropped_for_transport_budget", {
         sessionId: sourceSessionId,
         budgetBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
@@ -43136,7 +43286,11 @@ export function createAgentChatService(args: {
     const sourceTitle = sourceSession.title?.trim()
       ? portableText(sourceSession.title.trim()).slice(0, 300)
       : null;
-    const sourceLaneName = portableText(lane.name).slice(0, 200);
+    // The destination creates a NEW worktree lane from this name. "Primary"
+    // there would read as that machine's own checkout, so a primary source
+    // lane is named after its branch instead.
+    const rawSourceLaneName = lane.laneType === "primary" ? branchRef : lane.name;
+    const sourceLaneName = portableText(rawSourceLaneName).slice(0, 200);
     const targetReasoningEffort = args.reasoningEffort !== undefined
       ? args.reasoningEffort
       : managed.session.reasoningEffort;
@@ -43198,6 +43352,7 @@ export function createAgentChatService(args: {
             ...(transcriptEnvelopes ? { transcriptEnvelopes } : {}),
           }
         : {}),
+      ...(gitBundle ? { gitBundle } : {}),
     };
     const sanitizedSensitiveContext = (mode === "brief"
       && capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000))
@@ -43206,7 +43361,7 @@ export function createAgentChatService(args: {
       || sourceMachineName !== (os.hostname().trim() || "source machine")
       || sourceModel !== managed.session.model
       || sourceTitle !== (sourceSession.title?.trim() || null)
-      || sourceLaneName !== lane.name
+      || sourceLaneName !== rawSourceLaneName
       || transcript.entries.some((entry, index) => entry.text !== rawTranscript.entries[index]?.text)
       || capsule.artifacts.fileChanges.some((entry, index) => entry !== rawArtifacts.fileChanges[index]?.slice(0, 1_000))
       || capsule.artifacts.commands.some((entry, index) => entry !== rawArtifacts.commands[index]?.slice(0, 1_000))
@@ -43246,13 +43401,41 @@ export function createAgentChatService(args: {
     ) {
       throw new Error("The source chat model changed after the handoff was prepared. Review the handoff again.");
     }
-    const current = await requireCrossMachineSourceReady(managed);
+    const gitBundle = args.capsule.gitBundle;
+    const current = await requireCrossMachineSourceReady(managed, { includeChanges: Boolean(gitBundle) });
     if (
       current.branchRef !== args.capsule.source.branchRef
       || current.headSha !== args.capsule.source.headSha
       || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(args.capsule.source.originUrl)
     ) {
       throw new Error("The source branch changed after the handoff was prepared. Run the checks again before sending.");
+    }
+    if (gitBundle) {
+      // Re-pack-free check: the working tree must still be the snapshot (or
+      // the tip when it was clean), and origin must not have moved past HEAD.
+      const changedMessage = "The source lane's files changed after the handoff was prepared. Run the checks again before sending.";
+      let currentTree = "";
+      let preparedTree = "";
+      try {
+        currentTree = await readHandoffWorkingTreeSha({ worktreePath: current.lane.worktreePath });
+        preparedTree = await requireGitOutputForHandoff(
+          ["rev-parse", `${gitBundle.snapshotSha ?? gitBundle.branchHeadSha}^{tree}`],
+          current.lane.worktreePath,
+          changedMessage,
+        );
+      } catch {
+        throw new Error(changedMessage);
+      }
+      if (!currentTree || currentTree !== preparedTree) throw new Error(changedMessage);
+      if (current.remoteHeadSha && current.remoteHeadSha !== current.headSha) {
+        const ancestor = await runGit(["merge-base", "--is-ancestor", current.remoteHeadSha, current.headSha], {
+          cwd: current.lane.worktreePath,
+          timeoutMs: 15_000,
+        });
+        if (ancestor.exitCode !== 0) {
+          throw new Error(`'${current.branchRef}' on origin has commits this lane doesn't. Pull or rebase, then hand off again.`);
+        }
+      }
     }
     const preparedAt = Date.parse(args.capsule.createdAt);
     await Promise.all([
@@ -43270,7 +43453,12 @@ export function createAgentChatService(args: {
 
   const preflightCrossMachineDestination = async (
     args: AgentChatCrossMachineDestinationPreflightArgs,
+    // Accept-only: the lane a prior attempt of this handoff created. It holds
+    // the landed changes, so it is dirty by design and must not block a retry.
+    internal: { ownedLaneId?: string | null } = {},
   ): Promise<AgentChatCrossMachineDestinationPreflightResult> => {
+    // With a bundle, the commits need not be on origin: they arrive with it.
+    const hasGitBundle = args.hasGitBundle === true;
     const blockingErrors: string[] = [];
     const warnings: string[] = [];
     const targetId = args.targetModelId?.trim();
@@ -43332,9 +43520,11 @@ export function createAgentChatService(args: {
         blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
       } else {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
-        if (!remoteBranchHeadSha) blockingErrors.push(`Origin does not contain branch '${branchRef}'.`);
-        else if (remoteBranchHeadSha !== expectedHead) blockingErrors.push("The destination sees a different remote branch commit than the source machine.");
-        else {
+        if (!remoteBranchHeadSha) {
+          if (!hasGitBundle) blockingErrors.push(`Origin does not contain branch '${branchRef}'.`);
+        } else if (remoteBranchHeadSha !== expectedHead) {
+          if (!hasGitBundle) blockingErrors.push("The destination sees a different remote branch commit than the source machine.");
+        } else {
           const fetch = await runGit(
             // Forced refspec: the remote-tracking ref is only a local mirror of origin,
       // and if the destination still records a newer or rewound commit the
@@ -43369,7 +43559,9 @@ export function createAgentChatService(args: {
     if (branchRef) {
       const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
       const existingLane = lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
-      if (existingLane) {
+      if (existingLane && hasGitBundle && internal.ownedLaneId === existingLane.id) {
+        existingLaneId = existingLane.id;
+      } else if (existingLane) {
         existingLaneId = existingLane.id;
         if (existingLane.status.dirty) blockingErrors.push(`Destination lane '${existingLane.name}' has uncommitted changes.`);
         if (existingLane.status.rebaseInProgress) blockingErrors.push(`Destination lane '${existingLane.name}' has a rebase in progress.`);
@@ -43379,6 +43571,20 @@ export function createAgentChatService(args: {
           blockingErrors.push(`Destination lane '${existingLane.name}' does not have a readable commit.`);
         } else if (laneHead === expectedHead && !existingLane.status.dirty && !existingLane.status.rebaseInProgress) {
           warnings.push(`ADE will reuse the existing clean lane '${existingLane.name}'.`);
+        } else if (hasGitBundle) {
+          // The bundle fast-forwards a clean lane itself; no origin round trip.
+          // Dirty and rebasing lanes were already blocked above.
+          const ancestor = laneHead === expectedHead
+            ? null
+            : await runGit(["merge-base", "--is-ancestor", laneHead, expectedHead], {
+                cwd: existingLane.worktreePath,
+                timeoutMs: 15_000,
+              });
+          if (ancestor?.exitCode === 1) {
+            blockingErrors.push(`Destination lane '${existingLane.name}' has diverged from the source commit.`);
+          } else if (ancestor) {
+            warnings.push(`ADE will fast-forward the existing lane '${existingLane.name}' to the handed-off commit.`);
+          }
         } else if (laneHead !== expectedHead && fetchedExpectedHead) {
           const ancestor = await runGit(["merge-base", "--is-ancestor", laneHead, expectedHead], {
             cwd: existingLane.worktreePath,
@@ -43420,7 +43626,19 @@ export function createAgentChatService(args: {
           timeoutMs: 8_000,
         });
         if (localHead.exitCode === 0 && localHead.stdout.trim() !== expectedHead) {
-          blockingErrors.push(`A different local branch named '${branchRef}' already exists on the destination.`);
+          const ancestor = hasGitBundle
+            ? await runGit(["merge-base", "--is-ancestor", localHead.stdout.trim(), expectedHead], {
+                cwd: projectRoot,
+                timeoutMs: 15_000,
+              })
+            : null;
+          // With a bundle a behind branch moves forward; whether it is behind
+          // may only be decidable once the commits arrive.
+          if (!ancestor || ancestor.exitCode === 1) {
+            blockingErrors.push(`A different local branch named '${branchRef}' already exists on the destination.`);
+          } else {
+            warnings.push(`ADE will move the local branch '${branchRef}' forward to the handed-off commit.`);
+          }
         }
       }
     }
@@ -43476,6 +43694,7 @@ export function createAgentChatService(args: {
       warnings: Array.from(new Set(warnings)),
       ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
       ...(laneFastForward ? { laneFastForward } : {}),
+      gitBundleSupport: true,
     };
   };
 
@@ -43783,6 +44002,67 @@ export function createAgentChatService(args: {
     throw new Error("The handoff capsule fork transport does not match its provider.");
   };
 
+  type CrossMachineDestinationLane = Awaited<ReturnType<typeof laneService.importBranch>>;
+
+  /**
+   * Lands `capsule.gitBundle` in a lane: the branch at the handed-off tip and
+   * the snapshot's changes uncommitted. Reuses `existingLane` (clean, at or
+   * behind the tip, or already holding this exact handoff); otherwise imports
+   * a new lane, which is deleted again if a later step fails.
+   */
+  const landCrossMachineGitBundle = async (args: {
+    capsule: AgentChatCrossMachineHandoffCapsule;
+    handoffId: string;
+    branchRef: string;
+    existingLane: CrossMachineDestinationLane | null;
+    onLaneImported: (laneId: string) => void;
+  }): Promise<CrossMachineDestinationLane> => {
+    const bundle = args.capsule.gitBundle!;
+    const fetchEnv = await destinationGitEnv();
+    if (args.existingLane) {
+      await applyHandoffGitBundle({
+        projectRoot,
+        handoffId: args.handoffId,
+        branchRef: args.branchRef,
+        bundle,
+        fetchEnv,
+        target: { kind: "existing_worktree", worktreePath: args.existingLane.worktreePath },
+      });
+      return args.existingLane;
+    }
+    let imported: CrossMachineDestinationLane | null = null;
+    await applyHandoffGitBundle({
+      projectRoot,
+      handoffId: args.handoffId,
+      branchRef: args.branchRef,
+      bundle,
+      fetchEnv,
+      target: {
+        kind: "attach",
+        attach: async (branch) => {
+          const lane = await laneService.importBranch({
+            branchRef: branch,
+            name: args.capsule.source.laneName,
+            description: `Received from ${args.capsule.source.machineName}`,
+            // The bundle may carry commits the person never pushed.
+            publishUpstream: false,
+          });
+          imported = lane;
+          args.onLaneImported(lane.id);
+          return {
+            worktreePath: lane.worktreePath,
+            // The bundle apply restores the branch ref itself.
+            undo: async () => {
+              await laneService.delete({ laneId: lane.id, deleteBranch: false, force: true });
+            },
+          };
+        },
+      },
+    });
+    if (!imported) throw new Error("ADE could not create the destination lane for the handed-off changes.");
+    return imported;
+  };
+
   const acceptCrossMachineHandoffCore = async (
     args: AgentChatAcceptCrossMachineHandoffArgs,
   ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
@@ -43838,7 +44118,8 @@ export function createAgentChatService(args: {
       ...(capsule.mode === "fork"
         ? { mode: "fork" as const, sourceProvider: capsule.source.provider }
         : {}),
-    });
+      ...(capsule.gitBundle ? { hasGitBundle: true } : {}),
+    }, { ownedLaneId: priorRecord?.laneId ?? null });
     if (capsule.mode === "fork" && destinationPreflight.forkHandoffSupport?.supported === false) {
       throw new Error(
         destinationPreflight.forkHandoffSupport.reason || "This machine can't accept a fork handoff.",
@@ -43861,28 +44142,51 @@ export function createAgentChatService(args: {
     persistCrossMachineHandoffRecord(record);
 
     try {
-      const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
-        cwd: projectRoot,
-        timeoutMs: 60_000,
-        env: await destinationGitEnv(),
-      });
-      if (fetch.exitCode !== 0) {
-        throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
-      }
-      const fetchedHead = await requireGitOutputForHandoff(
-        ["rev-parse", `refs/remotes/origin/${branchRef}`],
-        projectRoot,
-        `The destination could not resolve origin/${branchRef}.`,
-      );
-      if (fetchedHead !== capsule.source.headSha) {
-        throw new Error("The fetched destination branch no longer matches the source handoff commit.");
+      // A bundle carries the commits itself; origin only supplies its base.
+      if (!capsule.gitBundle) {
+        const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
+          cwd: projectRoot,
+          timeoutMs: 60_000,
+          env: await destinationGitEnv(),
+        });
+        if (fetch.exitCode !== 0) {
+          throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+        }
+        const fetchedHead = await requireGitOutputForHandoff(
+          ["rev-parse", `refs/remotes/origin/${branchRef}`],
+          projectRoot,
+          `The destination could not resolve origin/${branchRef}.`,
+        );
+        if (fetchedHead !== capsule.source.headSha) {
+          throw new Error("The fetched destination branch no longer matches the source handoff commit.");
+        }
       }
 
       let lanes = await laneService.list({ includeArchived: false, includeStatus: true });
       let destinationLane = record.laneId ? lanes.find((lane) => lane.id === record.laneId) ?? null : null;
       destinationLane ??= lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
       const reusedLane = Boolean(destinationLane);
-      if (!destinationLane) {
+      if (capsule.gitBundle) {
+        // Past lane_ready the changes already landed (and may since have been
+        // worked on); only an earlier attempt still needs to apply them.
+        const landed = destinationLane !== null
+          && destinationLane.id === record.laneId
+          && (record.state === "lane_ready" || record.state === "chat_ready");
+        if (!landed || !destinationLane) {
+          destinationLane = await landCrossMachineGitBundle({
+            capsule,
+            handoffId,
+            branchRef,
+            existingLane: destinationLane,
+            onLaneImported: (laneId) => {
+              // Bind the lane before the changes land so a crash mid-apply
+              // retries into it instead of refusing it as a foreign dirty lane.
+              record = { ...record, laneId, updatedAt: nowIso() };
+              persistCrossMachineHandoffRecord(record);
+            },
+          });
+        }
+      } else if (!destinationLane) {
         try {
           destinationLane = await laneService.importBranch({
             branchRef,
@@ -44023,6 +44327,28 @@ export function createAgentChatService(args: {
         });
       }
 
+      if (!reusedSession) {
+        // The one durable fact the destination chat keeps about where it came
+        // from; the renderer's arrival banner reads it (never a transcript row).
+        // Written last so it sits after a fork's imported history.
+        emitChatEvent(destinationManaged, {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "cross_machine_handoff_arrived",
+          message: `Arrived from ${capsule.source.machineName}`,
+          detail: {
+            crossMachineHandoffArrival: {
+              handoffId,
+              sourceMachineName: capsule.source.machineName,
+              sourceSessionId: capsule.source.sessionId,
+              mode: capsule.mode === "fork" ? "fork" : "brief",
+              unpushedCommits: capsule.gitBundle?.unpushedCommitCount ?? 0,
+              changedFiles: capsule.gitBundle?.changedFileCount ?? 0,
+            },
+          },
+        });
+        persistChatState(destinationManaged);
+      }
       record = { ...record, state: "complete", updatedAt: nowIso(), lastError: null };
       persistCrossMachineHandoffRecord(record);
       return {
@@ -44184,6 +44510,249 @@ export function createAgentChatService(args: {
     cache.set(cardId, { fingerprint, createdAt });
     persistChatState(managed);
   };
+
+  // ── Moving a chat to another machine, from this (source) brain ──────────
+  // See crossMachineHandoffOrchestrator.ts. The record lives in the project's
+  // kv table (not the chat state file) so the startup sweep can find every
+  // move without opening every chat.
+  const CROSS_MACHINE_MOVE_KEY_PREFIX = "agent-chat-cross-machine-move:v1:";
+  const crossMachineMoveKey = (sessionId: string): string => `${CROSS_MACHINE_MOVE_KEY_PREFIX}${sessionId}`;
+
+  const readCrossMachineMove = (sessionId: string): CrossMachineHandoffPersisted | null => {
+    const value = db?.getJson<unknown>(crossMachineMoveKey(sessionId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const persisted = value as Partial<CrossMachineHandoffPersisted>;
+    if (!persisted.record || !persisted.request || typeof persisted.record.handoffId !== "string") return null;
+    return persisted as CrossMachineHandoffPersisted;
+  };
+
+  const writeCrossMachineMove = (sessionId: string, value: CrossMachineHandoffPersisted | null): void => {
+    db?.setJson(crossMachineMoveKey(sessionId), value);
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+    // Live clients (the banner) follow this; cold ones read the summary.
+    emitLiveOnlyChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "cross_machine_handoff_state",
+      message: "",
+      detail: { crossMachineHandoffState: value?.record ?? null },
+    });
+  };
+
+  const listCrossMachineMoves = (): Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> => {
+    const rows = db?.all?.<{ key: string }>("select key from kv where key like ?", [`${CROSS_MACHINE_MOVE_KEY_PREFIX}%`]) ?? [];
+    const moves: Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> = [];
+    for (const row of rows) {
+      const sessionId = row.key.slice(CROSS_MACHINE_MOVE_KEY_PREFIX.length);
+      const value = readCrossMachineMove(sessionId);
+      if (value) moves.push({ sessionId, value });
+    }
+    return moves;
+  };
+
+  /**
+   * Everything on the source that stops a move, as a list rather than the
+   * first thrown error, so a person and an agent both see every fix at once.
+   */
+  const inspectCrossMachineSource = async (sessionId: string): Promise<CrossMachineSourceInspection> => {
+    const managed = ensureManagedSession(sessionId);
+    const blockers: AgentChatCrossMachineHandoffBlocker[] = [];
+    const lane = await laneService.getSummary(managed.session.laneId, { includeStatus: true });
+    if (!lane) {
+      return { originUrl: null, branchRef: null, blockers: [], changes: null };
+    }
+    const cwd = lane.worktreePath;
+    const gitText = async (args: string[], timeoutMs = 15_000): Promise<string | null> => {
+      const result = await runGit(args, { cwd, timeoutMs });
+      return result.exitCode === 0 ? result.stdout.trim() : null;
+    };
+    const laneFlag = `--lane ${lane.id}`;
+    if (lane.status.rebaseInProgress) {
+      blockers.push({
+        id: "rebasing",
+        title: "A rebase is in progress",
+        detail: "Finish or abort it before moving this chat.",
+        clearedByIncludeChanges: false,
+        fixHint: `finish the rebase in ${lane.name}`,
+      });
+    }
+    const rawOrigin = await gitText(["remote", "get-url", "origin"]);
+    const originUrl = rawOrigin ? normalizeGitRemoteIdentity(sanitizePortableGitRemote(rawOrigin)) : null;
+    if (!originUrl) {
+      blockers.push({
+        id: "no_origin",
+        title: "This project has no origin remote",
+        detail: "The other machine finds the repository by its origin.",
+        clearedByIncludeChanges: false,
+        fixHint: null,
+      });
+    }
+    const branchRef = await gitText(["symbolic-ref", "--short", "HEAD"]);
+    const porcelain = await gitText(["status", "--porcelain=v1"]);
+    const changedFiles = porcelain ? porcelain.split("\n").filter(Boolean).length : 0;
+    if (changedFiles > 0) {
+      blockers.push({
+        id: "dirty",
+        title: `${changedFiles} uncommitted change${changedFiles === 1 ? "" : "s"}`,
+        detail: "Commit them, or bring them along to the other machine.",
+        clearedByIncludeChanges: true,
+        fixHint: `commit in ${lane.name}, or pass --include-changes`,
+      });
+    }
+    const unpushedText = await gitText(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
+    const unpushedCommits = unpushedText ? Number.parseInt(unpushedText, 10) || 0 : 0;
+    const upstream = await gitText(["rev-parse", "--abbrev-ref", "@{upstream}"]);
+    if (!upstream) {
+      blockers.push({
+        id: "no_upstream",
+        title: `${branchRef ?? "This branch"} hasn't been published`,
+        detail: "The other machine fetches the branch from origin.",
+        clearedByIncludeChanges: true,
+        fixHint: `run \`ade git push ${laneFlag}\`, or pass --include-changes`,
+      });
+    } else {
+      const counts = await gitText(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+      const [behind = 0, ahead = 0] = (counts ?? "0 0").split(/\s+/).map((part) => Number.parseInt(part, 10) || 0);
+      if (behind > 0 && ahead > 0) {
+        blockers.push({
+          id: "diverged",
+          title: `${branchRef ?? "This branch"} has diverged from ${upstream}`,
+          detail: "Reconcile it (rebase or merge) yourself; ADE won't pick a strategy.",
+          clearedByIncludeChanges: false,
+          fixHint: null,
+        });
+      } else if (behind > 0) {
+        blockers.push({
+          id: "behind",
+          title: `${branchRef ?? "This branch"} is ${behind} commit${behind === 1 ? "" : "s"} behind ${upstream}`,
+          detail: "Update it so both machines start from the same commit.",
+          clearedByIncludeChanges: false,
+          fixHint: `run \`ade git pull ${laneFlag}\``,
+        });
+      } else if (ahead > 0) {
+        blockers.push({
+          id: "unpushed",
+          title: `${ahead} unpushed commit${ahead === 1 ? "" : "s"}`,
+          detail: "Push them, or bring them along to the other machine.",
+          clearedByIncludeChanges: true,
+          fixHint: `run \`ade git push ${laneFlag}\`, or pass --include-changes`,
+        });
+      }
+    }
+    const move = readCrossMachineMove(sessionId)?.record;
+    if (move && isCrossMachineHandoffActive(move)) {
+      blockers.push({
+        id: "move_in_progress",
+        title: `Already moving to ${move.targetMachineName}`,
+        detail: "Cancel that move first.",
+        clearedByIncludeChanges: false,
+        fixHint: "run `ade chat handoff <session> --cancel`",
+      });
+    }
+    return {
+      originUrl,
+      branchRef,
+      blockers,
+      changes: changedFiles > 0 || unpushedCommits > 0 ? { unpushedCommits, changedFiles } : null,
+    };
+  };
+
+  const crossMachineMoveApprovalCardId = (handoffId: string): string => `cross-machine-move-approval:${handoffId}`;
+
+  const requireCrossMachineHandoff = (): CrossMachineHandoffOrchestrator => {
+    if (!crossMachineHandoff) throw new Error("Moving chats between machines isn't ready yet. Try again in a moment.");
+    return crossMachineHandoff;
+  };
+
+  crossMachineHandoff = createCrossMachineHandoffOrchestrator({
+    transport: () => crossMachineHandoffTransport?.() ?? null,
+    getSource: (sessionId) => {
+      let managed: ManagedChatSession;
+      try {
+        managed = ensureManagedSession(sessionId);
+      } catch {
+        return null;
+      }
+      const blockedReason = resolveHandoffBlockedReason(managed);
+      return {
+        sessionId,
+        isWorkChat: (managed.session.surface ?? "work") === "work",
+        turnActive: managed.session.status === "active" || Boolean(blockedReason?.startsWith("Wait")),
+        awaitingInput: Boolean(blockedReason?.startsWith("Resolve")),
+        permissionLevel: sessionPermissionLevel(managed.session, "ask"),
+        title: sessionService.get(sessionId)?.title ?? null,
+      };
+    },
+    readPersisted: readCrossMachineMove,
+    writePersisted: writeCrossMachineMove,
+    listPersisted: listCrossMachineMoves,
+    inspectSource: inspectCrossMachineSource,
+    listUserMessageIds: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return [];
+      const ids: string[] = [];
+      for (const entry of readTranscriptEnvelopes(managed)) {
+        if (entry.event.type === "user_message" && entry.event.messageId) ids.push(entry.event.messageId);
+      }
+      return ids;
+    },
+    prepare: (prepareArgs) => prepareCrossMachineHandoff(prepareArgs),
+    validateSource: (validateArgs) => validateCrossMachineSource(validateArgs),
+    markSource: (markArgs) => markCrossMachineHandoff(markArgs),
+    showApprovalCard: (sessionId, record) => {
+      const handoffId = record?.handoffId ?? readCrossMachineMove(sessionId)?.record.handoffId;
+      if (!handoffId) return;
+      const pending = record?.state === "awaiting_approval";
+      void emitAdeCard({
+        sessionId,
+        card: {
+          cardId: crossMachineMoveApprovalCardId(handoffId),
+          variant: "cross_machine_move_approval",
+          state: pending ? "live" : "terminal",
+          title: pending
+            ? `The agent wants to continue this chat on ${record!.targetMachineName}`
+            : "Move request answered",
+          subtitle: pending ? "Approve or deny it above the composer." : null,
+          fallbackText: pending
+            ? `The agent asked to move this chat to ${record!.targetMachineName}. Approve or deny it above the composer.`
+            : "The move request was answered.",
+        },
+      }).catch((error) => {
+        logger.warn("agent_chat.cross_machine_handoff_card_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
+    noticeEnded: (sessionId, record) => {
+      const managed = managedSessions.get(sessionId) ?? ensureManagedSession(sessionId);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: record.state === "cancelled" ? "info" : "warning",
+        status: "cross_machine_handoff_ended",
+        message: record.state === "cancelled"
+          ? `Stayed here: ${record.reason ?? "the move was cancelled."}`
+          : `Couldn't move to ${record.targetMachineName}: ${record.reason ?? "unknown error."}`,
+        detail: { crossMachineHandoffState: record },
+      });
+      persistChatState(managed);
+    },
+    notifyPerson: onCrossMachineHandoffLanded
+      ? (sessionId, record, title) => onCrossMachineHandoffLanded({ sessionId, record, title })
+      : undefined,
+    isTransportFailure: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      return /timed? ?out|timeout|disconnect|connection (closed|lost|reset)|socket hang up|ECONNRESET|EPIPE|is offline/i.test(message);
+    },
+    logger,
+  });
+  // Only the brain owns moves. A host without a transport (the desktop's own
+  // fallback service) must not sweep, or it would fail moves it can't run.
+  if (crossMachineHandoffTransport) {
+    const sweepTimer = setTimeout(() => crossMachineHandoff?.sweep(), 5_000);
+    sweepTimer.unref?.();
+  }
 
   const noteClaudeSessionQuota = (
     managed: ManagedChatSession,
@@ -55261,6 +55830,7 @@ export function createAgentChatService(args: {
       ? undefined
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
+    const crossMachineMove = readCrossMachineMove(row.id)?.record ?? null;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -55268,6 +55838,7 @@ export function createAgentChatService(args: {
       model,
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
+      ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
       goal: row.goal ?? null,
@@ -63029,6 +63600,29 @@ export function createAgentChatService(args: {
     fastForwardCrossMachineHandoffLane,
     acceptCrossMachineHandoff,
     markCrossMachineHandoff,
+    getCrossMachineHandoffOptions: (options: AgentChatCrossMachineHandoffOptionsArgs) =>
+      requireCrossMachineHandoff().getOptions(options.sourceSessionId),
+    startCrossMachineHandoff: (
+      startArgs: AgentChatStartCrossMachineHandoffArgs & { requestedBy?: "user" | "agent" },
+    ) => {
+      const { requestedBy, ...rest } = startArgs;
+      return requireCrossMachineHandoff().start(rest, { requestedBy: requestedBy === "agent" ? "agent" : "user" });
+    },
+    cancelCrossMachineHandoff: async (cancelArgs: AgentChatCancelCrossMachineHandoffArgs) =>
+      requireCrossMachineHandoff().cancel(cancelArgs.sourceSessionId),
+    retryCrossMachineHandoff: async (retryArgs: AgentChatCancelCrossMachineHandoffArgs) =>
+      requireCrossMachineHandoff().retry(retryArgs.sourceSessionId),
+    resolveCrossMachineHandoffApproval: async (approvalArgs: AgentChatResolveCrossMachineHandoffApprovalArgs) =>
+      requireCrossMachineHandoff().resolveApproval(
+        approvalArgs.sourceSessionId,
+        approvalArgs.handoffId,
+        approvalArgs.approve === true,
+      ),
+    acknowledgeCrossMachineHandoff: async (ackArgs: AgentChatAcknowledgeCrossMachineHandoffArgs) =>
+      requireCrossMachineHandoff().acknowledge(ackArgs.sourceSessionId, ackArgs.handoffId),
+    getCrossMachineHandoffState: async (stateArgs: AgentChatCancelCrossMachineHandoffArgs) =>
+      readCrossMachineMove(stateArgs.sourceSessionId)?.record ?? null,
+    sweepCrossMachineHandoffs: () => crossMachineHandoff?.sweep(),
     emitAdeCard,
     sendMessage,
     listThreadComments,

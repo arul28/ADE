@@ -5633,6 +5633,20 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
+    if (domain === "chat" && action === "startCrossMachineHandoff") {
+      // Who asked decides whether the person must approve the move, so it is
+      // derived from the caller's identity and never taken from its arguments.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chat.startCrossMachineHandoff requires object arguments.");
+      }
+      // Same bar as user-only actions: an agent's shell with no chat identity
+      // looks exactly like a person's terminal, so only the desktop (or the
+      // CTO) counts as the person here. A terminal's move waits for approval
+      // unless the chat is full-auto; the phone starts moves through its own
+      // remote command, which is always the person.
+      const { requestedBy: _ignoredRequestedBy, ...startArgs } = rawObjectArgs;
+      scopedObjectArgs = { ...startArgs, requestedBy: mayUseUserOnlyActions(session) || callerIsCto ? "user" : "agent" };
+    }
     if (domain === "automations" && action === "webhookCreateAutomation") {
       // The calling chat is derived from the caller's identity, never taken
       // from its arguments. `chatSessionId: "this"` binds the automation to

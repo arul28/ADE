@@ -19448,6 +19448,11 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog(preferRemoteSelection: true)
   }
 
+  /// DEBUG fixture screens only; see `seedRemoteCommandActionsForPreview`.
+  func applyPreviewRemoteCommandDescriptors(_ descriptors: [SyncRemoteCommandDescriptor]) {
+    remoteCommandDescriptors = descriptors
+  }
+
   func applyHelloPayloadForTesting(
     _ payload: [String: Any],
     expectedHostIdentity: String? = nil

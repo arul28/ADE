@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatDroidPermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
@@ -320,6 +321,8 @@ export type TerminalSessionSummary = {
   toolType: TerminalToolType | null;
   /** Completed model/provider transitions for an ADE chat, oldest first. */
   modelHandoffHistory?: AgentChatModelHandoff[];
+  /** The chat's latest move to another machine (banner, menu, Work-row chip). */
+  crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
   /**
    * The model this chat is currently running, projected from
    * `AgentChatSessionSummary` so a session ROW can name it without opening the

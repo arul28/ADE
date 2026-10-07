@@ -66,6 +66,9 @@ const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt"
 export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const primary = parsed.command[0]?.toLowerCase() ?? "";
   if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) return parsed;
+  // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
+  // flag names the destination, so the command runs on this machine.
+  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") return parsed;
   const kept: string[] = [];
   let machine: string | null = null;
   let allMachines = false;

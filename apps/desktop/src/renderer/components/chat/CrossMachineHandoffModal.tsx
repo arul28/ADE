@@ -10,13 +10,15 @@ import {
   GitBranch,
   GitFork,
   HardDrives,
+  Hourglass,
   LockKey,
   ShieldWarning,
   Warning,
   X,
 } from "@phosphor-icons/react";
 import type {
-  AgentChatAcceptCrossMachineHandoffResult,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
   AgentChatPermissionMode,
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineTargetConfig,
@@ -30,17 +32,12 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import {
-  decodeAcceptCrossMachineHandoffResult,
   decodeCrossMachineDestinationPreflightResult,
   normalizeGitRemoteIdentity,
-  requireRemoteRuntimeRouteKind,
 } from "../../../shared/crossMachineHandoff";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { providerSupportsCrossMachineHandoffFork } from "../../../shared/types/chat";
 import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
-import {
-  isRemoteRuntimeConnectionError,
-  isRuntimeTransportTimeoutError,
-} from "../../../shared/runtimeErrors";
 import {
   getModelById,
   modelSupportsFastMode,
@@ -69,11 +66,11 @@ import {
 } from "../shared/BlockedAction";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { formatBytes } from "../../lib/format";
+import { describeTravellingChanges } from "./CrossMachineHandoffBanner";
 import {
   branchRowDetail,
   branchRowState,
   CheckRow,
-  CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE,
   EMPTY_SOURCE_CHECK,
   forkFallbackReasonForPrepareError,
   isInsecureRoute,
@@ -84,12 +81,10 @@ import {
   repoReadinessClass,
   repoReadinessLabel,
   routeLabel,
-  SEND_STEPS,
   toPermissionPickerOption,
   type ForkHandoffSupport,
   type HandoffMode,
   type ModalStage,
-  type SendStep,
   type SourceCheck,
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
@@ -134,7 +129,8 @@ export function CrossMachineHandoffModal({
   awaitingInput,
   onStopTurn,
   onClose,
-  onFinished,
+  onStarted,
+  preselectedMachine = null,
 }: {
   open: boolean;
   sourceSessionId: string;
@@ -180,7 +176,13 @@ export function CrossMachineHandoffModal({
   awaitingInput: boolean;
   onStopTurn: () => Promise<void>;
   onClose: () => void;
-  onFinished: () => void;
+  /**
+   * The brain accepted the move. Progress from here lives in the banner above
+   * the composer, so the modal closes.
+   */
+  onStarted: (record: AgentChatCrossMachineHandoffRecord) => void;
+  /** Machine to select on open (name or target id), e.g. from the session menu. */
+  preselectedMachine?: string | null;
 }) {
   const [stage, setStage] = useState<ModalStage>("choose");
   const [loading, setLoading] = useState(false);
@@ -195,14 +197,17 @@ export function CrossMachineHandoffModal({
   const [storagePreflight, setStoragePreflight] = useState<RemoteRuntimeHandoffStoragePreflightResult | null>(null);
   const [cloneApproved, setCloneApproved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<AgentChatAcceptCrossMachineHandoffResult | null>(null);
-  const [sourceMarkerWarning, setSourceMarkerWarning] = useState<string | null>(null);
   /**
-   * Which of the real send checkpoints have completed. These mirror the durable
-   * states the destination actually walks (validate -> lane_ready/chat_ready ->
-   * dispatched), so the list is reporting progress rather than animating it.
+   * "Bring them along": uncommitted and unpushed work travels as a git bundle
+   * instead of blocking the move. Ignored files (.env) stay here.
    */
-  const [sendProgress, setSendProgress] = useState<SendStep[]>([]);
+  const [includeChanges, setIncludeChanges] = useState(false);
+  /** A busy chat moves once its current turn ends instead of being stopped. */
+  const [whenTurnEnds, setWhenTurnEnds] = useState(false);
+  /** Clone consent for a queued move, which skips the clone step's own screen. */
+  const [queuedCloneApproved, setQueuedCloneApproved] = useState(false);
+  /** The brain's view of this chat: what `includeChanges` would carry. */
+  const [brainOptions, setBrainOptions] = useState<AgentChatCrossMachineHandoffOptionsResult | null>(null);
   /**
    * Per-machine repository readiness, resolved while the picker is on screen so
    * the choice is informed instead of a guess you find out about two steps
@@ -364,7 +369,7 @@ export function CrossMachineHandoffModal({
       blockingErrors.push({
         id: "dirty",
         title: "You have uncommitted changes",
-        detail: "The other machine picks the work up from Git, so anything uncommitted would be left behind here. Commit or discard it first.",
+        detail: "The other machine picks the work up from Git. Commit it, or bring it along with this move.",
       });
     }
     if (lane?.status.rebaseInProgress) {
@@ -416,23 +421,34 @@ export function CrossMachineHandoffModal({
     setLoading(true);
     setError(null);
     try {
-      const [, snapshot] = await Promise.all([
+      const [, snapshot, options] = await Promise.all([
         inspectSource(),
         window.ade.remoteRuntime.getConnectionSnapshot(),
+        // Counts for "Bring them along". Optional: an older brain without the
+        // action still gets the full setup, just without the counts.
+        window.ade.agentChat
+          .getCrossMachineHandoffOptions({ sourceSessionId }, runtimePinRef.current)
+          .catch(() => null),
       ]);
       setConnections(snapshot.connections);
+      setBrainOptions(options);
       const eligible = snapshot.connections.filter((connection) =>
         isEligibleHandoffConnection(connection, sourceMachineTargetId),
       );
-      setSelectedTargetId((current) => current && eligible.some((item) => item.target.id === current)
-        ? current
-        : eligible[0]?.target.id ?? null);
+      const wanted = preselectedMachine?.trim().toLowerCase() ?? "";
+      const preselected = wanted
+        ? eligible.find((item) => item.target.id.toLowerCase() === wanted || item.target.name.trim().toLowerCase() === wanted)
+        : undefined;
+      setSelectedTargetId((current) => preselected?.target.id
+        ?? (current && eligible.some((item) => item.target.id === current)
+          ? current
+          : eligible[0]?.target.id ?? null));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [inspectSource, sourceMachineTargetId]);
+  }, [inspectSource, preselectedMachine, sourceMachineTargetId, sourceSessionId]);
 
   useEffect(() => {
     if (!open) return;
@@ -445,9 +461,10 @@ export function CrossMachineHandoffModal({
     setDestinationPreflight(null);
     setStoragePreflight(null);
     setCloneApproved(false);
-    setResult(null);
-    setSourceMarkerWarning(null);
-    setSendProgress([]);
+    setIncludeChanges(false);
+    setWhenTurnEnds(false);
+    setQueuedCloneApproved(false);
+    setBrainOptions(null);
     machineProjectsRef.current = {};
     setMachineRepoReadiness({});
     setMode(sourceProviderSupportsFork ? "fork" : "brief");
@@ -515,6 +532,7 @@ export function CrossMachineHandoffModal({
         sourceHeadSha: handoff.capsule.source.headSha,
         mode: requestedMode,
         ...(sourceProvider ? { sourceProvider } : {}),
+        ...(handoff.capsule.gitBundle ? { hasGitBundle: true } : {}),
       },
     });
     const next = decodeCrossMachineDestinationPreflightResult(response.result);
@@ -534,10 +552,11 @@ export function CrossMachineHandoffModal({
   }, [sourceProvider]);
 
   const prepareDestination = useCallback(async (requestedMode: HandoffMode = mode) => {
-    if (!selectedConnection || sourceCheck.blockingErrors.length || sourceCheck.needsPush) return;
+    const sourceBlocks = sourceCheck.blockingErrors.filter((reason) => !(includeChanges && reason.id === "dirty"));
+    if (!selectedConnection || sourceBlocks.length || (sourceCheck.needsPush && !includeChanges)) return;
     if (turnActive || awaitingInput) {
       setError(turnActive
-        ? "Stop the current response before preparing the handoff."
+        ? "Stop the current response, or choose to move when this turn ends."
         : "Resolve the current approval or question before preparing the handoff.");
       return;
     }
@@ -550,6 +569,7 @@ export function CrossMachineHandoffModal({
         handoffId: crypto.randomUUID(),
         continuationPrompt,
         mode: requestedMode,
+        ...(includeChanges ? { includeChanges: true } : {}),
         ...target,
       }, runtimePinRef.current);
       setPrepared(handoff);
@@ -573,6 +593,8 @@ export function CrossMachineHandoffModal({
         originUrl: handoff.capsule.source.originUrl,
         branchRef: handoff.capsule.source.branchRef,
         sourceHeadSha: handoff.capsule.source.headSha,
+        // The commits travel in the bundle, so origin need not have them.
+        ...(handoff.capsule.gitBundle ? { hasGitBundle: true } : {}),
       });
       setStoragePreflight(storage);
       setStage("clone");
@@ -593,10 +615,11 @@ export function CrossMachineHandoffModal({
   }, [
     awaitingInput,
     continuationPrompt,
+    includeChanges,
     mode,
     runDestinationPreflight,
     selectedConnection,
-    sourceCheck.blockingErrors.length,
+    sourceCheck.blockingErrors,
     sourceCheck.needsPush,
     sourceSessionId,
     target,
@@ -730,100 +753,76 @@ export function CrossMachineHandoffModal({
     }
   }, [destinationPreflight, destinationProject, mode, prepared, runDestinationPreflight, selectedConnection]);
 
-  const markSource = useCallback(async (
-    accepted: AgentChatAcceptCrossMachineHandoffResult,
-    connection: RemoteRuntimeConnectionStatus,
-    pin: OpenProjectBinding | null,
-  ) => {
-    await window.ade.agentChat.markCrossMachineHandoff({
-      sourceSessionId,
-      handoffId: accepted.handoffId,
-      targetMachineName: connection.target.name,
-      targetLaneId: accepted.laneId,
-      targetSessionId: accepted.session.id,
-    }, pin);
-  }, [sourceSessionId]);
-
-  const sendHandoff = useCallback(async () => {
-    if (!selectedConnection || !prepared || !destinationProject || !destinationPreflight) return;
-    if (destinationPreflight.blockingErrors.length) return;
-    setStage("sending");
-    setSendProgress([]);
-    setBusyLabel("Rechecking source branch and chat…");
+  /**
+   * The brain runs the move from here (prepare, destination checks, accept,
+   * mark) and persists each step, so the modal's job ends when it accepts.
+   * Progress, failure and "lost confirmation" all live in the banner above
+   * the composer, where they survive this modal closing.
+   */
+  const startMove = useCallback(async () => {
+    if (!selectedConnection) return;
+    setBusyLabel(turnActive ? "Queuing the move…" : "Starting the move…");
     setError(null);
-    let destinationAcceptanceStarted = false;
-    // Freeze the source machine for the whole send: validation and the source
-    // marker have to reach the same runtime the capsule was prepared on.
-    const sourcePin = runtimePinRef.current;
     try {
-      await window.ade.agentChat.validateCrossMachineSource({
+      // The brain knows machines by its own key; match by name, then id.
+      const name = selectedConnection.target.name.trim().toLowerCase();
+      const brainMachine = brainOptions?.machines.find((machine) =>
+        machine.machineKey === selectedConnection.target.id || machine.name.trim().toLowerCase() === name,
+      );
+      const record = await window.ade.agentChat.startCrossMachineHandoff({
+        ...target,
         sourceSessionId,
-        capsule: prepared.capsule,
-        capsuleFingerprint: prepared.capsuleFingerprint,
-      }, sourcePin);
-      setSendProgress(["validate"]);
-      setBusyLabel("Creating destination lane and chat…");
-      const requiredRouteKind = requireRemoteRuntimeRouteKind(selectedConnection.route?.kind);
-      destinationAcceptanceStarted = true;
-      const response = await window.ade.remoteRuntime.callAction(
-        selectedConnection.target.id,
-        destinationProject.projectId,
-        {
-          domain: "chat",
-          action: "acceptCrossMachineHandoff",
-          args: {
-            capsule: prepared.capsule,
-            capsuleFingerprint: prepared.capsuleFingerprint,
-          },
-          requiredRouteKind,
-        },
-      );
-      const accepted = decodeAcceptCrossMachineHandoffResult(response.result);
-      setSendProgress(["validate", "accept"]);
-      setResult(accepted);
-      try {
-        await markSource(accepted, selectedConnection, sourcePin);
-      } catch (markerError) {
-        setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError));
-      } finally {
-        // Destination acceptance is the commit point. A source-side marker is
-        // useful bookkeeping, but its failure must not strand the parent UI in
-        // a pre-transfer state or hide the successfully created destination.
-        onFinished();
-      }
-      setStage("complete");
-    } catch (sendError) {
-      const rawMessage = sendError instanceof Error ? sendError.message : String(sendError);
-      const completionMayBeUnconfirmed =
-        isRemoteRuntimeConnectionError(sendError)
-        || isRuntimeTransportTimeoutError(sendError);
-      setError(
-        destinationAcceptanceStarted && completionMayBeUnconfirmed
-          ? CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE
-          : rawMessage,
-      );
-      setStage("review");
+        machine: brainMachine?.machineKey ?? selectedConnection.target.name,
+        mode,
+        continuationPrompt: continuationPrompt.trim() || null,
+        ...(includeChanges ? { includeChanges: true } : {}),
+        ...(cloneApproved || queuedCloneApproved ? { clone: true } : {}),
+        ...(turnActive ? { whenTurnEnds: true } : {}),
+      }, runtimePinRef.current);
+      onStarted(record);
+      onClose();
+    } catch (startError) {
+      setError(stripElectronErrorWrapper(startError instanceof Error ? startError.message : String(startError)));
     } finally {
       setBusyLabel(null);
     }
   }, [
-    destinationPreflight,
-    destinationProject,
-    markSource,
-    onFinished,
-    prepared,
+    brainOptions,
+    cloneApproved,
+    continuationPrompt,
+    includeChanges,
+    mode,
+    onClose,
+    onStarted,
+    queuedCloneApproved,
     selectedConnection,
     sourceSessionId,
+    target,
+    turnActive,
   ]);
 
   if (!open) return null;
 
-  const hasSourceBlock = sourceCheck.blockingErrors.length > 0;
+  const busyNow = Boolean(busyLabel);
+  const changes = brainOptions?.changes ?? null;
+  const changesLabel = changes ? describeTravellingChanges(changes.unpushedCommits, changes.changedFiles) : null;
+  const bringAlong = {
+    label: changesLabel ? `Bring them along (${changesLabel})` : "Bring them along",
+    onFix: () => setIncludeChanges(true),
+    busy: busyNow,
+  };
+  // With "Bring them along", uncommitted work travels instead of blocking.
+  const effectiveSourceBlocks = sourceCheck.blockingErrors.filter((reason) => !(includeChanges && reason.id === "dirty"));
+  const hasSourceBlock = effectiveSourceBlocks.length > 0;
   // Fix buttons share the modal's single busy slot, so they grey out together
   // with everything else while an operation is running.
-  const sourceBlockReasons: BlockedActionReason[] = sourceCheck.blockingErrors.map((reason) => (
-    reason.fix ? { ...reason, fix: { ...reason.fix, busy: Boolean(busyLabel) } } : reason
-  ));
+  const sourceBlockReasons: BlockedActionReason[] = effectiveSourceBlocks.map((reason) => {
+    const withBusy = reason.fix ? { ...reason, fix: { ...reason.fix, busy: busyNow } } : reason;
+    return reason.id === "dirty" ? { ...withBusy, moreFixes: [bringAlong] } : withBusy;
+  });
+  const selectedRepoReadiness = selectedConnection ? machineRepoReadiness[selectedConnection.target.id] : undefined;
+  // A queued move never sees the clone screen, so it asks for consent here.
+  const queuedMoveNeedsClone = turnActive && whenTurnEnds && selectedRepoReadiness === "absent";
   /**
    * Everything standing between the user and "Continue". Assembled in one place
    * so the button cannot be disabled for a reason the user was never shown —
@@ -836,12 +835,13 @@ export function CrossMachineHandoffModal({
     // reports needsPush (ahead > 0), but its upstream already exists and the
     // push would be rejected as non-fast-forward — offering Publish there sits
     // next to the divergence blocker suggesting a fix that cannot work.
-    ...(sourceCheck.needsPush && !hasSourceBlock
+    ...(sourceCheck.needsPush && !hasSourceBlock && !includeChanges
       ? [{
         id: "needs-push",
         title: `${sourceCheck.branch ?? "This branch"} hasn't been published`,
-        detail: "The other machine fetches your work from origin, so the branch has to exist there.",
-        fix: { label: "Publish branch", onFix: () => void publishBranch(), busy: Boolean(busyLabel) },
+        detail: "The other machine fetches your work from origin, so publish it or bring the commits along.",
+        fix: { label: "Publish branch", onFix: () => void publishBranch(), busy: busyNow },
+        moreFixes: [bringAlong],
       }]
       : []),
     ...(!selectedConnection
@@ -853,12 +853,22 @@ export function CrossMachineHandoffModal({
           : "Pick which computer should continue this chat.",
       }]
       : []),
-    ...(turnActive
+    // A busy chat is not a dead end: it can move once the turn ends.
+    ...(turnActive && !whenTurnEnds
       ? [{
         id: "turn-active",
         title: "This chat is still responding",
-        detail: "Stop the current response, or wait for it to finish.",
-        fix: { label: "Stop current response", onFix: () => void onStopTurn(), busy: Boolean(busyLabel) },
+        detail: "Move it when this turn ends, or stop the current response.",
+        fix: { label: "Move when this turn ends", onFix: () => setWhenTurnEnds(true), busy: busyNow },
+        moreFixes: [{ label: "Stop current response", onFix: () => void onStopTurn(), busy: busyNow }],
+      }]
+      : []),
+    ...(queuedMoveNeedsClone && !queuedCloneApproved
+      ? [{
+        id: "queued-clone",
+        title: `This repository isn't on ${selectedConnection?.target.name ?? "that machine"} yet`,
+        detail: "ADE clones it there when the move starts. Nothing uncommitted or secret leaves this machine unless you bring it along.",
+        fix: { label: "Clone it there", onFix: () => setQueuedCloneApproved(true), busy: busyNow },
       }]
       : []),
     ...(awaitingInput
@@ -872,20 +882,25 @@ export function CrossMachineHandoffModal({
   // A fork prepared against a destination that can't fork must not send as-is;
   // the user switches to a brief (one click) or backs out.
   const forkUnsupportedAtReview = mode === "fork" && forkHandoffSupport != null && !forkHandoffSupport.supported;
+  const reviewBundle = prepared?.capsule.gitBundle ?? null;
+  // An older destination would silently drop the bundle; the brain refuses it
+  // too, but the review should say so before Send.
+  const bundleUnsupportedAtReview = Boolean(reviewBundle) && destinationPreflight != null
+    && destinationPreflight.gitBundleSupport !== true;
   // A pending fast-forward must gate Send. Preflight reports it as a warning so
   // the offer can render, but `acceptCrossMachineHandoff` still requires the
   // destination lane to be at the exact source commit — without this the user
   // could send and hit a hard failure after acceptance had already started.
   const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length)
     || Boolean(destinationPreflight?.laneFastForward)
-    || forkUnsupportedAtReview;
+    || forkUnsupportedAtReview
+    || bundleUnsupportedAtReview;
   const reviewIsFork = prepared?.capsule.mode === "fork";
-  const handoffMayStillComplete = error === CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE;
   const insecureRouteNotice = reviewIsFork
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
+  const queueOnly = turnActive && whenTurnEnds;
 
-  const sending = stage === "sending";
   return (
     <Dialog
       open
@@ -901,8 +916,8 @@ export function CrossMachineHandoffModal({
       bodyStyle={{ display: "flex", flexDirection: "column" }}
       // Nothing inside takes focus on open; the panel holds it.
       preventAutoFocus
-      // A handoff in flight cannot be backed out of.
-      dismissible={!sending}
+      // Closing mid-start would hide the answer; the move itself is the brain's.
+      dismissible={!busyLabel}
       onEscapeKeyDown={(event) => {
         // An open permission list takes Escape first and closes itself only.
         // (Dialog stops the key either way, so it never reaches the chat.)
@@ -910,34 +925,11 @@ export function CrossMachineHandoffModal({
       }}
       footerStart={
         <div className="min-w-0 text-[10px] text-fg/38">
-          {stage === "sending" ? (
-            <div className="flex flex-col gap-1">
-              {SEND_STEPS.map((step) => {
-                const done = sendProgress.includes(step.id);
-                const current = !done && sendProgress.length === SEND_STEPS.findIndex((item) => item.id === step.id);
-                return (
-                  <span
-                    key={step.id}
-                    className={cn(
-                      "inline-flex items-center gap-1.5",
-                      done ? "text-emerald-200/70" : current ? "text-fg/62" : "text-fg/26",
-                    )}
-                  >
-                    {done ? (
-                      <Check size={11} weight="bold" />
-                    ) : current ? (
-                      <CircleNotch size={11} className="animate-spin" />
-                    ) : (
-                      <span className="h-[11px] w-[11px] rounded-full border border-current opacity-45" />
-                    )}
-                    {step.label}
-                  </span>
-                );
-              })}
-            </div>
-          ) : busyLabel ? (
+          {busyLabel ? (
             <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
-          ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
+          ) : stage === "choose"
+            ? (queueOnly ? "Nothing moves until this turn ends. A new message from you keeps it here." : "Nothing is sent until you confirm.")
+            : "This chat stays here too. Progress shows above its composer."}
         </div>
       }
       footer={
@@ -964,9 +956,11 @@ export function CrossMachineHandoffModal({
             <BlockedActionButton
               reasons={loading ? [] : continueBlockers}
               busy={loading || Boolean(busyLabel)}
-              onClick={() => void prepareDestination()}
+              // A busy chat can't be packed yet, so a queued move skips review:
+              // the brain re-runs every check when the turn ends.
+              onClick={() => void (queueOnly ? startMove() : prepareDestination())}
             >
-              Continue <ArrowRight size={12} />
+              {queueOnly ? <>Move when this turn ends <ArrowRight size={12} /></> : <>Continue <ArrowRight size={12} /></>}
             </BlockedActionButton>
           ) : null}
           {stage === "clone" ? (
@@ -983,14 +977,11 @@ export function CrossMachineHandoffModal({
             <button
               type="button"
               disabled={Boolean(busyLabel) || reviewBlocked}
-              onClick={() => void sendHandoff()}
+              onClick={() => void startMove()}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
             >
-              Send chat <ArrowRight size={12} />
+              {turnActive ? "Send when this turn ends" : "Send chat"} <ArrowRight size={12} />
             </button>
-          ) : null}
-          {stage === "complete" ? (
-            <button type="button" onClick={onClose} className="h-8 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17">Done</button>
           ) : null}
         </div>
       }
@@ -1013,7 +1004,7 @@ export function CrossMachineHandoffModal({
             type="button"
             aria-label="Close handoff setup"
             onClick={onClose}
-            disabled={sending}
+            disabled={Boolean(busyLabel)}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-30"
           >
             <X size={15} />
@@ -1021,45 +1012,6 @@ export function CrossMachineHandoffModal({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {stage === "complete" && result && selectedConnection ? (
-            <div className="mx-auto flex max-w-[520px] flex-col items-center py-8 text-center">
-              <div className="grid h-14 w-14 place-items-center rounded-full border border-emerald-300/25 bg-emerald-400/10 text-emerald-200">
-                <Check size={28} weight="bold" />
-              </div>
-              <h3 className="mt-4 font-sans text-[16px] font-semibold text-fg/92">Handoff complete</h3>
-              <p className="mt-2 text-[11px] leading-5 text-fg/52">
-                {selectedConnection.target.name} now has the repository, lane, and continuation chat. This source chat and lane remain intact.
-              </p>
-              <div className="mt-5 grid w-full grid-cols-2 gap-2 text-left">
-                <CheckRow label="Destination lane" detail={result.reusedLane ? "Existing clean lane reused" : "New lane created from the remote branch"} state="ok" />
-                <CheckRow label="Destination chat" detail={result.reusedSession ? "Existing handoff chat resumed safely" : "New chat started with bounded context"} state="ok" />
-              </div>
-              {sourceMarkerWarning ? (
-                <Banner
-                  model={{
-                    id: "handoff-source-marker-warning",
-                    tone: "warning",
-                    title: `The destination succeeded, but ADE could not mark the source chat: ${sourceMarkerWarning}`,
-                    actions: [{
-                      label: "Retry marker",
-                      variant: "secondary",
-                      onClick: () => {
-                      void markSource(result, selectedConnection, runtimePinRef.current)
-                        .then(() => {
-                          setSourceMarkerWarning(null);
-                          onFinished();
-                        })
-                        .catch((markerError) => setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError)));
-                      },
-                    }],
-                  }}
-                  layout="inline"
-                  style={{ marginTop: 16, width: "100%" }}
-                />
-              ) : null}
-            </div>
-          ) : null}
-
           {stage === "choose" ? (
             <div className="space-y-5">
               <div>
@@ -1099,19 +1051,25 @@ export function CrossMachineHandoffModal({
               <div className="space-y-3">
                 <div>
                   <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Get this machine ready</div>
-                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Your work needs to be committed and pushed so the other machine can pick it up.</div>
+                  <div className="mt-1 text-[11px] leading-4 text-fg/48">Commit and push your work, or bring it along with the move.</div>
                 </div>
                 {loading ? <CheckRow label="Inspecting source lane" detail="Checking Git state and publication" state="pending" /> : (
                   <>
                     <CheckRow
                       label="Working tree"
-                      detail={sourceCheck.lane?.status.dirty ? "Commit or discard your changes first" : "No uncommitted changes"}
-                      state={sourceCheck.lane?.status.dirty ? "error" : sourceCheck.lane ? "ok" : "pending"}
+                      detail={sourceCheck.lane?.status.dirty
+                        ? (includeChanges ? "Your uncommitted changes travel with this move" : "Commit them, or bring them along")
+                        : "No uncommitted changes"}
+                      state={sourceCheck.lane?.status.dirty && !includeChanges ? "error" : sourceCheck.lane ? "ok" : "pending"}
                     />
                     <CheckRow
                       label="Remote branch"
-                      detail={branchRowDetail(sourceCheck)}
-                      state={branchRowState(sourceCheck)}
+                      detail={includeChanges && sourceCheck.needsPush && !sourceCheck.sync?.diverged
+                        ? "Unpublished commits travel with this move"
+                        : branchRowDetail(sourceCheck)}
+                      state={includeChanges && sourceCheck.needsPush && !sourceCheck.sync?.diverged
+                        ? "ok"
+                        : branchRowState(sourceCheck)}
                     />
                     <CheckRow
                       label="Repository"
@@ -1132,6 +1090,39 @@ export function CrossMachineHandoffModal({
                     ? { heading: `${continueBlockers.length} things to fix first` }
                     : {})}
                 />
+                {includeChanges ? (
+                  <Banner
+                    layout="inline"
+                    testId="handoff-bring-changes"
+                    model={{
+                      id: "handoff-bring-changes",
+                      tone: "accent",
+                      icon: <GitBranch size={13} weight="bold" />,
+                      title: changesLabel ? `Bringing ${changesLabel} along` : "Bringing your uncommitted work along",
+                      detail: ".env and other ignored files stay here.",
+                      actions: [{ label: "Leave them here", variant: "link", onClick: () => setIncludeChanges(false) }],
+                    }}
+                  />
+                ) : null}
+                {queueOnly ? (
+                  <Banner
+                    layout="inline"
+                    testId="handoff-when-turn-ends"
+                    model={{
+                      id: "handoff-when-turn-ends",
+                      tone: "info",
+                      icon: <Hourglass size={13} weight="bold" />,
+                      title: "Moves when this turn ends",
+                      detail: queuedCloneApproved
+                        ? `ADE checks everything again then, and clones the repository on ${selectedConnection?.target.name ?? "that machine"}.`
+                        : "ADE checks everything again then. A new message from you keeps it here.",
+                      actions: [
+                        { label: "Stop current response", variant: "secondary", disabled: busyNow, onClick: () => void onStopTurn() },
+                        { label: "Don't wait", variant: "link", onClick: () => setWhenTurnEnds(false) },
+                      ],
+                    }}
+                  />
+                ) : null}
               </div>
 
               <div className="space-y-3">
@@ -1346,7 +1337,7 @@ export function CrossMachineHandoffModal({
                   now with the subject's own mark instead of four identical rows. */}
               <div className="grid gap-2 sm:grid-cols-2">
                 <CheckRow icon={<HardDrives size={13} weight="duotone" />} label="Repository" detail={destinationProject?.displayName || destinationProject?.rootPath || "Ready on the other machine"} state="ok" />
-                <CheckRow icon={<GitBranch size={13} weight="duotone" />} label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
+                <CheckRow icon={<GitBranch size={13} weight="duotone" />} label="Branch commit" detail={`${prepared.capsule.source.branchRef} · ${prepared.capsule.source.headSha.slice(0, 10)}`} state={reviewBundle || destinationPreflight.remoteBranchHeadSha === prepared.capsule.source.headSha ? "ok" : "error"} />
                 <CheckRow
                   icon={destinationDescriptor ? <ProviderLogo family={destinationDescriptor.family} size={13} /> : undefined}
                   label="Model access"
@@ -1355,6 +1346,36 @@ export function CrossMachineHandoffModal({
                 />
                 <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
+              {bundleUnsupportedAtReview ? (
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "handoff-bundle-unsupported",
+                    tone: "warning",
+                    title: `${selectedConnection.target.name} needs an ADE update to take uncommitted changes.`,
+                    detail: "Update ADE there, or go back and commit and publish instead.",
+                  }}
+                />
+              ) : null}
+              {includeChanges ? (
+                /* What travels with "Bring them along", in two lines. */
+                <div className="space-y-1 rounded-xl border border-fg/[0.065] bg-fg/[0.025] px-3.5 py-2.5 text-[10.5px]" data-testid="handoff-what-travels">
+                  <div className="kit-eyebrow text-fg/40">What travels</div>
+                  <div className="inline-flex items-center gap-1.5 text-fg/70">
+                    <Check size={12} weight="bold" className="text-emerald-300/80" aria-hidden />
+                    {[
+                      reviewIsFork ? "fork" : "brief",
+                      reviewBundle
+                        ? describeTravellingChanges(reviewBundle.unpushedCommitCount, reviewBundle.changedFileCount)
+                        : changesLabel,
+                    ].filter(Boolean).join(" · ")}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-fg/48">
+                    <X size={12} weight="bold" className="text-fg/40" aria-hidden />
+                    .env and ignored files stay here
+                  </div>
+                </div>
+              ) : null}
               {destinationPreflight.warnings.map((message, index) => (
                 <Banner
                   key={`warning:${index}:${message}`}
@@ -1444,7 +1465,7 @@ export function CrossMachineHandoffModal({
             <Banner
               model={{
                 id: "handoff-error",
-                tone: handoffMayStillComplete ? "warning" : "error",
+                tone: "error",
                 title: error,
               }}
               layout="inline"

@@ -269,6 +269,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // An agent asking to move a chat must not approve its own request.
+  chat: ["resolveCrossMachineHandoffApproval"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -706,6 +708,18 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fastForwardCrossMachineHandoffLane",
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
+    // The brain-owned move. `startCrossMachineHandoff` is open to agents on
+    // purpose ("move this chat to my Mac mini"); the RPC server stamps
+    // `requestedBy`, and an agent moving a chat that isn't full-auto waits for
+    // the person's approval (crossMachineHandoffOrchestrator). Approval itself
+    // is the person's: see ADE_ACTION_USER_ONLY.
+    "getCrossMachineHandoffOptions",
+    "getCrossMachineHandoffState",
+    "startCrossMachineHandoff",
+    "cancelCrossMachineHandoff",
+    "retryCrossMachineHandoff",
+    "resolveCrossMachineHandoffApproval",
+    "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",
     "resolveSmartLinkPreview",

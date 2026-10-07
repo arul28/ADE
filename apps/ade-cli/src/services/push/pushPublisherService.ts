@@ -2689,6 +2689,31 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
+    /**
+     * A one-off alert about a chat that is not "needs you": a move to another
+     * machine landed or failed while the person wasn't watching. Plain
+     * title/body/deep link through the same alert queue; no run state changes.
+     */
+    handleSessionNotice(notice: {
+      sessionId: string;
+      dedupeKey: string;
+      title: string;
+      body: string | null;
+      deepLink?: string | null;
+    }): void {
+      if (disposed || !notice.sessionId) return;
+      enqueueAlert({
+        sessionId: notice.sessionId,
+        dedupeKey: `alert:${notice.sessionId}:${notice.dedupeKey}`,
+        render: () => ({ title: notice.title, body: notice.body }),
+        deepLink: notice.deepLink ?? `ade://session/${notice.sessionId}`,
+        threadId: notice.sessionId,
+        phase: "terminal",
+        interruptionLevel: "active",
+      });
+      scheduleFlush(true, false);
+    },
+
     handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {
       if (disposed || !sessionId) return;
       const run = runs.get(sessionId);

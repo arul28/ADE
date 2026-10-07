@@ -4,6 +4,69 @@ Cross-machine handoff lets a user stop work in one ADE Work chat and continue th
 
 This document defines the v1 product, transport, recovery, and security contract.
 
+## The source brain runs the move
+
+A move is run by the brain that owns the source chat, in
+`apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts`. Every
+entry point calls the same `chat` action, `startCrossMachineHandoff`:
+
+- the desktop modal and the session menu's **Hand off › Another machine ▸**
+  (including **Quick brief to <machine>**, which uses the chat's current model
+  and settings);
+- `ade chat handoff <session> --machine <name> …`, so an agent can move its own
+  chat ("wrap up and continue this on the Mac mini");
+- the phone, through the sync remote command `chat.startCrossMachineHandoff`.
+
+The brain reaches the destination over its agents' paired connection (the same
+path as `ade … --machine`), and the destination applies its own action policy to
+each step: `preflightCrossMachineDestination`, then
+`fastForwardCrossMachineHandoffLane` when its lane is clean and only behind,
+then `acceptCrossMachineHandoff`. The source runs `prepare`, `validate` and
+`mark` locally.
+
+### The move record
+
+Each source chat has at most one current move, an
+`AgentChatCrossMachineHandoffRecord` stored in the project's `kv` table
+(`agent-chat-cross-machine-move:v1:<sessionId>`) and projected onto the chat's
+session summary as `crossMachineHandoff`. Live clients also get a live-only
+`system_notice` with status `cross_machine_handoff_state` on every change.
+
+| State | Meaning |
+|---|---|
+| `awaiting_approval` | An agent asked to move a chat that is not full-auto. The person approves or denies it from the banner. |
+| `pending` | Waiting for the current turn to end. Any newer user message cancels it, because new instructions win. |
+| `sending` | In flight. `checkpoint` names the last step passed: `prepared`, `destination_ready`, `accepted`, `marked`. |
+| `continued` | The destination chat started. The source stays usable (see below). |
+| `failed` | A step failed before the destination accepted. `reason` says which. |
+| `unknown` | The destination may have accepted but the answer was lost. Never replayed automatically; **Retry** keeps the same `handoffId`, so the destination's own record reconciles it. |
+| `cancelled` | The person kept it here, denied the agent, or sent a new message. |
+
+The record is written before each step runs. On startup the brain sweeps the
+`kv` prefix: a `sending` move resumes (the destination transaction is
+idempotent by `handoffId`), and a `pending` move whose turn already ended starts.
+Only a brain with a transport sweeps, so the desktop's fallback chat service
+never fails a move it cannot run.
+
+### Who asked, and approval
+
+`adeRpcServer` stamps `requestedBy` from the caller's identity; the argument is
+never trusted. The desktop (the same bar as user-only actions) or the CTO is
+`user`; the phone's `chat.startCrossMachineHandoff` remote command is always
+`user`. Anything else, including an `ade` shell with no chat identity, is
+`agent`, because an agent's shell looks the same as a person's terminal. An agent-requested move on a chat whose permission level is not
+`full-auto` waits in `awaiting_approval`, with a transcript card recording the
+request. `resolveCrossMachineHandoffApproval` is a user-only action, so an agent
+cannot approve its own request.
+
+### Soft lock on the source
+
+After `continued` the source chat keeps working. Its banner reads
+**Continues on <machine>** with **Open on <machine>**, and the first send asks
+once ("This chat continues on <machine>. Both may change <branch>."). Confirming
+calls `acknowledgeCrossMachineHandoff`, which sets `resumedHere`, and later sends
+go through.
+
 ## The source is the chat's machine, not the tab
 
 Handoff is a fact about the machine the **source chat** runs on, not about whichever project the tab it is being viewed from happens to be bound to. A local chat viewed from a remote-bound tab can still hand off; a chat pinned to a remote machine cannot, regardless of the tab. A Work tab unions chats from every machine on the account, so the tab's binding and the chat's binding routinely disagree, and reading the tab's is wrong in exactly the case that matters.
@@ -33,9 +96,9 @@ The action lives on any chat row's right-click **Hand off…** submenu (Local ha
 9. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
 10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does ADE mark the source chat as handed off.
 
-While the transfer is in flight the modal reports the real durable checkpoints it has passed rather than an indeterminate spinner.
+The modal closes as soon as the brain accepts the request. From then on the source chat's banner (above the composer, on desktop and iOS) reports the real durable checkpoints the move has passed rather than an indeterminate spinner, whoever started it. The destination chat gets a durable `cross_machine_handoff_arrived` notice and an **Arrived from <machine>** banner.
 
-The setup modal can be opened while a turn is active. It explains the block and offers to stop the current response. Pending approvals or questions must be resolved in the source chat.
+The setup modal can be opened while a turn is active. It offers **Move when this turn ends**, which queues the move as `pending`, or stopping the current response. Pending approvals or questions must be resolved in the source chat.
 
 Once destination acceptance has been dispatched, a requester timeout or
 connection loss does not prove that destination work stopped. The modal reports
@@ -46,7 +109,7 @@ remain ordinary hard failures.
 
 ## Source contract
 
-V1 intentionally requires a clean, published Git branch:
+By default ADE requires a clean, published Git branch (the opt-in below relaxes this):
 
 - no tracked, staged, or untracked working-tree changes;
 - no rebase in progress;
@@ -58,7 +121,23 @@ The renderer provides a **Publish branch** action when a normal push is sufficie
 
 Every one of these source blockers must render. They are modeled as `BlockedActionReason` values from `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` — a title, a detail, and the action that clears it — rendered by `BlockedReasons`, and the primary button is a `BlockedActionButton` that takes those reasons instead of a `disabled` flag, so a surface cannot disable the action without also surfacing why. This is a deliberate guard against a bug ADE keeps regrowing: a blocking-error list that only ever feeds a `disabled` prop turns "update the source branch" into three green checks above a dead control. If a surface computes a blocker, that blocker must reach the user; a disabled control may never be the only signal.
 
-Dirty patches, stashes, Git bundles, untracked files, and worktree metadata are not transferred. Git bundles alone do not encode the working tree, index, stash, hooks, configuration, or ADE lane metadata, so treating them as a complete handoff would be misleading. A future dirty-state protocol must define those semantics separately.
+### Moving uncommitted and unpushed work (opt-in)
+
+With `includeChanges` (`AgentChatPrepareCrossMachineHandoffArgs`), the clean/published requirement is relaxed: the lane may be dirty, ahead of its upstream, or never pushed. A rebase or merge in progress still blocks, and so does a **diverged** branch — when the upstream or `origin/<branch>` (read with `ls-remote`) has commits HEAD lacks, ADE refuses rather than pick a reconciliation. The work travels as `capsule.gitBundle`, built by `packHandoffGitBundle` in `apps/desktop/src/main/services/chat/handoffGitBundle.ts`:
+
+- **What travels.** A snapshot commit on top of HEAD holding the working tree — tracked edits, deletions, and untracked files — made in a private copy of the index (`GIT_INDEX_FILE` in a temp dir), so the user's staging and refs are untouched. The bundle holds only what no remote has (`git bundle create … --not --remotes`): unpushed commits plus the snapshot. A clean, fully pushed branch yields no bundle and takes the normal path.
+- **What does not.** Ignored files (`.env`, build output), stashes, hooks, Git config, and the staged/unstaged split: on arrival every change is unstaged.
+- **Cap.** Over 50 MiB raw, or when its base64 would push the whole capsule past the ~20 MiB transport budget (it counts against the same budget as fork history), the handoff is refused with "Push the branch, then hand off again."
+- **Source validation.** Before sending, ADE re-checks HEAD, recomputes the working tree's tree id and compares it with the prepared snapshot (or the tip when it was clean), and re-checks origin for divergence. Any change means preparing again.
+
+The destination advertises `gitBundleSupport: true` in its preflight result; an older destination omits it and would silently drop the changes, so the source must refuse a bundle handoff to it. The source sends `hasGitBundle: true` in preflight args, which lifts the "remote branch is at the source commit" requirement (origin must still be readable, because it supplies the bundle's base commits). `applyHandoffGitBundle` then:
+
+- verifies the bundle, and when base commits are missing fetches `origin` and verifies again; still missing → refused;
+- fetches the bundle's head into a temporary `refs/ade-handoff/<hash>/head` ref, deleted on every exit path;
+- creates the branch, or moves an existing one **only forward** with a compare-and-swap `update-ref <ref> <new> <old>`; a branch with commits the handoff lacks is refused as diverged, and one checked out in a non-lane worktree is refused;
+- imports a new lane for it (or reuses an existing lane only when it is clean and at or behind the tip, fast-forwarding it), then checks out the snapshot and resets the index to the tip, so the commits are history and the edits are uncommitted. A snapshot file that would overwrite an existing file in the lane is refused.
+
+Any failing step undoes the earlier ones in reverse: the lane is deleted, the branch ref restored (or removed), the fast-forwarded lane reset, and temp refs and files removed. Nothing is written into a path ADE did not create.
 
 ## Portable capsule
 
@@ -79,7 +158,7 @@ The brief capsule excludes:
 - secrets and secret stores;
 - PTYs and terminal scrollback;
 - caches, dependency directories, and runtime processes;
-- uncommitted file contents; and
+- uncommitted file contents, unless the user opts into moving changes (above); and
 - local artifact bytes.
 
 ADE redacts common secret-shaped values and replaces source-only absolute repository/home paths before hashing the capsule. It also removes Git/issue URL credentials, query strings, and fragments, and applies the same sanitizer to user-controlled titles and lane names. The destination verifies the capsule fingerprint and all size/type bounds before using it.
@@ -157,6 +236,8 @@ The transaction states are:
 `failed` retains any known lane/chat identifiers so retry can reconcile instead of restarting blindly.
 
 The chat session ID is deterministically derived from the handoff replay key. A retry therefore returns the same compatible chat. Lane import is reconciled by branch and exact commit. Destination acceptance is serialized by handoff ID, and the durable `dispatched` state is written only after the provider backend acknowledges the prompt; an optimistic user-message event is never treated as acknowledgement.
+
+A bundle handoff binds the imported lane to the record before the changes land, so a crash mid-apply retries into that lane: if it already holds exactly this handoff (tip and working tree match the snapshot) the apply is a no-op, and once the record reaches `lane_ready` the apply is skipped entirely.
 
 Fork re-materialization is guarded by the same durable state. Installing the provider-native session files, calling the provider fork (`thread/fork`, `session.fork`, or the Claude resume rewrite), and seeding the ADE transcript envelopes run only when the record is not already `dispatched` or `complete`. A retry that finds the record past that point re-marks `dispatched` without importing again, so a resumed or reconnected fork never creates a duplicate forked thread or session. A fork whose continuation note is ADE's default sends no first turn — materializing the history and transcript is the continuation — and reaches `dispatched` directly; only a non-default note is dispatched as an acknowledged first user turn.
 

@@ -258,6 +258,13 @@ import type {
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
+  AgentChatAcknowledgeCrossMachineHandoffArgs,
+  AgentChatCancelCrossMachineHandoffArgs,
+  AgentChatCrossMachineHandoffOptionsArgs,
+  AgentChatCrossMachineHandoffOptionsResult,
+  AgentChatCrossMachineHandoffRecord,
+  AgentChatResolveCrossMachineHandoffApprovalArgs,
+  AgentChatStartCrossMachineHandoffArgs,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
@@ -2262,6 +2269,34 @@ declare global {
           args: AgentChatMarkCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        getCrossMachineHandoffOptions: (
+          args: AgentChatCrossMachineHandoffOptionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffOptionsResult>;
+        getCrossMachineHandoffState: (
+          args: AgentChatCancelCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        startCrossMachineHandoff: (
+          args: AgentChatStartCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        cancelCrossMachineHandoff: (
+          args: AgentChatCancelCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        retryCrossMachineHandoff: (
+          args: AgentChatCancelCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        resolveCrossMachineHandoffApproval: (
+          args: AgentChatResolveCrossMachineHandoffApprovalArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
+        acknowledgeCrossMachineHandoff: (
+          args: AgentChatAcknowledgeCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (
           args: AgentChatSteerArgs,

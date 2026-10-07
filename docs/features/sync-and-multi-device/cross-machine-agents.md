@@ -38,6 +38,35 @@ An offline machine fails at once with when it was last seen; nothing is queued.
 `--all-machines` never fails for one machine: an offline or refusing machine is
 one row saying so.
 
+## Moving a chat to another machine
+
+`ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO
+that one: here `--machine` names the destination, and the command runs on this
+machine's brain (it is exempt from `--machine` forwarding). It is the same move
+the desktop modal, the session menu and the phone start; see
+[cross-machine session handoff](./cross-machine-session-handoff.md).
+
+```bash
+ade chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
+ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 \
+  --prompt "run the UI tests next"                 # brief (default); --fork carries full history
+ade chat handoff <session> --machine "Mac mini" --model … --include-changes   # bring uncommitted/unpushed work
+ade chat handoff <session> --machine "Mac mini" --model … --clone             # set the repo up there first
+ade chat handoff <session> --machine "Mac mini" --model … --when-turn-ends    # queue it from inside a turn
+ade chat handoff <session> --cancel                # keep a queued or awaiting move here
+ade chat handoff <session> --retry                 # retry a failed move with the same choices
+```
+
+- The call returns the move record at once; the move continues in the brain
+  and the chat's banner shows it. Read the record later with
+  `ade chat handoff <session> --options --json` (`current`).
+- An agent moving its own chat mid-turn needs `--when-turn-ends`. Any newer
+  message from the person cancels a queued move.
+- A chat that is not full-auto waits for the person to approve an
+  agent-requested move. An `ade` shell with no chat identity counts as an agent.
+- Blockers come back as one line each with a fix ("run `ade git push --lane …`,
+  or pass --include-changes"); nothing is sent while any remain.
+
 ## Policy
 
 An agent on another machine is an **agent** there: the target clamps it to

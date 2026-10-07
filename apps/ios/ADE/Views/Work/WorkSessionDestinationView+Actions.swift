@@ -1913,3 +1913,75 @@ func workChatMappedPullRequest(
     pr.githubPrNumber == tag.githubPrNumber || pr.githubUrl == tag.githubUrl
   }
 }
+
+// MARK: - Cross-machine handoff (in-chat card + soft lock)
+
+extension WorkSessionDestinationView {
+  /// The card's calls, each the `chat.*CrossMachineHandoff` command desktop's
+  /// banner makes. Nil when the host has none of them, which hides the card's
+  /// buttons and lifts the soft lock.
+  var crossMachineHandoffActions: WorkCrossMachineHandoffActions? {
+    guard syncService.crossMachineHandoffActionAvailable("chat.cancelCrossMachineHandoff", sessionId: sessionId)
+      || syncService.crossMachineHandoffActionAvailable("chat.acknowledgeCrossMachineHandoff", sessionId: sessionId)
+    else { return nil }
+    let sessionId = sessionId
+    return WorkCrossMachineHandoffActions(
+      keepHere: {
+        await runCrossMachineHandoffAction("Couldn't keep the chat here") {
+          try await syncService.cancelCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      resolveApproval: { approve in
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        await runCrossMachineHandoffAction(approve ? "Couldn't approve the move" : "Couldn't deny the move") {
+          try await syncService.resolveCrossMachineHandoffApproval(
+            sourceSessionId: sessionId,
+            handoffId: record.handoffId,
+            approve: approve
+          )
+        }
+      },
+      acknowledge: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return true }
+        do {
+          // Keyed by the move that landed the chat, not a later attempt.
+          try await syncService.acknowledgeCrossMachineHandoff(
+            sourceSessionId: sessionId,
+            handoffId: record.continuation?.handoffId ?? record.handoffId
+          )
+          return true
+        } catch {
+          ADEHaptics.error()
+          errorMessage = "Couldn't switch to working here: \(error.localizedDescription)"
+          return false
+        }
+      },
+      retry: {
+        // The same move again (same handoff id): the brain reconciles an
+        // `unknown` one through the destination's record, never a second chat.
+        await runCrossMachineHandoffAction("Couldn't retry the move") {
+          try await syncService.retryCrossMachineHandoff(sourceSessionId: sessionId)
+        }
+      },
+      open: {
+        guard let record = composerChatSummary?.crossMachineHandoff else { return }
+        syncService.openCrossMachineHandoffDestination(record)
+      }
+    )
+  }
+
+  @MainActor
+  private func runCrossMachineHandoffAction(
+    _ failure: String,
+    _ operation: () async throws -> AgentChatCrossMachineHandoffRecord?
+  ) async {
+    do {
+      _ = try await operation()
+      ADEHaptics.success()
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "\(failure): \(error.localizedDescription)"
+    }
+  }
+}
