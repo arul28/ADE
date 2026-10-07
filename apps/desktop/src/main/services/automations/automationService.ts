@@ -32,6 +32,9 @@ import type {
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   ModelId,
   NormalizedLinearIssue,
   PrSummary,
@@ -1059,8 +1062,14 @@ function deriveIncludeProjectContext(rule: AutomationRuleInput): boolean {
 
 function normalizeAutomationLaneMode(mode: unknown): AutomationExecution["laneMode"] | undefined {
   if (mode === "provided" || mode === "prompt-at-run") return "require-on-trigger";
-  return mode === "create" || mode === "reuse" || mode === "require-on-trigger" ? mode : undefined;
+  return mode === "create" || mode === "reuse" || mode === "require-on-trigger" || mode === "pr-branch" ? mode : undefined;
 }
+
+/** The two PR-service calls a `pr-branch` run needs. */
+export type AutomationPrLaneService = {
+  preflightCreateLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult>;
+  createLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult>;
+};
 
 /**
  * Attempt budget for a one-shot rule that did not configure one. A one-shot
@@ -1375,6 +1384,7 @@ export function createAutomationService({
   linearIngressAvailable,
   cursorCloudIngressAvailable,
   githubPollingAvailable,
+  prService,
   onEvent,
   cronScheduler = cron,
 }: {
@@ -1401,6 +1411,8 @@ export function createAutomationService({
   cursorCloudIngressAvailable?: () => boolean;
   /** True when direct GitHub polling can resolve a configured repository. */
   githubPollingAvailable?: () => boolean;
+  /** Imports a PR's head branch as a lane, for `execution.laneMode: "pr-branch"`. */
+  prService?: AutomationPrLaneService | null;
   /** Injectable only for deterministic scheduler tests. */
   cronScheduler?: CronScheduler;
   onEvent?: (payload: AutomationServiceEvent) => void;
@@ -1417,6 +1429,7 @@ export function createAutomationService({
   let linearAgentHooksRef: AutomationLinearAgentHooks | null = null;
   let cursorCloudIngressAvailableRef = cursorCloudIngressAvailable ?? (() => false);
   let githubPollingAvailableRef = githubPollingAvailable ?? (() => hasConfiguredGitHubOrigin(projectRoot));
+  const prServiceRef: AutomationPrLaneService | null = prService ?? null;
   const readWebhookGatewayPublicUrl = (): string | null => {
     try {
       return normalizePublicWebhookUrl(projectConfigService.get().effective.ui?.webhookGatewayPublicUrl ?? null)
@@ -3132,6 +3145,10 @@ export function createAutomationService({
   const requiresTriggerLane = (rule: AutomationRule): boolean =>
     rule.execution?.laneMode === "require-on-trigger";
 
+  /** Lane modes that resolve (and may create) the run's lane before a step runs. */
+  const createsLaneForRun = (rule: AutomationRule): boolean =>
+    rule.execution?.laneMode === "create" || rule.execution?.laneMode === "pr-branch";
+
   const missingTriggerLaneMessage = (trigger: Pick<TriggerContext, "triggerType">): string =>
     trigger.triggerType === "manual"
       ? "This automation requires a lane when triggered manually. Pass laneId / --lane."
@@ -3209,7 +3226,7 @@ export function createAutomationService({
     }
     if (action.type === "predict-conflicts") {
       if (!conflictService) throw new Error("Conflict service unavailable");
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       await conflictService.runPrediction(laneId ? { laneId } : {});
@@ -3292,7 +3309,7 @@ export function createAutomationService({
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
       const configuredLaneId = getConfiguredTargetLaneId(rule, action);
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : configuredLaneId
           ?? trigger.laneId
@@ -3518,7 +3535,7 @@ export function createAutomationService({
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+      const laneId = requiresTriggerLane(rule) || createsLaneForRun(rule)
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
         : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
@@ -3726,6 +3743,66 @@ export function createAutomationService({
     return { laneId: lane.id, laneName: lane.name };
   };
 
+  const setTriggerLane = (trigger: TriggerContext, lane: { id: string; name: string; branchRef?: string | null }) => {
+    trigger.laneId = lane.id;
+    trigger.laneName = lane.name;
+    if (lane.branchRef) trigger.branch = lane.branchRef;
+  };
+
+  /**
+   * The lane on the trigger PR's own head branch, for `laneMode: "pr-branch"`.
+   * Reuses the lane already linked to the PR, so a second event for the same
+   * PR runs where the first one did; otherwise imports the branch as a new
+   * lane the same way the PRs tab does. Never falls back to another lane.
+   */
+  const resolvePrBranchLaneForRun = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+  ): Promise<{ laneId: string; laneName: string }> => {
+    const pr = trigger.pr;
+    if (!pr?.number) {
+      const triggerLaneId = trimToNull(trigger.laneId);
+      if (triggerLaneId) return { laneId: triggerLaneId, laneName: trigger.laneName ?? triggerLaneId };
+      throw new Error("This automation runs in the PR's branch, but the trigger has no pull request.");
+    }
+    if (!prServiceRef) throw new Error("The pull request service is unavailable, so ADE cannot open the PR's branch.");
+    const [repoOwner, repoName] = (pr.repo ?? "").split("/");
+    const template = rule.execution?.laneNamePreset && rule.execution.laneNamePreset !== "custom"
+      ? presetToTemplate(rule.execution.laneNamePreset)
+      : rule.execution?.laneNameTemplate ?? "";
+    const renderedName = resolveLaneNameTemplate(template, trigger, rule.name);
+    const laneName = renderedName && !/\{\{[^}]+\}\}/.test(renderedName) ? renderedName.trim() : "";
+    const args = {
+      ...(pr.url ? { prUrlOrNumber: pr.url } : repoOwner && repoName ? { repoOwner, repoName, githubPrNumber: pr.number } : { prUrlOrNumber: String(pr.number) }),
+      ...(laneName ? { laneName } : {}),
+    };
+    const reuseMappedLane = async (): Promise<{ laneId: string; laneName: string } | null> => {
+      const { preflight } = await prServiceRef!.preflightCreateLaneFromPrBranch(args);
+      const block = preflight.blockingConflict;
+      if (block?.code !== "already_mapped" || !block.laneId) {
+        if (!preflight.canCreate) throw new Error(block?.message || `PR #${pr.number} cannot be opened as a lane.`);
+        return null;
+      }
+      const lanes = await laneService.list({ includeArchived: false });
+      const lane = lanes.find((entry) => entry.id === block.laneId);
+      if (!lane) throw new Error(`${block.message} That lane is archived, so ADE will not run in it.`);
+      setTriggerLane(trigger, lane);
+      return { laneId: lane.id, laneName: lane.name };
+    };
+    const mapped = await reuseMappedLane();
+    if (mapped) return mapped;
+    try {
+      const { lane } = await prServiceRef.createLaneFromPrBranch(args);
+      setTriggerLane(trigger, lane);
+      return { laneId: lane.id, laneName: lane.name };
+    } catch (error) {
+      // Another event for the same PR may have imported it a moment ago.
+      const raced = await reuseMappedLane().catch(() => null);
+      if (raced) return raced;
+      throw error;
+    }
+  };
+
   /**
    * Resolve which lane an automation should run in. When the rule opts into
    * `execution.laneMode === "create"`, allocate a fresh lane via
@@ -3750,13 +3827,15 @@ export function createAutomationService({
 
     if (actionLaneId) return actionLaneId;
 
-    if (rule.execution?.laneMode === "create") {
+    if (createsLaneForRun(rule)) {
       const existingCreatedLaneId = loadLaneSetupLaneId(runId);
       if (existingCreatedLaneId) return existingCreatedLaneId;
 
       const setupActionId = runId ? insertAction(runId, -1, "lane-setup") : null;
       try {
-        const { laneId, laneName } = await createLaneForRun(rule, trigger);
+        const { laneId, laneName } = rule.execution?.laneMode === "pr-branch"
+          ? await resolvePrBranchLaneForRun(rule, trigger)
+          : await createLaneForRun(rule, trigger);
         if (setupActionId) {
           finishAction({
             id: setupActionId,

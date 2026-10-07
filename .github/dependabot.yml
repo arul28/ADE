@@ -1,1 +1,35 @@
-
+# Dependabot watches only the provider SDKs that ADE pins and ships.
+# Other dependencies stay manual.
+#
+# A provider bump also needs `npm run tools:manifest` in apps/ade-cli, and
+# Dependabot cannot run it. The ADE automation that picks up these PRs does
+# that step, then checks each provider live before the PR merges.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /apps/desktop
+      - /apps/ade-cli
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+      - dependency-name: "@openai/codex"
+      - dependency-name: "@opencode/cli"
+      - dependency-name: "@opencode/client"
+      - dependency-name: "@cursor/sdk"
+      - dependency-name: "@factory/droid-sdk"
+    groups:
+      provider-sdks:
+        patterns:
+          - "@anthropic-ai/claude-agent-sdk"
+          - "@openai/codex"
+          - "@opencode/cli"
+          - "@opencode/client"
+          - "@cursor/sdk"
+          - "@factory/droid-sdk"
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 2

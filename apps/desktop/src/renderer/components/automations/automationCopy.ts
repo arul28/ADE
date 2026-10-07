@@ -198,6 +198,7 @@ export function buildRuleSentence(rule: RuleLike): RuleSentence {
   const steps: string[] = [];
 
   if (rule.execution?.laneMode === "create") steps.push("create a lane");
+  if (rule.execution?.laneMode === "pr-branch") steps.push("open the PR's branch");
 
   if (rule.execution?.kind === "agent-session") {
     steps.push("run an agent");

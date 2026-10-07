@@ -4612,6 +4612,7 @@ app.whenReady().then(async () => {
         conflictService,
         testService,
         agentChatService,
+        prService,
         onEvent: (event) =>
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });

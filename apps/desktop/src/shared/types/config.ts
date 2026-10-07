@@ -611,6 +611,12 @@ export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, Automatio
   "git.pr_closed": "github.pr_closed",
 };
 
+/** Whether a trigger of this type carries a pull request (`trigger.pr`). */
+export function isPullRequestTriggerType(type: string): boolean {
+  const canonical = LEGACY_GITHUB_PR_TRIGGER_ALIASES[type] ?? type;
+  return canonical.startsWith("github.pr_") || canonical === "lane.merged";
+}
+
 export type AutomationActionType =
   | "create-lane"
   | "delete-lane"
@@ -862,7 +868,7 @@ export type AutomationAgentLimits = {
 
 export type AutomationExecutionKind = "agent-session" | "built-in";
 
-export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger";
+export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger" | "pr-branch";
 
 export type AutomationLaneNamePreset =
   | "issue-title"
@@ -875,7 +881,9 @@ export type AutomationExecution = {
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
    * configured / trigger / primary lane (`"reuse"`), or require the trigger
-   * caller/event to supply a lane (`"require-on-trigger"`). Defaults to `"reuse"`.
+   * caller/event to supply a lane (`"require-on-trigger"`). `"pr-branch"` runs
+   * in a lane on the trigger PR's own head branch: the lane already linked to
+   * that PR, or a new one imported from it. Defaults to `"reuse"`.
    */
   laneMode?: AutomationLaneMode;
   /**

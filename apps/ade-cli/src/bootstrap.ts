@@ -2525,6 +2525,7 @@ export async function createAdeRuntime(args: {
         conflictService,
         testService,
         agentChatService: agentChatService ?? undefined,
+        prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
       })
       : null;

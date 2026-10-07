@@ -62,7 +62,7 @@ import type {
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
-import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
@@ -658,7 +658,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
 
   const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
   const laneModeRaw = asString(value.laneMode)?.trim();
-  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse" || laneModeRaw === "require-on-trigger"
+  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse" || laneModeRaw === "require-on-trigger" || laneModeRaw === "pr-branch"
     ? laneModeRaw
     : laneModeRaw === "provided" || laneModeRaw === "prompt-at-run"
       ? "require-on-trigger"
@@ -2868,6 +2868,7 @@ function validateEffectiveConfig(
       && rule.execution.laneMode !== "create"
       && rule.execution.laneMode !== "reuse"
       && rule.execution.laneMode !== "require-on-trigger"
+      && rule.execution.laneMode !== "pr-branch"
     ) {
       issues.push({ path: `${p}.execution.laneMode`, message: `Unknown lane mode '${String(rule.execution.laneMode)}'` });
     }
@@ -2876,6 +2877,21 @@ function validateEffectiveConfig(
         path: `${p}.execution.targetLaneId`,
         message: "targetLaneId is not allowed when lane must be supplied at trigger time.",
       });
+    }
+    if (rule.execution?.laneMode === "pr-branch") {
+      rule.triggers.forEach((trigger, triggerIdx) => {
+        if (isPullRequestTriggerType(trigger.type)) return;
+        issues.push({
+          path: `${p}.triggers[${triggerIdx}].type`,
+          message: "Running in the PR's branch needs a pull request trigger.",
+        });
+      });
+      if ((rule.execution.targetLaneId ?? "").trim()) {
+        issues.push({
+          path: `${p}.execution.targetLaneId`,
+          message: "targetLaneId is not allowed when the lane comes from the PR's branch.",
+        });
+      }
     }
     if (rule.execution?.laneMode === "require-on-trigger" && rule.execution.kind === "built-in") {
       rule.execution.builtIn?.actions.forEach((action, actionIndex) => {
