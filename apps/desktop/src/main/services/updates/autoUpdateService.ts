@@ -1145,12 +1145,15 @@ export function createAutoUpdateService({
       }
       checkFailureKind = "network_stuck";
       const attemptRecovery = !netRecoveryExhausted || userInitiated;
+      const chromiumDiagnostics = describeChromiumNet(probeUrl);
       logger.warn("autoUpdate.net_wedge_detected", {
         message,
         probe,
-        chromium: await describeChromiumNet(probeUrl),
         attemptRecovery,
         userInitiated,
+      });
+      void chromiumDiagnostics.then((chromium) => {
+        logger.info("autoUpdate.chromium_net_diagnostics", { chromium });
       });
       if (!attemptRecovery) throw error;
       netSessionGeneration += 1;
