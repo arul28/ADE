@@ -578,10 +578,12 @@ type BoardMoveChatLink = {
 };
 
 /**
- * Whether one of this chat's direct subagents still keeps it busy. Best effort
- * like the summary read: no chat service, no lister, or a throw reads as "no".
- * The child's own row supplies its phase, settle and snooze; the chat supplies
- * the wake, which is never a session column.
+ * Whether a subagent anywhere under this chat still keeps it busy. The board
+ * nests a grandchild under the root chat (`indexNestedSubagents`), so a busy
+ * grandchild keeps the root busy there and must here too. Best effort like the
+ * summary read: no chat service, no lister, or a throw reads as "no". A
+ * child's own row supplies its phase, settle and snooze; the chat supplies the
+ * wake, which is never a session column.
  */
 async function hasBusySubagent(
   chat: BoardMoveChatService | null | undefined,
@@ -596,11 +598,20 @@ async function hasBusySubagent(
   } catch {
     return false;
   }
-  for (const child of chats) {
-    if (child.spawnKind !== "subagent" || child.orchestrationParentSessionId !== row.id) continue;
-    const childRow = sessionService.get(child.sessionId);
-    if (!childRow || childRow.laneId !== row.laneId) continue;
-    if (subagentKeepsParentBusy({ ...childRow, nextWakeAt: child.nextWakeAt ?? null }, nowMs)) return true;
+  const visited = new Set<string>([row.id]);
+  let parents = new Set<string>([row.id]);
+  while (parents.size > 0) {
+    const next = new Set<string>();
+    for (const child of chats) {
+      if (child.spawnKind !== "subagent" || !child.orchestrationParentSessionId) continue;
+      if (!parents.has(child.orchestrationParentSessionId) || visited.has(child.sessionId)) continue;
+      const childRow = sessionService.get(child.sessionId);
+      if (!childRow || childRow.laneId !== row.laneId) continue;
+      if (subagentKeepsParentBusy({ ...childRow, nextWakeAt: child.nextWakeAt ?? null }, nowMs)) return true;
+      visited.add(child.sessionId);
+      next.add(child.sessionId);
+    }
+    parents = next;
   }
   return false;
 }
@@ -611,9 +622,9 @@ async function hasBusySubagent(
  *
  * Best effort by design: a host with no chat service, an older one with no
  * summary reader, or a summary read that throws all answer null, which reads
- * as "no card, no wake" and lets the move through. A board move must not fail because the question could not be
- * asked — the refusal it feeds exists to stop a move that would LIE, and a
- * thrown probe is not evidence of one.
+ * as "no card, no wake" and lets the move through. A board move must not fail
+ * because the question could not be asked — the refusal it feeds exists to
+ * stop a move that would LIE, and a thrown probe is not evidence of one.
  */
 async function readBoardMoveChatSummary(
   chat: BoardMoveChatService | null | undefined,
@@ -675,7 +686,10 @@ export function createSessionBoardMoveActions(deps: {
         chatSummary?.nextWakeAt !== undefined ? { ...session, nextWakeAt: chatSummary.nextWakeAt } : session
       );
       const row = withWake(rawRow);
-      const busySubagent = await hasBusySubagent(deps.agentChatService, sessionService, rawRow, Date.now());
+      // Only a row that would otherwise file as Done can be held in Waiting by
+      // a subagent, so the lane's chats are listed only then.
+      const busySubagent = deriveWorkBoardColumn(row) === "done"
+        && await hasBusySubagent(deps.agentChatService, sessionService, rawRow, Date.now());
       // A live structured card outranks the drag, and the drag cannot answer
       // it. `clearAttentionRequest` clears the attention columns but not the
       // provider's pending item, so a move to Working or Done over a live card

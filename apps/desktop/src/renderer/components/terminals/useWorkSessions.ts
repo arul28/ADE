@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
-import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared/sessionStatusPresentation";
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -2220,17 +2220,21 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     ],
   );
 
-  // Exactly one timer, armed only while something is actually snoozed, firing at
-  // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
-  // overflow setTimeout). No polling and no document-level listener.
+  // Exactly one timer, armed only while something is snoozed or parked on a
+  // scheduled wake, firing at the soonest deadline (clamped so a 100-year
+  // "until I'm asked" snooze can't overflow setTimeout). A wake's deadline is
+  // when it turns overdue, which moves its card out of Waiting. No polling and
+  // no document-level listener.
   //
   // Reads the complete Work roster, NOT a filtered view, on purpose: a snoozed
   // row hidden by search, lane, status chips, or a foreign-machine slice must
   // still schedule its own wake so its filing bucket is fresh when visible.
   useEffect(() => {
     if (!isWorkRoute) return undefined;
-    const deadlineMs = nextSnoozeDeadlineMs(allKnownSessions);
-    if (deadlineMs == null) return undefined;
+    const deadlines = [nextSnoozeDeadlineMs(allKnownSessions), nextScheduledWakeDeadlineMs(allKnownSessions)]
+      .filter((value): value is number => value != null);
+    if (deadlines.length === 0) return undefined;
+    const deadlineMs = Math.min(...deadlines);
     const delay = Math.min(Math.max(deadlineMs - Date.now(), 250), SNOOZE_TICK_MAX_DELAY_MS);
     const timer = window.setTimeout(() => setSnoozeEpoch((value) => value + 1), delay);
     return () => window.clearTimeout(timer);

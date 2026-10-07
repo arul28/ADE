@@ -71,6 +71,7 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { HarnessLogo } from "../shared/HarnessLogo";
 import { harnessBodyLabel } from "../../../shared/harnessPresets";
 import {
@@ -681,6 +682,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // where the row is filed and what it says can never disagree.
   const snoozed = isSessionSnoozed(session);
   const wokeMarker = sessionWokeMarker(session);
+  // A live turn can go quiet, and a scheduled wake can come due, with no new
+  // data at all, so the card re-renders exactly when this session crosses the
+  // stall bar or its wake turns overdue.
+  const statusClockSessions = React.useMemo(() => [session], [session]);
+  const statusClockMs = useTurnStallClock(statusClockSessions);
   const presentation = sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
@@ -1337,6 +1343,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       compact={compact}
       runtimePin={runtimePin}
       hideLabelUnlessShout={nestedSubagent}
+      clockMs={statusClockMs}
     />
   );
   /* Live activity, not a property of the session: the agent is driving the

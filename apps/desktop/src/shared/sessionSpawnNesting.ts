@@ -322,9 +322,11 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
  * Does this subagent keep its parent's work open? True while it is mid-turn or
  * parked on a scheduled wake that has not come due (`scheduledWakeState`): it
  * reports back and wakes its parent when that turn ends, so the parent's real
- * Done is still to come. A snoozed, settled, finished or failed child does not.
+ * Done is still to come. An archived, snoozed, settled, finished or failed
+ * child does not.
  */
 export function subagentKeepsParentBusy(child: SpawnNestingSession, nowMs: number = Date.now()): boolean {
+  if (child.archivedAt) return false;
   const phase = phaseOf(child, nowMs);
   if (isSessionFiledAsSnoozed(child, phase, nowMs)) return false;
   if (phase === "starting" || phase === "running" || phase === "stale") return true;

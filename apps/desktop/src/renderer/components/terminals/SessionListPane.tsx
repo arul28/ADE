@@ -1644,7 +1644,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneWaiting: lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
         seenAtBySessionId: workSeenAtBySessionId,
         nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
-        subagentParentBySessionId: unfilteredNesting.nestedChildToRootParentId,
+        busySubagentParentIds,
         launching: unfilteredHandoffCountByLaneId.get(laneId) ?? 0,
         nowMs: stallNowMs,
       }));
@@ -1657,7 +1657,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     stallNowMs,
     unfilteredHandoffCountByLaneId,
     unfilteredNesting.excludedTopLevelIds,
-    unfilteredNesting.nestedChildToRootParentId,
+    busySubagentParentIds,
     unfilteredSessionsByLane,
     workSeenAtBySessionId,
   ]);
@@ -1690,8 +1690,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
-      subagentParentBySessionId: unfilteredNesting.nestedChildToRootParentId,
-      roster: allSessionsUnfiltered,
+      busySubagentParentIds,
       nowMs: stallNowMs,
     });
   }, [
@@ -1703,7 +1702,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedLaneIds,
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
-    unfilteredNesting.nestedChildToRootParentId,
+    busySubagentParentIds,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1885,7 +1884,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       laneWaiting: false,
       seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: excluded,
-      subagentParentBySessionId: fullNesting.nestedChildToRootParentId,
+      busySubagentParentIds,
       nowMs: stallNowMs,
     });
     const shelf = ((): WorkLaneShelf | null => {
