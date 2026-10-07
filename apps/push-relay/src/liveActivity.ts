@@ -256,7 +256,6 @@ async function accountActivityContentState(
   /** The exact four column counts. A change here pushes, but rate-limited. */
   countsFingerprint: string;
   count: number;
-  focusTitle: string | null;
 }> {
   const rows = await env.DB.prepare(`
     select payload_json, seen_at, dismissed_at
@@ -365,7 +364,6 @@ async function accountActivityContentState(
     // The activity lives while any agent needs you, works, or waits. Done
     // alone is not a reason to hold the Lock Screen.
     count: columns.needsYou + columns.working + columns.waiting,
-    focusTitle: boundedText(items[0]?.title, MAX_TITLE_LENGTH),
   };
 }
 

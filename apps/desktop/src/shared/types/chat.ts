@@ -457,7 +457,7 @@ export function spawnCompletionDeliveryFailedNoticeMessage(): string {
  * question text to show instead.
  *
  * One definition because this copy is not local to the chat pane: it becomes
- * the notch card's subtitle, the phone's push body and the lock screen preview.
+ * the Activity row's subtitle, the phone's push body and the lock screen preview.
  * Every provider used to spell its own variant of "<Provider> needs input
  * before it can continue" — a sentence about the agent where the user wanted a
  * sentence about them, and six places to fix when the wording changed.
@@ -1449,7 +1449,7 @@ export type AgentChatEvent =
        * `kind` above describes the *shape* of the thing being confirmed and has
        * no word for "the agent asked you a question" — so Claude's
        * AskUserQuestion rode this event as a `tool_call` approval, and every
-       * downstream surface (push, the notch, the lock screen) offered
+       * downstream surface (push, Activity, the lock screen) offered
        * "Approve/Deny" for something that wants prose. The answer branches were
        * unreachable code.
        *

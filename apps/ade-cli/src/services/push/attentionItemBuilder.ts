@@ -413,7 +413,7 @@ const AGENT_TITLE_SUFFIX_FALLBACK = "is working";
 
 const AGENT_PRIVACY_PREVIEW_BY_PHASE: Partial<Record<AttentionPhase, string>> = {
   // "needs you", the same two words the status label, the title suffix and the
-  // notch's own section heading use. "needs your input" was a third phrasing
+  // Activity column heading use. "needs your input" was a third phrasing
   // for one state, on the surface with the least room to explain itself.
   needs_you: "An ADE agent needs you.",
   failed: "An ADE agent run failed.",

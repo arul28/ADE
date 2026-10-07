@@ -1778,7 +1778,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       case "approval_request": {
         // An approval and a question both arrive on this event, and only the
         // request kind tells them apart. Without it every AskUserQuestion was
-        // published as `waiting_for_approval`, so the notch and the phone
+        // published as `waiting_for_approval`, so the desktop and the phone
         // offered Approve/Deny for something that wants prose — and the answer
         // branch in the item builder was dead code.
         //

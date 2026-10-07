@@ -1250,8 +1250,8 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "settings") {
-      // Lets surfaces outside the router tree (the attention popover, the
-      // notch) open a settings tab — and land on a specific card — without
+      // Lets surfaces outside the router tree (the Activity popover) open a
+      // settings tab — and land on a specific card — without
       // taking a `useNavigate` dependency. Unknown tabs fall back to the
       // settings root rather than 404-ing to General.
       const tab = resolveSettingsTab(target.tab ?? null);

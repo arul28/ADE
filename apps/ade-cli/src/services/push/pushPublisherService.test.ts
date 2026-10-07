@@ -3574,7 +3574,7 @@ describe("createPushPublisherService flush", () => {
   it("follows a chat that is renamed after its first frame was published", async () => {
     // A new Claude chat is created with a placeholder title and renamed a few
     // seconds later. The publisher used to latch the title on first resolve and
-    // never look again, so the notch card, the phone's push and the lock screen
+    // never look again, so the Activity row, the phone's push and the lock screen
     // all showed "Claude Chat" for the life of the session.
     const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
       activityProtocol: 2,

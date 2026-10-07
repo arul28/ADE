@@ -1148,7 +1148,7 @@ async function deliverAttentionNotifications(
     }
     // Give a desktop surface that actually contains this item the first chance
     // to surface it. A merely foreground ADE window is not enough: the header,
-    // full center, or native notch must report the exact visible item.
+    // or the full center must report the exact visible item.
     // The machine heartbeat republishes the full snapshot every 30s; if the
     // item remains unseen, the next pass escalates it to the phone.
     if (
@@ -2860,7 +2860,7 @@ async function handleAcknowledgment(
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }
       const normalized = value.trim();
-      // 1024 matches the notch snapshot parser's bound on the same field.
+      // 1024 matches the desktop Activity item parser's bound on the same field.
       if (!normalized || normalized.length > 1024) {
         return json({ ok: false, error: "invalid alert fingerprints" }, { status: 400 });
       }

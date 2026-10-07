@@ -226,38 +226,6 @@ export type AttentionTombstone = {
   deletedAt: string;
 };
 
-/**
- * The whole account's shape, sent alongside a bounded projection of its items.
- *
- * Load-bearing: the renderer publishes only the top-priority slice to stay
- * inside the native pipe's byte budget, so "5 working · 2 need you · 61 total"
- * can only be honest if the totals travel separately from the rows.
- */
-export type AttentionCounts = {
-  needsYou: number;
-  /**
-   * The six state groups of `ACTIVITY_STATE_GROUPS`, of which three were here
-   * from the start. `failed`, `planning` and `idle` are optional only because
-   * an older publisher cannot send them — a reader that has them must floor its
-   * own groups from them rather than inventing a residual, which is what the
-   * deleted `notchStripUnattributedCount` was doing to paper over the gap.
-   *
-   * A reader that does NOT get `idle` falls back to counting the rows it can
-   * see, and the projection is capped — so a machine with fifty resting
-   * sessions would under-report until the publisher catches up. That is the
-   * same transitional gap `failed` and `planning` had, and it resolves the
-   * moment both sides ship together.
-   */
-  failed?: number;
-  planning?: number;
-  idle?: number;
-  working: number;
-  done: number;
-  total: number;
-  machinesOnline: number;
-  machinesTotal: number;
-};
-
 export type AttentionSnapshot = {
   contractVersion: typeof ATTENTION_CONTRACT_VERSION;
   /** Where this snapshot was sourced. Account is canonical; machine is fallback. */
@@ -290,12 +258,6 @@ export type AttentionSnapshot = {
   machines?: AttentionMachineRef[];
   items: AttentionItem[];
   itemsTruncated?: boolean;
-  /**
-   * Totals over the full item set, so a surface receiving a truncated
-   * projection can still state how much work the account actually has.
-   * Optional: publishers older than this build omit it.
-   */
-  counts?: AttentionCounts;
   tombstones?: AttentionTombstone[];
 };
 

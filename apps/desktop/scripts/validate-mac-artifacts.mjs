@@ -280,7 +280,7 @@ async function assertBundledAdeMedia(resourcesPath, description) {
 }
 
 /**
- * The capture helper is a universal Mach-O like the notch, and the arch check is
+ * The capture helper is a universal Mach-O, and the arch check is
  * the point: a helper built for one arch ships happily, then fails to spawn on
  * the other half of the install base with nothing but an EACCES-shaped silence.
  */
