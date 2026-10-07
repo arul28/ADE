@@ -1590,6 +1590,60 @@ describe("sessionService resume metadata", () => {
     }));
   });
 
+  it("settles a parent's subagents with it, reaches them through an already-settled parent, and brings them back on unsettle", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-subagent-cascade-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    // The lineage the chat service reports: parent → its subagents.
+    const children = new Map<string, string[]>([["parent", ["sub-a", "sub-early"]]]);
+    const service = createSessionService({
+      db,
+      listSubagentLinks: async (parentIds) => parentIds.flatMap((parentSessionId) =>
+        (children.get(parentSessionId) ?? []).map((sessionId) => ({ sessionId, parentSessionId }))),
+    });
+    for (const sessionId of ["parent", "sub-a", "sub-early", "sub-late", "unrelated"]) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: sessionId,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "shell",
+      });
+    }
+    // The user filed this subagent away on its own, before its parent.
+    await service.settleSession("sub-early", { settledAt: "2026-03-17T00:30:00.000Z" });
+
+    expect(await service.settleSessions(["parent"])).toEqual(["parent", "sub-a"]);
+    expect(service.get("sub-a")?.settledAt).not.toBeNull();
+    expect(service.get("sub-early")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+    expect(service.get("unrelated")?.settledAt).toBeNull();
+
+    // A subagent that appears (or refused) after the parent settled is reached
+    // when the parent is settled again, without re-reporting the parent.
+    children.set("parent", ["sub-a", "sub-early", "sub-late"]);
+    expect(await service.settleSessions(["parent"])).toEqual(["sub-late"]);
+    expect(service.get("sub-late")?.settledAt).not.toBeNull();
+
+    // Unsettling the parent brings back what was settled with it or later; the
+    // one settled on its own before the parent stays filed.
+    const subagentsBack = new Promise<void>((resolve) => {
+      const stop = service.onChanged(() => {
+        if (service.get("sub-a")?.settledAt == null && service.get("sub-late")?.settledAt == null) {
+          stop();
+          resolve();
+        }
+      });
+    });
+    expect(service.unsettleSession("parent")).toBe(true);
+    await subagentsBack;
+    expect(service.get("parent")?.settledAt).toBeNull();
+    expect(service.get("sub-early")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+  });
+
   it("normalizes status and attention text and clears turn-start markers separately from agent activity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-markers-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);

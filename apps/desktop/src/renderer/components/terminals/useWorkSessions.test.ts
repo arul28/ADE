@@ -3944,6 +3944,29 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     snoozedUntil: "2099-01-01T00:00:00.000Z",
   });
 
+  it("moves an old local pin onto its row's synced column, and keeps only the pins it could not write", async () => {
+    seedViewState({ pinnedSessionIds: ["session-running", "session-snoozed", "session-not-loaded"] });
+    const updateMeta = vi.fn(async (args: { sessionId: string; pinned?: boolean }) => {
+      if (args.sessionId === "session-snoozed") throw new Error("machine offline");
+    });
+    (window as any).ade.sessions.updateMeta = updateMeta;
+    setWorkViewStateSpy.mockClear();
+    await renderWithSessions([runningSession, snoozedSession]);
+
+    await waitFor(() => {
+      expect(setWorkViewStateSpy.mock.calls.some(([, next]) => typeof next === "function")).toBe(true);
+    });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true });
+    // A row not loaded yet (another machine's) is not written now.
+    expect(updateMeta.mock.calls.some(([args]) => args.sessionId === "session-not-loaded")).toBe(false);
+    const updater = setWorkViewStateSpy.mock.calls.filter(([, next]) => typeof next === "function").at(-1)?.[1] as
+      (prev: Record<string, unknown>) => Record<string, unknown>;
+    // The written pin leaves the local list; the failed and the unloaded ones stay for later.
+    expect(updater({ pinnedSessionIds: ["session-running", "session-snoozed", "session-not-loaded"] }).pinnedSessionIds)
+      .toEqual(["session-snoozed", "session-not-loaded"]);
+  });
+
   it("narrows the buckets and the by-lane grouping but not the exported filtered list", async () => {
     seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const { result } = await renderWithSessions([runningSession, snoozedSession]);

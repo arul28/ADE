@@ -50,6 +50,8 @@ describe("canonicalSessionState precedence", () => {
     ["plain running stays running (no badge)", { lastOutputPreview: "compiling..." }, "running", null],
     ["idle chat is ready (no badge)", { runtimeState: "idle", toolType: "claude-chat" }, "ready", null],
     ["idle CLI is idle (no badge)", { runtimeState: "idle" }, "idle", null],
+    ["idle chat silent past threshold stays ready, not stale", { runtimeState: "idle", toolType: "claude-chat", lastActivityAt: silentSince }, "ready", null],
+    ["idle CLI silent past threshold stays idle, not stale", { runtimeState: "idle", lastActivityAt: silentSince }, "idle", null],
     ["heuristic does NOT fire on idle sessions", { runtimeState: "idle", lastOutputPreview: "continue? (y/n)" }, "idle", null],
     ["clean exit stays ended until explicitly settled", { status: "detached", exitCode: 0 }, "ended", null],
     ["unknown exit stays ended (no badge)", { status: "detached", exitCode: null, runtimeState: "exited" }, "ended", null],
@@ -361,6 +363,10 @@ describe("background work liveness", () => {
   it("leaves a silent session stale rather than claiming it is working", () => {
     const silentSince = new Date(NOW - SESSION_STALE_AFTER_MS - 1_000).toISOString();
     expect(state({ lastActivityAt: silentSince, backgroundWork: working }).phase).toBe("stale");
+    // At rest, only the background-work claim can go stale; a fresh one cannot.
+    expect(state({ runtimeState: "idle", toolType: "claude-chat", lastActivityAt: silentSince, backgroundWork: working }).phase)
+      .toBe("stale");
+    expect(state({ runtimeState: "idle", toolType: "claude-chat", backgroundWork: working }).phase).not.toBe("stale");
   });
 
   it("ignores an empty or absent background-work record", () => {

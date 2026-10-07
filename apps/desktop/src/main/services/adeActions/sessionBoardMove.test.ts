@@ -127,8 +127,6 @@ describe("deriveWorkBoardColumn", () => {
     // bucket "needs_you", so this row derived as a raised hand and a drag off it
     // produced a host-authored "you moved this chat from Needs you" naming a
     // column the user never saw. Only a real pending input earns that column.
-    // Fresh activity on purpose: the shared fixture's `lastActivityAt` is days
-    // old, which is `stale` (still Working), and stale is a different claim.
     const justNow = new Date().toISOString();
     expect(deriveWorkBoardColumn(row({ runtimeState: "idle", lastActivityAt: justNow })))
       .toBe("done");
@@ -350,7 +348,11 @@ describe("session.undoBoardMove", () => {
   it("refuses once the message has gone out, rather than reversing the write alone", async () => {
     vi.useFakeTimers();
     const sessions = makeSessionService(row({ settledAt: "2026-09-11T09:00:00.000Z" }));
-    const messageSession = vi.fn(async (_args: unknown) => ({ ok: true }));
+    // Delivering the message starts the agent's turn, as a real chat does.
+    const messageSession = vi.fn(async (_args: unknown) => {
+      sessions.current = { ...sessions.current, runtimeState: "running" };
+      return { ok: true };
+    });
     const actions = createSessionBoardMoveActions({
       sessionService: sessions.service,
       agentChatService: { messageSession },
@@ -389,7 +391,8 @@ describe("a board move that cannot deliver its message", () => {
       logger: { warn },
     });
     await actions.moveOnBoard({ sessionId: "chat-1", to: "working" });
-    expect(deriveWorkBoardColumn(sessions.current)).toBe("working");
+    // The move's own write: unsettled and held active until the turn starts.
+    expect(sessions.current).toMatchObject({ settledAt: null, settleOverride: "active" });
 
     await vi.advanceTimersByTimeAsync(BOARD_MOVE_STAGE_MS + 5);
     expect(deriveWorkBoardColumn(sessions.current)).toBe("done");
@@ -632,7 +635,7 @@ describe("a project that closes with a move still staged", () => {
     const moved = await actionsA.moveOnBoard({ sessionId: "chat-1", to: "working" }) as {
       moveId: string;
     };
-    expect(deriveWorkBoardColumn(projectA.current)).toBe("working");
+    expect(projectA.current).toMatchObject({ settledAt: null, settleOverride: "active" });
 
     // The user switches projects and then hits undo, so the call lands on B.
     expect(await actionsB.undoBoardMove({ sessionId: "chat-1", moveId: moved.moveId }))

@@ -494,7 +494,8 @@ describe("SessionListPane", () => {
     expect(filterButton).toBeTruthy();
 
     fireEvent.click(filterButton!);
-    fireEvent.click(within(view.container).getByRole("button", { name: "Time" }));
+    fireEvent.keyDown(within(view.container).getByRole("button", { name: /^Group by:/ }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Time" }));
 
     expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
     expect(screen.queryByText("Tiers")).toBeNull();
@@ -507,7 +508,7 @@ describe("SessionListPane", () => {
 
     rerender(paneElement({ filterLaneId: "lane-known" }));
 
-    expect(screen.getByRole("button", { name: "Filters, lane filter active" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filters, 1 on" })).toBeTruthy();
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 
@@ -2990,12 +2991,14 @@ describe("SessionListPane visual hierarchy", () => {
       });
     }
 
-    it("pins Primary above every other lane, pinned ones included", () => {
-      const { container } = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
-      const order = Array.from(container.querySelectorAll("[data-section-id]"))
+    it("lists a pinned lane above Primary, and Primary above unpinned lanes", () => {
+      const pinned = renderWithPrimary({ workPinnedLaneIds: ["lane-other"] });
+      const laneOrder = (root: HTMLElement) => Array.from(root.querySelectorAll("[data-section-id]"))
         .map((el) => el.getAttribute("data-section-id") ?? "")
         .filter((id) => id.startsWith("lane-") && !id.startsWith("lane-shelf:"));
-      expect(order).toEqual(["lane-primary", "lane-other"]);
+      expect(laneOrder(pinned.container)).toEqual(["lane-other", "lane-primary"]);
+      pinned.unmount();
+      expect(laneOrder(renderWithPrimary().container)).toEqual(["lane-primary", "lane-other"]);
     });
 
     it("marks the offline Primary while leaving this computer's Primary alone", () => {

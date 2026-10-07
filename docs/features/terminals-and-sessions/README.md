@@ -729,6 +729,22 @@ IPC registration:
 
 Renderer surfaces:
 
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusGrid.ts` — the
+  Focus grid's state: tile order, the page size measured from the grid's box,
+  the pages, the focused tile (whose page wins when the pages re-spread), the
+  unseen marks, swipe paging, the saved-layout key, and the sidebar-roster marks
+  and toolbar pager. `TerminalsPage` renders the grid from it.
+- `apps/desktop/src/renderer/components/terminals/useWorkFocusQueueReport.ts` —
+  the sidebar's half: every chat the Focus grid shows (this machine's, then
+  other machines' unfolded lanes with their binding), reported up only when
+  what a tile shows can change.
+- `apps/desktop/src/renderer/components/terminals/WorkFocusGrid.tsx` — the
+  Focus grid's pure page math (`focusFit`, `focusEvenPages`,
+  `focusPageColumns`, `focusPageSummary`) and its UI: the empty state, the
+  bottom roster strip, the toolbar pager, and the Focus pill.
+- `apps/desktop/src/renderer/lib/useTurnStallClock.ts` — "now" for the
+  turn-stall rule, re-rendering exactly at the next stall deadline; used by the
+  sidebar fold and `SessionStatusSlot`.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
   entry surface with `PaneTilingLayout` (sessions list + work view).
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,

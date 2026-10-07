@@ -362,6 +362,38 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
+  it("keeps a newer peer's change for a column this build lacks and applies it once the column exists", async () => {
+    const newer = await openKvDb(makeDbPath("ade-kvdb-sync-new-col-a-"), createLogger() as any);
+    const olderPath = makeDbPath("ade-kvdb-sync-new-col-b-");
+    let older = await openKvDb(olderPath, createLogger() as any);
+    newer.run("alter table projects add column extra_note text");
+    newer.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at, extra_note)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      ["project-1", "/repo/a", "Repo A", "main", "2026-03-15T00:00:00.000Z", "2026-03-15T00:00:00.000Z", "written once"],
+    );
+    const changes = newer.sync.exportChangesSince(0);
+    expect(changes.some((change) => change.cid === "extra_note")).toBe(true);
+
+    // The older build applies the rest of the batch instead of failing it,
+    // and a re-delivered batch does not pile up copies of the kept change.
+    older.sync.applyChanges(changes);
+    older.sync.applyChanges(changes);
+    expect(older.get<{ name: string }>("select display_name as name from projects where id = 'project-1'")?.name).toBe("Repo A");
+    expect(older.get<{ count: number }>("select count(*) as count from sync_deferred_column_changes")?.count).toBe(1);
+
+    // The value was written once, so no later change will carry it again:
+    // only the kept change can deliver it after this device gains the column.
+    older.run("alter table projects add column extra_note text");
+    older.close();
+    older = await openKvDb(olderPath, createLogger() as any);
+    expect(older.get<{ note: string }>("select extra_note as note from projects where id = 'project-1'")?.note).toBe("written once");
+    expect(older.get<{ count: number }>("select count(*) as count from sync_deferred_column_changes")?.count).toBe(0);
+
+    newer.close();
+    older.close();
+  });
+
   it("rejects CRDT changes for unknown future tables", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-future-table-"), createLogger() as any);
     const futureChange = {

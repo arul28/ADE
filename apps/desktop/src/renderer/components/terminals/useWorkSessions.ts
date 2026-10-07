@@ -679,6 +679,23 @@ type UseWorkSessionsOptions = {
 const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 5_000;
 const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 15_000;
 
+/**
+ * Whether an installation uses the Work Focus view and its Focus grid. Emitted
+ * at the two setters every entry point goes through, only when a mode turns
+ * on. Coarse and closed: the mode and nothing else, never a lane, chat, count
+ * or page. A per-mode 24-hour deduplication key holds this to at most two
+ * accepted events per installation per UTC day, inside the existing
+ * `ade_feature_used` limits; no ceiling was raised.
+ */
+function captureWorkFocusMode(mode: "focus" | "focus_grid"): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: { feature: "work", action: "focus_mode", outcome: `mode_${mode}`, source: "renderer_route" },
+    dedupeKey: `work_focus_mode:${mode}`,
+    minimumIntervalMs: 24 * 60 * 60_000,
+  }).catch(() => undefined);
+}
+
 export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -1159,7 +1176,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   /**
    * Focus folds busy lanes, and folding needs the by-lane list, so turning
-   * Focus on also groups by lane. Turning Focus off also leaves the grid,
+   * Focus on also groups by lane. Turning a mode on reports its adoption
+   * (`captureWorkFocusMode`). Turning Focus off also leaves the grid,
    * because the grid shows what Focus left unfolded.
    */
   const setWorkFoldBusyLanes = useCallback(
@@ -1168,6 +1186,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       setProjectViewState(enabled
         ? { workFoldBusyLanes: true, sessionListOrganization: "by-lane" }
         : { workFoldBusyLanes: false, workFocusGrid: false });
+      if (enabled) captureWorkFocusMode("focus");
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
@@ -1177,6 +1196,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       setProjectViewState(enabled
         ? { workFocusGrid: true, workFoldBusyLanes: true, sessionListOrganization: "by-lane", workViewMode: "list" }
         : { workFocusGrid: false });
+      if (enabled) captureWorkFocusMode("focus_grid");
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );

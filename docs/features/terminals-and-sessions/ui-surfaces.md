@@ -642,8 +642,9 @@ own headers, chat action panes and floating previews); what differs:
   screen is mounted.
 - **Roster.** The roster shows where every waiting chat is. Its place depends
   on the project sidebar:
-  - **Sidebar open.** The sidebar is the roster. `TerminalsPage` builds
-    `focusMarks` (page, on screen, unseen) and passes them to `SessionListPane`.
+  - **Sidebar open.** The sidebar is the roster. `useWorkFocusGrid` builds the
+    marks (page, on screen, unseen) that `TerminalsPage` passes to
+    `SessionListPane`.
     Only the focused tile's card gets the selected fill (`TerminalsPage`
     passes it as the selected chat while the grid shows). The other cards on
     screen get no mark. A card on another page gets a "Page N" tag, with
