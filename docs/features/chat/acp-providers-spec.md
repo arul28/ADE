@@ -908,7 +908,9 @@ the new version.
   the one in that prefix when present. A project-local install
   (`<repo>/node_modules/<pkg>`) has neither layout and stays manual. After the
   installer exits 0, the binary must report `tested.max`; otherwise the
-  update fails with the version it still reports. An install ADE cannot place (or Kimi
+  update fails with the version it still reports. One update per provider
+  binary runs at a time; a second request (another chat warning, or Settings)
+  joins the one in flight. An install ADE cannot place (or Kimi
   and Devin, which have no npm package or exact-version updater) shows a
   manual note and no button.
 - The updater spawns through `resolveCliSpawnInvocation`, so a Windows `.cmd`

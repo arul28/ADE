@@ -248,7 +248,11 @@ describe("automationIngressService", () => {
         },
         getIngressStatus: () => ({}),
       } as never,
-      prService: { ingestGithubWebhook } as never,
+      // The comment's PR is tracked, so its branches come from the local row.
+      prService: {
+        ingestGithubWebhook,
+        listAll: () => [{ githubPrNumber: 42, repoOwner: "arul28", repoName: "ADE", headBranch: "feature/webhooks", baseBranch: "main" }],
+      } as never,
       secretService: {
         getSecret: (ref: string) => {
           if (ref === "automations.githubRelay.apiBaseUrl") return "https://relay.example.com/";
@@ -272,7 +276,11 @@ describe("automationIngressService", () => {
       // A comment rule's bodyRegex reads the new comment, not the PR description.
       expect(typedCalls.find(([args]) => args.triggerType === "github.pr_commented")?.[0]).toMatchObject({
         author: "dependabot[bot]",
-        pr: expect.objectContaining({ number: 42, body: "@dependabot rebase" }),
+        // A comment webhook names no branch; a branch-filtered comment rule
+        // needs the tracked PR's branches to match at all.
+        branch: "feature/webhooks",
+        targetBranch: "main",
+        pr: expect.objectContaining({ number: 42, body: "@dependabot rebase", headBranch: "feature/webhooks" }),
       });
       expect(typedCalls.find(([args]) => args.triggerType === "github.pr_updated")?.[0]).toMatchObject({
         source: "github-relay",

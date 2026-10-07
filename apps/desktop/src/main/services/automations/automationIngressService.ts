@@ -324,6 +324,36 @@ function buildPrContext(pr: Record<string, unknown> | null, repo: string | null)
   };
 }
 
+/**
+ * A comment webhook names the PR but not its branches, so a `github.pr_commented`
+ * rule with a branch filter could never match. Fill them from the PR row ADE
+ * already tracks (a local read, no network). A comment on an untracked PR stays
+ * branchless: a branch-filtered rule skips it rather than guessing.
+ */
+function withTrackedPrBranches(
+  mapped: ReturnType<typeof mapGithubWebhookToTrigger>,
+  prService: Pick<ReturnType<typeof createPrService>, "listAll"> | null | undefined,
+): ReturnType<typeof mapGithubWebhookToTrigger> {
+  if (!mapped?.pr || mapped.pr.headBranch || !prService) return mapped;
+  const [owner, name] = (mapped.pr.repo ?? "").toLowerCase().split("/");
+  let tracked: { headBranch: string; baseBranch: string } | undefined;
+  try {
+    tracked = prService.listAll().find((row) =>
+      row.githubPrNumber === mapped.pr!.number
+      && row.repoOwner.toLowerCase() === owner
+      && row.repoName.toLowerCase() === name);
+  } catch {
+    return mapped;
+  }
+  if (!tracked) return mapped;
+  return {
+    ...mapped,
+    branch: tracked.headBranch,
+    targetBranch: tracked.baseBranch,
+    pr: { ...mapped.pr, headBranch: tracked.headBranch, baseBranch: tracked.baseBranch },
+  };
+}
+
 function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, unknown>): {
   triggerType: AutomationTriggerType;
   summary: string;
@@ -1306,7 +1336,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             // the raw one. Where no poller emits them, the relay must, or those
             // rules never run. Same mapping as the local-webhook path.
             const mapped = args.relayDispatchesTypedGithubEvents && isRecord(rawPayload)
-              ? mapGithubWebhookToTrigger(githubEvent, rawPayload)
+              ? withTrackedPrBranches(mapGithubWebhookToTrigger(githubEvent, rawPayload), args.prService)
               : null;
             if (mapped) {
               await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({

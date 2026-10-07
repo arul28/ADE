@@ -12054,27 +12054,27 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("automations create accepts require-on-trigger lane mode without a target lane", () => {
-    const plan = buildCliPlan([
-      "automations",
-      "create",
-      "--text",
-      "id: r1\n",
-      "--lane-mode",
-      "require-on-trigger",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toMatchObject({
-      arguments: {
-        args: {
-          draft: {
-            execution: { laneMode: "require-on-trigger" },
-          },
-        },
-      },
-    });
-  });
+  it.each(["require-on-trigger", "pr-branch"])(
+    "automations create switches a saved reuse rule to %s and drops its fixed lane",
+    (laneMode) => {
+      const plan = buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\nexecution:\n  kind: agent-session\n  laneMode: reuse\n  targetLaneId: lane-old\n",
+        "--lane-mode",
+        laneMode,
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      const execution = (plan.steps[0]?.params as { arguments: { args: { draft: { execution: Record<string, unknown> } } } })
+        .arguments.args.draft.execution;
+      expect(execution.laneMode).toBe(laneMode);
+      expect(execution.kind).toBe("agent-session");
+      // Validation rejects a fixed lane next to these modes, so it must go.
+      expect(execution).not.toHaveProperty("targetLaneId");
+    },
+  );
 
   it("automations create rejects --lane with --lane-mode require-on-trigger", () => {
     expect(() =>

@@ -217,6 +217,13 @@ export function acpProviderOutdatedNotice(
 }
 
 /**
+ * Updates in flight, by provider and binary. Two chat warnings, or a warning and
+ * Settings, would otherwise run two installs into the same npm prefix at once;
+ * a second request joins the first instead.
+ */
+const updatesInFlight = new Map<string, Promise<AcpProviderUpdateResult>>();
+
+/**
  * Install the newest tested version of one provider CLI.
  *
  * It re-resolves the binary and refuses when the installer is unknown, so the
@@ -252,16 +259,24 @@ export async function runAcpProviderUpdate(args: {
     const home = configHomeFor("grok", env);
     if (home) env.GROK_HOME = home;
   }
-  const result = await runAcpProviderInstall({
+  const key = `${args.provider}\0${executable.path}`;
+  const running = updatesInFlight.get(key);
+  if (running) return running;
+  const pending = runAcpProviderInstall({
     provider: args.provider,
     installer,
     env,
     cwd: args.cwd,
     ...(args.run ? { run: args.run } : {}),
     ...(args.installerIo ? { io: args.installerIo } : {}),
+  }).then((result) => {
+    if (result.ok) launchStandingCache.delete(key);
+    return result;
+  }).finally(() => {
+    updatesInFlight.delete(key);
   });
-  if (result.ok) launchStandingCache.delete(`${args.provider}\0${executable.path}`);
-  return result;
+  updatesInFlight.set(key, pending);
+  return pending;
 }
 
 /**

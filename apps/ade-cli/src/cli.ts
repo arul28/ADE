@@ -16474,6 +16474,9 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
 
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
+  // Only "reuse" names a fixed lane. Switching a saved rule to another mode
+  // drops the old target, which validation rejects next to that mode.
+  if (laneMode != null && laneMode !== "reuse") delete execution.targetLaneId;
   if (laneId != null) execution.targetLaneId = laneId;
   if (preset != null) execution.laneNamePreset = preset;
   if (template != null) execution.laneNameTemplate = template;

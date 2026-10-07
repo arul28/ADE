@@ -144,6 +144,34 @@ describe("acpProviderDiagnostics", () => {
     expect(calls.every((call) => call.env.GROK_HOME === path.resolve("relative/grok-home"))).toBe(true);
   });
 
+  it("joins a second update of the same CLI to the one already running", async () => {
+    let finish: (value: { status: number; stdout: string; stderr: string }) => void = () => {};
+    const installs: string[][] = [];
+    const run: AcpSpawn = (_command, args) => {
+      if (args[0] === "--version") {
+        return Promise.resolve({ status: 0, stdout: `${ACP_PROVIDER_VERSION_POLICY.grok.tested.max}\n`, stderr: "" });
+      }
+      installs.push(args);
+      return new Promise((resolve) => { finish = resolve; });
+    };
+    const update = () => runAcpProviderUpdate({ provider: "grok", cwd: "/repo", env: { ...env, GROK_EXECUTABLE: "/opt/single-flight/grok" }, run, installerIo: nativeAt("/opt/single-flight/grok") });
+
+    const first = update();
+    const second = update();
+    await vi.waitFor(() => expect(installs).toHaveLength(1));
+    finish({ status: 0, stdout: "", stderr: "" });
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(installs).toHaveLength(1);
+    expect(a.ok).toBe(true);
+    expect(b).toBe(a);
+    // Once it settles, a later request runs a new install.
+    const third = update();
+    await vi.waitFor(() => expect(installs).toHaveLength(2));
+    finish({ status: 0, stdout: "", stderr: "" });
+    expect((await third).ok).toBe(true);
+  });
+
   it("refuses an update ADE cannot place instead of running a guess", async () => {
     const run = vi.fn() as unknown as AcpSpawn;
     const result = await runAcpProviderUpdate({ provider: "kimi", cwd: "/repo", env, run, installerIo: noInstaller });
