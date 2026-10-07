@@ -11,15 +11,20 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types/sync";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
+import type {
+  WorkBoardColumn,
+  WorkBoardWaitingReason,
+} from "../../../../desktop/src/shared/types/chat";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
+import { scheduledWakeState } from "../../../../desktop/src/shared/sessionStatusPresentation";
 import { withActivityFingerprints } from "./activityFingerprint";
 
 /**
  * The Activity projection: `(runs, recentRuns, prActivities, roster)` in, wire
  * `AttentionItem[]` out.
  *
- * Extracted from the push publisher's closure so the one function every phone,
- * notch, and desktop Activity row is derived from can be exercised directly,
+ * Extracted from the push publisher's closure so the one function every phone
+ * and desktop Activity row is derived from can be exercised directly,
  * with a context record instead of a booted publisher. Everything it needs is
  * an explicit input; it owns no state and performs no I/O beyond the roster
  * loader it is handed.
@@ -180,6 +185,55 @@ export function agentAttentionPhase(run: AgentRunState): AttentionPhase {
     return "running";
   }
   return run.phase;
+}
+
+/**
+ * The Work-board column for a live run's published phase. A quiet run (`stale`)
+ * is still Working, as the board files a stale session.
+ */
+export function runBoardColumn(phase: AttentionPhase): WorkBoardColumn {
+  switch (phase) {
+    case "needs_you":
+    case "failed":
+      return "needs_you";
+    case "starting":
+    case "running":
+    case "stale":
+      return "working";
+    default:
+      return "done";
+  }
+}
+
+/**
+ * The Work-board column for a roster row, before the snooze overlay. A running
+ * row waits instead of working while its lane's PR has CI in flight or a review
+ * requested, and a resting row waits while a scheduled wake is pending — the
+ * same rules `buildWorkBoardModel` applies on the board. The board's other
+ * resting wait, a busy nested subagent, needs spawn links the roster does not
+ * carry, so such a parent reads Done here.
+ */
+export function rosterBoardColumn(
+  status: SyncRosterChatStatus,
+  lanePrWaitingReason: "ci" | "review" | null,
+  nextWakeAt: string | null = null,
+  nowMs: number = Date.now(),
+): { boardColumn: WorkBoardColumn; waitingReason: WorkBoardWaitingReason | null } {
+  switch (status) {
+    case "awaiting":
+    case "failed":
+      return { boardColumn: "needs_you", waitingReason: null };
+    case "running":
+      return lanePrWaitingReason
+        ? { boardColumn: "waiting", waitingReason: lanePrWaitingReason }
+        : { boardColumn: "working", waitingReason: null };
+    case "idle":
+      return scheduledWakeState(nextWakeAt, nowMs) === "pending"
+        ? { boardColumn: "waiting", waitingReason: "scheduled" }
+        : { boardColumn: "done", waitingReason: null };
+    case "ended":
+      return { boardColumn: "done", waitingReason: null };
+  }
 }
 
 export function rosterAttentionPhase(status: SyncRosterChatStatus): AttentionPhase {
@@ -535,6 +589,8 @@ function buildRunItems(context: AttentionItemBuildContext, machine: AttentionIte
       kind: "agent",
       eventKind: agentEventKindForPhase(phase),
       phase,
+      boardColumn: runBoardColumn(phase),
+      waitingReason: null,
       machine,
       project: attentionProjectRef(
         run.scopeKey,
@@ -587,6 +643,7 @@ async function buildRosterItems(
   const projects = await context.loadRoster();
   const items = projects.flatMap((project): AttentionItem[] => {
     const laneNames = new Map(project.lanes.map((lane) => [lane.id, lane.name]));
+    const lanePrWaits = new Map(project.lanes.map((lane) => [lane.id, lane.prWaitingReason ?? null]));
     const rosterChatIds = new Set(project.chats.map((chat) => chat.id));
     return project.chats.filter((chat) => {
       // CTO/identity chats are ADE's own assistant threads, not user work.
@@ -604,6 +661,12 @@ async function buildRosterItems(
     }).map((chat): AttentionItem => {
       let phase = rosterAttentionPhase(chat.status);
       let activityTier = rosterActivityTier(chat.status);
+      let { boardColumn, waitingReason } = rosterBoardColumn(
+        chat.status,
+        lanePrWaits.get(chat.laneId) ?? null,
+        chat.nextWakeAt ?? null,
+        context.nowMs,
+      );
       // Snooze is a visibility overlay, not a phase. Activity still has to
       // stop counting a snoozed row as working — otherwise ADE-121-style
       // until-asked chats inflate the island's working tally forever.
@@ -619,6 +682,8 @@ async function buildRosterItems(
       ) {
         phase = "stale";
         activityTier = "idle";
+        boardColumn = "waiting";
+        waitingReason = "snoozed";
         snoozedItemIds.add(id);
       }
       const existingAnchor = context.rosterPhaseAnchors.get(id);
@@ -655,6 +720,8 @@ async function buildRosterItems(
         kind: "agent",
         eventKind: agentEventKindForPhase(phase),
         phase,
+        boardColumn,
+        waitingReason,
         machine,
         project: attentionProjectRef(
           project.projectId,
@@ -777,6 +844,29 @@ function buildPrItems(
   });
 }
 
+/**
+ * A live run knows its lane only by name, so it cannot see the lane's PR. When
+ * it replaces a roster row that waits on CI or review, it keeps that wait: the
+ * board shows the same session in Waiting.
+ */
+function withRosterPrWait(
+  liveItem: AttentionItem,
+  rosterItem: AttentionItem | undefined,
+): AttentionItem {
+  if (
+    liveItem.boardColumn !== "working"
+    || rosterItem?.boardColumn !== "waiting"
+    || (rosterItem.waitingReason !== "ci" && rosterItem.waitingReason !== "review")
+  ) {
+    return liveItem;
+  }
+  return withActivityFingerprints({
+    ...liveItem,
+    boardColumn: "waiting",
+    waitingReason: rosterItem.waitingReason,
+  });
+}
+
 function shouldKeepRosterItem(
   rosterItem: AttentionItem | undefined,
   liveItem: AttentionItem,
@@ -838,7 +928,7 @@ export async function buildAttentionItems(
   for (const item of runItems) {
     const rosterItem = agentItems.get(item.id);
     if (shouldKeepRosterItem(rosterItem, item, snoozedItemIds)) continue;
-    agentItems.set(item.id, item);
+    agentItems.set(item.id, withRosterPrWait(item, rosterItem));
   }
   return [...agentItems.values(), ...prItems].map((item) => {
     const revision = Math.max(

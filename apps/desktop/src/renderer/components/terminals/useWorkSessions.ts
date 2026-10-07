@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared/sessionStatusPresentation";
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
@@ -226,33 +226,11 @@ function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
  */
 export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>;
 
-/**
- * Why a row sits in Waiting. Rendered as the card's reason chip. `scheduled`
- * is a finished chat parked on a wake that has not come due yet
- * (`scheduledWakeState`), so it is out of Done until it runs again. `subagent`
- * is a finished chat whose subagent is still busy (`subagentKeepsParentBusy`):
- * the subagent wakes it when its turn ends, so its Done is still to come.
- */
-export type WorkBoardWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
+import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
+import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 
-/**
- * Does this lane's PR park a running session in Waiting?
- *
- * Only live PRs count: a merged or closed PR's last check state is history, and
- * a lane whose PR landed hours ago is not "waiting on CI". `pending` is the
- * only checks value that means work is in flight — `none`/`not_run` mean nobody
- * looked, which is not the same claim (ADE-135), and `failing` is the agent's
- * problem, not a wait.
- */
-export function lanePrWaitingReason(prs: readonly PrSummary[]): WorkBoardWaitingReason | null {
-  let sawReviewRequest = false;
-  for (const pr of prs) {
-    if (pr.state !== "open" && pr.state !== "draft") continue;
-    if (pr.checksStatus === "pending") return "ci";
-    if (pr.reviewStatus === "requested") sawReviewRequest = true;
-  }
-  return sawReviewRequest ? "review" : null;
-}
+export type { WorkBoardWaitingReason };
+export { lanePrWaitingReason };
 
 export type WorkBoardModel = {
   buckets: WorkBoardBuckets;
@@ -424,6 +402,14 @@ export function buildWorkBoardModel(args: {
   const waiting: TerminalSessionSummary[] = [];
   const working: TerminalSessionSummary[] = [];
   const resting: TerminalSessionSummary[] = [];
+  // A failed turn is the user's move: it files under Needs you, not Done, like
+  // `canonicalBoardColumnForPhase` on the host. The list keeps it in Ended.
+  const failed: TerminalSessionSummary[] = [];
+  const ended: TerminalSessionSummary[] = [];
+  for (const session of args.endedFiltered) {
+    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+    (phase === "failed" ? failed : ended).push(session);
+  }
 
   for (const session of args.snoozedFiltered) {
     waitingReasonBySessionId.set(session.id, "snoozed");
@@ -453,13 +439,13 @@ export function buildWorkBoardModel(args: {
 
   return {
     buckets: {
-      needs_you: [...args.needsYouFiltered],
+      needs_you: [...args.needsYouFiltered, ...failed],
       working,
       waiting,
       // Loudest tier first. Resting rows are live sessions that just finished a
       // turn, so they are the ones worth looking at; ended is a dead process;
       // settled is the quietest, because the user already filed it.
-      done: [...resting, ...args.endedFiltered, ...args.settledFiltered],
+      done: [...resting, ...ended, ...args.settledFiltered],
     },
     waitingReasonBySessionId,
   };

@@ -2870,8 +2870,14 @@ Account Activity and push:
   bound), `chunkAttentionAcknowledgmentItemIds`, `runAcknowledgmentChunks` (with
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
+- `apps/desktop/src/shared/attention/activityBoardColumn.ts` and
+  `activityBoardColumn.cases.json` — the four states every Activity surface
+  counts by (needs you, working, waiting, done; the Work board's columns), and
+  the fixture that pins the TypeScript, Swift and relay copies of the rule. The
+  brain writes the column on each agent item as `boardColumn`; see
+  [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the six-group state table. The mapping
+  cross-language conformance fixture for the older six-group state table. The mapping
   is implemented three times (renderer TypeScript, iOS Swift, and the hermetic
   relay Worker) because the surfaces cannot share code, and
   documentation alone did not keep them in step. Every implementation runs these

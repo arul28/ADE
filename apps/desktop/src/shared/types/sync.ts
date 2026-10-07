@@ -1138,6 +1138,12 @@ export type SyncRosterChat = {
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
   /**
+   * The chat's next scheduled wake, when its project is booted and a wake is
+   * parked. A finished chat with a pending wake waits rather than being Done.
+   * Optional: older hosts omit it.
+   */
+  nextWakeAt?: string | null;
+  /**
    * Agent chats only (`chatLogV2` hosts): the chat's durable envelope
    * `sequence` high-water and `historyGeneration`, so a client can tell which
    * cached chat logs are current without subscribing to each one.
@@ -1153,6 +1159,12 @@ export type SyncRosterLane = {
   icon?: string | null;
   laneType?: string | null;
   branchRef?: string | null;
+  /**
+   * Why a running session in this lane waits rather than works: the lane's
+   * open PR has CI in flight, or a review requested (`lanePrWaitingReason`).
+   * Optional: older hosts omit it, and a client then shows no Waiting reason.
+   */
+  prWaitingReason?: "ci" | "review" | null;
 };
 
 export type SyncRosterProject = {

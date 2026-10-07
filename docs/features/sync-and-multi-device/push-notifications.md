@@ -18,8 +18,11 @@ channels, persistence fields, and analytics/log identifiers.
   appear twice.
 - Running work is ambient. It belongs in Activity, widgets, and
   Live Activities, not in a stream of toast or push interruptions.
-- `needs_you`, failures, failing checks, changes requested, and review requests
-  can notify according to the user's policy.
+- Only urgent events push by default: an agent that needs you, an agent that
+  failed, and failing checks. Everything else updates Activity and the Live
+  Activity without a push. Users can turn other events on per kind.
+- A push is two short lines: the session or PR title, then the state and where
+  it is. Agent text never goes in a push.
 - Completed and merged work remains visible until it is seen or dismissed.
 - Every row owns an exact ADE destination. A PR can target Overview, Checks, or
   Review; an agent item can target a session, question, approval, or event.
@@ -33,40 +36,55 @@ channels, persistence fields, and analytics/log identifiers.
 - Notification previews and Live Activity content honor the same
   `hideDetails` preference.
 
-## The state glyph language
+## The four states
 
-Every surface that summarizes Activity reads from one six-group table. The
-canonical implementation is `activityStateGroup` plus `ACTIVITY_STATE_GLYPHS` in
-`apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
+Every surface that counts agents uses the Work board's four columns. The desktop
+Activity panel, the Work board, the iOS Hub and Activity drawer, the widgets, and
+the Live Activity all show the same numbers.
 
-| Group | Tone | Glyph identity | Means |
-| --- | --- | --- | --- |
-| `needs-you` | amber | filled dot | the reader's move |
-| `failed` | red | warning triangle | it stopped on an error, or checks/review failed |
-| `planning` | violet | note-pencil | the agent is deliberating |
-| `working` | blue | dashed circle | live work, plus someone else's move (review requested, merge ready, blocked) |
-| `idle` | neutral | clock | went quiet mid-work, including the `stale` phase and a snoozed running chat |
-| `done` | emerald | check circle | finished, and nobody has looked yet |
+| Column | Tone | Means |
+| --- | --- | --- |
+| `needs_you` | amber | the user's move: a question, an approval, or a failure |
+| `working` | blue | an agent is mid-turn |
+| `waiting` | neutral | snoozed, a scheduled wake is pending, a subagent is busy, or the lane's PR has CI running or a review requested |
+| `done` | emerald | finished, resting, or settled |
 
-The array order above is also the priority order (`ACTIVITY_STATE_GROUPS`), so
-"which state does this surface lead with" is a lookup rather than a ladder. Two
-rules matter more than the table itself: an `idle`-tier item is `idle` no matter
-which phase it preserved — never `done`, because a session that went quiet
-mid-work is not a session that finished — and `planning` is never derived from a
-phase; it comes only from `chatActivityMode`. The desktop header popover omits
-the two resting bands `idle` and `done` so a dropdown does not open onto quiet
-work. The island compact pill shows only the one or two highest-priority groups
-that fit. Hub tree headers and the full Activity
-list keep every nonzero group, including resting bands.
+A failure files under Needs you, with its own red status mark. A failed turn is
+the user's move until they settle the session or send a new turn. Pull requests
+are notifications, not agents, so they are never counted in a column.
 
-Section headings, glyph counts, the iOS rows, and the Live
-Activity all mirror this table, and the mirrors cannot share code — the renderer
-is TypeScript, iOS is Swift, and the relay is a hermetic Worker
-that imports nothing from this repo. `apps/desktop/src/shared/attention/
-activityStateGroup.cases.json` is the pin: every implementation runs the same
-cases through its own mapper, so a change made anywhere but the canonical table
-fails the other suites. Change the rule there first, update the cases, then let
-the mirrors follow.
+The publishing brain decides the column and writes it on each agent item as
+`boardColumn`, with `waitingReason` (`snoozed`, `ci`, `review`, `scheduled`,
+`subagent`) for Waiting:
+
+- A roster row maps its status: awaiting and failed are Needs you, running is
+  Working, idle and ended are Done.
+- A running row waits instead when its lane's open PR has CI pending or a review
+  requested. The roster builder reads that from the `pull_requests` table into
+  `SyncRosterLane.prWaitingReason`, with the same `lanePrWaitingReason` rule the
+  renderer's board uses.
+- An idle row whose chat has a pending scheduled wake (`SyncRosterChat.nextWakeAt`,
+  read from the booted chat service) is Waiting with reason `scheduled`.
+- A snoozed row that is not failed or asking is Waiting with reason `snoozed`.
+- The board also parks a finished parent while a nested subagent is busy
+  (`subagent`). The roster has no spawn links, so the brain cannot see that
+  yet; such a parent reads Done in Activity. Clients still accept the reason.
+- A live run maps its phase (`runBoardColumn`). When it replaces a roster row
+  that waits on CI or review, it keeps that wait, because a run knows its lane
+  only by name.
+
+Readers group with `activityBoardColumn` in
+`apps/desktop/src/shared/attention/activityBoardColumn.ts`. It trusts a valid
+published column and otherwise derives one from the phase for items an older
+brain sent (it never derives Waiting). The function is implemented in
+TypeScript, in Swift for iOS, and in the push relay, which imports nothing from
+this repo. `activityBoardColumn.cases.json` beside it pins all three: change the
+rule there first, update the cases, then let the mirrors follow.
+
+The older six-group table (`activityStateGroup`, pinned by
+`activityStateGroup.cases.json`) still feeds the relay's `groups` field for app
+builds that predate the four-column Live Activity, and the surfaces that have
+not moved to the four columns yet.
 
 ## Topology
 
@@ -561,15 +579,41 @@ device so a sibling phone's success cannot falsely satisfy the retry.
 
 ## Delivery policy and preferences
 
-Balanced defaults:
+Defaults (`defaultPolicy` in `apps/desktop/src/shared/activityCatalog.ts`,
+mirrored by `DEFAULT_NOTIFY_EVENTS` in the relay):
 
 | Event | Default |
 | --- | --- |
-| Running / progress | Ambient |
 | Needs you | Notify |
-| Failed / checks failing / changes requested | Notify |
-| Review requested / merge ready | Notify |
+| Failed | Notify |
+| Checks failing | Notify |
+| Running / progress | Ambient |
+| Review requested / changes requested / merge ready | Ambient |
 | Completed / merged / opened / closed | Ambient |
+
+Review requests, requested changes and merge-ready PRs notified by default
+before policy-defaults version 2. Every save writes the whole `eventPolicies`
+map, so a saved "notify" for one of them cannot tell a choice from the old
+default. `eventPolicyDefaultsVersion` on the account scope settles it: a scope
+without version 2 reads those three "notify" values as the new default
+("ambient"). The desktop settings model applies the same upgrade on load
+(`upgradeAttentionEventPolicies`) and saves version 2, so a choice the user makes
+after that stays.
+
+### Push copy
+
+`attentionAlertCopy` in the relay builds every account push:
+
+| Kind | Title | Body |
+| --- | --- | --- |
+| Agent | the session title | state · project · machine, for example `Needs you · ADE · Arul's Mac Studio` |
+| Pull request | `#1514` and the PR title | state · project, for example `Checks failing · ADE` |
+| Hide details on | `Agent: Needs you` or `Pull request: Checks failing` | none |
+
+Each line is cut at 64 characters with an ellipsis. The agent's preview text
+never goes in a push: it is a paragraph nobody reads on a Lock Screen, and the
+row the push opens shows it in full. An agent item that offers both Approve and
+Deny carries the `ADE_APPROVAL` category, so the banner shows the two buttons.
 
 Preferences support account defaults plus device, project, and machine
 overrides. The `machines` scope is keyed by machine key and is what "mute this
@@ -857,12 +901,26 @@ and paired-machine route; omitted tokens preserve the existing registration.
 
 ## Live Activity and widgets
 
-There is one account-wide `agent-runs` Live Activity per iPhone. The relay
-prioritizes and caps up to three agent rows and two PR rows.
+There is one account-wide `agent-runs` Live Activity per iPhone, and only the
+relay starts it. A brain never starts a Live Activity of its own: the per-machine
+activity it used to start when account delivery was unavailable is how a phone
+came to show two. The relay's legacy `/machines/:key/publish` route still lets an
+older brain end the activity it started, and reports its start and update frames
+as suppressed so the brain stops retrying.
 
-- Ordinary open PRs do not keep the activity alive.
-- Running, starting, needs-you, and blocked agent work contributes to the active
-  count.
+The content state leads with `columns`: `{ needsYou, working, waiting, done }`,
+the account-wide agent counts in the four states. It is always present, zeros
+included. The relay still sends the older `runs`, `prs`, `groups` and
+`activeCount` fields for app builds that predate the four-tile design.
+
+- The activity lives while any agent needs you, works, or waits. When only Done
+  remains, the relay ends it.
+- A push-to-start carries an alert, as ActivityKit requires. Its title is `ADE`
+  and its body is the counts, for example `2 need you · 5 working`.
+- A needs-you change pushes at once. A change to the working, waiting or done
+  counts pushes at most once every 5 minutes
+  (`LIVE_ACTIVITY_COUNT_REFRESH_MS`), so a busy account cannot use up the
+  ActivityKit budget while every number still settles within minutes.
 - Completed/merged outcomes remain until seen, then disappear.
 - Disabling Live Activities actively ends an existing account activity.
 - When `hideDetails` is enabled, per-device content is redacted before APNs

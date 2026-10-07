@@ -7,7 +7,7 @@ import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/cross
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
-import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
+import { isSessionSnoozed, lanePrWaitingReason } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
   AgentChatLogState,
   SyncRosterChat,
@@ -74,6 +74,8 @@ export type RosterLiveSession = {
    * so a chat whose subagents are still working is not reported as idle.
    */
   activeBackgroundTaskCount?: number | null;
+  /** The chat's next scheduled wake, if one is parked. */
+  nextWakeAt?: string | null;
   /**
    * Set on CTO/identity chats. Identity sessions are deliberately omitted from
    * the normal project roster, but this marker remains available as a
@@ -158,9 +160,18 @@ type TerminalSessionRow = {
   snoozed_at: string | null;
 };
 
+type PullRequestRow = {
+  lane_id: string;
+  state: string;
+  checks_status: string | null;
+  review_status: string | null;
+};
+
 type DiskProjectData = {
   lanes: LaneRow[];
   chats: TerminalSessionRow[];
+  /** Lane id → why a running session there waits on its PR. */
+  prWaitingReasonByLaneId: Map<string, "ci" | "review">;
 };
 
 // --- Helpers -----------------------------------------------------------------
@@ -266,7 +277,7 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
  * the project still appears in the roster (just without rows).
  */
 function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> | null): DiskProjectData {
-  const empty: DiskProjectData = { lanes: [], chats: [] };
+  const empty: DiskProjectData = { lanes: [], chats: [], prWaitingReasonByLaneId: new Map() };
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
   if (!fs.existsSync(dbPath)) return empty;
 
@@ -337,7 +348,38 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
         })()
       : [];
 
-    return { lanes, chats };
+    const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
+    if (hasTable(db, "pull_requests")) {
+      const prsByLaneId = new Map<string, Array<{
+        state: string;
+        checksStatus: string | null;
+        reviewStatus: string | null;
+      }>>();
+      const rows = db
+        .prepare(
+          `
+            select lane_id, state, checks_status, review_status
+            from pull_requests
+            where state in ('open', 'draft')
+          `,
+        )
+        .all<PullRequestRow>();
+      for (const row of rows) {
+        const list = prsByLaneId.get(row.lane_id) ?? [];
+        list.push({
+          state: row.state,
+          checksStatus: row.checks_status,
+          reviewStatus: row.review_status,
+        });
+        prsByLaneId.set(row.lane_id, list);
+      }
+      for (const [laneId, prs] of prsByLaneId) {
+        const reason = lanePrWaitingReason(prs);
+        if (reason) prWaitingReasonByLaneId.set(laneId, reason);
+      }
+    }
+
+    return { lanes, chats, prWaitingReasonByLaneId };
   } catch (error) {
     logger?.warn?.("sync_host.roster_project_read_failed", {
       projectRoot,
@@ -431,7 +473,10 @@ function rosterRepoOriginUrl(record: RosterProjectRecord): string | null {
   return normalizeGitRemoteIdentity(record.gitOriginUrl ?? null);
 }
 
-function mapLane(row: LaneRow): SyncRosterLane {
+function mapLane(
+  row: LaneRow,
+  prWaitingReasonByLaneId: ReadonlyMap<string, "ci" | "review">,
+): SyncRosterLane {
   return {
     id: row.id,
     name: row.name,
@@ -439,6 +484,7 @@ function mapLane(row: LaneRow): SyncRosterLane {
     icon: row.icon,
     laneType: row.lane_type,
     branchRef: row.branch_ref,
+    prWaitingReason: prWaitingReasonByLaneId.get(row.id) ?? null,
   };
 }
 
@@ -613,6 +659,7 @@ async function buildRosterProject(
       exitCode: row.exit_code,
       snoozedUntil: row.snoozed_until,
       snoozedAt: row.snoozed_at,
+      ...(live?.nextWakeAt ? { nextWakeAt: live.nextWakeAt } : {}),
       ...(chatLog
         ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
         : {}),
@@ -630,7 +677,7 @@ async function buildRosterProject(
     booted,
     runningCount,
     attentionCount,
-    lanes: visibleLanes.map(mapLane),
+    lanes: visibleLanes.map((lane) => mapLane(lane, disk.prWaitingReasonByLaneId)),
     chats,
   };
 }

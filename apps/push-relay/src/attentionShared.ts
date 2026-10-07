@@ -43,6 +43,29 @@ export type OwnedAttentionDeviceRow = AttentionDeviceRow & {
   ownership_epoch: number;
 };
 
+export type ActivityBoardColumn = "needs_you" | "working" | "waiting" | "done";
+export type ActivityWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
+
+export const ACTIVITY_BOARD_COLUMNS: readonly ActivityBoardColumn[] = [
+  "needs_you",
+  "working",
+  "waiting",
+  "done",
+];
+
+export function isActivityBoardColumn(value: unknown): value is ActivityBoardColumn {
+  return typeof value === "string"
+    && (ACTIVITY_BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
+export function isActivityWaitingReason(value: unknown): value is ActivityWaitingReason {
+  return value === "snoozed"
+    || value === "ci"
+    || value === "review"
+    || value === "scheduled"
+    || value === "subagent";
+}
+
 export type ParsedAttentionItem = Record<string, unknown> & {
   contractVersion: 1;
   id: string;
@@ -55,6 +78,11 @@ export type ParsedAttentionItem = Record<string, unknown> & {
   // so "planning" could not be added to it; the publisher stamps this instead.
   // Absent means "not planning" — planning is NEVER inferred from a phase.
   chatActivityMode?: "planning";
+  // Optional and additive: the Work-board column the publishing brain computed
+  // for an agent item, and why it waits. Absent from older publishers; readers
+  // then derive a column from the phase (`activityBoardColumn`).
+  boardColumn?: ActivityBoardColumn;
+  waitingReason?: ActivityWaitingReason;
   kind: "agent" | "pull_request";
   eventKind: string;
   phase: string;

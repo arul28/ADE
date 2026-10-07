@@ -8,6 +8,7 @@ import {
 
 import {
   DEFAULT_ATTENTION_PREFERENCES,
+  upgradeAttentionEventPolicies,
   type AttentionPreferences,
 } from "../../../shared/types";
 import { useAccountStatus } from "../../lib/account";
@@ -62,16 +63,17 @@ const RETIRED_ACCOUNT_PREFERENCE_KEYS = ["notchRevealMode", "notchExpandedPanel"
 function normalizeActivityPreferences(
   preferences: AttentionPreferences,
 ): AttentionPreferences {
+  const saved = upgradeAttentionEventPolicies(preferences.account ?? {});
   const account: AttentionPreferences["account"] & Record<string, unknown> = {
     ...DEFAULT_ATTENTION_PREFERENCES.account,
-    ...preferences.account,
+    ...saved,
     eventPolicies: {
       ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
-      ...preferences.account?.eventPolicies,
+      ...saved.eventPolicies,
     },
     quietHours: {
       ...DEFAULT_ATTENTION_PREFERENCES.account.quietHours,
-      ...preferences.account?.quietHours,
+      ...saved.quietHours,
     },
   };
   for (const key of RETIRED_ACCOUNT_PREFERENCE_KEYS) delete account[key];

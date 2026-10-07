@@ -1,4 +1,5 @@
 import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
@@ -146,6 +147,20 @@ export type AttentionItem = {
    * validate it at the boundary (`activityStateGroup`) rather than trusting it.
    */
   chatActivityMode?: "planning" | null;
+  /**
+   * The Work-board column this agent item files under, computed by the
+   * publishing brain with the board's own rules (a failure is Needs you, a
+   * snoozed row or a lane PR mid-CI or awaiting review is Waiting). Every
+   * Activity surface groups by it, so the board, the desktop panel, the phone
+   * and the Live Activity count the same four states.
+   *
+   * Optional and additive: older publishers omit it, and readers then derive a
+   * column from the phase through `activityBoardColumn`. Pull-request items
+   * never carry it; they are notifications, not agents.
+   */
+  boardColumn?: WorkBoardColumn | null;
+  /** Why the item is in Waiting. Present only when `boardColumn` is `waiting`. */
+  waitingReason?: WorkBoardWaitingReason | null;
   title: string;
   preview: string;
   privacyPreview: string;
@@ -185,10 +200,6 @@ export type AttentionItem = {
  * currently unused by any phase; it stays in the union and the stylesheets as
  * the spare for the next PR-side distinction, and must never be handed to a
  * session state — those five hues are settled.
- *
- * It lives here rather than beside the phase table because the native notch
- * protocol carries it on the wire (`NotchStatusTone` in `AttentionModels.swift`
- * mirrors this union), so main-process code has to name it too.
  */
 export type AttentionTone =
   | "amber"
@@ -300,6 +311,12 @@ export type AttentionPresence = {
 
 export type AttentionPreferenceScope = {
   eventPolicies: Record<AttentionEventKind, AttentionDeliveryPolicy>;
+  /**
+   * Which default event policies `eventPolicies` was saved against. Absent
+   * means version 1, when review requests, requested changes and merge-ready
+   * PRs notified by default. See `upgradeAttentionEventPolicies`.
+   */
+  eventPolicyDefaultsVersion?: number;
   notificationsEnabled: boolean;
   liveActivitiesEnabled: boolean;
   desktopFirstEnabled: boolean;
@@ -498,9 +515,52 @@ export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
   ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
 ) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
 
+/**
+ * Version 2: only the urgent events (a question, a failure, red CI) notify by
+ * default. Bump it when a default policy changes, and add the change to
+ * `upgradeAttentionEventPolicies`. The push relay applies the same rule.
+ */
+export const ATTENTION_EVENT_POLICY_DEFAULTS_VERSION = 2;
+
+/** Events that notified under version 1 defaults and are ambient from version 2. */
+const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2: readonly AttentionEventKind[] = [
+  "pr_review_requested",
+  "pr_changes_requested",
+  "pr_merge_ready",
+];
+
+/**
+ * Bring saved event policies onto the current defaults.
+ *
+ * Every save writes the whole `eventPolicies` map, so a "notify" saved under an
+ * older version cannot tell a user's choice apart from the default it was
+ * saved with. Version 2 treats it as the default and moves it to "ambient".
+ * After that the scope carries the current version, so any later choice stays.
+ */
+export function upgradeAttentionEventPolicies<T extends Partial<AttentionPreferenceScope>>(
+  scope: T,
+): T {
+  const version = typeof scope.eventPolicyDefaultsVersion === "number"
+    ? scope.eventPolicyDefaultsVersion
+    : 1;
+  if (version >= ATTENTION_EVENT_POLICY_DEFAULTS_VERSION) return scope;
+  const eventPolicies = scope.eventPolicies ? { ...scope.eventPolicies } : undefined;
+  if (eventPolicies) {
+    for (const kind of EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2) {
+      if (eventPolicies[kind] === "notify") eventPolicies[kind] = "ambient";
+    }
+  }
+  return {
+    ...scope,
+    ...(eventPolicies ? { eventPolicies } : {}),
+    eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
+  };
+}
+
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
     eventPolicies: BALANCED_ATTENTION_EVENT_POLICIES,
+    eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
     notificationsEnabled: true,
     liveActivitiesEnabled: true,
     desktopFirstEnabled: true,

@@ -1186,6 +1186,25 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
     outcomes.push(...await deliverAlertItem(env, config, machineKey, devices, item, defaultTopic));
   }
   for (const item of liveActivities) {
+    // The Live Activity is account-wide and owned by the account route. A
+    // per-machine one from an older brain is how a phone showed two, so this
+    // route only lets such a brain END the activity it already started. Start
+    // and update report as suppressed, so the old brain stops retrying.
+    if (item.event !== "end") {
+      for (const device of devices) {
+        if (item.deviceIds && !item.deviceIds.includes(device.device_id)) continue;
+        outcomes.push({
+          deviceId: device.device_id,
+          kind: "liveactivity",
+          delivered: false,
+          suppressed: true,
+          skipped: null,
+          status: null,
+          reason: "account_live_activity_only",
+        });
+      }
+      continue;
+    }
     outcomes.push(...await deliverLiveActivityItem(env, config, machineKey, devices, item, defaultTopic));
   }
   // Publishes far outnumber device re-registrations, so prune here too or a

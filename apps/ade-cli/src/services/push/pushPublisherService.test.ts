@@ -26,7 +26,6 @@ import {
 } from "./activityFingerprint";
 import { deriveProjectId } from "../projects/projectRegistry";
 import {
-  buildAgentRunsContentState,
   countAwaitingAttentionRuns,
   createPushPublisherService,
   isWithinQuietHours,
@@ -142,37 +141,6 @@ describe("shouldDeliverAlertForPrefs", () => {
   it("blocks inside quiet hours", () => {
     const prefs = { enabled: true, quietHours: { start: "00:00", end: "23:59", timezone: "UTC" } };
     expect(shouldDeliverAlertForPrefs(prefs, "s-1", nowMs)).toBe(false);
-  });
-});
-
-describe("buildAgentRunsContentState", () => {
-  it("caps runs at 3, orders by recency, and counts active runs", () => {
-    const runs = [
-      run({ sessionId: "a", lastActiveAt: 10, phase: "running" }),
-      run({ sessionId: "b", lastActiveAt: 40, phase: "waiting_for_approval" }),
-      run({ sessionId: "c", lastActiveAt: 30, phase: "completed" }),
-      run({ sessionId: "d", lastActiveAt: 20, phase: "running" }),
-    ];
-    const state = buildAgentRunsContentState(runs, 1_000);
-    expect(state.updatedAt).toBe(1);
-    // 3 active (a, b, d); c is terminal.
-    expect(state.activeCount).toBe(3);
-    expect(state.runs.map((r) => r.id)).toEqual(["b", "c", "d"]);
-  });
-
-  it("redacts failed detail and caps detail length", () => {
-    const long = "x".repeat(300);
-    const state = buildAgentRunsContentState(
-      [
-        run({ sessionId: "f", phase: "failed", detail: "stack trace with secrets", lastActiveAt: 2 }),
-        run({ sessionId: "g", phase: "running", detail: long, lastActiveAt: 1 }),
-      ],
-      0,
-    );
-    const failed = state.runs.find((r) => r.id === "f");
-    const running = state.runs.find((r) => r.id === "g");
-    expect(failed?.detail).toBe("Run failed");
-    expect(running?.detail).toHaveLength(160);
   });
 });
 

@@ -4367,20 +4367,22 @@ describe("account Attention contract", () => {
     expect(parsed).not.toBeNull();
     if (!parsed) throw new Error("setup precondition: agent Attention item must parse");
 
-    expect(attentionTestInternals.notificationTitle(parsed, false)).toBe(
+    expect(attentionTestInternals.attentionAlertCopy(parsed, false).title).toBe(
       "Approve the migration",
     );
-    expect(attentionTestInternals.notificationTitle(parsed, true)).toBe(
-      "ADE agent update",
-    );
+    expect(attentionTestInternals.attentionAlertCopy(parsed, true)).toEqual({
+      title: "Agent: Needs you",
+      body: null,
+    });
 
     const pullRequest = {
       ...parsed,
       kind: "pull_request",
     } as typeof parsed;
-    expect(attentionTestInternals.notificationTitle(pullRequest, true)).toBe(
-      "ADE pull request update",
-    );
+    expect(attentionTestInternals.attentionAlertCopy(pullRequest, true)).toEqual({
+      title: "Pull request: Needs you",
+      body: null,
+    });
   });
 
   it("keeps exact account-machine routing in cross-machine alerts and Live Activity rows", () => {
