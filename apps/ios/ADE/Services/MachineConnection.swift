@@ -611,8 +611,9 @@ final class MachineConnection {
   private func startRelayReauthorization(lease: SyncRelayAuthorizationLease, generation leaseGeneration: UInt64) {
     guard let pairedDeviceId = nonEmptyTrimmed(profile.pairedDeviceId) else { return }
     relayReauthorizationTask?.cancel()
+    // No strong self here: the loop's closures hold the connection weakly, and
+    // `closeSocket` cancels this task.
     relayReauthorizationTask = Task { @MainActor [weak self] in
-      guard let self else { return }
       await syncRunRelayReauthorizationLoop(
         lease: lease,
         isCurrent: { [weak self] in
@@ -620,22 +621,9 @@ final class MachineConnection {
           return self.generation == leaseGeneration && self.socket != nil
         },
         makeAttempt: { activeLease -> (requestId: String, payload: [String: Any]) in
-          let relaySession = try await AccountService.shared.freshRelaySession()
-          guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
-            deviceId: pairedDeviceId,
-            relayAccountToken: relaySession.token,
-            challenge: activeLease.challenge
-          ) else {
-            throw RelayReauthorizationFailure(
-              code: "invalid_proof",
-              message: "This iPhone could not refresh its secure Relay proof.",
-              retryable: false,
-              receivedHostResult: true
-            )
-          }
-          return (
+          (
             requestId: UUID().uuidString,
-            payload: ["deviceId": pairedDeviceId, "relayAccountToken": relaySession.token, "proof": proof]
+            payload: try await syncRelayReauthorizationPayload(deviceId: pairedDeviceId, lease: activeLease)
           )
         },
         perform: { [weak self] attempt in

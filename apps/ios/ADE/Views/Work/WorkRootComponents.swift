@@ -1922,8 +1922,6 @@ private struct WorkHeaderOverflowMenu: View {
   }
 }
 
-/// A lane's rolled-up status as one dot in the board column's accent — the same
-/// accents as the status chips (`statusFilterTint`) and the desktop board.
 /// Marks a lane that lives on another machine, after its name: two machines'
 /// lanes can share a name, and the machine never goes in the title.
 struct WorkRemoteLaneGlyph: View {
@@ -1935,6 +1933,8 @@ struct WorkRemoteLaneGlyph: View {
   }
 }
 
+/// A lane's rolled-up status as one dot in the board column's accent — the same
+/// accents as the status chips (`statusFilterTint`) and the desktop board.
 struct WorkLaneFocusDot: View {
   let status: WorkLaneFocusStatus
 

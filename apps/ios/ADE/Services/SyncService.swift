@@ -3862,6 +3862,37 @@ func syncRelayReauthorizationLease(from raw: Any) throws -> SyncRelayAuthorizati
   )
 }
 
+/// The `relay_reauthorize` payload, shared by the focused and roster
+/// connections: a fresh account token and a DPoP proof over the lease's
+/// challenge. `stillCurrent` runs after the token fetch, so a caller whose
+/// socket moved on stops before signing.
+@MainActor
+func syncRelayReauthorizationPayload(
+  deviceId: String,
+  lease: SyncRelayAuthorizationLease,
+  stillCurrent: () -> Bool = { true }
+) async throws -> [String: Any] {
+  let relaySession = try await AccountService.shared.freshRelaySession()
+  guard !Task.isCancelled, stillCurrent() else { throw CancellationError() }
+  guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
+    deviceId: deviceId,
+    relayAccountToken: relaySession.token,
+    challenge: lease.challenge
+  ) else {
+    throw RelayReauthorizationFailure(
+      code: "invalid_proof",
+      message: "This iPhone could not refresh its secure Relay proof.",
+      retryable: false,
+      receivedHostResult: true
+    )
+  }
+  return [
+    "deviceId": deviceId,
+    "relayAccountToken": relaySession.token,
+    "proof": proof,
+  ]
+}
+
 @MainActor
 func installRelayReauthorizationLeaseIfCurrent(
   _ lease: SyncRelayAuthorizationLease,
@@ -19286,33 +19317,15 @@ final class SyncService: ObservableObject {
     guard let pairedDeviceId = activeHostProfile?.pairedDeviceId else {
       throw CancellationError()
     }
-    let relaySession = try await AccountService.shared.freshRelaySession()
-    guard !Task.isCancelled,
-          syncRelayReauthorizationContextIsCurrent(
-            scheduledGeneration: scheduledGeneration,
-            currentGeneration: connectionGeneration,
-            scheduledSocketIdentifier: scheduledSocketIdentifier,
-            currentSocketIdentifier: socket.map(ObjectIdentifier.init)
-          ) else { throw CancellationError() }
-    guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
-      deviceId: pairedDeviceId,
-      relayAccountToken: relaySession.token,
-      challenge: lease.challenge
-    ) else {
-      throw RelayReauthorizationFailure(
-        code: "invalid_proof",
-        message: "This iPhone could not refresh its secure Relay proof.",
-        retryable: false,
-        receivedHostResult: true
+    let payload = try await syncRelayReauthorizationPayload(deviceId: pairedDeviceId, lease: lease) {
+      syncRelayReauthorizationContextIsCurrent(
+        scheduledGeneration: scheduledGeneration,
+        currentGeneration: self.connectionGeneration,
+        scheduledSocketIdentifier: scheduledSocketIdentifier,
+        currentSocketIdentifier: self.socket.map(ObjectIdentifier.init)
       )
     }
-
     let requestId = makeRequestId()
-    let payload: [String: Any] = [
-      "deviceId": pairedDeviceId,
-      "relayAccountToken": relaySession.token,
-      "proof": proof,
-    ]
     return RelayReauthorizationAttempt(
       requestId: requestId,
       payload: payload,

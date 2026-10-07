@@ -211,15 +211,17 @@ struct ADEKitDot: View {
 }
 
 /// A small tinted pill (`.kit-tag`): mono caps, 18pt tall. `color` tints it
-/// with a hue that already carries meaning instead of a kit tone.
+/// with a hue that already carries meaning instead of a kit tone. A
+/// user-chosen name (a lane, a machine) passes `keepsCase: true`.
 struct ADEKitTag: View {
   let text: String
   var tone: ADEKitTone = .neutral
   var color: Color? = nil
+  var keepsCase = false
 
   var body: some View {
     let tint = color ?? (tone == .neutral ? ADEColor.textSecondary : tone.color)
-    Text(text.uppercased())
+    Text(keepsCase ? text : text.uppercased())
       .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
       .tracking(0.5)
       .foregroundStyle(tint)
@@ -458,10 +460,11 @@ struct ADEKitButtonStyle: ButtonStyle {
 /// Custom button styles do not dim when disabled; this does, from the
 /// environment the button sets.
 private struct ADEKitDisabledDim: ViewModifier {
+  var enabled = true
   @Environment(\.isEnabled) private var isEnabled
 
   func body(content: Content) -> some View {
-    content.opacity(isEnabled ? 1 : 0.45)
+    content.opacity(enabled && !isEnabled ? 0.45 : 1)
   }
 }
 
@@ -667,13 +670,17 @@ extension View {
   }
 }
 
-/// A full-width row that highlights while pressed (`.kit-row`).
+/// A full-width row that highlights while pressed (`.kit-row`). A row that
+/// draws its own unavailable state (muted text plus a reason) passes
+/// `dimsWhenDisabled: false`, so the reason stays readable.
 struct ADEKitRowButtonStyle: ButtonStyle {
+  var dimsWhenDisabled = true
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .contentShape(Rectangle())
       .background(configuration.isPressed ? ADEKit.pressed : Color.clear)
-      .modifier(ADEKitDisabledDim())
+      .modifier(ADEKitDisabledDim(enabled: dimsWhenDisabled))
   }
 }
 

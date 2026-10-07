@@ -375,7 +375,7 @@ struct LaneBranchPickerSheet: View {
         if current {
           ADEKitTag(text: "Current", tone: .ok)
         } else if let owner {
-          ADEKitTag(text: owner, color: ADEColor.warning)
+          ADEKitTag(text: owner, color: ADEColor.warning, keepsCase: true)
         } else if branch.profiledInCurrentLane == true {
           ADEKitTag(text: "Used here")
         }

@@ -269,6 +269,11 @@ final class SettingsMachineController: ObservableObject {
       if machine.machineKey != nil, let primary = syncService.focusedMachineKey {
         candidates.append((key: primary, name: syncService.focusedMachineDisplayName))
       }
+      guard !candidates.isEmpty else {
+        // Only pairings still in flight fill the limit: nothing to disconnect yet.
+        errors[machine.id] = "Wait for the machine that is pairing to finish, then connect this one."
+        return
+      }
       limitPrompt = SettingsMachineLimitPrompt(target: machine, candidates: candidates)
       return
     }
@@ -334,8 +339,11 @@ final class SettingsMachineController: ObservableObject {
     var live = false
     pairingAlongsideIds.insert(machine.id)
     run(machine, successToast: { live ? "\(machine.name) connected" : "\(machine.name) paired · connecting…" }) {
-      defer { self.pairingAlongsideIds.remove(machine.id) }
-      switch await syncService.pairAccountMachineAlongsidePrimary(accountMachine, authorization: authorization) {
+      let result = await syncService.pairAccountMachineAlongsidePrimary(accountMachine, authorization: authorization)
+      // Paired (into the connected set) or failed: no longer pending either way,
+      // so it is never counted twice while its link comes up.
+      self.pairingAlongsideIds.remove(machine.id)
+      switch result {
       case .failure(let failure):
         self.errors[machine.id] = failure.message
         return false

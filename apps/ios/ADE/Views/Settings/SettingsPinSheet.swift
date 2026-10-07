@@ -499,6 +499,7 @@ private struct PinKeypad: View {
         .disabled(isDisabled)
         .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
         .adeKitCard(padding: nil, radius: 10)
+        .opacity(isDisabled ? 0.5 : 1)
         .accessibilityLabel("Delete digit")
       }
     }
@@ -551,6 +552,7 @@ private struct PinKeyButton: View {
     .disabled(isDisabled)
     .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
     .adeKitCard(padding: nil, radius: 10)
+    .opacity(isDisabled ? 0.5 : 1)
     .accessibilityLabel("Digit \(title)")
   }
 }

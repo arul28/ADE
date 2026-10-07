@@ -483,10 +483,13 @@ func syncRunRelayReauthorizationLoop<Attempt>(
     }
     refreshNow = true
     do {
-      if activeAttempt == nil {
-        activeAttempt = try await makeAttempt(activeLease)
+      let attemptToSend: Attempt
+      if let pending = activeAttempt {
+        attemptToSend = pending
+      } else {
+        attemptToSend = try await makeAttempt(activeLease)
+        activeAttempt = attemptToSend
       }
-      guard let attemptToSend = activeAttempt else { throw CancellationError() }
       let refreshed = try await perform(attemptToSend)
       try install(refreshed)
       activeLease = refreshed

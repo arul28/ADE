@@ -216,7 +216,6 @@ struct LaneDetailGitActionsPane: View {
           .buttonStyle(ADEKitButtonStyle(prominent: true))
           .frame(minHeight: 36)
           .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
-          .opacity(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty) ? 0.45 : 1)
       }
       HStack(spacing: 6) {
         Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }

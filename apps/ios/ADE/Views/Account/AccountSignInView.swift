@@ -332,7 +332,6 @@ struct AccountSignInView: View {
     .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     .accessibilityIdentifier(identifier)
     .disabled(disabled || busy != nil)
-    .opacity(disabled ? 0.55 : 1)
   }
 
   private var emailLooksValid: Bool {

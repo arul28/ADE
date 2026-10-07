@@ -643,7 +643,7 @@ struct WorkModelPickerSheet: View {
       .background(isSelected ? ADEColor.accent.opacity(0.08) : Color.clear)
       .contentShape(Rectangle())
     }
-    .buttonStyle(ADEKitRowButtonStyle())
+    .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: false))
     .disabled(!preset.bound)
     .accessibilityLabel(
       "\(preset.name), \(harnessLabel), \(modelLabel)"

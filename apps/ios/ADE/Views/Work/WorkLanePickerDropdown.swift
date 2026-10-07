@@ -377,7 +377,7 @@ struct WorkLanePickerMenu: View {
       .padding(.vertical, 11)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .buttonStyle(ADEKitRowButtonStyle())
+    .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: false))
     .disabled(disabled)
   }
 }
