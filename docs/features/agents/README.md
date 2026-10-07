@@ -83,6 +83,11 @@ into the Work list:
   it does not cover. It never changes the parent board phase, **Needs you**
   takes priority, and a new user turn clears it. Provider guidance exposes this
   only when ADE can make a session-scoped CLI call reliably.
+- `ade notify --title "Deploy finished" [--body "…"] [--open ade://…]` pushes
+  a notification the agent wrote to the user's phones, for when the user asked
+  to be told. It is open to agents (not CTO-only), capped at 60 an hour per
+  account, and exits non-zero past the cap or when the machine is signed out.
+  See [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next
   user turn clears the ask.

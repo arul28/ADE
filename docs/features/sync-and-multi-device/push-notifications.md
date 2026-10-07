@@ -81,10 +81,11 @@ TypeScript, in Swift for iOS, and in the push relay, which imports nothing from
 this repo. `activityBoardColumn.cases.json` beside it pins all three: change the
 rule there first, update the cases, then let the mirrors follow.
 
-The older six-group table (`activityStateGroup`, pinned by
-`activityStateGroup.cases.json`) still feeds the relay's `groups` field for app
-builds that predate the four-column Live Activity, and the surfaces that have
-not moved to the four columns yet.
+The older six-group table (needs-you, failed, planning, working, idle, done) now
+lives only in the relay, which still fills the Live Activity's `groups` field
+from it for app builds that predate the four-column Live Activity.
+`activityStateGroup.cases.json` pins that relay mapping (and the iOS mirror
+until it moves); desktop, the hosted web client and ADE Code no longer read it.
 
 ## Topology
 
@@ -295,6 +296,7 @@ The account routes are:
 GET    /attention/account/snapshot?since=<revision>
 POST   /attention/account/ack
 POST   /attention/account/presence
+POST   /attention/account/notify
 GET    /attention/account/preferences
 PUT    /attention/account/preferences
 PATCH  /attention/account/preferences/devices/:deviceId
@@ -697,6 +699,42 @@ other notifying events use active interruption. Alert pushes also carry
 `content-available`, so the visible alert doubles as a background wake for a
 snapshot refresh — foreground polling remains the guaranteed path, not this.
 
+## Custom notifications
+
+`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` sends a push the
+caller wrote to every phone on the account. Agents use it when the user asked to
+be told ("tell me when the deploy is done"), and automations use it through the
+**Send notification** step (an ADE-action step for `attention.sendNotification`).
+
+The path is CLI or automation → `attention.sendNotification` on the brain → the
+account relay client → `POST /attention/account/notify` with the account's
+Clerk bearer token, like every other account route. The brain sends its own
+relay machine key, so a phone that muted this machine stays quiet.
+
+| Field | Limit |
+| --- | --- |
+| `title` | required, up to 64 characters |
+| `body` | optional, up to 160 characters |
+| `deepLink` | optional, `ade://` links only |
+| `machineKey` | optional, the sending machine |
+
+The relay sends the text exactly as written: no agent text, no state suffix.
+Each phone gets the alert unless its notifications are off, it is in quiet
+hours, or it muted the sending machine (`machines[<key>].notificationsEnabled`).
+`soundsEnabled` applies as it does to other alerts. The response counts
+`devices`, `delivered`, `skipped` and `failed`, plus `remaining` for the hour.
+
+An account may send **60 per hour window**. The relay counts them in
+`rate_counters` (bucket `notify:<account>`) before the fan-out, so parallel
+calls cannot slip past the cap, and keeps those rows past the 15-minute rate
+prune so a quiet spell cannot reopen the hour early. Past the cap it answers
+`429` with `retryAfterSeconds` and a `Retry-After` header; `ade notify` exits
+non-zero and says when to try again. It also exits non-zero when this machine
+is signed out. Every call still counts against the daily request budget.
+
+Cost: APNs is free. One custom push costs about one Worker request and one D1
+row write (the counter upsert); a rejected call over the cap writes nothing.
+
 ## Desktop Activity
 
 `AttentionAccountCoordinator` in Electron main owns desktop reads and
@@ -715,53 +753,57 @@ an empty account.
 
 `useActivitySync` remains mounted in `AppShell`, so the global-header control
 stays truthful across project switches and while `/activity` is
-closed. The header count is the `needs-you` group and nothing else; live work is
+closed. The header count is the Needs you column (failures included) and nothing else; live work is
 an ambient pulse rather than an inflated inbox count.
 
-Both surfaces are built from `activityPriority.ts`, which projects the snapshot
-into agent sections and a notification tail:
+Both sizes of Activity are one panel, `ActivityPanel.tsx`, fed by
+`activityPriority.ts`:
 
 - `activityFeedItems` — live, non-dismissed `kind: "agent"` rows.
-- `activitySections` — those rows grouped by state, always returning all six
-  descriptors (including empty ones) so the popover and pane share
-  headings without re-declaring order. A section **is** a state group;
-  they were separate vocabularies once, and the drift showed up as a
-  "Working 0" heading above rows that were plainly working.
+- `activitySections` — those rows grouped by Work-board column with
+  `activityBoardColumn`, always returning all four descriptors in board order.
 - `activityNotificationItems` — everything that is not an agent and is
   inbox-eligible, sorted. Eligibility rather than "every PR", because an open
   pull request nobody is waiting on is not a notification.
-- `activityFeedOrder` — the flattened agent sections followed by the
-  notification tail.
+- `summarizeActivity` — the counts the trigger, the chips and the footer share.
+  The badge is the Needs you column, failures included.
 
-The keyboard-accessible header popover shows every section except the two
-resting bands (`idle` and `done`): those are the most common states, and a
-dropdown that opens onto a wall of finished and gone-quiet work buries the two
-rows that wanted a human. Both stay one click away in the pane, and the footer
-keeps counting them.
+The panel, in both sizes, is a **Sessions / Inbox** switch with counts, then
+for Sessions the chips **All · Needs you · Working · Waiting · Done** with
+counts (single-select; the counts never narrow with the chip, so every column
+stays one click away), then the rows grouped by column. Done folds into one
+"N done" line until it is opened, from that line or the Done chip, and folds
+back from its heading. A row shows the lane or branch, the machine chip, its
+column state with time in that state (`activityRowStatus`), the title, one
+quiet line (the status note or preview) and the provider mark. A failed agent
+reads **Failed** in red under Needs you; a Waiting row carries its reason tag
+(**Snoozed**, **CI running**, **Review requested**). An offline machine's rows
+sit below a labelled divider. The Inbox groups pull request, check and review
+outcomes by project, with per-row dismiss and a single-call **Clear all**.
 
-The `/activity` pane's filter row includes a **state strip**: one glyph and
-count per populated group, single-select, AND-ed with machine / project / chat
-type / model. Counts come from the unfiltered item set so the strip cannot hide
-its own escape routes. Pressing the lit glyph clears the filter.
+The **compact** size is the top-bar popover (`HeaderActivityControl`). It is
+mounted only while open, so it costs nothing while idle; the always-visible
+trigger is the badge and a stepped live pulse. It shows six rows per column and
+hands the rest to the expanded view. A row click opens its destination.
 
-The full `/activity` route provides:
+The **expanded** size is the "Open all" view (`ActivityPane`), a modal over
+whatever tab is in front. It adds:
 
-- an **Agents** column of state-group sections and a **Notifications** column of
-  PR/CI and review outcomes grouped by project, each with per-row dismiss and a
-  single-call Clear all;
-- collapsible section headers — the whole strip is the button, and the collapsed
-  set is remembered per surface (`ade:activity:collapsed-sections-popover` and
-  `-pane`), because folding Done in a glance is not the same choice as folding it
-  in the list you opened to read it;
-- an all-clear beat when the last raised hand goes down: a quiet `role="status"`
-  strip, fired on the transition only and never on arrival, held for 1.8 s;
-- all-machine, machine, and project scopes, and a machine → project → item
-  roster;
-- an exact detail view with the plain-language state sentence
-  (`activityStateSentence` — "Claude is asking a question"), time in the current
-  state derived from the immutable `statusSince`, plan progress, recent activity,
-  safe actions, seen/dismiss state, offline explanation, and retryable
-  acknowledgment;
+- Machine / Project / Type / Model filters (`ActivityFilters`), AND-ed;
+- multi-select: a checkbox on hover, on a checked row, and on every row while
+  anything is checked, with bulk **Mark seen**, **Dismiss** (both through the
+  account acknowledgement path, one call, partial outcomes said out loud) and
+  **Open** (the first eight, stopping at the first that fails). Snooze and
+  Settle are not offered: they are session mutations on the owning machine, and
+  a window can only reach its own (see the note at the top of
+  `ActivityCard.tsx`);
+- an all-clear beat when the last raised hand goes down: a quiet
+  `role="status"` strip, fired on the transition only and held for 1.8 s;
+- an exact detail sheet that slides over the list: the plain-language state
+  sentence (`activityStateSentence` — "Claude needs you", "Claude is waiting on
+  CI"), time in the current state from the immutable `statusSince`, plan
+  progress, recent activity, safe actions, seen/dismiss state, offline
+  explanation, and retryable acknowledgment;
 - account delivery/privacy controls.
 
 ### Opening an item from another machine
@@ -813,7 +855,9 @@ leaving the header pinned on syncing.
 
 ## Hosted web Activity
 
-The hosted browser adapter reads account Activity directly from the relay with
+The hosted web client renders the desktop renderer, so it shows the same
+Activity panel in both sizes, with the same four columns and chips. Only the
+data source differs: the hosted browser adapter reads account Activity directly from the relay with
 its in-memory Clerk access token, independently of the paired machine and
 selected project used for Work, Files, and PR commands. It validates the entire
 snapshot/preferences contract at the network boundary and performs at most one
@@ -833,24 +877,21 @@ snapshot is rejected until Activity refreshes under the new owner.
 
 ## ADE Code Activity
 
-`/activity` opens an account-wide right pane with five headings — `NEEDS YOU`,
-`FAILING OR BLOCKED`, `DONE, UNREVIEWED`, `LIVE NOW`, `RECENT`. The TUI calls
-machine-global `attention.call`, not the selected project's action scope, so
-changing lanes or projects does not change the account source. Enter opens the
-exact ADE destination first and only then sends the owner-fenced seen mutation.
-`/attention` remains an unadvertised compatibility alias.
+`/activity` opens an account-wide right pane with the same four columns as
+desktop: `NEEDS YOU`, `WORKING`, `WAITING`, `DONE`, then the `NOTIFICATIONS`
+tail. A chip line under the status message (`All 12 · Needs you 2 · Working 5 ·
+Waiting 1 · Done 4`) is the summary and the filter: keys 0–4 pick All or one
+column, and the choice survives `R` refresh. Under All, Done folds into one
+`✓ N done · 4 to show` line. A failed agent sits under `NEEDS YOU` with a red
+`×` instead of the `!`; a waiting row names its reason first in its context
+line. The TUI calls machine-global `attention.call`, not the selected project's
+action scope, so changing lanes or projects does not change the account source.
+Enter opens the exact ADE destination first and only then sends the
+owner-fenced seen mutation. `/attention` remains an unadvertised compatibility
+alias.
 
-Its headings are a projection of the shared six-group table rather than a
-second phase ladder: `activityPane.ts` maps each state group onto a pane group
-through `ACTIVITY_PANE_GROUP_BY_STATE_GROUP` (`failed` → failing, `planning` and
-`working` → live, `idle` → recent), then splits the `done` band into
-`DONE, UNREVIEWED` versus `RECENT` on seen state and idle tier. The TUI has no
-separate planning or idle heading, so planning rows sit under `LIVE NOW` and
-idle/stale rows sit under `RECENT` rather than claiming live agents hours after
-they stopped. Because the table is now the single source, `review_requested`,
-`merge_ready`, and `blocked` file under `LIVE NOW` as someone else's move rather
-than borrowing an amber heading, and `open` is live rather than recent.
-`activityPane.test.ts` runs the shared conformance fixture.
+The grouping is `activitySections` from the desktop tree, so the pane cannot
+disagree with the desktop about which column a row is in.
 
 When signed out, ADE Code asks the connected host for its real machine snapshot
 and labels the subset. Account failure may degrade to that same connected-host

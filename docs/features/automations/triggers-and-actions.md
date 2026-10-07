@@ -220,6 +220,16 @@ Action types (`AutomationActionType`):
   - `args` — object or array passed to the domain method. Strings may contain `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time.
   - `resolvers` — optional explicit `{ key: "trigger.path" }` mapping for placeholders that are not embedded in `args` strings.
 
+**Send notification** is an `ade-action` step for `attention.sendNotification`:
+`args` are `title` (up to 64 characters), optional `body` (up to 160) and
+optional `open` (an `ade://` link a tap opens), and all three take
+`{{trigger.*}}` placeholders, for example `PR {{trigger.pr.number}} is ready to
+merge`. It pushes exactly that text to every phone on the ADE account, skipping
+phones with notifications off, in quiet hours, or muting this machine, and an
+account may send 60 an hour; past that the step fails with the time to wait. An
+`agent-session` step can do the same from its shell with `ade notify`. See
+[Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
+
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/actionPolicy.ts`.
 
 Rule config is not a trusted author of chat-message provenance. Before dispatching any `chat` domain action, the automation service runs `stripHostAuthoredMessageProvenance` (from `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts`) over each resolved argument's `metadata`, deleting `spawnDispatch`, `orchestrationOrigin`, `scheduledWake`, `spawnCompletion`, `agentRelay`, and `hostContinuation`. Those keys decide whether a spawned agent's turn completion wakes another agent, and the host derives them from observed identity — see [Chat](../chat/README.md#mission-ownership-decides-the-wake).

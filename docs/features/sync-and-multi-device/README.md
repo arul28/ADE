@@ -2877,15 +2877,10 @@ Account Activity and push:
   brain writes the column on each agent item as `boardColumn`; see
   [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the older six-group state table. The mapping
-  is implemented three times (renderer TypeScript, iOS Swift, and the hermetic
-  relay Worker) because the surfaces cannot share code, and
-  documentation alone did not keep them in step. Every implementation runs these
-  cases through its own mapper. Canonical source of truth:
-  `activityStateGroup` in
-  `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
-  There are six groups, not five: `idle` was split out of `done` because a
-  session that went quiet mid-work is not a session that finished.
+  conformance fixture for the older six-group table. Desktop, the web client and
+  ADE Code no longer group by it; the relay still fills the Live Activity's
+  legacy `groups` field from it for old iOS builds, so the relay (and the iOS
+  mirror, until it moves) run these cases.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
@@ -2901,25 +2896,25 @@ Account Activity and push:
   single account poller, mounted in `AppShell` so the header control stays
   truthful while `/activity` is closed. It also loads the account's Activity
   preferences, and clears the localStorage keys the removed notch left behind.
+- `apps/desktop/src/renderer/components/activity/ActivityPanel.tsx` — the one
+  Activity panel, in two sizes: a Sessions / Inbox switch with counts, the All /
+  Needs you / Working / Waiting / Done chips, the rows grouped by column with
+  Done folded into one "N done" line, and the Inbox list
+  (`ActivityInboxList.tsx`, PR/CI and review outcomes grouped by project).
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
-  the global-header count (the `needs-you` group and nothing else) and its
-  popover preview, which shows every state section except the two resting bands
-  (`idle` and `done`).
+  the global-header count (the Needs you column, failures included) and the
+  compact panel in its popover, mounted only while open.
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
-  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
-  one section per state group, split per machine and divided where an offline
-  machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
-  Notifications column: PR/CI and review outcomes grouped by project),
-  `ActivityFilters.tsx` (machine / project / chat type / model, plus a
-  single-select state-group glyph strip whose counts come from the unfiltered
-  snapshot), and `ActivityDetailSheet.tsx`.
+  expanded panel behind "Open all": `ActivityFilters.tsx` (machine / project /
+  chat type / model), multi-select with bulk Mark seen / Dismiss / Open, and
+  `ActivityDetailSheet.tsx`.
 - `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
-  `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
+  `activitySectionCollapse.ts`, `ActivityColumnMark.tsx`,
   `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header
-  (the whole strip is the button, with the `<h3>`/`<h4>` outline preserved for
-  screen readers), per-surface collapsed-section memory, the Phosphor half of the
-  state glyph language, and the all-clear beat that fires on the transition to
-  zero raised hands and never on arrival.
+  (a toggle only where a section folds: Done, and the Inbox project groups),
+  per-surface collapsed-section memory for those Inbox groups, the column glyphs
+  (with the red warning mark for a failed agent), and the all-clear beat that
+  fires on the transition to zero raised hands and never on arrival.
 - `apps/desktop/src/renderer/components/activity/ActivityCard.tsx` and
   `ActivityCardSkeleton.tsx` — the row and its fixed-height placeholder. The
   card deliberately does **not** reuse `terminals/SessionCard`: an Activity row
@@ -2929,18 +2924,17 @@ Account Activity and push:
   shared instead through the pure `terminals/SessionStatusLabel.tsx`, extracted
   from `SessionStatusSlot` for exactly this reason. Read the comment at the top
   of `ActivityCard.tsx` before "simplifying" it.
-- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — the
-  canonical state glyph language: `ActivityStateGroup`, `ACTIVITY_STATE_GLYPHS`,
-  `ACTIVITY_STATE_GROUPS` (also the priority order), `activityStateGroup`, plus
-  the per-item label/tone/glyph derivation and the detail sheet's
-  `activityStateSentence` / `activityStateElapsed`. Change the rule here first;
-  the iOS and relay mirrors follow.
+- `apps/desktop/src/renderer/components/activity/activityPresentation.ts` — how
+  a column looks (`ACTIVITY_COLUMN_PRESENTATION`), the red mark
+  (`activityItemFailed`), a waiting row's reason (`activityWaitingReasonLabel`),
+  a row's column-based state (`activityRowStatus`), plus the per-item phase
+  presentation and the detail sheet's `activityStateSentence` /
+  `activityStateElapsed`.
 - `apps/desktop/src/renderer/components/activity/activityPriority.ts` — the
   projection every surface reads: `activityFeedItems` (agents only),
-  `activitySections` (one per state group, empties included),
-  `activityNotificationItems` (non-agent, inbox-eligible),
-  `activityFeedOrder`, and the counts/leading-group
-  helpers that replaced four hand-written priority ladders.
+  `activitySections` (one per Work-board column, empties included),
+  `activityNotificationItems` (non-agent, inbox-eligible), and the counts and
+  phrases the trigger, chips and footer share.
 - `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
   bounded row budget (60, stepped by 60) that keeps long columns cheap.
 - `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
