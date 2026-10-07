@@ -43,6 +43,8 @@ import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
 import { applyInterfacePreferences } from "../../theme/applyInterface";
+import { useSceneDocumentSync } from "../../scene/useScene";
+import { themeTintedByScene } from "../../scene/sceneTheme";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { fgTint } from "../lanes/laneDesignTokens";
 
@@ -671,6 +673,7 @@ function ProjectTabHost() {
     promptStashButtonEnabled: s.promptStashButtonEnabled,
     voiceInputEnabled: s.voiceInputEnabled,
     codexVoice: s.codexVoice,
+    appleDevice: s.appleDevice,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const bindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
@@ -1436,9 +1439,31 @@ function BrowserHashRouteBridge() {
   return null;
 }
 
-export function App() {
+/**
+ * Paints the theme and the scene onto <html> together, so neither can
+ * overwrite the other: inline custom properties for a custom/imported theme
+ * (built-in dark/light emit none and render as the stylesheet defines them),
+ * `data-theme`/`data-theme-id`, and `data-scene`. With "match app colours"
+ * on, a picture recolours the theme's accent and surfaces first. Isolated so a
+ * scene load does not re-render the shell.
+ */
+function ThemeDocumentSync() {
   const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
+  const scene = useSceneDocumentSync();
+  const tint = scene.kind === "image" && scene.matchTheme ? scene.palette : null;
+  React.useEffect(() => {
+    const theme = resolveThemeById(themeId, customThemes);
+    const resolved = resolveTheme(tint ? themeTintedByScene(theme, tint) : theme);
+    applyAdeTheme(resolved);
+    // The Windows caption strip is painted by the OS from a colour ADE hands
+    // it, so it does not inherit `data-theme` the way the header does.
+    syncWindowsTitleBarOverlay({ theme: resolved.theme.baseMode });
+  }, [themeId, customThemes, tint]);
+  return null;
+}
+
+export function App() {
   const setSystemColorScheme = useAppStore((s) => s.setSystemColorScheme);
   const interfacePreferences = useAppStore((s) => s.interfacePreferences);
 
@@ -1475,23 +1500,13 @@ export function App() {
     return () => query.removeEventListener("change", sync);
   }, [setSystemColorScheme]);
 
-  React.useEffect(() => {
-    // One pass per theme change: inline custom properties on <html> for a
-    // custom/imported theme, plus `data-theme` for the structural block and
-    // `data-theme-id` for identity. Built-in dark/light emit no inline vars, so
-    // they render exactly as the stylesheet defines them.
-    const resolved = resolveTheme(resolveThemeById(themeId, customThemes));
-    applyAdeTheme(resolved);
-    // The Windows caption strip is painted by the OS from a colour ADE hands
-    // it, so it does not inherit `data-theme` the way the header does.
-    syncWindowsTitleBarOverlay({ theme: resolved.theme.baseMode });
-  }, [themeId, customThemes]);
 
   return (
     // The interface "Reduce motion" preference is explicit, so it wins over the
     // OS query; off, `"user"` is exactly the OS-honouring default. Wrapping the
     // shell (not just the desktop entry) keeps the hosted web client in step.
     <MotionConfig reducedMotion={interfacePreferences.reduceMotion ? "always" : "user"}>
+    <ThemeDocumentSync />
     <LaunchGate>
       <Router>
         <div

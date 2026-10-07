@@ -78,6 +78,16 @@ const MACHINE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
   },
 ];
 
+const DEVICE_SETTINGS: readonly AccountSyncedSetting<FakeState>[] = [
+  {
+    key: "theme",
+    scope: "account",
+    perDevice: true,
+    read: (state) => state.theme,
+    apply: (state, value) => state.setTheme(value as string),
+  },
+];
+
 function row(key: string, value: unknown, updatedAt: string, scope = "all"): AccountSettingRow {
   return { scope, key, value, updatedAt, changedAt: updatedAt, writerDeviceId: "other" };
 }
@@ -449,6 +459,47 @@ describe("accountSettingsSync (renderer)", () => {
     expect(api.list).not.toHaveBeenCalled();
     expect(api.set).not.toHaveBeenCalled();
     expect(state.theme).toBe("sepia");
+    stop();
+  });
+
+  // Per-computer settings (Apple devices) live in the account store so the
+  // brain on that computer can read them, but each computer has its own copy:
+  // one machine's edit must never land on another, and nothing is written
+  // until this computer's id is known.
+  it("keeps a per-device setting to this computer, holding edits until its id is known", async () => {
+    const { store, state } = createStore({ theme: "dark" });
+    const api = createApi([
+      row("device.other-mac.theme", "sepia", "2030-01-01T00:00:00.000Z"),
+      row("theme", "light", "2030-01-01T00:00:00.000Z"),
+    ]);
+    let deviceId: string | null = null;
+    const deviceListeners = new Set<() => void>();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store,
+        settings: DEVICE_SETTINGS,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getLocalDeviceId: () => deviceId,
+        subscribeLocalDeviceId: (listener) => {
+          deviceListeners.add(listener);
+          return () => deviceListeners.delete(listener);
+        },
+      }),
+    );
+    await settle();
+    // Neither another computer's copy nor an account-wide row applies here.
+    expect(state.theme).toBe("dark");
+
+    state.setTheme("midnight");
+    expect(api.set).not.toHaveBeenCalled();
+
+    deviceId = "this-mac";
+    for (const listener of deviceListeners) listener();
+    await settle();
+    expect(api.set).toHaveBeenCalledWith({ scope: "all", key: "device.this-mac.theme", value: "midnight" });
+    expect(api.set).not.toHaveBeenCalledWith(expect.objectContaining({ key: "theme" }));
+    expect(state.theme).toBe("midnight");
     stop();
   });
 

@@ -16742,7 +16742,7 @@ export function AgentChatPane({
                             // The logo is the only flexible row: in a short window it absorbs the
                             // overflow down to a legible floor, so the composer stays visible far
                             // longer than it did when the whole column was rigid.
-                            "relative flex min-h-[56px] w-full min-w-0 shrink items-center justify-center",
+                            "ade-draft-wordmark relative flex min-h-[56px] w-full min-w-0 shrink items-center justify-center",
                             appPanelOpen ? "max-w-[360px]" : "max-w-[520px]",
                           )}
                           style={{ aspectRatio: "560 / 300" }}

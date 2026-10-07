@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, GitMerge, Lightbulb, Hash } from "@phosphor-icons/react";
+import { ArrowRight, Check, CloudArrowDown, Laptop, type Icon } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import type { NewLaneBaseSource, RebaseSuggestionDisplay } from "../../../shared/types";
 import {
   DEFAULT_REBASE_SUGGESTIONS,
@@ -10,14 +9,15 @@ import {
 } from "../../../shared/types/config";
 import { DEFAULT_NEW_LANE_BASE_SOURCE, effectiveNewLaneBaseSource } from "../lanes/newLaneBaseSource";
 import {
+  ModernRow,
+  ModernRows,
+  ModernSection,
   SavedFlash,
-  SettingsCard,
-  SettingsGroup,
   SettingsNumber,
-  SettingsSegmented,
   SettingsToggle,
   useSavedFlash,
 } from "./primitives";
+import "./machineSettings.css";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -147,42 +147,76 @@ export function LaneBehaviorSection() {
     }
   }, [autoRebase, newLaneBaseSource, rebaseSuggestions, minBehind, flash, fail, pin, refresh]);
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
-      <SettingsGroup title="Starting lanes">
-        <SettingsCard
-          anchor="new-lane-base"
-          icon={<GitBranch size={15} weight="duotone" />}
-          tone="blue"
-          title="New lane base"
-          description="Whether new root lanes and chat-created lanes start from the fetched remote branch or your local tip."
-          control={
-            <SettingsSegmented
-              ariaLabel="New lane base"
-              value={newLaneBaseSource}
-              onChange={(next) => {
-                setNewLaneBaseSource(next);
-                void persist({ baseSource: next });
-              }}
-              options={[
-                { value: "remote", label: "Remote", hint: "Fetched upstream" },
-                { value: "local", label: "Local", hint: "Your branch tip" },
-              ]}
-            />
-          }
-        />
-      </SettingsGroup>
+  const suggestionsOff = rebaseSuggestions === "off";
 
-      <SettingsGroup title="Rebase & stacking">
-        <SettingsCard
-          anchor="auto-rebase"
-          icon={<GitMerge size={15} weight="duotone" />}
-          tone="green"
-          title="Auto-rebase child lanes"
-          description="Rebase dependent lanes when a parent advances, keeping stacks aligned."
-          control={
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <SavedFlash state={saveState} />
+  return (
+    <div className="ade-modern-sections">
+      <ModernSection
+        group="Starting lanes"
+        anchor="new-lane-base"
+        title="New lane base"
+        hint="Whether new root lanes and chat-created lanes start from the fetched remote branch or your local tip."
+      >
+        <div role="radiogroup" aria-label="New lane base" className="ade-modern-choices">
+          {BASE_OPTIONS.map((option) => {
+            const active = newLaneBaseSource === option.value;
+            const OptionIcon = option.icon;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className="ade-ap-choice"
+                data-active={active}
+                onClick={() => {
+                  if (active) return;
+                  setNewLaneBaseSource(option.value);
+                  void persist({ baseSource: option.value });
+                }}
+              >
+                <span className="ade-ms-art" aria-hidden>
+                  <BaseArt source={option.value} />
+                </span>
+                <span className="ade-modern-choice-body">
+                  <span className="ade-modern-choice-title">
+                    <OptionIcon size={14} />
+                    {option.label}
+                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                  </span>
+                  <span className="ade-modern-choice-hint">{option.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </ModernSection>
+
+      <ModernSection
+        group="Rebase & stacking"
+        title="Rebase & stacking"
+        hint="Keep stacked lanes aligned with their parents."
+        actions={(
+          <>
+            <SavedFlash state={saveState} />
+            <button
+              type="button"
+              className="ade-modern-btn"
+              data-variant="ghost"
+              onClick={() => navigate("/prs?tab=workflows&workflow=rebase")}
+            >
+              Open Rebase/Merge tab
+              <ArrowRight size={12} />
+            </button>
+          </>
+        )}
+      >
+        <ModernRows>
+          <ModernRow
+            anchor="auto-rebase"
+            title="Auto-rebase child lanes"
+            hint="Rebase dependent lanes when a parent advances, keeping stacks aligned."
+            control={
               <SettingsToggle
                 label="Auto-rebase child lanes"
                 checked={autoRebase}
@@ -191,71 +225,116 @@ export function LaneBehaviorSection() {
                   void persist({ autoRebase: next });
                 }}
               />
-            </div>
-          }
-        />
+            }
+          />
+        </ModernRows>
+      </ModernSection>
 
-        <SettingsCard
-          anchor="rebase-suggestions"
-          icon={<Lightbulb size={15} weight="duotone" />}
-          tone="amber"
-          title="Rebase suggestions"
-          description="How ADE tells you a lane has fallen behind. Off also skips the scan, so it costs nothing."
-          control={
-            <SettingsSegmented
-              ariaLabel="Rebase suggestions"
-              value={rebaseSuggestions}
-              onChange={(next) => {
-                setRebaseSuggestions(next);
-                void persist({ suggestions: next });
-              }}
-              options={[
-                { value: "off", label: "Off", hint: "Never mention it" },
-                { value: "badge", label: "Badge", hint: "One quiet line" },
-                { value: "banner", label: "Banner", hint: "Full strip" },
-              ]}
-            />
-          }
-        />
-
-        <SettingsCard
-          anchor="rebase-min-behind"
-          icon={<Hash size={15} weight="duotone" />}
-          tone="slate"
-          title="Only suggest after"
-          description="Ignore lanes that are behind by fewer commits than this."
-          disabled={rebaseSuggestions === "off"}
-          control={
-            <SettingsNumber
-              ariaLabel="Only suggest after this many commits"
-              value={minBehind}
-              min={1}
-              suffix={minBehind === 1 ? "commit" : "commits"}
-              disabled={rebaseSuggestions === "off"}
-              onChange={(next) => {
-                const clamped = Math.max(1, Math.floor(next));
-                setMinBehind(clamped);
-                void persist({ minBehind: clamped });
-              }}
-            />
-          }
-        />
-
-        {/* A footer row of the group's panel, so it sits inside the panel. */}
-        <div className="ade-settings-row" style={{ display: "flex", justifyContent: "flex-end", padding: "10px 16px" }}>
-          <button
-            type="button"
-            style={{
-              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 12 }),
-              fontFamily: SANS_FONT,
-              color: COLORS.textSecondary,
-            }}
-            onClick={() => navigate("/prs?tab=workflows&workflow=rebase")}
-          >
-            Open Rebase/Merge tab
-          </button>
+      <ModernSection
+        group="Rebase & stacking"
+        anchor="rebase-suggestions"
+        title="Rebase suggestions"
+        hint="How ADE tells you a lane has fallen behind. Off also skips the scan, so it costs nothing."
+      >
+        <div role="radiogroup" aria-label="Rebase suggestions" className="ade-ap-grid3">
+          {SUGGESTION_OPTIONS.map((option) => {
+            const active = rebaseSuggestions === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className="ade-ap-choice"
+                data-active={active}
+                onClick={() => {
+                  if (active) return;
+                  setRebaseSuggestions(option.value);
+                  void persist({ suggestions: option.value });
+                }}
+              >
+                <span className="ade-ms-art" aria-hidden>
+                  <SuggestionArt display={option.value} />
+                </span>
+                <span className="ade-modern-choice-body">
+                  <span className="ade-modern-choice-title">
+                    {option.label}
+                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                  </span>
+                  <span className="ade-modern-choice-hint">{option.hint}</span>
+                </span>
+              </button>
+            );
+          })}
         </div>
-      </SettingsGroup>
+        <div style={{ opacity: suggestionsOff ? 0.55 : 1 }}>
+          <ModernRows>
+            <ModernRow
+              anchor="rebase-min-behind"
+              title="Only suggest after"
+              hint="Ignore lanes that are behind by fewer commits than this."
+              control={
+                <SettingsNumber
+                  ariaLabel="Only suggest after this many commits"
+                  value={minBehind}
+                  min={1}
+                  suffix={minBehind === 1 ? "commit" : "commits"}
+                  disabled={suggestionsOff}
+                  onChange={(next) => {
+                    const clamped = Math.max(1, Math.floor(next));
+                    setMinBehind(clamped);
+                    void persist({ minBehind: clamped });
+                  }}
+                />
+              }
+            />
+          </ModernRows>
+        </div>
+      </ModernSection>
     </div>
+  );
+}
+
+const BASE_OPTIONS: ReadonlyArray<{ value: NewLaneBaseSource; label: string; hint: string; icon: Icon }> = [
+  { value: "remote", label: "Remote", hint: "Fetched upstream", icon: CloudArrowDown },
+  { value: "local", label: "Local", hint: "Your branch tip", icon: Laptop },
+];
+
+const SUGGESTION_OPTIONS: ReadonlyArray<{ value: RebaseSuggestionDisplay; label: string; hint: string }> = [
+  { value: "off", label: "Off", hint: "Never mention it" },
+  { value: "badge", label: "Badge", hint: "One quiet line" },
+  { value: "banner", label: "Banner", hint: "Full strip" },
+];
+
+/** Two branches: the new lane forks from the remote tip or the local one. */
+function BaseArt({ source }: { source: NewLaneBaseSource }) {
+  const fromRemote = source === "remote";
+  return (
+    <svg width="132" height="44" viewBox="0 0 132 44" fill="none">
+      {/* origin line on top, local line below */}
+      <path d="M8 12 H124" stroke="currentColor" strokeOpacity={fromRemote ? 0.9 : 0.3} strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M8 32 H84" stroke="currentColor" strokeOpacity={fromRemote ? 0.3 : 0.9} strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="124" cy="12" r="3.5" fill="currentColor" fillOpacity={fromRemote ? 0.9 : 0.3} />
+      <circle cx="84" cy="32" r="3.5" fill="currentColor" fillOpacity={fromRemote ? 0.3 : 0.9} />
+      {fromRemote ? (
+        <path d="M124 12 C124 26 112 38 100 40" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" strokeLinecap="round" />
+      ) : (
+        <path d="M84 32 C96 32 104 40 116 40" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" strokeLinecap="round" />
+      )}
+    </svg>
+  );
+}
+
+/** A tiny lane card with nothing, a badge, or a banner on it. */
+function SuggestionArt({ display }: { display: RebaseSuggestionDisplay }) {
+  return (
+    <span className="ade-lb-mini">
+      {display === "banner" ? <span className="ade-lb-mini-banner" /> : null}
+      <span className="ade-lb-mini-row">
+        <span className="ade-lb-mini-line" />
+        {display === "badge" ? <span className="ade-lb-mini-badge">3 behind</span> : null}
+      </span>
+      <span className="ade-lb-mini-line ade-lb-mini-line--short" />
+    </span>
   );
 }

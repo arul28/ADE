@@ -1,37 +1,28 @@
 import React, { useMemo } from "react";
 import {
-    BellSimpleSlash,
   ChatCircleDots,
   CheckCircle,
   CircleDashed,
-  DeviceMobile,
   Eye,
   GitMerge,
   GitPullRequest,
   Info,
-  LockKey,
-  MoonStars,
   PencilSimpleLine,
   Prohibit,
   ShieldWarning,
-  SpeakerSimpleHigh,
-  Timer,
   WarningCircle,
 } from "@phosphor-icons/react";
 import type { ActivityIconKey } from "../../../shared/activityCatalog";
 import type { AttentionDeliveryPolicy, AttentionEventKind } from "../../../shared/types/attention";
 import { ACTIVITY_EVENT_CATALOG, ACTIVITY_EVENT_GROUPS } from "../../../shared/activityCatalog";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import {
+  ModernPage,
+  ModernRow,
+  ModernRows,
+  ModernSection,
   SettingsColumn,
-  SettingsPanel,
-  SettingsRow,
-  SettingsSection,
-  SettingsSegmented,
   SettingsSelect,
-  SettingsSplit,
   SettingsToggle,
-  type SettingsTone,
 } from "./primitives";
 import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
 import {
@@ -41,6 +32,7 @@ import {
   useActivitySettings,
 } from "./ActivitySettingsControls";
 import { AiFeaturesSection } from "./AiFeaturesSection";
+import "./NotificationsSection.css";
 
 /**
  * Notifications and Activity, on one page.
@@ -48,31 +40,32 @@ import { AiFeaturesSection } from "./AiFeaturesSection";
  * They were two tabs about one thing — what ADE tells you about running work,
  * and where — and each held its own copy of the same preferences object, so a
  * change on one could be overwritten by a save from the other. The page now
- * reads and writes through one model (`useActivitySettings`), and lays the
- * sections out in pairs so a wide window is not half empty.
+ * reads and writes through one model (`useActivitySettings`). The events are
+ * a matrix (event × delivery level); the rest sit in two columns of sections
+ * so a wide window is not half empty.
  */
 
-const POLICY_OPTIONS: { value: AttentionDeliveryPolicy; label: string }[] = [
-  { value: "off", label: "Off" },
-  { value: "ambient", label: "Activity" },
-  { value: "notify", label: "Notify" },
+const POLICY_OPTIONS: { value: AttentionDeliveryPolicy; label: string; hint: string }[] = [
+  { value: "off", label: "Off", hint: "Not shown anywhere" },
+  { value: "ambient", label: "Activity", hint: "Listed quietly in Activity" },
+  { value: "notify", label: "Notify", hint: "Listed, and interrupts you" },
 ];
 
-/** The catalog names an icon per event; this is the glyph and hue for it. */
-const EVENT_ICON: Record<ActivityIconKey, { Icon: React.ElementType; tone: SettingsTone }> = {
-  working: { Icon: CircleDashed, tone: "blue" },
-  "needs-you": { Icon: ChatCircleDots, tone: "amber" },
-  failed: { Icon: WarningCircle, tone: "red" },
-  done: { Icon: CheckCircle, tone: "green" },
-  checks: { Icon: ShieldWarning, tone: "red" },
-  review: { Icon: Eye, tone: "violet" },
-  changes: { Icon: PencilSimpleLine, tone: "orange" },
-  "merge-ready": { Icon: GitMerge, tone: "green" },
-  "pull-request": { Icon: GitPullRequest, tone: "blue" },
-  closed: { Icon: Prohibit, tone: "slate" },
-};
+type EventTone = "ok" | "warn" | "crit" | undefined;
 
-const ICON = 15;
+/** The catalog names an icon per event; this is the glyph, and a status hue where the event is a status. */
+const EVENT_ICON: Record<ActivityIconKey, { Icon: React.ElementType; tone: EventTone }> = {
+  working: { Icon: CircleDashed, tone: undefined },
+  "needs-you": { Icon: ChatCircleDots, tone: "warn" },
+  failed: { Icon: WarningCircle, tone: "crit" },
+  done: { Icon: CheckCircle, tone: "ok" },
+  checks: { Icon: ShieldWarning, tone: "crit" },
+  review: { Icon: Eye, tone: undefined },
+  changes: { Icon: PencilSimpleLine, tone: "warn" },
+  "merge-ready": { Icon: GitMerge, tone: "ok" },
+  "pull-request": { Icon: GitPullRequest, tone: undefined },
+  closed: { Icon: Prohibit, tone: undefined },
+};
 
 const ESCALATION_OPTIONS = [
   { value: "0", label: "Immediately" },
@@ -111,82 +104,112 @@ export function NotificationsSection() {
     [account.eventPolicies],
   );
 
-  const eventPanel = (group: (typeof ACTIVITY_EVENT_GROUPS)[number]) => (
-    <SettingsPanel key={group.id}>
-      <div className="ade-settings-panel-head">{group.label}</div>
+  /**
+   * One group of events as a matrix: an event per row, a delivery level per
+   * column. Each row's three cells are one radio group named for the event.
+   */
+  const eventMatrix = (group: (typeof ACTIVITY_EVENT_GROUPS)[number]) => (
+    <div key={group.id} className="ade-nt-matrix">
+      <div className="ade-nt-mhead" aria-hidden>
+        <span className="kit-eyebrow">{group.label}</span>
+        {POLICY_OPTIONS.map((option) => (
+          <span key={option.value} className="kit-eyebrow" title={option.hint}>{option.label}</span>
+        ))}
+      </div>
       {ACTIVITY_EVENT_CATALOG.filter((event) => event.group === group.id).map((event) => {
         const { Icon, tone } = EVENT_ICON[event.iconKey];
+        const value = account.eventPolicies[event.kind] ?? "ambient";
         return (
-          <SettingsRow
-            key={event.kind}
-            icon={<Icon size={ICON} weight="duotone" />}
-            tone={tone}
-            title={event.label}
-            description={event.description}
-            control={
-              <SettingsSegmented
-                ariaLabel={event.label}
-                value={account.eventPolicies[event.kind] ?? "ambient"}
-                disabled={busy}
-                onChange={(policy) => setEventPolicy(event.kind, policy)}
-                options={POLICY_OPTIONS}
-              />
-            }
-          />
+          <div key={event.kind} className="ade-nt-mrow">
+            <div className="ade-nt-event">
+              <span className="ade-nt-event-icon" data-tone={tone} aria-hidden>
+                <Icon size={15} weight="duotone" />
+              </span>
+              <div className="ade-nt-event-copy">
+                <div className="ade-nt-event-title">{event.label}</div>
+                <div className="ade-nt-event-hint">{event.description}</div>
+              </div>
+            </div>
+            <div role="radiogroup" aria-label={event.label} className="ade-nt-cells">
+              {POLICY_OPTIONS.map((option) => {
+                const active = option.value === value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    aria-label={option.label}
+                    title={`${option.label} — ${option.hint}`}
+                    data-level={option.value === "ambient" ? "activity" : option.value}
+                    disabled={busy}
+                    className="ade-nt-cell"
+                    onClick={() => { if (!active) setEventPolicy(event.kind, option.value); }}
+                  >
+                    <span className="ade-nt-mark" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         );
       })}
-    </SettingsPanel>
+    </div>
   );
 
   return (
     <SettingsColumn wide>
-      {signedOut ? (
-        <div className="ade-settings-note">
-          <Info size={15} />
-          {model.notchSupported
-            ? "Sign in to sync these across your machines. Sound and the notch still apply here."
-            : "Sign in to sync these across your machines. Sound still applies here."}
-        </div>
-      ) : null}
-      {model.error ? (
-        <div role="alert" className="ade-settings-note" style={{ color: COLORS.danger }}>
-          <Info size={15} />
-          {model.error}
-        </div>
-      ) : null}
+      <ModernPage>
+        {signedOut || model.error ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {signedOut ? (
+              <div className="ade-nt-note">
+                <Info size={15} />
+                {model.notchSupported
+                  ? "Sign in to sync these across your machines. Sound and the notch still apply here."
+                  : "Sign in to sync these across your machines. Sound still applies here."}
+              </div>
+            ) : null}
+            {model.error ? (
+              <div role="alert" className="ade-nt-note" data-tone="error">
+                <Info size={15} />
+                {model.error}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
-      <div id="notification-events" data-settings-anchor="notification-events" style={{ scrollMarginTop: 16 }}>
-        <SettingsSection
+        <ModernSection
+          group="Notifications"
+          anchor="notification-events"
           title="Events"
-          description="Activity lists an event quietly. Notify also interrupts you."
+          hint="Activity lists an event quietly. Notify also interrupts you."
           actions={(
-            <span className="ade-settings-summary" aria-live="polite">
+            <span className="ade-nt-summary" aria-live="polite">
               {model.saved ? (
                 <>
-                  <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} />
+                  <CheckCircle size={13} weight="fill" style={{ color: "var(--kit-ok)" }} />
                   Saved
                 </>
               ) : (
-                `${notifyCount} of ${ACTIVITY_EVENT_CATALOG.length} notify`
+                <><b>{notifyCount}</b> of <b>{ACTIVITY_EVENT_CATALOG.length}</b> notify</>
               )}
             </span>
           )}
         >
-          <SettingsSplit start={eventPanel(ACTIVITY_EVENT_GROUPS[0])} end={eventPanel(ACTIVITY_EVENT_GROUPS[1])} />
-        </SettingsSection>
-      </div>
+          <div className="ade-nt-matrix-wrap">
+            {ACTIVITY_EVENT_GROUPS.map((group) => eventMatrix(group))}
+          </div>
+        </ModernSection>
 
-      <SettingsSplit
-        start={(
-          <>
-            <SettingsSection title="Delivery">
-              <SettingsPanel>
-                <SettingsRow
+        <div className="ade-nt-columns">
+          <div className="ade-nt-col">
+            <ModernSection group="Notifications" title="Delivery" hint="Where Notify events reach you, and when they hold off.">
+              <ModernRows>
+                <ModernRow
                   anchor="focus-suppression"
-                  icon={<BellSimpleSlash size={ICON} weight="duotone" />}
-                  tone="violet"
                   title="Quiet while ADE is focused"
-                  description="If you are looking at ADE, Activity carries it instead."
+                  hint="If you are looking at ADE, Activity carries it instead."
                   control={
                     <SettingsToggle
                       label="Stay quiet while ADE is focused"
@@ -196,12 +219,10 @@ export function NotificationsSection() {
                     />
                   }
                 />
-                <SettingsRow
+                <ModernRow
                   anchor="phone-escalation"
-                  icon={<Timer size={ICON} weight="duotone" />}
-                  tone="amber"
                   title="Escalate to phone"
-                  description={
+                  hint={
                     account.desktopFirstEnabled
                       ? "How long an event waits on the desktop before your phone gets it too."
                       : "Turn on “Quiet while ADE is focused” to delay the phone."
@@ -216,12 +237,10 @@ export function NotificationsSection() {
                     />
                   }
                 />
-                <SettingsRow
+                <ModernRow
                   anchor="phone-notifications"
-                  icon={<DeviceMobile size={ICON} weight="duotone" />}
-                  tone="blue"
                   title="Phone notifications"
-                  description="Send Notify events to the ADE app on your phone."
+                  hint="Send Notify events to the ADE app on your phone."
                   control={
                     <SettingsToggle
                       label="Phone notifications"
@@ -231,12 +250,10 @@ export function NotificationsSection() {
                     />
                   }
                 />
-                <SettingsRow
+                <ModernRow
                   anchor="live-activities"
-                  icon={<LockKey size={ICON} weight="duotone" />}
-                  tone="teal"
                   title="Live Activities"
-                  description="Keep a running agent on your lock screen."
+                  hint="Keep a running agent on your lock screen."
                   control={
                     <SettingsToggle
                       label="Live Activities"
@@ -246,23 +263,21 @@ export function NotificationsSection() {
                     />
                   }
                 />
-                <SettingsRow
+                <ModernRow
                   anchor="quiet-hours"
-                  icon={<MoonStars size={ICON} weight="duotone" />}
-                  tone="violet"
                   title="Quiet hours"
-                  description="Every event drops to Activity during this window."
+                  hint="Every event drops to Activity during this window."
                   control={(
                     <>
                       {account.quietHours.enabled ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <span className="ade-nt-quiet">
                           <QuietHourField
                             label="From"
                             value={account.quietHours.startMinute}
                             disabled={busy}
                             onChange={(startMinute) => updateAccount({ quietHours: { ...account.quietHours, startMinute } })}
                           />
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>to</span>
+                          <span>to</span>
                           <QuietHourField
                             label="To"
                             value={account.quietHours.endMinute}
@@ -280,23 +295,18 @@ export function NotificationsSection() {
                     </>
                   )}
                 />
-              </SettingsPanel>
-            </SettingsSection>
+              </ModernRows>
+            </ModernSection>
             <ActivityNotchSection model={model} />
             <ActivityMachinesSection model={model} />
-          </>
-        )}
-        end={(
-          <>
-            <SettingsSection title="Sound">
-              <SettingsPanel>
-                <AgentCompletionSoundSection />
-                <SettingsRow
+          </div>
+          <div className="ade-nt-col">
+            <AgentCompletionSoundSection
+              extraRows={(
+                <ModernRow
                   anchor="activity-sounds"
-                  icon={<SpeakerSimpleHigh size={ICON} weight="duotone" />}
-                  tone="teal"
                   title="Activity sounds"
-                  description="Restrained cues for events that need you."
+                  hint="Restrained cues for events that need you."
                   control={
                     <SettingsToggle
                       label="Activity sounds"
@@ -306,13 +316,13 @@ export function NotificationsSection() {
                     />
                   }
                 />
-              </SettingsPanel>
-            </SettingsSection>
+              )}
+            />
             <ActivityPrivacySection model={model} />
             <AiFeaturesSection />
-          </>
-        )}
-      />
+          </div>
+        </div>
+      </ModernPage>
     </SettingsColumn>
   );
 }

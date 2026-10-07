@@ -97,83 +97,24 @@
   border-radius: 999px;
   background: var(--tone-color);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone-color) 18%, transparent);
-  animation: activity-hdr-pulse 2.4s step-end infinite;
+  animation: activity-hdr-pulse 3s step-end infinite;
 }
 
 /*
- * The pulse is an `ease-in-out` 1 -> 0.42 -> 1 opacity cycle held at
- * 0.02-opacity steps: each stop below is the time where
- * cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02, changes value
- * (so the stops are even in opacity, not in time, and sparse near 1 and 0.42
- * where the curve is flat). Rendered, it matches the smooth pulse within 1/255 per
- * channel. `step-end` on the animation is load-bearing: the dot sits inside the
- * blurred header, and every frame of a smooth animation over a backdrop-filter
- * re-runs the blur and composites the window. At 120 Hz that cost ~32% of a GPU
- * core and ~67% of the main process whenever an agent was live; holding the
- * steps (~24 changes a second) cuts it to ~6% and ~20%. To change the range or
- * step, re-derive the stops from the same curve.
+ * The pulse is a slow breath held at four levels: 1 -> 0.72 -> 0.45 -> 0.72
+ * over 3s, `step-end`, so the dot changes about 1.3 times a second. Both the
+ * stepping and the low rate are load-bearing: the dot sits inside the blurred
+ * header, and every change re-runs the backdrop blur and composites the window
+ * — a compositor layer of its own does not avoid that. A smooth pulse at 120 Hz
+ * cost ~32% of a GPU core; the earlier 24-change-a-second ramp still cost ~7%
+ * of a core whenever an agent was live (measured on an M-series Mac); four
+ * levels cost about a third of that and still read as "live".
  */
 @keyframes activity-hdr-pulse {
-  0% { opacity: 1.00; }
-  4.7% { opacity: 0.98; }
-  8.05% { opacity: 0.96; }
-  10.3% { opacity: 0.94; }
-  12.1% { opacity: 0.92; }
-  13.7% { opacity: 0.90; }
-  15.1% { opacity: 0.88; }
-  16.4% { opacity: 0.86; }
-  17.65% { opacity: 0.84; }
-  18.8% { opacity: 0.82; }
-  19.9% { opacity: 0.80; }
-  20.95% { opacity: 0.78; }
-  22% { opacity: 0.76; }
-  23% { opacity: 0.74; }
-  24% { opacity: 0.72; }
-  25.05% { opacity: 0.70; }
-  26.05% { opacity: 0.68; }
-  27.05% { opacity: 0.66; }
-  28.05% { opacity: 0.64; }
-  29.1% { opacity: 0.62; }
-  30.15% { opacity: 0.60; }
-  31.25% { opacity: 0.58; }
-  32.4% { opacity: 0.56; }
-  33.65% { opacity: 0.54; }
-  34.95% { opacity: 0.52; }
-  36.35% { opacity: 0.50; }
-  37.95% { opacity: 0.48; }
-  39.75% { opacity: 0.46; }
-  42% { opacity: 0.44; }
-  45.35% { opacity: 0.42; }
-  54.7% { opacity: 0.44; }
-  58.05% { opacity: 0.46; }
-  60.3% { opacity: 0.48; }
-  62.1% { opacity: 0.50; }
-  63.7% { opacity: 0.52; }
-  65.1% { opacity: 0.54; }
-  66.4% { opacity: 0.56; }
-  67.65% { opacity: 0.58; }
-  68.8% { opacity: 0.60; }
-  69.9% { opacity: 0.62; }
-  70.95% { opacity: 0.64; }
-  72% { opacity: 0.66; }
-  73% { opacity: 0.68; }
-  74% { opacity: 0.70; }
+  0% { opacity: 1; }
+  25% { opacity: 0.72; }
+  50% { opacity: 0.45; }
   75% { opacity: 0.72; }
-  76.05% { opacity: 0.74; }
-  77.05% { opacity: 0.76; }
-  78.05% { opacity: 0.78; }
-  79.1% { opacity: 0.80; }
-  80.15% { opacity: 0.82; }
-  81.25% { opacity: 0.84; }
-  82.4% { opacity: 0.86; }
-  83.65% { opacity: 0.88; }
-  84.95% { opacity: 0.90; }
-  86.35% { opacity: 0.92; }
-  87.95% { opacity: 0.94; }
-  89.75% { opacity: 0.96; }
-  92% { opacity: 0.98; }
-  95.35% { opacity: 1.00; }
-  100% { opacity: 1.00; }
 }
 
 /* ---- popover ---------------------------------------------------------- */

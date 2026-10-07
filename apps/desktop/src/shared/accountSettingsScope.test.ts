@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_SCOPE_ALL,
+  accountDeviceSettingKey,
   accountRepoScopeKey,
   accountSettingScopeKey,
   isAccountScope,
@@ -91,5 +92,22 @@ describe("account setting scope keys", () => {
     expect(key.startsWith("repo:")).toBe(true);
     expect(key.length).toBeGreaterThan("repo:".length);
     expect(ACCOUNT_SCOPE_ALL).toBe("all");
+  });
+
+  // One computer's copy of a setting. The relay accepts keys of
+  // `[A-Za-z0-9._-]` only, so an id that would break that has no key at all
+  // rather than a key the Worker rejects (which stalls every other setting).
+  it.each([
+    ["8f2c-41aa_b", "device.8f2c-41aa_b.apple.remoteBitrateKbpsCap"],
+    ["  8f2c  ", "device.8f2c.apple.remoteBitrateKbpsCap"],
+    [null, null],
+    ["", null],
+    ["has space", null],
+    ["dot.ted", null],
+    ["slash/id", null],
+  ])("files device %j under %j", (deviceId, expected) => {
+    const key = accountDeviceSettingKey(deviceId, "apple.remoteBitrateKbpsCap");
+    expect(key).toBe(expected);
+    if (key) expect(key).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
   });
 });

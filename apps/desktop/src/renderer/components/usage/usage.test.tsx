@@ -26,6 +26,7 @@ import { UsageLimitsBand } from "./UsageLimitsBand";
 import { UsagePooledLimits } from "./UsagePooledLimits";
 import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
+import { providerColor } from "./providerColors";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
   bucketActivityIntensity,
@@ -598,20 +599,30 @@ describe("usage components", () => {
     });
 
     /**
-     * The bars were once coloured by hashing the card key into a palette, then
-     * by provider brand. They now follow headroom alone, the same rule as the
-     * header rings, so every provider reads green / yellow / red alike.
+     * The bars stay neutral while a window has room and only turn amber at 20%
+     * left and red at 5% — one rule for every provider, the same as the kit
+     * meters and the header ring.
      */
-    it("colours each window bar by its headroom, not by provider", async () => {
+    it.each([
+      { percentUsed: 63, left: 37, fill: "var(--kit-fill)" },
+      { percentUsed: 85, left: 15, fill: "var(--kit-warn)" },
+      { percentUsed: 97, left: 3, fill: "var(--kit-crit)" },
+    ])("colours a bar with $left% left by headroom, not by provider", async ({ percentUsed, left, fill }) => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, percentUsed } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
       render(<MountedBand />);
 
       const claude = await screen.findByRole("button", {
         name: /Weekly · this machine: 80% left/,
       });
-      expect(claude.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.ok);
+      expect(claude.style.getPropertyValue("--usage-fill")).toBe("var(--kit-fill)");
 
-      const codex = screen.getByRole("button", { name: /Weekly · this machine: 37% left/ });
-      expect(codex.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.warn);
+      const codex = screen.getByRole("button", { name: new RegExp(`Weekly · this machine: ${left}% left`) });
+      expect(codex.style.getPropertyValue("--usage-fill")).toBe(fill);
     });
 
     /**
@@ -1239,7 +1250,10 @@ describe("usage components", () => {
       expect(ring?.getAttribute("data-usage-left")).toBe("81");
       expect(ring?.getAttribute("data-usage-unshaded")).toBe("19");
       expect(ring?.getAttribute("data-usage-tone")).toBe("ok");
-      expect(ring?.querySelector("circle")?.getAttribute("stroke")).toBe(USAGE_HEADROOM_COLOR.ok);
+      // A healthy ring wears its provider's colour; only a nearly spent window
+      // turns amber or red.
+      expect([providerColor("codex", "dark"), providerColor("codex", "light")])
+        .toContain(ring?.querySelector("circle")?.getAttribute("stroke"));
       expect(ring?.querySelector("[data-ring-unshaded]")?.getAttribute("transform")).toContain("rotate(-90");
       const darkStroke = ring?.querySelector("[data-ring-unshaded]")?.getAttribute("stroke") ?? "";
       expect(darkStroke).toContain("8%, white");
@@ -1900,41 +1914,6 @@ describe("usage components", () => {
       const grid = container.querySelector('[aria-label="Daily activity heatmap"]')!;
       expect(grid.children.length).toBe(5);
       expect(Array.from(grid.children, (cell) => cell.getAttribute("data-level"))).toEqual(["1", "0", "0", "0", "4"]);
-    });
-
-    it("draws each intensity level in its own colour rather than one hue at five opacities", () => {
-      // Twelve days spanning the whole quartile range, with one interior idle
-      // day, so every level from empty to peak appears in the grid.
-      const daily = Array.from({ length: 12 }, (_, i) =>
-        makeActivityDay(`2026-06-${String(i + 1).padStart(2, "0")}`, {
-          totalTokens: i === 5 ? 0 : (i + 1) * (i + 1) * 5_000,
-        }),
-      );
-      const { container } = render(
-        <ActivityModule stats={makeActivityStats({ daily } as unknown as Partial<AdeUsageStats>)} preset="30d" onPresetChange={vi.fn()} />,
-      );
-
-      const cells = Array.from(
-        container.querySelector('[aria-label="Daily activity heatmap"]')!.children,
-      ) as HTMLElement[];
-      // jsdom drops `color-mix()` from the parsed `background` shorthand, so
-      // the raw style attribute is what carries the declared value here.
-      const byLevel = new Map<string, string>();
-      for (const cell of cells) byLevel.set(cell.getAttribute("data-level")!, cell.getAttribute("style") ?? "");
-
-      // All five levels present, each with its own colour value: a single-hue
-      // opacity ramp would repeat one token five times.
-      expect([...byLevel.keys()].sort()).toEqual(["0", "1", "2", "3", "4"]);
-      const backgrounds = [...byLevel.values()].map((style) => /background:\s*([^;]+)/.exec(style)?.[1] ?? "");
-      expect(new Set(backgrounds).size).toBe(5);
-      // Only the empty level is a theme-mix of the foreground; the active
-      // levels carry real ramp colours, and none of them is the accent the
-      // flat single-hue version leaned on.
-      expect(byLevel.get("0")).toContain("var(--color-fg)");
-      for (const level of ["1", "2", "3", "4"]) {
-        expect(byLevel.get(level)).not.toContain("var(--color-fg)");
-        expect(byLevel.get(level)).not.toContain("var(--color-accent)");
-      }
     });
 
     it("rings today's cell so the grid has an anchor", () => {

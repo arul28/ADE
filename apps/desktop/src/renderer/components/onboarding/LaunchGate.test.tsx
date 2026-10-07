@@ -33,8 +33,8 @@ vi.mock("../../lib/account", async () => {
   };
 });
 
-vi.mock("../account/AccountPage", () => ({
-  SignInCard: ({ onSignedIn }: { onSignedIn: () => void }) => (
+vi.mock("./GlassSignInCard", () => ({
+  GlassSignInCard: ({ onSignedIn }: { onSignedIn: () => void }) => (
     <button type="button" onClick={onSignedIn}>Sign in test</button>
   ),
 }));

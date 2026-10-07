@@ -1,8 +1,6 @@
-import React, { useEffect, useState } from "react";
-import { CheckSquare } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export function SessionLifecycleSection() {
@@ -43,31 +41,28 @@ export function SessionLifecycleSection() {
   };
 
   return (
-    <SettingsGroup
+    <ModernSection
+      group="Session lifecycle"
+      anchor="session-lifecycle"
       title="Session lifecycle"
-      description="Control when completed lane work moves into the quiet Settled section."
+      hint="Control when completed lane work moves into the quiet Settled section."
     >
-      <SettingsCard
-        anchor="session-lifecycle"
-        icon={<CheckSquare size={15} weight="duotone" />}
-        tone="green"
-        title="Auto-settle sessions when lane PR merges"
-        description="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
-        control={
-          <SettingsToggle
-            label="Auto-settle sessions when lane PR merges"
-            checked={settings?.autoSettleLaneSessionsOnPrMerge ?? true}
-            disabled={!settings || saving}
-            onChange={(enabled) => void update(enabled)}
-          />
-        }
-      >
-        {error ? (
-          <p role="alert" style={{ margin: 0, color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-            {error}
-          </p>
-        ) : null}
-      </SettingsCard>
-    </SettingsGroup>
+      <ModernRows>
+        <ModernRow
+          title="Auto-settle sessions when lane PR merges"
+          hint="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
+          control={
+            <SettingsToggle
+              label="Auto-settle sessions when lane PR merges"
+              checked={settings?.autoSettleLaneSessionsOnPrMerge ?? true}
+              disabled={!settings || saving}
+              onChange={(enabled) => void update(enabled)}
+            />
+          }
+        >
+          {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+        </ModernRow>
+      </ModernRows>
+    </ModernSection>
   );
 }

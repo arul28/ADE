@@ -11,6 +11,7 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./workToolPickerBackdropShader";
+import type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader";
 
 /**
  * The tools picker backdrop's GL side: context, program, uniforms, the rAF loop
@@ -81,6 +82,8 @@ export function createBackdropRenderer(options: {
   theme: ThemeId;
   /** The active theme's palette; omitted for the two stylesheet themes. */
   palette?: ResolvedAdeThemePalette;
+  /** A finished ramp that wins over the theme's, e.g. a scene picture's colours. */
+  override?: WorkToolPickerBackdropTheme;
   onRefused: () => void;
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
@@ -196,7 +199,7 @@ export function createBackdropRenderer(options: {
     view: context.getUniformLocation(program, "u_view"),
   };
 
-  const palette = backdropThemeFor(theme, options.palette);
+  const palette = options.override ?? backdropThemeFor(theme, options.palette);
   const colorCount = Math.min(palette.colors.length, 8);
   const flat = new Float32Array(24);
   for (let i = 0; i < colorCount; i += 1) {

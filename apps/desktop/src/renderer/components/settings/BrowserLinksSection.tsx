@@ -1,20 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { LinkSimple } from "@phosphor-icons/react";
+import { AppWindow, Check, Globe, type Icon } from "@phosphor-icons/react";
 
 import type { BrowserLinkOpenMode } from "../../../shared/types";
 import { modifierKeyLabel } from "../../lib/platform";
 import { refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
-import {
-  SavedFlash,
-  SettingsCard,
-  SettingsGroup,
-  SettingsSegmented,
-  useSavedFlash,
-} from "./primitives";
+import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 
-const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string }> = [
-  { value: "in-app", label: "In ADE" },
-  { value: "external", label: "In system browser" },
+const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: string; icon: Icon }> = [
+  { value: "in-app", label: "In ADE", hint: "A tab in the ADE browser, beside your work.", icon: AppWindow },
+  { value: "external", label: "In system browser", hint: "Your default browser, outside ADE.", icon: Globe },
 ];
 
 /**
@@ -76,33 +70,45 @@ export function BrowserLinksSection() {
   };
 
   return (
-    <SettingsGroup title="Links">
-      <SettingsCard
-        anchor="link-open-mode"
-        icon={<LinkSimple size={15} weight="duotone" />}
-        tone="teal"
-        title="Links"
-        description={
-          <>
-            Where a link clicked inside ADE opens. {modifierKeyLabel}-click always uses your system
-            browser; Shift-click always uses ADE's, which stays signed in across chats.
-          </>
-        }
-        control={
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            <SavedFlash state={flash.state} />
-            <SettingsSegmented
-              ariaLabel="Open links"
-              value={mode}
-              onChange={(next) => {
-                void handleChange(next);
-              }}
-              options={OPTIONS}
+    <ModernSection
+      group="Links"
+      anchor="link-open-mode"
+      title="Open links"
+      hint={
+        <>
+          Where a link clicked inside ADE opens. {modifierKeyLabel}-click always uses your system
+          browser; Shift-click always uses ADE&apos;s, which stays signed in across chats.
+        </>
+      }
+      actions={<SavedFlash state={flash.state} />}
+    >
+      <div role="radiogroup" aria-label="Open links" className="ade-modern-choices" style={{ opacity: busy ? 0.7 : 1 }}>
+        {OPTIONS.map((option) => {
+          const active = option.value === mode;
+          const OptionIcon = option.icon;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
               disabled={busy}
-            />
-          </div>
-        }
-      />
-    </SettingsGroup>
+              onClick={() => { if (!active) void handleChange(option.value); }}
+              className="ade-ap-choice"
+              data-active={active}
+            >
+              <span className="ade-modern-choice-body">
+                <span className="ade-modern-choice-title">
+                  <OptionIcon size={14} />
+                  {option.label}
+                  {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                </span>
+                <span className="ade-modern-choice-hint">{option.hint}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </ModernSection>
   );
 }

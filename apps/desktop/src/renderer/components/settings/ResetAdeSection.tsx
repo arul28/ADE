@@ -1,6 +1,5 @@
-import { Trash } from "@phosphor-icons/react";
 import { ResetAdeButton } from "../app/ResetAdeDialog";
-import { SettingsCard } from "./primitives";
+import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
 /**
  * The hard reset, as a setting. Its own section at the very bottom of General,
@@ -14,13 +13,14 @@ import { SettingsCard } from "./primitives";
  */
 export function ResetAdeSection() {
   return (
-    <SettingsCard
-      anchor="reset-ade"
-      icon={<Trash size={15} weight="duotone" />}
-      tone="red"
-      title="Reset ADE"
-      description="Removes everything ADE put on this computer, including ADE's data and lanes in every project, then reopens ADE as a new install. Your code and repositories stay."
-      control={<ResetAdeButton label="Reset ADE…" />}
-    />
+    <ModernSection group="Reset ADE" anchor="reset-ade" title="Reset ADE">
+      <ModernRows>
+        <ModernRow
+          title="Remove everything ADE put on this computer"
+          hint="Includes ADE's data and lanes in every project, then reopens ADE as a new install. Your code and repositories stay."
+          control={<ResetAdeButton label="Reset ADE…" className="ade-modern-btn ade-modern-btn-danger" />}
+        />
+      </ModernRows>
+    </ModernSection>
   );
 }

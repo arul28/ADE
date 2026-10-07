@@ -1765,6 +1765,11 @@ export function createSyncService(args: SyncServiceArgs) {
       return pinStore.getPin();
     },
 
+    /** This computer's sync device id — the key for per-device account settings. */
+    getLocalDeviceId(): string {
+      return deviceRegistryService.getLocalDeviceId();
+    },
+
     async setPin(pin: string): Promise<SyncRoleSnapshot> {
       assertPhonePairingAvailable();
       const current = await service.getStatus();

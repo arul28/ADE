@@ -95,6 +95,8 @@ including agents started by a skill.
 
 The desktop renderer has exactly one of each notice and overlay. Read `docs/design/notices.md` before adding any banner, toast, dialog, or popover-like surface. Never invent a new style.
 
+For the look of everything else (cards, pages, settings, charts, backdrops), read `docs/design/visual-language.md` before building or restyling a surface. Reuse the surface kit (`styles/surfaceKit.css`) and the modern settings primitives (`settings/primitives/SettingsModern.tsx`); do not write a new panel style.
+
 - **Banners:** `Banner` / `useAppBanner` from `components/ui/notice`. App-wide states are docked, short prompts float, and a banner about one pane is `layout="inline"`. Never write a new `*Banner` component with its own styling.
 - **Toasts:** `showToast()` from `components/app/toast/toastStore`. No toast libraries and no hand-positioned corner cards.
 - **Confirm / prompt / modals:** `confirmDialog()` / `promptDialog()` / `<Dialog>` from `components/ui/dialog`. Never call `window.confirm`, `prompt`, or `alert`.

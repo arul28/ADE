@@ -26,30 +26,17 @@ import {
   windowLabel,
 } from "./usageWindowFormat";
 
-/**
- * Pace tones as theme variables with a literal fallback.
- *
- * These four are the only colours on these surfaces that are not a provider
- * brand token, and they carry meaning rather than identity, so they stay
- * semantic rather than borrowing the accent.
- */
-const TONE_COLOR: Record<PaceVisual["tone"], string> = {
-  calm: "var(--color-usage-ok, #34D399)",
-  warm: "var(--color-usage-warn, #F5A623)",
-  hot: "var(--color-usage-critical, #F87171)",
-  cool: "var(--color-muted-fg)",
+/** Pace tones map onto the kit tag tones: they carry meaning, not identity. */
+const TONE_TAG: Record<PaceVisual["tone"], "ok" | "warn" | "crit" | undefined> = {
+  calm: "ok",
+  warm: "warn",
+  hot: "crit",
+  cool: undefined,
 };
 
 export function PacePill({ pace }: { pace: PaceVisual }) {
-  const color = TONE_COLOR[pace.tone];
   return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-[1px] font-medium leading-none",
-        USAGE_TEXT.micro,
-      )}
-      style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
-    >
+    <span className="kit-tag shrink-0 gap-1" data-tone={TONE_TAG[pace.tone]}>
       {pace.label}
       {pace.arrow ? <span aria-hidden>{pace.arrow}</span> : null}
     </span>

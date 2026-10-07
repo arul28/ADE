@@ -239,7 +239,7 @@ import { createAccountRuntimeLifecycle } from "./services/account/accountRuntime
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
-import { ACCOUNT_SCOPE_ALL } from "../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -1628,6 +1628,21 @@ export async function createAdeRuntime(args: {
       logger,
       onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
     });
+    /**
+     * Apple device settings are per computer (Settings › This computer › Apple
+     * devices): this device's own value first, then the account-wide value
+     * older desktops wrote. Read lazily, so a value that syncs in later lands.
+     */
+    const readAppleDeviceSetting = (key: string): unknown => {
+      let deviceKey: string | null = null;
+      try {
+        deviceKey = accountDeviceSettingKey(syncService?.getLocalDeviceId() ?? null, key);
+      } catch {
+        deviceKey = null;
+      }
+      const own = deviceKey ? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, deviceKey) : undefined;
+      return own ?? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+    };
     const iosSimulatorService = chatOnlyRuntime
       ? null
       : createIosSimulatorService({
@@ -1671,7 +1686,7 @@ export async function createAdeRuntime(args: {
         recordingDeps: {
           artifactFiler: computerUseArtifactBrokerService,
           readOverlaySetting: (key) => {
-            const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+            const value = readAppleDeviceSetting(key);
             return typeof value === "boolean" ? value : undefined;
           },
           // ADE's own accent, mirrored in `shared/themeTokens.ts` and guarded
@@ -1712,7 +1727,7 @@ export async function createAdeRuntime(args: {
      */
     const appleRemoteBitrateKbpsCap = (): number | null => {
       try {
-        const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
+        const value = readAppleDeviceSetting(APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
         return typeof value === "number" && Number.isFinite(value)
           ? clampAppleRemoteBitrateKbps(value)
           : DEFAULT_APPLE_REMOTE_BITRATE_KBPS;

@@ -13,7 +13,7 @@ import {
   type HarnessPresetDraft,
   type HarnessPresetMissing,
 } from "../../../../shared/harnessPresets";
-import { COLORS, SANS_FONT, formatTimestamp, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, formatTimestamp } from "../../lanes/laneDesignTokens";
 import { CustomToolMark } from "../../shared/CustomToolMark";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { RouteTestBadge } from "../../shared/ModelPicker/ReachableModelList";
@@ -25,7 +25,8 @@ import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { saveHarnessPresetsToAccount } from "../../../lib/harnessPresetAccountSync";
 import { HelpHint } from "../primitives/HelpHint";
-import { SettingsManagerPage } from "../primitives/SettingsManagerPage";
+import { ModernSection } from "../primitives/SettingsModern";
+import "./customProviders.css";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
 import { bodyLogoFamily, PresetAgent, PresetModels } from "./presetFacts";
@@ -229,22 +230,23 @@ export function CustomProvidersSection({
 
   const toolbar = (
     <>
-      <button type="button" style={outlineButton()} onClick={() => importInputRef.current?.click()}>
+      <HelpHint text={CUSTOM_HELP} />
+      <button type="button" className="ade-modern-btn" onClick={() => importInputRef.current?.click()}>
         Import
       </button>
-      <button type="button" style={primaryButton()} onClick={openCreate} data-custom-add="">
+      <button type="button" className="ade-modern-btn" data-tone="primary" onClick={openCreate} data-custom-add="">
         <Plus size={12} weight="bold" /> Add
       </button>
     </>
   );
 
   return (
-    <SettingsManagerPage
+    <ModernSection
+      group="Connections"
       anchor="ai-harnesses"
       title="Custom"
-      leading={<CustomToolMark size={18} />}
-      titleAdornment={<HelpHint text={CUSTOM_HELP} />}
-      toolbar={toolbar}
+      hint="Any harness on a model you already pay for, saved once and picked from any model picker."
+      actions={toolbar}
     >
       <input
         ref={importInputRef}
@@ -259,9 +261,13 @@ export function CustomProvidersSection({
       />
 
       {presets.length === 0 ? (
-        <div data-custom-empty="" style={{ display: "flex", flexDirection: "column", gap: 10, fontFamily: SANS_FONT }}>
-          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: COLORS.textMuted }}>
-            Run any harness on a model you already pay for. Save the pairing once and pick it from any model picker.
+        <div data-custom-empty="" className="ade-custom-empty">
+          <span className="ade-modern-glyph" aria-hidden><CustomToolMark size={16} /></span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0, flex: 1 }}>
+          <p className="ade-custom-empty-copy">
+            {starters.length > 0
+              ? "Nothing saved yet. Start from something this computer already has connected:"
+              : "Nothing saved yet. Add one to pair a harness with a model you already pay for."}
           </p>
           {starters.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -272,18 +278,19 @@ export function CustomProvidersSection({
                   data-custom-starter={starter.key}
                   onClick={() => createFromStarter(starter)}
                   title={`${starter.group.label} · ${starter.group.detail}`}
-                  style={starterStyle}
+                  className="ade-custom-starter"
                 >
                   <ProviderLogo family={bodyLogoFamily(starter.harness)} size={14} />
-                  <span style={{ fontWeight: 600 }}>{starter.name}</span>
-                  <span style={{ color: COLORS.textMuted }}>· {starter.group.label}</span>
+                  <span style={{ fontWeight: 500 }}>{starter.name}</span>
+                  <span style={{ color: "var(--color-muted-fg)" }}>· {starter.group.label}</span>
                 </button>
               ))}
             </div>
           ) : null}
+          </div>
         </div>
       ) : (
-        <div data-custom-preset-list="" style={{ display: "flex", flexDirection: "column" }}>
+        <div data-custom-preset-list="" className="ade-modern-rows">
           {presets.map((preset, index) => (
             <CustomProviderRow
               key={preset.id}
@@ -339,7 +346,7 @@ export function CustomProvidersSection({
           onRetryAccountSync={async () => (await saveHarnessPresetsToAccount()).message}
         />
       ) : null}
-    </SettingsManagerPage>
+    </ModernSection>
   );
 }
 
@@ -407,32 +414,20 @@ function CustomProviderRow({
   return (
     <div
       data-custom-preset-row={preset.id}
-      style={{
-        display: "grid",
-        // Small minimums: at 150% zoom the pane is ~700px, and a row that
-        // cannot shrink is what makes the page scroll sideways.
-        gridTemplateColumns: "minmax(120px, 1.1fr) minmax(86px, 0.7fr) minmax(150px, 1.3fr) auto",
-        gap: 12,
-        alignItems: "center",
-        padding: "10px 2px",
-        borderTop: first ? "none" : `1px solid ${COLORS.borderMuted}`,
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textPrimary,
-        minWidth: 0,
-      }}
+      className="ade-custom-row"
+      data-first={first ? "true" : undefined}
     >
       <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
         <HarnessLogo logo={preset.logo} size={22} accentColor={preset.accentColor} />
         <span style={{ minWidth: 0 }}>
           <span
-            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}
+            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500, fontSize: 13 }}
             title={`Updated ${formatTimestamp(preset.updatedAt)}`}
           >
             {name}
           </span>
           <span
-            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10.5, color: COLORS.textMuted }}
+            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: "var(--color-muted-fg)", marginTop: 2 }}
           >
             {presetSourceLabel(preset.source, accountLabel)}
           </span>
@@ -451,12 +446,12 @@ function CustomProviderRow({
             aria-label={`Test ${name}`}
             disabled={testState?.status === "testing"}
             onClick={() => void reach.testRoute(preset.harness, source, preset.model)}
-            style={outlineButton({ padding: "0 8px" })}
+            className="ade-modern-btn"
           >
             Test
           </button>
         ) : null}
-        <button type="button" aria-label={`Edit ${name}`} title="Edit" onClick={onEdit} style={outlineButton({ padding: "0 7px" })}>
+        <button type="button" aria-label={`Edit ${name}`} title="Edit" onClick={onEdit} className="ade-modern-btn" data-variant="ghost" data-icon="true">
           <PencilSimple size={13} weight="bold" />
         </button>
         <button
@@ -466,7 +461,9 @@ function CustomProviderRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((openNow) => !openNow)}
-          style={outlineButton({ padding: "0 6px" })}
+          className="ade-modern-btn"
+          data-variant="ghost"
+          data-icon="true"
         >
           <DotsThree size={14} weight="bold" />
         </button>
@@ -497,18 +494,3 @@ function CustomProviderRow({
     </div>
   );
 }
-
-const starterStyle: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 8,
-  height: 30,
-  padding: "0 12px",
-  borderRadius: 8,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: "var(--color-card)",
-  fontFamily: SANS_FONT,
-  fontSize: 11.5,
-  color: COLORS.textPrimary,
-  cursor: "pointer",
-};

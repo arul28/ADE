@@ -17,7 +17,7 @@ import {
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "./AppearanceSection";
 import { AppleDevicesSection } from "./AppleDevicesSection";
-import { SettingsColumn, SettingsRowIcon, SettingsSectionRail, type SettingsTone } from "./primitives";
+import { ModernPage, SettingsColumn, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
 import { BudgetCapSettings } from "./BudgetCapEditor";
 import { AboutSection } from "./AboutSection";
@@ -167,7 +167,7 @@ function AgentsTabContent() {
   }
 
   return (
-    <>
+    <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
           forceRefreshOnMount
@@ -181,7 +181,7 @@ function AgentsTabContent() {
       <WebSettingsSection entryIds={["agents.budget"]}>
         <BudgetCapSettings />
       </WebSettingsSection>
-    </>
+    </ModernPage>
   );
 }
 
@@ -574,12 +574,10 @@ export function TabContent({
           data-tone={block.group?.tone}
         >
           {block.group ? (
-            <header className="ade-settings-group-head">
-              <SettingsRowIcon icon={block.group.icon} tone={block.group.tone} />
-              <div style={{ minWidth: 0 }}>
-                <h2 className="ade-settings-group-title">{block.group.title}</h2>
-                <p className="ade-settings-group-description">{block.group.description}</p>
-              </div>
+            // A quiet mono label on a hairline: the sections under it carry
+            // their own headings, so the block only needs to name the group.
+            <header className="ade-settings-group-head" title={block.group.description}>
+              <h2 className="ade-settings-group-title">{block.group.title}</h2>
             </header>
           ) : null}
           {block.items.map((item) => (

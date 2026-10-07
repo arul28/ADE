@@ -27,8 +27,7 @@ import {
   LOCAL_PROVIDER_LABELS,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { CaretRight, Robot } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -38,8 +37,8 @@ import {
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
-import { SettingsToggle } from "./primitives";
+import { ModernSection, SettingsToggle } from "./primitives";
+import "./ProvidersSection.css";
 import { CustomProvidersSection } from "./harnesses/CustomProvidersSection";
 import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
@@ -51,7 +50,6 @@ import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
 import {
   AlertBanner,
   PreviewChip,
-  ProviderStatusChip,
   normalizeProviderVersion,
   prettifyProviderId,
 } from "./providers/providerUi";
@@ -107,111 +105,201 @@ const API_KEY_PROVIDERS: Array<{
  */
 
 /**
- * One provider row.
+ * One provider card.
  *
- * The whole row is the button, spanning every column on the table's own track
- * template, so the accessible name ("Open Claude Code settings") still covers
- * the status and the message — a screen reader that lands on the control hears
- * the same three facts a sighted reader sees, and nothing is stranded in a
- * sibling cell the label does not reach.
+ * The whole card is the open button, so its accessible name ("Open Claude Code
+ * settings") covers the status tag and the message — a screen reader that lands
+ * on it hears the same facts a sighted reader sees. The one quick action
+ * (Sign in, Install, Review) is a sibling button laid over the card's corner,
+ * never nested inside it.
  */
-function ProviderManagerRow({
+function ProviderCard({
   descriptor,
   ctx,
   accountCount,
+  hidden = false,
   onOpen,
 }: {
   descriptor: ProviderDescriptor;
   ctx: ProvidersViewContext;
   /** Local logins for this provider. Only Claude and Codex can exceed one. */
   accountCount?: number;
+  /** Folded away with its group. */
+  hidden?: boolean;
   onOpen: () => void;
 }) {
   const status = providerStatusFor(descriptor, ctx);
   const models = descriptor.models(ctx);
   const version = normalizeProviderVersion(descriptor.version?.(ctx));
   // A count of zero while the probe is still out is a claim we cannot make.
-  // A disabled provider's count is real but beside the point — the row's job
-  // is to say it is off and to be clickable.
+  // A disabled provider's count is real but beside the point.
   const showModelCount = status.state !== "checking" && status.state !== "disabled";
 
-  // The detail line says one of two things. A provider in trouble gets the real
-  // status sentence; a healthy one gets where its credential came from, which
-  // is the only question a working provider still raises.
+  // A provider in trouble gets the real status sentence; a healthy one gets
+  // where its credential came from — the only question a working one raises.
   const healthy = status.state === "connected";
   const problem = status.errorLine ?? (healthy ? null : status.message);
   const message = healthy ? descriptor.credentialLine?.(ctx) ?? null : problem;
 
   const metaParts = [
-    // Only when there is more than one: "1 account" is the state every other
-    // provider is permanently in, so saying it is noise on nine rows.
+    // Only when there is more than one: "1 account" is noise on every card.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
     ...(version ? [version] : []),
   ];
 
+  const signInCommand = acpLoginCommand(descriptor.id);
+  const action = status.state === "sign-in"
+    ? {
+      label: "Sign in",
+      aria: `Sign in to ${descriptor.label}`,
+      run: () => (signInCommand ? ctx.actions.openSignInTerminal(descriptor.id) : onOpen()),
+    }
+    : status.state === "not-installed"
+      ? { label: "Install", aria: `Install ${descriptor.label}`, run: onOpen }
+      : status.state === "attention"
+        ? { label: "Review", aria: `Review ${descriptor.label}`, run: onOpen }
+        : null;
+
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label={`Open ${descriptor.label} settings`}
-      className="ade-provider-tile"
-      data-state={status.state}
-    >
-      <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        {descriptor.logo(26)}
-        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-            <span
-              data-testid={`provider-tile-name-${descriptor.id}`}
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                fontFamily: SANS_FONT,
-                color: COLORS.textPrimary,
-                minWidth: 0,
-                // Never clipped: the name is the tile's identity.
-                overflowWrap: "anywhere",
-                lineHeight: 1.3,
-              }}
-            >
-              {descriptor.label}
+    <div className="ade-pv-card" data-state={status.state} hidden={hidden}>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`Open ${descriptor.label} settings`}
+        className="ade-pv-open"
+      >
+        <span className="ade-pv-top">
+          <span className="ade-pv-logo" aria-hidden>{descriptor.logo(22)}</span>
+          <span className="ade-pv-id">
+            <span className="ade-pv-name-row">
+              <span className="ade-pv-name" data-testid={`provider-tile-name-${descriptor.id}`}>
+                {descriptor.label}
+              </span>
+              {descriptor.preview ? <PreviewChip /> : null}
             </span>
-            {descriptor.preview ? <PreviewChip /> : null}
+            {metaParts.length > 0 ? (
+              <span className="ade-pv-meta">{metaParts.join(" · ")}</span>
+            ) : null}
           </span>
-          <ProviderStatusChip state={status.state} label={status.label} />
+          <CaretRight size={12} className="ade-pv-caret" aria-hidden />
         </span>
-        <span aria-hidden style={{ display: "flex", color: COLORS.textDim, flexShrink: 0 }}>
-          <CaretRight size={13} />
-        </span>
-      </span>
-      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-        {metaParts.length > 0 ? (
-          <span style={{ fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>{metaParts.join(" · ")}</span>
-        ) : null}
         {message ? (
-          <span
-            style={{
-              fontSize: 11.5,
-              fontFamily: SANS_FONT,
-              // The dot already carries the state; red here is reserved for a
-              // real probe failure so it still means something.
-              color: status.errorLine ? COLORS.danger : COLORS.textDim,
-              lineHeight: 1.4,
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-              overflowWrap: "anywhere",
-            }}
-            title={message}
-          >
-            {message}
-          </span>
+          <span className="ade-pv-line" title={message}>{message}</span>
         ) : null}
-      </span>
-    </button>
+        <span className="ade-pv-foot">
+          <span className="kit-tag" data-tone={PROVIDER_TAG_TONE[status.state]}>
+            {status.label}
+          </span>
+        </span>
+      </button>
+      {action ? (
+        <button type="button" className="ade-pv-action" aria-label={action.aria} onClick={action.run}>
+          {action.label}
+        </button>
+      ) : null}
+    </div>
   );
+}
+
+const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
+  checking: undefined,
+  connected: "ok",
+  "sign-in": "warn",
+  attention: "crit",
+  "not-installed": undefined,
+  disabled: undefined,
+};
+
+type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
+
+/**
+ * Ready first, then the ones asking for something, then the ones that are not
+ * set up — folded away while anything above them exists, so the grid opens on
+ * what works. Until the first status lands every card says Checking, and the
+ * grid stays one flat list rather than shuffling as answers arrive.
+ */
+const PROVIDER_GROUPS: Array<{ id: string; label: string; states: ProviderDescriptorState[] }> = [
+  { id: "ready", label: "Ready", states: ["connected"] },
+  { id: "action", label: "Action needed", states: ["sign-in", "attention", "checking"] },
+  { id: "unset", label: "Not set up", states: ["not-installed", "disabled"] },
+];
+
+function ProviderGrid({
+  descriptors,
+  ctx,
+  accountCounts,
+  onOpen,
+}: {
+  descriptors: ProviderDescriptor[];
+  ctx: ProvidersViewContext;
+  accountCounts: Partial<Record<string, number>>;
+  onOpen: (id: string) => void;
+}) {
+  const [unsetOpen, setUnsetOpen] = useState(false);
+  const card = (descriptor: ProviderDescriptor, hidden = false) => (
+    <ProviderCard
+      key={descriptor.id}
+      descriptor={descriptor}
+      ctx={ctx}
+      hidden={hidden}
+      {...(accountCounts[descriptor.id] != null ? { accountCount: accountCounts[descriptor.id] } : {})}
+      onOpen={() => onOpen(descriptor.id)}
+    />
+  );
+  // One flat, keyed list in one parent — headings included — so a card that
+  // changes group when its status lands is moved, not remounted, and keeps
+  // keyboard focus.
+  if (ctx.status == null) {
+    return <div className="ade-pv-grid">{descriptors.map((descriptor) => card(descriptor))}</div>;
+  }
+  const grouped = PROVIDER_GROUPS.map((group) => ({
+    ...group,
+    items: descriptors.filter((descriptor) => group.states.includes(providerStatusFor(descriptor, ctx).state)),
+  })).filter((group) => group.items.length > 0);
+  const foldable = grouped.length > 1;
+  const children: React.ReactNode[] = [];
+  grouped.forEach((group, index) => {
+    const collapsible = foldable && group.id === "unset";
+    const open = !collapsible || unsetOpen;
+    children.push(
+      <div key={`head-${group.id}`} className="ade-pv-group-head" data-first={index === 0 ? "true" : undefined}>
+        <span className="kit-eyebrow">{group.label}</span>
+        <span className="ade-pv-count kit-num">{group.items.length}</span>
+        {collapsible ? (
+          <button
+            type="button"
+            className="ade-pv-fold"
+            aria-expanded={open}
+            onClick={() => setUnsetOpen((value) => !value)}
+          >
+            {open ? "Hide" : "Show"}
+            <CaretDown size={11} weight="bold" style={{ transform: open ? "rotate(180deg)" : undefined }} />
+          </button>
+        ) : null}
+      </div>,
+    );
+    if (collapsible && !open) {
+      children.push(
+        <button
+          key={`folded-${group.id}`}
+          type="button"
+          className="ade-pv-folded"
+          onClick={() => setUnsetOpen(true)}
+          aria-label={`Show ${group.items.length} providers that are not set up`}
+        >
+          <span className="ade-pv-folded-logos" aria-hidden>
+            {group.items.slice(0, 8).map((descriptor) => (
+              <span key={descriptor.id}>{descriptor.logo(16)}</span>
+            ))}
+          </span>
+          <span>{group.items.map((descriptor) => descriptor.label).join(", ")}</span>
+        </button>,
+      );
+    }
+    for (const descriptor of group.items) children.push(card(descriptor, !open));
+  });
+  return <div className="ade-pv-grid">{children}</div>;
 }
 
 function buildLocalProviderDrafts(
@@ -1084,11 +1172,9 @@ export function ProvidersSection({
   const signInCommand = signInProvider ? acpLoginCommand(signInProvider) : null;
 
   return (
-    // The `ai-providers` anchor moved onto the manager page below, so the
-    // template owns the id, the scope chip and the heading in one place. This
-    // wrapper is layout only — giving it the id too would put the same anchor
-    // in the DOM twice whenever the grid is on screen.
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    // The `ai-providers` anchor lives on the section below. This wrapper is
+    // layout only — giving it the id too would put the anchor in the DOM twice.
+    <div className={selectedDescriptor ? "ade-pv-detail" : "ade-pv-page"}>
       {notice && (
         <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
@@ -1113,14 +1199,13 @@ export function ProvidersSection({
           />
         </div>
       ) : (
-        <SettingsManagerPage
+        <ModernSection
+          group="Connections"
           anchor="ai-providers"
-          title="AI providers"
-          description="Every coding agent ADE can run. Open one to sign in, choose models, or turn it off."
-          icon={<Robot size={15} weight="duotone" />}
-          tone="violet"
-          toolbar={(
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+          title="Coding agents"
+          hint="Every agent ADE can run. Open one to sign in, choose models, or turn it off."
+          actions={(
+            <label className="ade-pv-usage-toggle">
               Show usage in header
               <SettingsToggle
                 label="Show usage in header"
@@ -1130,20 +1215,13 @@ export function ProvidersSection({
             </label>
           )}
         >
-          <div className="ade-provider-grid">
-            {descriptors.map((descriptor) => (
-              <ProviderManagerRow
-                key={descriptor.id}
-                descriptor={descriptor}
-                ctx={ctx}
-                {...(accountCounts[descriptor.id as keyof typeof accountCounts] != null
-                  ? { accountCount: accountCounts[descriptor.id as keyof typeof accountCounts] }
-                  : {})}
-                onOpen={() => selectProvider(descriptor.id)}
-              />
-            ))}
-          </div>
-        </SettingsManagerPage>
+          <ProviderGrid
+            descriptors={descriptors}
+            ctx={ctx}
+            accountCounts={accountCounts as Partial<Record<string, number>>}
+            onOpen={selectProvider}
+          />
+        </ModernSection>
       )}
 
       {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}

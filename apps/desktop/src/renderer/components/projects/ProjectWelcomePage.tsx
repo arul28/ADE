@@ -5,7 +5,7 @@ import {
   ArrowCounterClockwise,
   ChatCircleDots,
   FolderOpen,
-  GearSix,
+  FolderSimple,
   GitMerge,
   Plus,
   Trash,
@@ -38,7 +38,19 @@ import {
   RecentProjectRow,
   type WebRowChrome,
 } from "./ProjectWelcomeWebRows";
-import { WelcomeSideColumn } from "./ProjectWelcomeSidePanels";
+import { WelcomeCardHead, useRunningChats } from "./ProjectWelcomeSidePanels";
+import {
+  ActivityUsageCard,
+  HomeAction,
+  LimitsMachinesCard,
+  PullRequestsCard,
+  RunningCard,
+  WelcomeHero,
+  useMachineRows,
+  useRecentStats,
+} from "./ProjectWelcomeHome";
+import { activityStateGroup } from "../activity/activityPresentation";
+import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
   WebAddProjectNotice,
   WebZeroMachines,
@@ -70,7 +82,6 @@ export function ProjectWelcomePage() {
   const theme = useAppStore((s) => s.theme);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
-  const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
@@ -135,6 +146,9 @@ export function ProjectWelcomePage() {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  const running = useRunningChats();
+  const recentStats = useRecentStats();
+  const needsYouCount = running.filter((item) => activityStateGroup(item) === "needs-you").length;
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
@@ -192,6 +206,8 @@ export function ProjectWelcomePage() {
   // before the first relay dial and fills in as machines come up.
   // ---------------------------------------------------------------------
   const webMachines = useWebMachines();
+  const machineRows = useMachineRows(webMode, remoteSnapshot, webMachines);
+  const machinesOnline = machineRows.filter((row) => row.dot === "online").length;
   const webMachineByKey = useMemo(
     () => new Map(webMachines.map((machine) => [machine.key, machine])),
     [webMachines],
@@ -585,6 +601,26 @@ export function ProjectWelcomePage() {
 
   const hasProjects = visibleProjectGroups.length > 0;
   const showSide = !webMode || webMachines.length > 0;
+  const hasRunning = running.length > 0;
+  const backgroundPageEntries = useMemo((): ContextMenuEntry[] => [
+    {
+      kind: "item",
+      key: "add-project",
+      label: "Add project…",
+      icon: Plus,
+      disabled: webMode && !activeWebMachine,
+      onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+    },
+    {
+      kind: "item",
+      key: "chat",
+      label: "Chat without a project",
+      icon: ChatCircleDots,
+      disabled: webMode && !activeWebMachine,
+      onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
+    },
+  ], [activeWebMachine, navigate, openWebChats, webMode]);
+  const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
     <div
@@ -604,6 +640,7 @@ export function ProjectWelcomePage() {
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
       onDrop={handleDropFolder}
+      onContextMenu={backgroundMenu.onContextMenu}
       data-ade-web-welcome={webMode ? "true" : undefined}
       style={{
         // The window gradient paints over this base; see the backdrop below.
@@ -651,58 +688,43 @@ export function ProjectWelcomePage() {
         </div>
       ) : null}
 
-      {/* Header: logo + the two ways in */}
-      <div className="ade-welcome-head">
-        <img
-          src="./logo.png"
-          alt="ADE Logo"
-          className="ade-welcome-logo"
-          data-ade-welcome-motion={webMode ? "true" : undefined}
-          style={webMode
-            ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
-            : undefined}
+      <div className="ade-home" data-narrow={narrow ? "true" : undefined}>
+        <WelcomeHero
+          runningCount={running.length}
+          needsYouCount={needsYouCount}
+          machinesOnline={machinesOnline}
+          machinesTotal={machineRows.length}
+          actions={(
+            <>
+              <HomeAction
+                icon={Plus}
+                primary
+                label="Add project"
+                tour="project.welcomeAddButton"
+                disabled={webMode && !activeWebMachine}
+                title={
+                  webMode && !activeWebMachine
+                    ? "Connect a machine first — projects are added on the machine that hosts them."
+                    : undefined
+                }
+                onClick={() => {
+                  if (!webMode) {
+                    setProjectBrowserOpen(true);
+                    return;
+                  }
+                  setWebAddProjectNoticeOpen(true);
+                }}
+              />
+              <HomeAction
+                icon={ChatCircleDots}
+                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                disabled={webMode && !activeWebMachine}
+                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+              />
+            </>
+          )}
         />
 
-        <div className="ade-welcome-actions">
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="primary"
-            data-remote-ready={connectedRemoteCount > 0 ? "true" : undefined}
-            data-tour="project.welcomeAddButton"
-            disabled={webMode && !activeWebMachine}
-            title={
-              webMode && !activeWebMachine
-                ? "Connect a machine first — projects are added on the machine that hosts them."
-                : undefined
-            }
-            onClick={() => {
-              if (!webMode) {
-                setProjectBrowserOpen(true);
-                return;
-              }
-              setWebAddProjectNoticeOpen(true);
-            }}
-          >
-            <Plus size={15} weight="bold" />
-            Add project
-          </button>
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="secondary"
-            disabled={webMode && !activeWebMachine}
-            onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-          >
-            <ChatCircleDots size={15} weight="regular" />
-            Chat without a project
-            {webMode && activeWebMachine ? (
-              <span style={{ color: COLORS.textMuted, fontWeight: 400 }}>
-                on {activeWebMachine.name}
-              </span>
-            ) : null}
-          </button>
-        </div>
         {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
           <WebAddProjectNotice
             machineName={activeWebMachine.name}
@@ -725,21 +747,27 @@ export function ProjectWelcomePage() {
           />
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
-      </div>
 
-      <div
-        className="ade-welcome-body"
-        data-single={showSide ? undefined : "true"}
-        data-narrow={showSide && narrow ? "true" : undefined}
-      >
-        <section className="ade-welcome-plane ade-welcome-main" aria-label="Recent projects">
-          {hasProjects ? (
-            <div
-              id="ade-welcome-project-list"
-              ref={listRef}
-              className="ade-welcome-list"
-              onKeyDown={handleListKeyDown}
-            >
+        <div
+          className="ade-home-grid"
+          data-single={showSide ? undefined : "true"}
+          data-running={hasRunning ? "true" : undefined}
+        >
+          <div className="ade-home-col">
+          <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
+            <WelcomeCardHead
+              icon={FolderSimple}
+              title="Projects"
+              count={hasProjects ? visibleProjectGroups.length : null}
+            />
+            {hasProjects ? (
+              <div
+                id="ade-welcome-project-list"
+                ref={listRef}
+                className="kit-card-body ade-welcome-list ade-home-scroll"
+                data-flush="true"
+                onKeyDown={handleListKeyDown}
+              >
               {rows.map(({ group, rp, key }) => {
                 const primary = group.primary;
                 const isRemote = rp.kind === "remote" && Boolean(rp.remote);
@@ -800,51 +828,34 @@ export function ProjectWelcomePage() {
                   />
                 );
               })}
-            </div>
-          ) : (
-            <div className="ade-welcome-empty">
-              <strong>No projects yet</strong>
-              {webMode
-                ? "Projects you open on your machines show up here."
-                : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
-            </div>
-          )}
-        </section>
+              </div>
+            ) : (
+              <div className="ade-welcome-empty">
+                <strong>No projects yet</strong>
+                {webMode
+                  ? "Projects you open on your machines show up here."
+                  : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
+              </div>
+            )}
+          </section>
+          {showSide ? <RunningCard onOpenActivity={() => navigate("/activity")} /> : null}
+          </div>
 
-        {showSide ? (
-          <WelcomeSideColumn
-            webMode={webMode}
-            remoteSnapshot={remoteSnapshot}
-            webMachines={webMachines}
-            narrow={narrow}
-          />
-        ) : null}
+          {showSide ? (
+            <>
+              <ActivityUsageCard stats={recentStats} />
+              <LimitsMachinesCard machineRows={machineRows} webMode={webMode} />
+              <PullRequestsCard
+                projectName={project?.displayName ?? null}
+                projectRoot={project?.rootPath ?? null}
+                onOpenPrs={project ? () => navigate("/prs") : undefined}
+              />
+            </>
+          ) : null}
+        </div>
       </div>
 
-      {/* The way into Settings with no project open. Bottom-left, so it reads
-          as an app-level door rather than one of the project actions above.
-          The hosted client keeps its own navigation. */}
-      {webMode ? null : (
-        <footer className="ade-welcome-foot">
-          <button
-            type="button"
-            className="ade-welcome-button"
-            data-variant="secondary"
-            data-tour="project.settings"
-            onClick={() => {
-              // Leave the new-tab state first: it is what is holding this page
-              // in front, so a bare navigate would leave Settings behind it.
-              cancelNewTab();
-              setStandaloneSettingsOpen(true);
-              navigate("/settings");
-            }}
-          >
-            <GearSix size={15} weight="regular" />
-            Settings
-          </button>
-        </footer>
-      )}
-
+      {backgroundMenu.menu}
       <ContextMenu
         menu={rowMenu}
         entries={rowMenuEntries}

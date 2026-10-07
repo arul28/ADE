@@ -182,9 +182,9 @@ describe("SettingsPage", () => {
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
     // Nav rows are grouped (Account/Project/Machines) now, so the first
     // entries are the rest of the Account group, not a flat alphabetical or
-    // registration-order list. Appearance is no longer here: it is per computer
-    // and lives under Machines. Apple devices keeps the account-scoped rows.
-    expect(rows.slice(0, 3)).toEqual(["Account", "Chat", "Apple devices"]);
+    // registration-order list. Appearance and Apple devices are per computer
+    // and live under Machines.
+    expect(rows.slice(0, 3)).toEqual(["Account", "Chat", "Notifications"]);
   });
 
   it("carries feedback, help, zoom, and the identity row above the sections", async () => {

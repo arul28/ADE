@@ -14,21 +14,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AdeUsageLiveEnvironment,
-  UsageProvider,
 } from "../../../shared/types";
 import { poolLiveQuota } from "../../../shared/usageLiveQuota";
-import { cn } from "../ui/cn";
 import { formatCountdown } from "./usageWindowFormat";
-import {
-  USAGE_BAR_TRACK_CLASS,
-  USAGE_DIVIDER_COLOR_CLASS,
-  USAGE_NUMERIC_CLASS,
-  USAGE_SEGMENT_ITEM_ACTIVE_CLASS,
-  USAGE_SEGMENT_ITEM_CLASS,
-  USAGE_SEGMENT_ITEM_IDLE_CLASS,
-  USAGE_TEXT,
-  usageHeadroomColor,
-} from "./usageDesign";
+import "./usageSurfaces.css";
 import {
   buildLimitCards,
   emailInitials,
@@ -37,16 +26,9 @@ import {
   type LimitSegment,
   type UsageAccountView,
 } from "./usageLimitModel";
+import { humanizeProvider } from "./usageProviderNames";
+import { usageLeftLevel } from "./usageDesign";
 
-const PROVIDER_LABEL: Record<UsageProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  grok: "Grok",
-  opencode: "OpenCode",
-  kimi: "Kimi",
-};
 
 function FilterChip({
   active,
@@ -58,20 +40,12 @@ function FilterChip({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        USAGE_TEXT.micro,
-        USAGE_SEGMENT_ITEM_CLASS,
-        active ? USAGE_SEGMENT_ITEM_ACTIVE_CLASS : USAGE_SEGMENT_ITEM_IDLE_CLASS,
-      )}
-    >
+    <button type="button" onClick={onClick} aria-pressed={active}>
       {children}
     </button>
   );
 }
+
 
 function accountLabel(segment: LimitSegment): string {
   const account = segment.account;
@@ -99,27 +73,24 @@ function PooledCard({
   // list below would only repeat the headline.
   const single = card.segments.length === 1 ? card.segments[0]! : null;
   return (
-    <div className="ade-limit-card">
-      <span className={cn(USAGE_TEXT.detail, "text-muted-fg")}>{card.label}</span>
+    <div className="usage-pool-card">
+      <span className="kit-eyebrow">{card.label}</span>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn(USAGE_TEXT.title, USAGE_NUMERIC_CLASS, "font-semibold text-fg")}>{percent}%</span>
-        <span className={cn(USAGE_TEXT.detail, "text-muted-fg")}>left</span>
+        <span className="usage-fact-value" style={usageLeftLevel(card.percentLeft) ? { color: `var(--kit-${usageLeftLevel(card.percentLeft)})` } : undefined}>{percent}%</span>
+        <span className="usage-card-sub">left</span>
       </div>
       <div
-        className="flex h-1.5 gap-0.5"
+        className="flex gap-1"
         role="img"
         aria-label={`${label}: ${percent} percent left across ${card.segments.length} account${card.segments.length === 1 ? "" : "s"}`}
       >
         {card.segments.map((segment, index) => (
-          <div key={segment.account?.id ?? index} className={cn(USAGE_BAR_TRACK_CLASS, "h-full flex-1")}>
-            <div
-              className="h-full rounded-full"
-              style={{ width: `${segment.percentLeft}%`, background: usageHeadroomColor(segment.percentLeft) }}
-            />
+          <div key={segment.account?.id ?? index} className="kit-meter flex-1" data-level={usageLeftLevel(segment.percentLeft)}>
+            <span style={{ width: `${segment.percentLeft}%` }} />
           </div>
         ))}
       </div>
-      <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
+      <span className="usage-stat-detail">
         {card.forecast
           ? `↻ +${Math.round(card.forecast.percent)}% in ${formatCountdown(card.forecast.resetsInMs)}`
           : single
@@ -134,7 +105,7 @@ function PooledCard({
             const open = openKey === key;
             const detail = accountDetail(segment.account);
             return (
-              <div key={key} className={cn("border-t", USAGE_DIVIDER_COLOR_CLASS)}>
+              <div key={key} style={{ borderTop: "1px solid var(--kit-rule)" }}>
                 <button
                   type="button"
                   onClick={() => onToggle(open ? null : key)}
@@ -142,15 +113,15 @@ function PooledCard({
                   className="flex w-full items-center justify-between gap-2 py-1 text-left"
                   title={detail ? `${accountLabel(segment)} — ${detail}` : accountLabel(segment)}
                 >
-                  <span className={cn(USAGE_TEXT.micro, "min-w-0 truncate text-muted-fg")}>
+                  <span className="usage-account-email" style={{ fontSize: 11.5 }}>
                     {accountLabel(segment)}
                   </span>
-                  <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "shrink-0 text-fg")}>
+                  <span className="usage-limit-value">
                     {Math.round(segment.percentLeft)}% · {formatCountdown(segment.resetsInMs)}
                   </span>
                 </button>
                 {open && detail ? (
-                  <p className={cn(USAGE_TEXT.micro, "m-0 pb-1.5 text-muted-fg")}>{detail}</p>
+                  <p className="usage-footnote pb-1.5">{detail}</p>
                 ) : null}
               </div>
             );
@@ -213,10 +184,10 @@ export function UsagePooledLimits({
       {/* The machine filter only earns its space with more than one machine. */}
       {environments.length > 1 ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
+          <span className="kit-eyebrow">
             Pooled across {selectedCount} computer{selectedCount === 1 ? "" : "s"}
           </span>
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="kit-seg flex-wrap" data-case="sentence" role="group" aria-label="Computers">
             <FilterChip active={selected === null} onClick={() => setSelected(null)}>All</FilterChip>
             {environments.map((environment) => (
               <FilterChip
@@ -231,11 +202,11 @@ export function UsagePooledLimits({
         </div>
       ) : null}
       {selectedCount === 0 ? (
-        <p className={cn(USAGE_TEXT.detail, "m-0 text-muted-fg")}>
+        <p className="usage-footnote">
           No computers selected. Pick one above to see its limits.
         </p>
       ) : groups.length === 0 ? (
-        <p className={cn(USAGE_TEXT.detail, "m-0 text-muted-fg")}>
+        <p className="usage-footnote">
           {onlyFailedSelection
             ? "That computer didn't report its limits."
             : "No live limits reported by the selected computers."}
@@ -243,10 +214,10 @@ export function UsagePooledLimits({
       ) : (
         groups.map(({ provider, cards }) => (
           <div key={provider} className="flex flex-col gap-2.5">
-            <span className={cn(USAGE_TEXT.detail, "font-medium text-fg")}>
-              {PROVIDER_LABEL[provider] ?? provider}
+            <span className="usage-provider-name">
+              {humanizeProvider(provider)}
             </span>
-            <div className="ade-limit-grid">
+            <div className="usage-pool-grid">
               {cards.map((card) => (
                 <PooledCard key={card.key} card={card} openKey={openKey} onToggle={setOpenKey} />
               ))}

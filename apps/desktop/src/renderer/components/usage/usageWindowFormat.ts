@@ -49,6 +49,16 @@ export function formatCountdown(ms: number): string {
   return `${mins}m`;
 }
 
+/** The largest unit only, for tight labels: "3d", "4h", "12m", "now". */
+export function formatCountdownShort(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "now";
+  const days = Math.floor(ms / 86_400_000);
+  if (days > 0) return `${days}d`;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours > 0) return `${hours}h`;
+  return `${Math.max(1, Math.floor(ms / 60_000))}m`;
+}
+
 /**
  * "5h" / "wk" / "mo" — the window's name in a two-across meter row.
  *

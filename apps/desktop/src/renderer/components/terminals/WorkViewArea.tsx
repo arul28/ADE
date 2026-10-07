@@ -44,6 +44,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder
 import { WorkStartSurface } from "./WorkStartSurface";
 import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
+import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
@@ -1225,6 +1226,8 @@ export function WorkViewArea({
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const theme = useAppStore((s) => s.theme);
+  // Right-click on the new chat page's empty background.
+  const draftBackgroundMenu = useBackgroundContextMenu();
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -1334,7 +1337,12 @@ export function WorkViewArea({
         />
       </SingleSessionGridDropZone>
     ) : (
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden" data-work-draft-surface="">
+      <div
+        className="relative flex h-full min-h-0 flex-col overflow-hidden"
+        data-work-draft-surface=""
+        onContextMenu={draftBackgroundMenu.onContextMenu}
+      >
+        {draftBackgroundMenu.menu}
         {/* The new chat pane is part of the window gradient, so the top bar above
             flows into it with no seam. */}
         <WorkToolPickerBackdrop theme={theme} playing={pageActive} field="window" />

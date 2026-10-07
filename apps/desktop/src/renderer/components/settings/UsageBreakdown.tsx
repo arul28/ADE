@@ -20,14 +20,8 @@ import { formatSpend, formatTokens } from "../../lib/format";
 import { triggerBrowserDownload } from "../../lib/transcriptExport";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
-import {
-  USAGE_DIVIDER_COLOR_CLASS,
-  USAGE_HAIRLINE_CLASS,
-  USAGE_HOVER_ROW_CLASS,
-  USAGE_NUMERIC_CLASS,
-  USAGE_TEXT,
-} from "../usage/usageDesign";
-import { SettingsSegmented } from "./primitives";
+import { UsageSegmented } from "../usage/UsageSegmented";
+import "../usage/usageSurfaces.css";
 
 export type UsageBreakdownView = "models" | AdeUsageCostBreakdownBy;
 type Metric = "cost" | "tokens";
@@ -225,12 +219,12 @@ export function UsageBreakdown({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <SettingsSegmented ariaLabel="Breakdown view" options={viewOptions} value={view} onChange={changeView} />
+        <UsageSegmented ariaLabel="Breakdown view" labelCase="sentence" options={viewOptions} value={view} onChange={changeView} />
         <button
           type="button"
           onClick={exportCsv}
           disabled={!rows.length}
-          className="ade-settings-icon-button"
+          className="kit-icon-btn"
           aria-label="Export this view as CSV"
           title="Export CSV (⌘⇧E)"
         >
@@ -238,7 +232,7 @@ export function UsageBreakdown({
         </button>
       </div>
       {ledgerView ? (
-        <p className={cn(USAGE_TEXT.micro, "m-0 text-muted-fg")}>
+        <p className="usage-footnote">
           {lane ? (
             <>
               <button type="button" className="text-fg underline-offset-2 hover:underline" onClick={() => changeView("lane")}>
@@ -252,23 +246,23 @@ export function UsageBreakdown({
         </p>
       ) : null}
       {loading && !rows.length ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>Loading…</p>
+        <p className="usage-footnote py-6 text-center">Loading…</p>
       ) : failed ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>Couldn&apos;t load this view.</p>
+        <p className="usage-footnote py-6 text-center">Couldn&apos;t load this view.</p>
       ) : ledgerView && breakdown && !breakdown.available ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>This host does not keep a per-turn ledger.</p>
+        <p className="usage-footnote py-6 text-center">This host does not keep a per-turn ledger.</p>
       ) : rows.length === 0 ? (
-        <p className={cn(USAGE_TEXT.detail, "py-6 text-center text-muted-fg")}>
+        <p className="usage-footnote py-6 text-center">
           {ledgerView ? "No ADE chat turns in this range." : "No model activity in this range."}
         </p>
       ) : (
-        <table className={cn(USAGE_TEXT.detail, "w-full")}>
+        <table className="usage-table">
           <thead>
-            <tr className={cn(USAGE_TEXT.micro, "border-b text-left text-muted-fg", USAGE_HAIRLINE_CLASS)}>
-              <th className="py-2 pl-2 font-normal">{viewOptions.find((option) => option.value === view)?.label.replace(/s$/, "")}</th>
-              <th className="py-2 text-right font-normal">{metric === "cost" ? "Cost" : "Tokens"}</th>
-              {ledgerView ? <th className="py-2 text-right font-normal">Billed</th> : null}
-              <th className="w-[28%] py-2 pr-2 text-right font-normal">Share</th>
+            <tr>
+              <th>{viewOptions.find((option) => option.value === view)?.label.replace(/s$/, "")}</th>
+              <th style={{ textAlign: "right" }}>{metric === "cost" ? "Cost" : "Tokens"}</th>
+              {ledgerView ? <th style={{ textAlign: "right" }}>Billed</th> : null}
+              <th className="w-[30%]" style={{ textAlign: "right" }}>Share</th>
             </tr>
           </thead>
           <tbody>
@@ -279,12 +273,7 @@ export function UsageBreakdown({
               return (
                 <tr
                   key={row.key}
-                  className={cn(
-                    "border-b last:border-b-0",
-                    USAGE_DIVIDER_COLOR_CLASS,
-                    interactive && cn("cursor-pointer hover:bg-muted", USAGE_HOVER_ROW_CLASS),
-                    row.other && "text-muted-fg",
-                  )}
+                  className={cn(row.other && "text-muted-fg")}
                   onClick={row.onOpen}
                   onKeyDown={(event) => {
                     if (interactive && (event.key === "Enter" || event.key === " ")) {
@@ -295,27 +284,27 @@ export function UsageBreakdown({
                   tabIndex={interactive ? 0 : undefined}
                   role={interactive ? "button" : undefined}
                 >
-                  <td className="max-w-0 py-2 pl-2">
+                  <td className="max-w-0">
                     <span className="flex min-w-0 items-center gap-2">
                       {row.provider ? <ProviderLogo family={row.provider} size={14} /> : null}
-                      <span className="min-w-0 shrink truncate text-fg" title={row.label}>{row.label}</span>
+                      <span className="min-w-0 shrink truncate font-mono text-[12px] text-fg" title={row.label}>{row.label}</span>
                       {row.detail ? <span className="min-w-0 shrink-[4] truncate text-muted-fg" title={row.detail}>{row.detail}</span> : null}
                     </span>
                   </td>
-                  <td className={cn("py-2 text-right text-fg", USAGE_NUMERIC_CLASS)}>
+                  <td className="usage-num text-fg">
                     {metric === "cost" ? formatSpend(row.costUsd) : formatTokens(row.totalTokens)}
                   </td>
                   {ledgerView ? (
-                    <td className={cn("py-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
+                    <td className="usage-num text-muted-fg">
                       {(row.billedUsd ?? 0) > 0 ? formatSpend(row.billedUsd ?? 0) : "—"}
                     </td>
                   ) : null}
-                  <td className="py-2 pr-2">
-                    <span className="flex items-center justify-end gap-2">
-                      <span className="h-1.5 w-full max-w-[96px] overflow-hidden rounded-full bg-muted">
-                        <span className="block h-full rounded-full bg-fg/45" style={{ width: `${(share * 100).toFixed(1)}%` }} />
+                  <td>
+                    <span className="flex items-center justify-end gap-3">
+                      <span className="kit-meter w-full max-w-[112px]">
+                        <span style={{ width: `${(share * 100).toFixed(1)}%` }} />
                       </span>
-                      <span className={cn(USAGE_NUMERIC_CLASS, "w-9 text-right text-muted-fg")}>{`${Math.round(share * 100)}%`}</span>
+                      <span className="usage-num w-9 text-muted-fg">{`${Math.round(share * 100)}%`}</span>
                     </span>
                   </td>
                 </tr>

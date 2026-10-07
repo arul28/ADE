@@ -1,11 +1,9 @@
-import React, { useEffect, useState } from "react";
-import { FirstAid } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import type {
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
  * The off switch for automatic diagnostic reports — and the one place a user
@@ -62,58 +60,35 @@ export function DiagnosticsSharingSection() {
   };
 
   return (
-    <SettingsGroup
+    <ModernSection
+      group="Diagnostics sharing"
+      anchor="diagnostics-sharing"
       title="Diagnostics sharing"
-      description="Send ADE a report when something breaks, so it can be fixed."
+      hint="Send ADE a report when something breaks, so it can be fixed."
     >
-      <SettingsCard
-        anchor="diagnostics-sharing"
-        icon={<FirstAid size={15} weight="duotone" />}
-        tone="red"
-        title="Share diagnostics with ADE when something breaks"
-        description={'ADE sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
-        control={
-          <SettingsToggle
-            label="Share diagnostics with ADE when something breaks"
-            checked={status?.enabled ?? true}
-            disabled={!status || saving}
-            onChange={(enabled) => void setEnabled(enabled)}
-          />
-        }
-      >
-        <p style={NOTE_STYLE}>
-          {`At most ${status?.limit ?? 3} a day, one per problem. You get a message every time one is sent.`}
-        </p>
-        {error ? (
-          <p role="alert" style={{ margin: "8px 0 0", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-            {error}
+      <ModernRows>
+        <ModernRow
+          title="Share diagnostics with ADE when something breaks"
+          hint={'ADE sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
+          control={
+            <SettingsToggle
+              label="Share diagnostics with ADE when something breaks"
+              checked={status?.enabled ?? true}
+              disabled={!status || saving}
+              onChange={(enabled) => void setEnabled(enabled)}
+            />
+          }
+        >
+          <p className="ade-modern-muted">
+            {`At most ${status?.limit ?? 3} a day, one per problem. You get a message every time one is sent.`}
           </p>
-        ) : null}
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${COLORS.outlineBorder}` }}>
-          <ManualDiagnosticsSend sharingEnabled={status?.enabled ?? true} />
-        </div>
-      </SettingsCard>
-    </SettingsGroup>
+          {error ? <p role="alert" className="ade-modern-error" style={{ marginTop: 6 }}>{error}</p> : null}
+        </ModernRow>
+        <ManualDiagnosticsSend sharingEnabled={status?.enabled ?? true} />
+      </ModernRows>
+    </ModernSection>
   );
 }
-
-const NOTE_STYLE: React.CSSProperties = {
-  margin: "8px 0 0",
-  color: COLORS.textMuted,
-  fontFamily: SANS_FONT,
-  fontSize: 11,
-  lineHeight: 1.5,
-};
-
-const LINK_STYLE: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  padding: 0,
-  color: COLORS.textSecondary,
-  cursor: "pointer",
-  font: "inherit",
-  textDecoration: "underline",
-};
 
 /**
  * One short sentence per outcome, and never a status code.
@@ -181,21 +156,20 @@ function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) 
   const reportPath = result?.ok ? result.reportPath : result?.reportPath ?? "";
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+    <ModernRow
+      title="Send a report now"
+      hint="Something feels wrong but nothing has broken? Send one now."
+      control={(
         <button
           type="button"
           onClick={() => void send()}
           disabled={sending}
-          style={outlineButton({ opacity: sending ? 0.6 : 1, cursor: sending ? "default" : "pointer" })}
+          className="ade-modern-btn"
         >
           {sending ? "Sending…" : "Send a report to ADE"}
         </button>
-        <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-          Something feels wrong but nothing has broken? Send one now.
-        </span>
-      </div>
-
+      )}
+    >
       {/*
         Consent, said out loud rather than quietly contradicted. A deliberate
         click sends whether or not automatic sharing is on — the toggle is about
@@ -203,31 +177,32 @@ function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) 
         way to ask for help — but they must never be able to mistake this click
         for switching background reporting back on.
       */}
-      {sharingEnabled ? null : (
-        <p style={NOTE_STYLE}>
-          Automatic reports are off. This sends one report, now. It does not turn
-          automatic reports back on.
-        </p>
-      )}
+      {sharingEnabled && !result ? null : (
+        <div className="ade-modern-stack" style={{ gap: 6 }}>
+          {sharingEnabled ? null : (
+            <p className="ade-modern-muted">
+              Automatic reports are off. This sends one report, now. It does not turn
+              automatic reports back on.
+            </p>
+          )}
 
-      {result ? (
-        <p
-          role="status"
-          style={{ ...NOTE_STYLE, color: result.ok ? COLORS.textSecondary : COLORS.warning }}
-        >
-          {result.ok
-            ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
-            : describeManualSendFailure(result)}
-          {reportPath ? (
-            <>
-              {" "}
-              <button type="button" style={LINK_STYLE} onClick={() => void bridge.revealReport(reportPath)}>
-                View report
-              </button>
-            </>
+          {result ? (
+            <p role="status" className={result.ok ? "ade-modern-muted" : "ade-modern-warn"} style={result.ok ? { color: "var(--kit-text-2)" } : undefined}>
+              {result.ok
+                ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
+                : describeManualSendFailure(result)}
+              {reportPath ? (
+                <>
+                  {" "}
+                  <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void bridge.revealReport(reportPath)}>
+                    View report
+                  </button>
+                </>
+              ) : null}
+            </p>
           ) : null}
-        </p>
-      ) : null}
-    </div>
+        </div>
+      )}
+    </ModernRow>
   );
 }

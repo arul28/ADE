@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -449,7 +450,11 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    await screen.findByText("Mac Studio", { exact: true });
+    // One card, carrying both machines behind its "2 machines" chip.
+    fireEvent.click(await screen.findByRole("button", { name: /On 2 machines/ }));
+    const menu = screen.getByRole("menu", { name: "Open on machine" });
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
+    expect(within(menu).getByText("Mac Studio", { exact: true })).toBeTruthy();
     expect(
       document.querySelectorAll('[data-tour="project.recentProject"]'),
     ).toHaveLength(1);

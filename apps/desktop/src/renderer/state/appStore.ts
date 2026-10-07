@@ -52,6 +52,7 @@ import {
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
 import { applyInterfacePreferences } from "../theme/applyInterface";
+import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 
 export type ThemeId = "dark" | "light";
 
@@ -90,17 +91,22 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = [
 export type InterfaceSansFont = "geist" | "system" | "geist-mono";
 export type InterfaceMonoFont = "jetbrains" | "geist-mono" | "system";
 
+export { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences } from "../scene/scenePreferences";
+export type { SceneMode, ScenePreferences, SceneTexture } from "../scene/scenePreferences";
+
 export type InterfacePreferences = {
   sansFont: InterfaceSansFont;
   monoFont: InterfaceMonoFont;
   /** Stops transitions and animations across the app, whatever the OS says. */
   reduceMotion: boolean;
+  scene: ScenePreferences;
 };
 
 export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {
   sansFont: "geist",
   monoFont: "jetbrains",
   reduceMotion: false,
+  scene: DEFAULT_SCENE_PREFERENCES,
 };
 
 export function normalizeInterfacePreferences(value: unknown): InterfacePreferences {
@@ -109,7 +115,7 @@ export function normalizeInterfacePreferences(value: unknown): InterfacePreferen
     raw.sansFont === "system" || raw.sansFont === "geist-mono" ? raw.sansFont : "geist";
   const monoFont: InterfaceMonoFont =
     raw.monoFont === "geist-mono" || raw.monoFont === "system" ? raw.monoFont : "jetbrains";
-  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true };
+  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true, scene: normalizeScenePreferences(raw.scene) };
 }
 
 export type TerminalPreferences = {

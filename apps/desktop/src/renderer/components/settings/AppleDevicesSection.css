@@ -1,0 +1,219 @@
+/*
+ * Settings › Apple devices, in the Settings › Appearance language: a short
+ * heading over a visual block, 44px between sections, 14px from a heading to
+ * its block, 12px between items. Every colour is a theme token; the only
+ * colour beyond neutrals is the accent on recording overlays (they are drawn
+ * in the accent in real recordings too) and the meter's warn/crit status.
+ */
+
+.ade-as { container: appleset / inline-size; display: flex; flex-direction: column; gap: 44px; padding-bottom: 32px; min-width: 0; }
+
+.ade-as-line { display: block; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 22%, transparent); flex: none; }
+
+/* Shared card surface. */
+.ade-as-feature,
+.ade-as-card,
+.ade-as-panel {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
+/* ── device frame ───────────────────────────────────────────────────── */
+
+.ade-as-feature { display: flex; align-items: center; gap: 18px; padding: 0 16px 0 0; overflow: hidden; }
+.ade-as-feature-art {
+  flex: none;
+  width: 132px;
+  height: 120px;
+  display: grid;
+  place-items: center;
+  border-right: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+}
+.ade-as-feature-text { flex: 1; min-width: 0; }
+
+.ade-as-phone {
+  position: relative;
+  width: 50px;
+  height: 96px;
+  padding: 0;
+  border-radius: 9px;
+  transition: padding 180ms ease, border-radius 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+.ade-as-phone[data-realistic="true"] {
+  padding: 3px;
+  border-radius: 13px;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--color-fg) 46%, transparent), color-mix(in srgb, var(--color-fg) 20%, transparent));
+  box-shadow: 0 10px 22px -12px rgb(0 0 0 / 70%), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+/* Side buttons, only on the realistic body. */
+.ade-as-phone[data-realistic="true"]::before,
+.ade-as-phone[data-realistic="true"]::after {
+  content: "";
+  position: absolute;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--color-fg) 38%, transparent);
+}
+.ade-as-phone[data-realistic="true"]::before { left: -2px; top: 22px; height: 12px; }
+.ade-as-phone[data-realistic="true"]::after { right: -2px; top: 28px; height: 18px; }
+
+.ade-as-phone-screen {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 16px 6px 6px;
+  border-radius: inherit;
+  overflow: hidden;
+  background: var(--color-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 16%, transparent);
+}
+.ade-as-phone[data-realistic="true"] .ade-as-phone-screen { border-radius: 10px; box-shadow: none; }
+.ade-as-phone-island {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 14px;
+  height: 4px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--color-fg) 70%, transparent);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.ade-as-phone[data-realistic="true"] .ade-as-phone-island { opacity: 1; }
+.ade-as-phone-screen .ade-as-line { height: 3px; }
+.ade-as-phone-tile { display: block; height: 14px; border-radius: 3px; background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+
+/* ── recording overlays ─────────────────────────────────────────────── */
+
+.ade-as-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@container appleset (max-width: 460px) { .ade-as-grid2 { grid-template-columns: minmax(0, 1fr); } }
+
+.ade-as-card { display: flex; flex-direction: column; overflow: hidden; transition: border-color 120ms ease; }
+.ade-as-card[data-on="true"] { border-color: color-mix(in srgb, var(--color-fg) 16%, transparent); }
+.ade-as-card-art {
+  height: 108px;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+}
+.ade-as-card-foot { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+
+/* A tiny app screen the overlay draws on. */
+.ade-as-screen {
+  position: relative;
+  width: 100%;
+  max-width: 200px;
+  height: 78px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 14%, transparent);
+  background: var(--color-bg);
+}
+.ade-as-button {
+  position: relative;
+  align-self: flex-start;
+  margin-top: 4px;
+  height: 16px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 8.5px;
+  color: var(--color-bg);
+  background: color-mix(in srgb, var(--color-fg) 75%, transparent);
+}
+.ade-as-field {
+  height: 16px;
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 8.5px;
+  color: var(--color-muted-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-as-field-secret { letter-spacing: 0.1em; }
+
+.ade-as-overlay { position: absolute; transition: opacity 160ms ease, transform 160ms ease; }
+.ade-as-card[data-on="false"] .ade-as-overlay { opacity: 0; transform: scale(0.85); }
+.ade-as-card[data-on="false"] .ade-as-screen { opacity: 0.7; }
+
+.ade-as-tap {
+  left: calc(78% - 11px);
+  top: calc(50% - 11px);
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.ade-as-badge {
+  right: 10px;
+  top: 7px;
+  height: 15px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--color-bg);
+  background: var(--color-accent);
+  box-shadow: 0 4px 10px -4px rgb(0 0 0 / 50%);
+}
+
+/* ── panels (bitrate, storage) ──────────────────────────────────────── */
+
+.ade-as-panel { display: flex; flex-direction: column; gap: 14px; padding: 14px; }
+.ade-as-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.ade-as-stat { display: flex; align-items: baseline; gap: 8px; }
+
+.ade-as-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+@container appleset (max-width: 460px) { .ade-as-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ade-as-preset {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 9px;
+  row-gap: 1px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--kit-panel-edge);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-as-preset:hover { border-color: color-mix(in srgb, var(--color-fg) 18%, transparent); }
+.ade-as-preset[data-active="true"] {
+  border-color: color-mix(in srgb, var(--color-fg) 55%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.ade-as-preset:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-as-bars { grid-row: 1 / span 2; display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.ade-as-bars i { width: 3px; border-radius: 1px; background: color-mix(in srgb, var(--color-fg) 14%, transparent); }
+.ade-as-bars i[data-on="true"] { background: color-mix(in srgb, var(--color-fg) 70%, transparent); }
+.ade-as-preset-label { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-as-preset-kbps { font-size: 10px; color: var(--color-muted-fg); }
+
+.ade-as-storage-line { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-width: 0; }
+.ade-as-storage-num { font-size: 12px; color: var(--color-muted-fg); }
+.ade-as-meter { height: 6px; }
