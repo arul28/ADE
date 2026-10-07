@@ -70,7 +70,7 @@ function openingFillersRegExp(fillers: string[]): RegExp | null {
     .sort((a, b) => b.length - a.length)
     .map(escapeRegExp);
   if (alternatives.length === 0) return null;
-  return new RegExp(`^(?:(?:${alternatives.join("|")})(?=[^\\p{L}\\p{N}]|$)[,.;:]*\\s*)+`, "iu");
+  return new RegExp(`^(?:(?:${alternatives.join("|")})(?=[^\\p{L}\\p{N}]|$)[,.;:!?]*\\s*)+`, "iu");
 }
 
 /** Like {@link wholePhraseRegExp}, but also consumes a comma right after the filler. */

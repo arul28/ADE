@@ -121,6 +121,7 @@ describe("desktop voice transcription", () => {
       ["Um, uh, ship it.", "Ship it."],
       ["Um. Um. Ship it.", "Ship it."],
       ["Uh. Um. Ship it.", "Ship it."],
+      ["Um! Ship it.", "Ship it."],
       ["... so we ship.", "... So we ship."],
     ])("removes a punctuated filler cleanly: %s", (raw, expected) => {
       expect(clean(raw)).toBe(expected);

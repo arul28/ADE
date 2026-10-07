@@ -62,7 +62,7 @@ enum DictationCleanup {
     // attached to each ("Um. Uh, ship it" -> "ship it"); a transcript that
     // itself starts with ".env" keeps it. Longest filler first.
     if !alternatives.isEmpty {
-      let opening = "^(?:(?:" + alternatives.joined(separator: "|") + ")\\b[,.;:]*\\s*)+"
+      let opening = "^(?:(?:" + alternatives.joined(separator: "|") + ")\\b[,.;:!?]*\\s*)+"
       text = replaceRegex(in: text, pattern: opening, with: "", caseInsensitive: true)
     }
     for filler in fillers {
