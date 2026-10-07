@@ -42,9 +42,11 @@ import {
 import {
   buildUpdateFeedProbeUrl,
   canReplaceUpdaterNetSession,
+  describeChromiumNet,
   isChromiumNetError,
   probeUpdateFeed,
   replaceUpdaterNetSession,
+  switchUpdaterToNodeTransport,
 } from "./updaterNetRecovery";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -612,9 +614,9 @@ export function createAutoUpdateService({
   let staleHandoffRecoveryInProgress = false;
   // Fresh updater sessions handed out so far; each needs its own partition name.
   let netSessionGeneration = 0;
-  // A fresh session already failed to fix this streak. Background checks stop
-  // minting new sessions until a check succeeds; a user's Check again may
-  // still try one more.
+  // Neither a fresh session nor Node transport was available for this
+  // streak. Background checks stop retrying until a check succeeds; a user's
+  // Check again may still try once more.
   let netRecoveryExhausted = false;
   // Set by the net recovery when the feed is reachable but the updater is not.
   let checkFailureKind: AutoUpdateErrorKind | null = null;
@@ -1110,8 +1112,10 @@ export function createAutoUpdateService({
    * One feed check that survives a wedged updater session. When Chromium fails
    * the request, Node asks the feed the same question. Node getting through
    * means the network is fine and the updater's session is not, so the updater
-   * gets a fresh session and the check runs once more. At most one retry per
-   * check; any failure that is left propagates to runUpdateCheck's catch.
+   * gets a fresh session and the check runs once more. When the fresh session
+   * fails too, the updater moves to Node's HTTP stack for the rest of the
+   * launch and the check runs a last time. Any failure that is left propagates
+   * to runUpdateCheck's catch.
    */
   async function checkFeedRecoveringNetSession(userInitiated: boolean): Promise<unknown> {
     try {
@@ -1141,40 +1145,50 @@ export function createAutoUpdateService({
       logger.warn("autoUpdate.net_wedge_detected", {
         message,
         probe,
+        chromium: await describeChromiumNet(probeUrl),
         attemptRecovery,
         userInitiated,
       });
       if (!attemptRecovery) throw error;
       netSessionGeneration += 1;
       const partition = `electron-updater-recovered-${netSessionGeneration}`;
-      if (!replaceUpdaterNetSession(updater, partition)) {
+      if (replaceUpdaterNetSession(updater, partition)) {
+        try {
+          const result = await updater.checkForUpdates();
+          checkFailureKind = null;
+          logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "fresh_session", probe });
+          return result;
+        } catch (retryError) {
+          if (!isChromiumNetError(retryError)) {
+            // The fresh session reached the server; whatever failed now is a
+            // different problem with its own classification.
+            checkFailureKind = null;
+            throw retryError;
+          }
+          logger.warn("autoUpdate.net_fresh_session_failed", {
+            partition,
+            message: formatErrorMessage(retryError),
+          });
+        }
+      } else {
+        logger.warn("autoUpdate.net_fresh_session_failed", { partition, reason: "session_unavailable" });
+      }
+      // Chromium refuses the feed even on a fresh session while Node reaches
+      // it, so the updater stops using Chromium until the next launch.
+      if (!switchUpdaterToNodeTransport(updater)) {
         netRecoveryExhausted = true;
-        logger.warn("autoUpdate.net_wedge_unrecovered", {
-          partition,
-          reason: "session_unavailable",
-          message,
-        });
+        logger.warn("autoUpdate.net_wedge_unrecovered", { partition, reason: "node_transport_unavailable", message });
         throw error;
       }
       try {
         const result = await updater.checkForUpdates();
         checkFailureKind = null;
-        logger.info("autoUpdate.net_wedge_recovered", { partition, probe });
+        logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "node", probe });
         return result;
-      } catch (retryError) {
-        if (isChromiumNetError(retryError)) {
-          netRecoveryExhausted = true;
-          logger.warn("autoUpdate.net_wedge_unrecovered", {
-            partition,
-            reason: "retry_failed",
-            message: formatErrorMessage(retryError),
-          });
-        } else {
-          // The fresh session reached the server; whatever failed now is a
-          // different problem with its own classification.
-          checkFailureKind = null;
-        }
-        throw retryError;
+      } catch (nodeError) {
+        // Node reached the feed moments ago, so this is not the stuck session.
+        checkFailureKind = null;
+        throw nodeError;
       }
     }
   }
