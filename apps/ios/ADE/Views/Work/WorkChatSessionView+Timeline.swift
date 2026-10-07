@@ -300,6 +300,7 @@ extension WorkChatSessionView {
       WorkComputerUseRunView(
         groupId: group.id,
         actions: group.computerUseActions,
+        compactAll: group.computerUseCompact,
         expandedIds: cardExpansion.expandedIds,
         onToggle: { id in toggleNestedCard(id) }
       )

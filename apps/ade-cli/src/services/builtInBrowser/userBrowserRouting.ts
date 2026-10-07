@@ -150,7 +150,28 @@ export function withUserBrowserAttachment(
       if (property === "getStatus") {
         return async (input?: unknown) => {
           const { toUserBrowser, args } = takeRoute(input);
-          if (!toUserBrowser) return await call.call(target, args);
+          if (!toUserBrowser) {
+            // Not attached: still report which of the user's browsers have
+            // remote debugging on. A file read only; it never connects.
+            const chatSessionId = args && typeof args === "object"
+              ? (args as Record<string, unknown>).chatSessionId
+              : null;
+            const userBrowserStatus = await userBrowser
+              .status({ chatSessionId: typeof chatSessionId === "string" ? chatSessionId : null })
+              .catch(() => null);
+            if (!userBrowserStatus) return await call.call(target, args);
+            try {
+              const status = await call.call(target, args);
+              return status && typeof status === "object"
+                ? { ...(status as object), userBrowser: userBrowserStatus }
+                : { userBrowser: userBrowserStatus };
+            } catch (error) {
+              return {
+                userBrowser: userBrowserStatus,
+                builtInUnavailable: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }
           const attached = await userBrowser.dispatch("getStatus", userBrowserArgs(input)) as Record<string, unknown>;
           try {
             const status = await call.call(target, args);

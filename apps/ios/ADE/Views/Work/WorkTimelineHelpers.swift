@@ -2799,7 +2799,29 @@ func workPresentedTimelineEntries(
       return entry
     }
   }
-  return workGroupingPresentedRuns(drawn)
+  return workGroupingPresentedRuns(workMarkCompactComputerUseRuns(drawn))
+}
+
+/// Only a turn's newest computer-use run draws its newest action in full;
+/// every earlier run of that turn draws compact, as on desktop.
+func workMarkCompactComputerUseRuns(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  func turnKey(_ entry: WorkTimelineEntry, _ group: WorkToolGroupModel) -> String {
+    entry.turnId ?? group.turnId ?? "entry:\(entry.id)"
+  }
+  var lastIndexByTurn: [String: Int] = [:]
+  for (index, entry) in entries.enumerated() {
+    if case .toolGroup(let group) = entry.payload, !group.computerUseActions.isEmpty {
+      lastIndexByTurn[turnKey(entry, group)] = index
+    }
+  }
+  guard lastIndexByTurn.count > 0 else { return entries }
+  return entries.enumerated().map { index, entry in
+    guard case .toolGroup(var group) = entry.payload, !group.computerUseActions.isEmpty else { return entry }
+    let compact = lastIndexByTurn[turnKey(entry, group)] != index
+    guard compact != group.computerUseCompact else { return entry }
+    group.computerUseCompact = compact
+    return WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .toolGroup(group), turnId: entry.turnId)
+  }
 }
 
 /// Up to three subagent cards side by side on desktop (`SUBAGENT_CARD_GRID_MAX_COLUMNS`).

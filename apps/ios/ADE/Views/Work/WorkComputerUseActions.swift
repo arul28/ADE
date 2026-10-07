@@ -153,6 +153,8 @@ private func workReadComputerUseToolInput(argsText: String?, resultText: String?
 struct WorkComputerUseRunView: View {
   let groupId: String
   let actions: [WorkComputerUseAction]
+  /// Not the turn's newest run: its newest action draws compact too.
+  var compactAll = false
   var expandedIds: Set<String> = []
   var onToggle: (String) -> Void = { _ in }
 
@@ -170,7 +172,11 @@ struct WorkComputerUseRunView: View {
         }
       }
       if let latest = layout.latest {
-        WorkComputerUseFullRow(action: latest)
+        if compactAll {
+          compactRow(latest, expandable: true)
+        } else {
+          WorkComputerUseFullRow(action: latest)
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

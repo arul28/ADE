@@ -1471,6 +1471,9 @@ struct WorkToolGroupModel: Identifiable, Hashable {
   /// rows (`workPresentedTimelineEntries`): the cluster's other tools stay on
   /// the turn's tools toggle, like every other tool cluster.
   var computerUseActions: [WorkComputerUseAction] = []
+  /// Not the turn's newest computer-use run, so its newest action draws
+  /// compact too (desktop `computerUseCompact`, `arrangeComputerUseRuns`).
+  var computerUseCompact = false
 
   var count: Int { members.count }
 }
