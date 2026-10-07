@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
@@ -1022,6 +1022,26 @@ function createTemporaryAutoLaneBranch(): string {
   crypto.getRandomValues(bytes);
   return `ade/${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
+
+/**
+ * What a host may put into the pane's composer (`composerHandleRef`).
+ *
+ * The draft is the pane's state; a host that offers its own ways to start a
+ * message (suggestion chips, a tool panel beside the pane) goes through this
+ * instead of reaching into the textarea or broadcasting window events. The text
+ * methods put the caret at the end and focus the composer, so the user can keep
+ * typing.
+ */
+export type AgentChatPaneComposerHandle = {
+  /** Replace the draft. */
+  setDraft: (text: string) => void;
+  /** Add to the draft, on its own paragraph after anything already there. */
+  insertDraft: (text: string) => void;
+  /** Attach a file already staged in this chat's attachment store. */
+  addAttachment: (attachment: AgentChatFileRef) => void;
+  /** Add an element picked in the ADE Browser as context on the next message. */
+  addBuiltInBrowserContext: (item: unknown) => void;
+};
 
 export type AgentChatSessionCreatedOptions = {
   activate?: boolean;
@@ -3661,6 +3681,8 @@ export function AgentChatPane({
   onOpenTerminalPane,
   terminalPaneOpen,
   chatScope = null,
+  composerHandleRef,
+  emptyStateAccessory = null,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -3765,6 +3787,13 @@ export function AgentChatPane({
    * Absent for every project chat, which is unchanged.
    */
   chatScope?: ChatPaneScope | null;
+  /** Lets the host set or add to the composer draft. */
+  composerHandleRef?: React.Ref<AgentChatPaneComposerHandle>;
+  /**
+   * Rendered under the composer while the pane has no chat yet (the new-chat
+   * state), e.g. a host's suggestion chips. Not rendered once a chat exists.
+   */
+  emptyStateAccessory?: React.ReactNode;
 }) {
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
@@ -5042,6 +5071,14 @@ export function AgentChatPane({
     // type their reply to it without clicking there first.
     setComposerCaretToEndRequest((current) => current + 1);
   }, [clearPromptSuggestionForSession, draft, draftLaunchJobsScopeKey, selectedSessionId, updateComposerDraft]);
+
+  const replaceComposerDraft = useCallback((value: string) => {
+    updateComposerDraft(value);
+    clearPromptSuggestionForSession(selectedSessionId);
+    setComposerCaretToEndRequest((current) => current + 1);
+  }, [clearPromptSuggestionForSession, selectedSessionId, updateComposerDraft]);
+  const handleInsertDraft = useLatestCallback(insertComposerDraft);
+  const handleSetDraft = useLatestCallback(replaceComposerDraft);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
@@ -9614,6 +9651,17 @@ export function AgentChatPane({
       ...current.slice(0, 4),
     ]);
   }, [claimDraftAttachmentOwner, saveContextScreenshot, selectedSessionId]);
+
+  const handleAddAttachment = useLatestCallback(addAttachment);
+  const handleAddBuiltInBrowserContext = useLatestCallback((item: unknown) => {
+    void addBuiltInBrowserContext(item);
+  });
+  useImperativeHandle(composerHandleRef, () => ({
+    setDraft: handleSetDraft,
+    insertDraft: handleInsertDraft,
+    addAttachment: handleAddAttachment,
+    addBuiltInBrowserContext: handleAddBuiltInBrowserContext,
+  }), [handleAddAttachment, handleAddBuiltInBrowserContext, handleInsertDraft, handleSetDraft]);
 
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
@@ -16830,6 +16878,16 @@ export function AgentChatPane({
                           <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
                             {composerWithTypographyRoot}
                           </div>
+                        ) : null}
+
+                        {emptyStateAccessory && !appPanelOpen ? (
+                          <motion.div
+                            className="relative z-10 w-full shrink-0"
+                            data-draft-depart="fade"
+                            exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                          >
+                            {emptyStateAccessory}
+                          </motion.div>
                         ) : null}
 
                         {/* Launch shelf — everything that answers "where does this

@@ -4,7 +4,18 @@ import type { AgentChatSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
-import { providerToolType, relativeTime, sessionPreview, sessionTitle } from "./sessionHelpers";
+import { providerToolType, relativeTime, sessionRowDetail, sessionRowStatus, sessionTitle } from "./sessionHelpers";
+import type { SessionStatusTone } from "../../../shared/sessionStatusPresentation";
+
+/** Status word colours: blue is work, amber is your move, red is broken. */
+const STATUS_TONE_CLASS: Record<SessionStatusTone, string> = {
+  blue: "text-sky-300/80",
+  violet: "text-violet-300/80",
+  amber: "text-amber-300/90",
+  emerald: "text-emerald-300/80",
+  red: "text-rose-300/85",
+  neutral: "text-muted-fg/55",
+};
 
 export function ProjectlessSidebar({
   standalone,
@@ -126,6 +137,7 @@ export function ProjectlessSidebar({
                   const active = session.sessionId === selectedId;
                   const streaming = session.status === "active";
                   const dotColor = providerChatAccent(session.provider) ?? "var(--color-accent)";
+                  const status = sessionRowStatus(session);
                   if (renaming?.id === session.sessionId) {
                     return (
                       <div key={session.sessionId} className="px-1 py-1">
@@ -160,7 +172,12 @@ export function ProjectlessSidebar({
                             {session.pinned ? <PushPin size={10} weight="fill" aria-label="Pinned" className="shrink-0 text-muted-fg/50" /> : null}
                             <span className="block truncate font-sans text-[12px] font-medium text-fg/82">{sessionTitle(session)}</span>
                           </span>
-                          <span className="mt-0.5 block truncate font-sans text-[10px] text-muted-fg/42">{sessionPreview(session)}</span>
+                          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-sans text-[10px] text-muted-fg/42">
+                            {status ? (
+                              <span className={cn("shrink-0 font-medium", STATUS_TONE_CLASS[status.tone])}>{status.label}</span>
+                            ) : null}
+                            <span className="min-w-0 truncate">{sessionRowDetail(session)}</span>
+                          </span>
                         </span>
                         <span className="mt-0.5 shrink-0 font-sans text-[9px] tabular-nums text-muted-fg/35 group-hover:hidden">{relativeTime(session.lastActivityAt)}</span>
                       </button>

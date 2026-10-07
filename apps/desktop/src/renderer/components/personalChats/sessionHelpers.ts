@@ -2,6 +2,10 @@ import type { AgentChatSessionSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import type { ToolLogo } from "../terminals/ToolLogos";
 import { chatToolTypeForProvider } from "../../lib/sessions";
+import {
+  sessionStatusPresentation,
+  type SessionStatusPresentation,
+} from "../../../shared/sessionStatusPresentation";
 
 export function sessionTitle(session: AgentChatSessionSummary): string {
   const title = session.title?.trim() || session.goal?.trim() || session.summary?.trim();
@@ -11,6 +15,25 @@ export function sessionTitle(session: AgentChatSessionSummary): string {
 
 export function sessionPreview(session: AgentChatSessionSummary): string {
   return session.lastOutputPreview?.trim() || session.summary?.trim() || "Start a conversation";
+}
+
+/**
+ * The rail's status word for a chat, in the Work row's vocabulary: "Needs you"
+ * after the agent's `ade chat ask`, the activity it reported or ADE detected
+ * ("Testing") during a live turn, else "Working" while it streams. Null at rest.
+ */
+export function sessionRowStatus(session: AgentChatSessionSummary): SessionStatusPresentation | null {
+  if (session.attentionRequestedAt) return sessionStatusPresentation("needs_you");
+  if (session.status !== "active") return null;
+  return sessionStatusPresentation("running", {}, {
+    activityStatus: session.activityStatus ?? null,
+    currentTurnStartedAt: session.currentTurnStartedAt ?? null,
+  });
+}
+
+/** The row's second line: the agent's own status note when it left one. */
+export function sessionRowDetail(session: AgentChatSessionSummary): string {
+  return session.statusNote?.trim() || sessionPreview(session);
 }
 
 export function relativeTime(value: string | null | undefined): string {

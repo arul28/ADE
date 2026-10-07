@@ -32,6 +32,8 @@ export type PersonalChatsBridge = {
 
 const EVENT_POLL_MS = 700;
 
+const ASSISTANT_CLAIM = { personalProfile: "assistant" } as const;
+
 function resultOf<T>(response: PersonalChatCallResponse | T): T {
   if (response && typeof response === "object" && "result" in response) {
     return (response as PersonalChatCallResponse).result as T;
@@ -126,15 +128,20 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
     list:(args?: { includeArchived?: boolean }) =>
       call<AgentChatSessionSummary[]>("list", { includeArchived: args?.includeArchived === true })
         .then((rows) => (Array.isArray(rows) ? rows : [])),
-    getSummary: (args: { sessionId: string }) => call<AgentChatSessionSummary | null>("getSummary", { sessionId: args.sessionId }),
+    // This adapter is ADE's own Chats surface (desktop and web), so the calls
+    // that open or use a chat carry the assistant claim: a chat written before
+    // profiles existed becomes an assistant chat here. See
+    // `PersonalChatAssistantClaim`.
+    getSummary: (args: { sessionId: string }) =>
+      call<AgentChatSessionSummary | null>("getSummary", { sessionId: args.sessionId, ...ASSISTANT_CLAIM }),
     create: async (args: Record<string, unknown>) => {
       // The lane is the pane's business, not a personal chat's: the scope
       // places the chat on its own internal lane.
       const { laneId: _laneId, ...rest } = args;
       return sessionFromSummary(await call<AgentChatSessionSummary>("create", { ...rest, personalProfile: "assistant" }));
     },
-    send: (args: unknown) => call<void>("send", args),
-    steer: (args: unknown) => call("steer", args),
+    send: (args: Record<string, unknown>) => call<void>("send", { ...args, ...ASSISTANT_CLAIM }),
+    steer: (args: Record<string, unknown>) => call("steer", { ...args, ...ASSISTANT_CLAIM }),
     cancelSteer: (args: unknown) => call<void>("cancelSteer", args),
     editSteer: (args: unknown) => call<void>("editSteer", args),
     moveSteer: (args: unknown) => call<void>("moveSteer", args),
@@ -166,8 +173,9 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
       }).then((rows) => (Array.isArray(rows) ? rows : [])),
     getEventHistory: (args: unknown) => call("getEventHistory", args),
     getEventHistoryPage: (args: unknown) => call("getEventHistoryPage", args),
-    // Personal attachments are images saved into the scope's own store; the
-    // scope refuses anything else, so the composer is told to send bytes.
+    // Personal attachments are saved into the scope's own store as bytes (any
+    // file type, up to the legacy cap); there is no path route into it, so the
+    // composer is told to send bytes.
     getAttachmentStagingMode: async () => CONSERVATIVE_ATTACHMENT_STAGING_MODE,
     saveTempAttachment: (args: { data: string; filename: string }) =>
       call<{ path: string }>("saveTempAttachment", { base64: args.data, filename: args.filename }),

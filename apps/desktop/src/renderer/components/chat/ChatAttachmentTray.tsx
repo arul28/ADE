@@ -4,6 +4,7 @@ import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } fr
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
+import { useChatPaneScope } from "./agentChatApi";
 import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
@@ -304,6 +305,11 @@ function ImageAttachmentPreview({
   // pin for the same machine does not read the image again.
   const machinePinRef = useRef(machinePin);
   machinePinRef.current = machinePin;
+  // A personal chat's attachments live in its own store, which only its own
+  // API can read; a project runtime would refuse the path.
+  const personalReader = useChatPaneScope()?.agentChat.getImageDataUrl ?? null;
+  const personalReaderRef = useRef(personalReader);
+  personalReaderRef.current = personalReader;
   useEffect(() => {
     let cancelled = false;
     setDataUrl(initialPreviewUrl ?? null);
@@ -313,7 +319,10 @@ function ImageAttachmentPreview({
         cancelled = true;
       };
     }
-    readAttachmentImageDataUrl(attachment.path, machinePinRef.current)
+    const reader = personalReaderRef.current;
+    readAttachmentImageDataUrl(attachment.path, machinePinRef.current, {
+      reader: reader ? (path) => reader(path) : null,
+    })
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })

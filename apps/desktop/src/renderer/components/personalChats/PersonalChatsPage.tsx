@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
+  AgentChatFileRef,
   AgentChatModelCatalog,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -10,7 +11,7 @@ import type {
   PersonalChatCallResponse,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { AgentChatPane } from "../chat/AgentChatPane";
+import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
 import { AgentChatApiProvider, type ChatPaneScope } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
@@ -40,6 +41,31 @@ import {
 } from "../../../shared/machineIdentity";
 
 type ToolPanel = "browser" | "terminal" | null;
+
+/** Ways to start a new chat. A chip fills the composer; the user finishes the sentence. */
+const SUGGESTION_PROMPTS: ReadonlyArray<{ label: string; prefill: string }> = [
+  { label: "Think through a decision", prefill: "Help me think through a decision I'm facing: " },
+  { label: "Draft from a rough idea", prefill: "Help me draft this from a rough idea: " },
+  { label: "Research a topic", prefill: "Research this topic with me: " },
+  { label: "Plan from my notes", prefill: "Turn these notes into an action plan:\n" },
+];
+
+function SuggestionChips({ onSelect }: { onSelect: (prefill: string) => void }) {
+  return (
+    <div className="flex flex-wrap justify-center gap-1.5" aria-label="Suggestions">
+      {SUGGESTION_PROMPTS.map((prompt) => (
+        <button
+          key={prompt.label}
+          type="button"
+          onClick={() => onSelect(prompt.prefill)}
+          className="h-7 rounded-full border border-fg/[0.08] bg-fg/[0.03] px-3 font-sans text-[11px] text-fg/65 transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.06] hover:text-fg/85"
+        >
+          {prompt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export type PersonalChatsMachineOption = { id: string; name: string };
 
@@ -120,6 +146,19 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const targetGenerationRef = useRef(0);
   const catalogRequestSeqRef = useRef(0);
+  // The pane owns the draft; chips and the browser panel write to it through
+  // the pane's composer handle.
+  const composerRef = useRef<AgentChatPaneComposerHandle | null>(null);
+  const setComposerDraft = useCallback((text: string) => composerRef.current?.setDraft(text), []);
+  const insertIntoComposer = useCallback((text: string) => composerRef.current?.insertDraft(text), []);
+  const attachToComposer = useCallback(
+    (attachment: AgentChatFileRef) => composerRef.current?.addAttachment(attachment),
+    [],
+  );
+  const addBrowserContextToComposer = useCallback(
+    (item: unknown) => composerRef.current?.addBuiltInBrowserContext(item),
+    [],
+  );
 
   // The one routing decision for the pane: every chat call it makes goes to
   // this machine's personal scope. Rebuilt per machine so a switched window
@@ -439,6 +478,8 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 initialSessionSummary={selectedSession}
                 availableModelIdsOverride={availableModelIds}
                 onSessionCreated={handleSessionCreated}
+                composerHandleRef={composerRef}
+                emptyStateAccessory={providerUnavailable ? null : <SuggestionChips onSelect={setComposerDraft} />}
                 hideSessionTabs
                 hideWorkspaceChrome
                 hideSurfaceHeader
@@ -459,7 +500,13 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
           <AgentChatApiProvider scope={chatScope}>
             {toolPanel === "browser" ? (
               <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
-                <ChatBuiltInBrowserPanel sessionId={selectedId} projectRootOverride={null} />
+                <ChatBuiltInBrowserPanel
+                  sessionId={selectedId}
+                  projectRootOverride={null}
+                  onInsertDraft={insertIntoComposer}
+                  onAddContext={addBrowserContextToComposer}
+                  onAddAttachment={attachToComposer}
+                />
               </div>
             ) : null}
             {toolPanel === "terminal" ? (
