@@ -3,10 +3,11 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { CancellationToken } from "builder-util-runtime";
 import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
+import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport } from "./windowsInstallProgress";
 import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
   buildGithubReleaseUrl,
@@ -512,6 +513,39 @@ describe("createAutoUpdateService", () => {
         downloadPreserved: true,
       }),
     );
+
+    service.dispose();
+  });
+
+  // A retry that landed while an earlier launch had already consumed the
+  // pending marker used to keep reporting the failure on the version it named.
+  it.each([
+    ["the failed version", "1.2.3"],
+    ["a newer version", "1.2.4"],
+  ])("clears a recorded failure when this launch already runs %s", (_label, currentVersion) => {
+    const globalStatePath = makeStatePath();
+    const logger = makeLogger();
+    fs.writeFileSync(globalStatePath, JSON.stringify({
+      failedInstallAttempts: {
+        targetVersion: "1.2.3",
+        count: 2,
+        lastFailedAt: "2026-04-06T15:10:00.000Z",
+      },
+    }), "utf8");
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion,
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(readState(globalStatePath)).not.toHaveProperty("failedInstallAttempts");
+    expect(service.getSnapshot().lastInstallFailed).toBeNull();
+    expect(logger.error).not.toHaveBeenCalledWith("autoUpdate.install_did_not_land", expect.anything());
 
     service.dispose();
   });
@@ -1846,6 +1880,7 @@ describe("createAutoUpdateService", () => {
     updater.quitAndInstall = vi.fn(() => {
       throw new Error("The command is disabled and cannot be executed");
     });
+    const cancelHandoff = vi.fn();
     const service = createAutoUpdateService({
       logger,
       currentVersion: "1.2.2",
@@ -1855,6 +1890,7 @@ describe("createAutoUpdateService", () => {
       periodicCheckMs: 60_000,
       now: () => "2026-04-06T15:21:00.000Z",
       updater,
+      onInstallHandoff: () => cancelHandoff,
     });
 
     updater.emit("update-downloaded", {
@@ -1866,6 +1902,8 @@ describe("createAutoUpdateService", () => {
       status: "ready",
       parked: { reason: "handoff_failed" },
     });
+    // ADE stays open, so the update window it started must go away.
+    expect(cancelHandoff).toHaveBeenCalledTimes(1);
     expect(readState(globalStatePath)).toEqual({});
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
     expect(logger.warn).toHaveBeenCalledWith(
@@ -1885,6 +1923,8 @@ describe("createAutoUpdateService", () => {
     const logger = makeLogger();
     const updater = new FakeAutoUpdater();
     const beforeQuitAndInstall = vi.fn(async () => {});
+    const cancelHandoff = vi.fn();
+    const onInstallHandoff = vi.fn(() => cancelHandoff);
     const service = createAutoUpdateService({
       logger,
       currentVersion: "1.2.2",
@@ -1895,6 +1935,7 @@ describe("createAutoUpdateService", () => {
       now: () => "2026-04-06T15:21:00.000Z",
       updater,
       beforeQuitAndInstall,
+      onInstallHandoff,
     });
 
     updater.emit("update-downloaded", {
@@ -1907,6 +1948,14 @@ describe("createAutoUpdateService", () => {
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
       updater.quitAndInstall.mock.invocationCallOrder[0],
     );
+    // The update window has to be up before ADE quits into the installer, and
+    // a handoff that went through leaves it running.
+    expect(onInstallHandoff).toHaveBeenCalledTimes(1);
+    expect(onInstallHandoff).toHaveBeenCalledWith(expect.objectContaining({ version: "1.2.3" }));
+    expect(onInstallHandoff.mock.invocationCallOrder[0]).toBeLessThan(
+      updater.quitAndInstall.mock.invocationCallOrder[0],
+    );
+    expect(cancelHandoff).not.toHaveBeenCalled();
     expect(readState(globalStatePath)).toMatchObject({
       pendingInstallUpdate: {
         targetVersion: "1.2.3",
@@ -3219,5 +3268,72 @@ describe("update transaction on the snapshot", () => {
     expect(service.getPreferences()).toEqual({ automaticInstall: false, onlyWhenIdle: true });
 
     service.dispose();
+  });
+});
+
+// The hand-launch guard and the update window meet only through files in
+// %LOCALAPPDATA%\ADE\update-progress-<channel>, so these drive it through a real
+// folder and a real live / dead pid.
+describe("Windows update window files", () => {
+  let localAppData: string;
+  let previousLocalAppData: string | undefined;
+
+  beforeEach(() => {
+    previousLocalAppData = process.env.LOCALAPPDATA;
+    localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-progress-test-"));
+    process.env.LOCALAPPDATA = localAppData;
+  });
+
+  afterEach(() => {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    fs.rmSync(localAppData, { recursive: true, force: true });
+  });
+
+  const progressDir = (channel: string | null) =>
+    path.join(localAppData, "ADE", `update-progress-${channel ?? "stable"}`);
+  const writeHeartbeat = (channel: string | null, beat: Record<string, unknown>): string => {
+    const dir = progressDir(channel);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "progress.json");
+    fs.writeFileSync(file, JSON.stringify(beat));
+    return file;
+  };
+  const now = () => new Date().toISOString();
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+  // A pid no process holds: far above any real pid on the test hosts.
+  const DEAD_PID = 2 ** 30;
+
+  it.each([
+    { label: "the old copy, opened mid-install", defers: true, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: now() } },
+    { label: "the new version the installer opened", defers: false, beat: { pid: process.pid, targetVersion: "1.2.94", phase: "opening", updatedAt: now() } },
+    { label: "after the window reported a failure", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "failed", updatedAt: now() } },
+    { label: "a heartbeat that stopped beating", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: ago(9_000) } },
+    { label: "a heartbeat dated in the future", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: ago(-60_000) } },
+    { label: "a window process that is gone", defers: false, beat: { pid: DEAD_PID, targetVersion: "1.2.95", phase: "installing", updatedAt: now() } },
+  ])("hand-launch guard, $label: defers $defers", ({ beat, defers }) => {
+    const heartbeat = writeHeartbeat(null, beat);
+
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(defers);
+    // Deferring is only half of it: the window has to be asked to come forward.
+    expect(fs.existsSync(`${heartbeat}.focus`)).toBe(defers);
+  });
+
+  it("hand-launch guard starts normally with no update window, or another channel's", () => {
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(false);
+
+    writeHeartbeat("beta", { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: now() });
+    expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(false);
+    expect(deferToRunningWindowsInstall({ channel: "beta", appVersion: "1.2.94" })).toBe(true);
+  });
+
+  it("hands the window's log to the next launch once, without its BOM or blank lines", () => {
+    const dir = progressDir(null);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "progress.log"), "\uFEFF+0.2s started\r\n\r\n+3.4s parent_exited\r\n");
+
+    expect(takeWindowsInstallProgressReport(null)).toEqual(["+0.2s started", "+3.4s parent_exited"]);
+    expect(takeWindowsInstallProgressReport(null)).toBeNull();
+    expect(fs.existsSync(path.join(dir, "progress.log"))).toBe(false);
   });
 });
