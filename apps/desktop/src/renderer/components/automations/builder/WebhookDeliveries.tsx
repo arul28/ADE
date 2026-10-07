@@ -70,15 +70,20 @@ function DeliveryDetail({
   const navigate = useNavigate();
   const [delivery, setDelivery] = useState<AutomationWebhookDelivery | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(null);
     void window.ade.automations.webhooks
       .getDelivery({ id }, runtimePin)
       .then((value) => {
         if (!cancelled) setDelivery(value);
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -170,6 +175,8 @@ function DeliveryDetail({
     >
       {loading ? (
         <div className="py-6 text-center text-[11px] text-muted-fg/60">Loading…</div>
+      ) : error ? (
+        <div className="py-6 text-center text-[11px] text-muted-fg/60">{`Couldn't load this delivery: ${error}`}</div>
       ) : !delivery ? (
         <div className="py-6 text-center text-[11px] text-muted-fg/60">This delivery is no longer in the log.</div>
       ) : (

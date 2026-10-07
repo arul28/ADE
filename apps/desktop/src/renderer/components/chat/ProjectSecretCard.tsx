@@ -417,6 +417,7 @@ export function AddProjectSecretDialog({
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [existing, setExisting] = useState<Set<string>>(() => new Set());
+  const [listFailed, setListFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameTouched, setNameTouched] = useState(false);
@@ -428,15 +429,21 @@ export function AddProjectSecretDialog({
       setValue("");
       setError(null);
       setNameTouched(false);
+      setListFailed(false);
       setSaving(false);
       return;
     }
     let cancelled = false;
+    setListFailed(false);
     void window.ade.projectSecrets.list()
       .then((result) => {
         if (!cancelled) setExisting(new Set(result.secrets.map((secret) => secret.name)));
       })
-      .catch(() => { /* the list only powers the "replaces" hint */ });
+      .catch(() => {
+        // A failed list is not "no secrets": say the check failed so the hint
+        // does not promise the name is free.
+        if (!cancelled) setListFailed(true);
+      });
     return () => { cancelled = true; };
   }, [open]);
 
@@ -513,6 +520,8 @@ export function AddProjectSecretDialog({
             <span className="text-[11.5px] text-[var(--color-warning)]">{nameError}</span>
           ) : replaces ? (
             <span className="text-[11.5px] text-fg/50">{trimmedName} already exists. Saving replaces its value.</span>
+          ) : listFailed && trimmedName ? (
+            <span className="text-[11.5px] text-fg/50">{`Couldn't check whether ${trimmedName} exists. Saving replaces any existing value.`}</span>
           ) : null}
         </label>
         <div className="flex flex-col gap-1.5">

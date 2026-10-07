@@ -381,8 +381,8 @@ export function WebhookTriggerPanel({
     patchConfig({ signature: enabled ? { ...preset.signature, secretName: preset.secretName } : null });
   };
 
-  const saveSecret = async (value: string) => {
-    if (!signature || !value.trim()) return;
+  const saveSecret = async (value: string): Promise<boolean> => {
+    if (!signature || !value.trim()) return false;
     setSavingSecret(true);
     try {
       await window.ade.projectSecrets.set({ name: signature.secretName, value: value.trim() });
@@ -390,8 +390,10 @@ export function WebhookTriggerPanel({
       setReplacingSecret(false);
       setSecretDraft("");
       showToast({ tone: "success", title: `Saved ${signature.secretName}`, message: "Encrypted in this project's secrets." });
+      return true;
     } catch (error) {
       showToast({ tone: "error", title: "Couldn't save the secret", message: error instanceof Error ? error.message : String(error) });
+      return false;
     } finally {
       setSavingSecret(false);
     }
@@ -399,8 +401,9 @@ export function WebhookTriggerPanel({
 
   const generateSecret = async () => {
     const value = generateProjectSecretValue();
-    await saveSecret(value);
-    setGeneratedSecret(value);
+    // Only show the value once it is actually stored; a failed save would
+    // otherwise hand the person a secret ADE never kept.
+    if (await saveSecret(value)) setGeneratedSecret(value);
   };
 
   const rotate = async () => {

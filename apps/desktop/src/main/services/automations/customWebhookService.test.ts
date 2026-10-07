@@ -669,4 +669,53 @@ describe("customWebhookService", () => {
     expect(relay.ackBodies[0]?.eventIds).toEqual(["evt-ok-1"]);
     expect(service.listDeliveries({ hookId: HOOK_BAD })).toHaveLength(0);
   });
+
+  it("receive(): a run the automation ignored is logged as filtered and its redelivery runs", async () => {
+    const dispatch = vi.fn(async () => ({ id: "ing-ignored", status: "ignored" }) as never);
+    const { service } = setupService({ rules: [makeRule({ hookId: HOOK_ID })], dispatch });
+    seedHook(HOOK_ID, HOOK_TOKEN, null);
+    const request = {
+      hookId: HOOK_ID,
+      token: HOOK_TOKEN,
+      method: "POST",
+      headers: { "content-type": "application/json", "x-github-delivery": "gh-delivery-1" },
+      query: {},
+      rawBody: Buffer.from(githubBody, "utf8"),
+      via: "local" as const,
+    };
+
+    const first = await service.receive(request);
+    // Read the row itself: the run lookup behind list/get needs the automation service's tables.
+    const outcomeOf = (id: string) => db.get<{ outcome: string }>(
+      "select outcome from automation_webhook_deliveries where id = ?",
+      [id],
+    )?.outcome;
+    await vi.waitFor(() => expect(outcomeOf(first.deliveryId!)).toBe("filtered"));
+    const again = await service.receive(request);
+
+    expect(again.outcome).toBe("ran");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(outcomeOf(again.deliveryId!)).not.toBe("duplicate");
+  });
+
+  it("pollNow(): leaves relay requests over the rate limit held on the relay instead of acknowledging them", async () => {
+    const events = Array.from({ length: 62 }, (_, index) => heldEvent(HOOK_OK, `evt-${index}`));
+    const relay = makeRelayFetch([{ events, hasMore: false }]);
+    const { service } = setupService({
+      rules: relayRules(),
+      dispatch: vi.fn(async () => null),
+      fetchImpl: relay.fetchImpl,
+      accountToken: "account-token",
+    });
+    seedHook(HOOK_OK, "token-ok", new Date().toISOString());
+
+    service.start();
+    await service.pollNow();
+
+    const acked = relay.ackBodies.flatMap((body) => body.eventIds);
+    expect(acked).toHaveLength(60);
+    expect(acked).not.toContain("evt-60");
+    expect(acked).not.toContain("evt-61");
+    expect(service.listDeliveries({ hookId: HOOK_OK, limit: 50 }).some((row) => row.outcome === "rate_limited")).toBe(false);
+  });
 });

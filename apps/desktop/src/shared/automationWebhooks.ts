@@ -251,6 +251,9 @@ function filterValueText(value: unknown): string {
 }
 
 /** Returns the first filter that fails, or null when every filter passes. */
+/** A `matches` condition reads at most this much of a field. */
+export const WEBHOOK_REGEX_INPUT_MAX_CHARS = 10_000;
+
 export function firstFailingWebhookFilter(
   filters: readonly AutomationWebhookFilter[] | undefined,
   view: WebhookRequestView,
@@ -275,7 +278,9 @@ export function firstFailingWebhookFilter(
         break;
       case "matches":
         try {
-          passes = new RegExp(expected, "i").test(actualText);
+          // The sender writes the text; a pattern with heavy backtracking must
+          // not get an unbounded input to chew on.
+          passes = new RegExp(expected, "i").test(actualText.slice(0, WEBHOOK_REGEX_INPUT_MAX_CHARS));
         } catch {
           passes = false;
         }

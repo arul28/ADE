@@ -12,6 +12,8 @@ import type { WebhookIncomingRequest } from "./customWebhookService";
 const RELAY_SAFETY_POLL_MS = 5 * 60_000;
 const RELAY_PAGE_LIMIT = 100;
 const RELAY_MAX_PAGES_PER_DRAIN = 20;
+/** Past the receiver's one-minute rate window. */
+const RATE_LIMITED_RETRY_MS = 61_000;
 
 type HeldRequest = {
   eventId: string;
@@ -35,13 +37,14 @@ export function createWebhookRelayDrain(deps: {
   relayBaseUrl: () => string;
   fetchImpl: typeof fetch;
   logger: Logger;
-  receive: (request: WebhookIncomingRequest) => Promise<unknown>;
+  receive: (request: WebhookIncomingRequest) => Promise<{ outcome: string }>;
 }) {
   let stopped = true;
   let wakeSocket: RelayWakeSocket | null = null;
   let safetyTimer: ReturnType<typeof setInterval> | null = null;
   let drainInFlight: Promise<void> | null = null;
   let drainAgain = false;
+  let rateRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   const drainOnce = async (): Promise<void> => {
     let hookIds = deps.listRelayHookIds();
@@ -64,9 +67,13 @@ export function createWebhookRelayDrain(deps: {
       }
       if (!payload.events.length) return;
       const processed: string[] = [];
+      // Hooks over the per-minute rate limit: their requests stay held on the
+      // relay (not acknowledged) and are drained again after the window.
+      const rateLimited = new Set<string>();
       for (const event of payload.events) {
+        if (rateLimited.has(event.hookId)) continue;
         try {
-          await deps.receive({
+          const result = await deps.receive({
             hookId: event.hookId,
             method: event.method,
             headers: lowerCaseHeaders(event.headers ?? {}),
@@ -76,6 +83,10 @@ export function createWebhookRelayDrain(deps: {
             receivedAt: event.receivedAt,
             relayDeliveryId: event.eventId,
           });
+          if (result.outcome === "rate_limited") {
+            rateLimited.add(event.hookId);
+            continue;
+          }
           processed.push(event.eventId);
         } catch (error) {
           // Not acknowledged: the relay keeps it (up to its hold limit) and the
@@ -84,12 +95,17 @@ export function createWebhookRelayDrain(deps: {
           deps.logger.warn("automations.webhook_relay_delivery_failed", { eventId: event.eventId, error: errorMessage(error) });
         }
       }
+      if (rateLimited.size) scheduleRateLimitedRetry();
+      if (!processed.length || rateLimited.size) {
+        // Unacknowledged requests head every page. Leave the hooks that are
+        // failing or rate-limited for a later drain and keep draining the
+        // others, so one hook cannot hold up the rest.
+        const paused = processed.length
+          ? rateLimited
+          : new Set(payload.events.map((event) => event.hookId));
+        hookIds = hookIds.filter((hookId) => !paused.has(hookId));
+      }
       if (!processed.length) {
-        // Nothing in this page went through, and unacknowledged requests head
-        // every page. Leave their hooks for the next drain and keep draining
-        // the others, so one failing hook cannot hold up the rest.
-        const failing = new Set(payload.events.map((event) => event.hookId));
-        hookIds = hookIds.filter((hookId) => !failing.has(hookId));
         if (!hookIds.length) return;
         continue;
       }
@@ -103,7 +119,7 @@ export function createWebhookRelayDrain(deps: {
         signal: AbortSignal.timeout(20_000),
       });
       if (!ack.ok) throw new Error(`ADE relay did not accept the acknowledgement (HTTP ${ack.status}).`);
-      if (!payload.hasMore) return;
+      if (!payload.hasMore || !hookIds.length) return;
     }
   };
 
@@ -126,6 +142,15 @@ export function createWebhookRelayDrain(deps: {
       drainInFlight = null;
     });
     return await drainInFlight;
+  };
+
+  const scheduleRateLimitedRetry = (): void => {
+    if (rateRetryTimer || stopped) return;
+    rateRetryTimer = setTimeout(() => {
+      rateRetryTimer = null;
+      void drain();
+    }, RATE_LIMITED_RETRY_MS);
+    rateRetryTimer.unref?.();
   };
 
   const resolveWakeTarget = async (): Promise<RelayWakeTarget | null> => {
@@ -172,6 +197,10 @@ export function createWebhookRelayDrain(deps: {
       if (safetyTimer) {
         clearInterval(safetyTimer);
         safetyTimer = null;
+      }
+      if (rateRetryTimer) {
+        clearTimeout(rateRetryTimer);
+        rateRetryTimer = null;
       }
       wakeSocket?.stop();
       wakeSocket = null;

@@ -250,6 +250,7 @@ struct WebhookAutomationDetailPage: View {
   @ObservedObject var syncService: SyncService
   let automation: MobileWebhookAutomation
   @State private var deliveries: [MobileWebhookDeliverySummary]?
+  @State private var errorMessage: String?
   @State private var openDelivery: MobileWebhookDeliverySummary?
   @State private var copied = false
 
@@ -291,7 +292,12 @@ struct WebhookAutomationDetailPage: View {
       }
 
       Section {
-        if let deliveries {
+        if let errorMessage {
+          Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.warning)
+            .adeFlatRow()
+        } else if let deliveries {
           if deliveries.isEmpty {
             Text("Nothing yet. Requests show up here the moment they arrive.")
               .font(.footnote)
@@ -343,7 +349,13 @@ struct WebhookAutomationDetailPage: View {
   }
 
   private func load() async {
-    deliveries = (try? await syncService.fetchWebhookDeliveries(hookId: automation.hookId)) ?? []
+    do {
+      deliveries = try await syncService.fetchWebhookDeliveries(hookId: automation.hookId)
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+      if deliveries == nil { deliveries = [] }
+    }
   }
 }
 

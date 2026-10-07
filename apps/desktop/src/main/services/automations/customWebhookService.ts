@@ -632,6 +632,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
 
     const rate = takeRateSlot(hookId);
     if (!rate.allowed) {
+      // A relay request is still held on the relay: the drain leaves it there
+      // and comes back after the window, so it is neither logged nor lost.
+      if (request.via === "relay") return { status: 429, outcome: "rate_limited", deliveryId: null };
       if (rate.logRejection) record("rate_limited", OUTCOME_DETAIL.rate_limited);
       return { status: 429, outcome: "rate_limited", deliveryId: rate.logRejection ? deliveryId : null };
     }
@@ -717,21 +720,28 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       webhook: { method: base.method, headers: request.headers, query: request.query, body: parsedBody },
     }).then((ingress) => {
       if (!ingress) return;
+      // Only a dispatched run stays `ran` and keeps its duplicate key. An
+      // ignored or failed one started nothing, so the sender's redelivery must
+      // be allowed to try again rather than read as a duplicate.
+      const outcome: AutomationWebhookDeliveryOutcome = ingress.status === "failed"
+        ? "error"
+        : ingress.status === "ignored" ? "filtered" : "ran";
+      const detail = outcome === "error"
+        ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}`
+        : outcome === "filtered"
+          ? "No run started: the automation's other conditions (active hours, event or branch) did not match."
+          : null;
       deps.db.run(
-        "update automation_webhook_deliveries set ingress_event_id = ?, outcome = ?, detail = ? where project_id = ? and id = ?",
-        [
-          ingress.id,
-          ingress.status === "failed" ? "error" : "ran",
-          ingress.status === "failed" ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}` : null,
-          deps.projectId,
-          deliveryId,
-        ],
+        `update automation_webhook_deliveries
+            set ingress_event_id = ?, outcome = ?, detail = ?, dedupe_key = case when ? = 'ran' then dedupe_key else null end
+          where project_id = ? and id = ?`,
+        [ingress.id, outcome, detail, outcome, deps.projectId, deliveryId],
       );
       deps.onDeliveriesChanged?.(hookId);
     }).catch((error: unknown) => {
       deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
       deps.db.run(
-        "update automation_webhook_deliveries set outcome = 'error', detail = ? where project_id = ? and id = ?",
+        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
         [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
       );
       deps.onDeliveriesChanged?.(hookId);

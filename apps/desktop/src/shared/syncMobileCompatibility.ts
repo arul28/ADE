@@ -215,8 +215,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   ...PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS,
   // Custom webhook automations: the read-only list and delivery log. Optional
   // so a phone on an older build simply shows no Webhooks pane against a newer
-  // host, and an older host — or one with automations disabled — simply omits
-  // the actions instead of flipping a newer phone into "limited".
+  // host, and an older host — or a runtime with no webhook source wired —
+  // omits the actions instead of flipping a newer phone into "limited". A host
+  // whose automations are off lists no webhooks.
   "automations.webhookList",
   "automations.webhookListDeliveries",
   "automations.webhookGetDelivery",

@@ -2272,6 +2272,12 @@ export function registerIpc({
     ...(args.length > 2 ? { arg2: summarizeIpcArg(args[2]) } : {}),
   });
 
+  const WEBHOOK_URL_RESULT_CHANNELS: ReadonlySet<string> = new Set([
+    IPC.automationsWebhookCreateEndpoint,
+    IPC.automationsWebhookGetEndpoint,
+    IPC.automationsWebhookRotateEndpoint,
+    IPC.automationsWebhookList,
+  ]);
   const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
     if (channel === IPC.transcriptionTranscribe) {
       if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
@@ -2280,6 +2286,13 @@ export function registerIpc({
         raw: "[redacted]",
         cleaned: "[redacted]",
       };
+    }
+    // A webhook URL carries its secret token: whoever has it can ring it.
+    if (WEBHOOK_URL_RESULT_CHANNELS.has(channel)) {
+      const hideUrl = (entry: unknown) => entry && typeof entry === "object" && !Array.isArray(entry) && "url" in entry
+        ? { ...(entry as Record<string, unknown>), url: "[redacted]" }
+        : entry;
+      return Array.isArray(result) ? result.map(hideUrl) : hideUrl(result);
     }
     if (!result || typeof result !== "object" || Array.isArray(result)) return result;
     const record = result as Record<string, unknown>;
@@ -6637,8 +6650,8 @@ export function registerIpc({
   };
   ipcMain.handle(IPC.automationsWebhookList, async () => {
     const ctx = getCtx();
-    const webhooks = requireWebhookIngress();
     if (!ctx.automationService) return [];
+    const webhooks = requireWebhookIngress();
     return await listWebhookAutomations({
       rules: ctx.automationService.list(),
       webhooks,

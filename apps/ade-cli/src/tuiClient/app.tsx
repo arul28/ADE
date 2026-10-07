@@ -18964,7 +18964,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           flexDirection="column"
           width={promptPaneWidth}
         >
-          {promptSmartLinks.length > 0 || promptModelMentions.length > 0 ? (
+          {!promptIsSecret && (promptSmartLinks.length > 0 || promptModelMentions.length > 0) ? (
             <Text color={PURPLE} bold wrap="truncate-end">
               {formatPromptSmartLinkStrip(promptSmartLinks, promptModelMentions)}
             </Text>

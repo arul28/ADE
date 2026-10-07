@@ -151,7 +151,7 @@ export function webhookSetupGuide(args: {
   };
 }
 
-export function webhookTriggersOf(rule: AutomationRule): AutomationWebhookTriggerConfig[] {
+export function webhookTriggersOf(rule: { triggers?: AutomationRule["triggers"] | null }): AutomationWebhookTriggerConfig[] {
   return (rule.triggers ?? []).flatMap((trigger) => (trigger.type === "webhook" && trigger.webhook ? [trigger.webhook] : []));
 }
 

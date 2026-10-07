@@ -15939,16 +15939,21 @@ function buildSecretsPlan(args: string[]): CliPlan {
   if (sub === "request" || sub === "ask") {
     // The private secret card: ask the person in this chat, store the answer,
     // and print only the outcome. The value never reaches the agent.
-    const name = readValue(args, ["--name"]) ?? firstPositional(args);
-    if (!name) throw new CliUsageError("Secret name is required.");
+    //
+    // Read every value flag before the positional helper: `firstPositional`
+    // skips a flag token but not its value, so `--reason "…" NAME` would
+    // otherwise resolve the name to the reason text.
+    const nameFlag = readValue(args, ["--name"]);
     const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const generate = readFlag(args, ["--generate"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const name = nameFlag ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
     if (!reason?.trim()) {
       throw new CliUsageError("secrets request needs --reason \"…\": one line telling the person what the secret is for.");
     }
-    const generate = readFlag(args, ["--generate"]);
-    const timeoutValue = readValue(args, ["--timeout"]);
     const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
-    const sessionId = readValue(args, ["--session", "--session-id"]);
     return {
       kind: "execute",
       label: "secrets request",
@@ -16708,8 +16713,11 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       };
     }
     if (mode === "deliveries" || mode === "log") {
-      const hookId = requireValue(target(), "webhook id (wh-…)");
+      // Read `--limit` before the positional helper: `firstPositional` skips a
+      // flag token but not its value, so `--limit 20 wh-…` would otherwise
+      // resolve the hook id to "20".
       const limit = readIntOption(args, ["--limit"]);
+      const hookId = requireValue(target(), "webhook id (wh-…)");
       return {
         kind: "execute",
         label: `automations webhook deliveries ${hookId}`,
@@ -16736,8 +16744,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       };
     }
     if (mode === "test") {
-      const hookId = requireValue(target(), "webhook id (wh-…)");
+      // Read `--body` before the positional helper so its value is not taken
+      // as the hook id.
       const body = readValue(args, ["--body"]);
+      const hookId = requireValue(target(), "webhook id (wh-…)");
       return {
         kind: "execute",
         label: `automations webhook test ${hookId}`,
@@ -26238,6 +26248,9 @@ function formatWebhookList(value: unknown): string {
       ];
     }),
     "(no webhook automations)",
+    // The hook id and URL are pasted into a command or the service; a clipped
+    // one is unusable.
+    { fullColumns: ["webhook", "url"] },
   );
 }
 
@@ -26250,7 +26263,7 @@ function formatWebhookEndpoint(value: unknown): string {
     ["route", result.route],
     ["note", result.setupError],
     ["lastDelivery", result.lastDeliveryAt],
-  ]);
+  ], ["url"]);
 }
 
 function formatWebhookDeliveries(value: unknown): string {
@@ -26260,6 +26273,9 @@ function formatWebhookDeliveries(value: unknown): string {
     ["id", "outcome", "method", "event", "via", "received", "why"],
     entries.map((entry) => [entry.id, entry.outcome, entry.method, entry.eventLabel ?? "", entry.via, entry.receivedAt, entry.detail ?? ""]),
     "(no deliveries yet)",
+    // The delivery id is pasted into `webhook delivery <whd-id>`; clip it and
+    // the next command cannot find it.
+    { fullColumns: ["id"] },
   );
 }
 
@@ -26278,7 +26294,7 @@ function formatWebhookDelivery(value: unknown): string {
       ["received", result.receivedAt],
       ["run", result.runId],
       ["chat", result.chatSessionId],
-    ]),
+    ], ["id"]),
     "",
     "Prompt the agent got:",
     textOr(result.prompt, "(no run started)"),

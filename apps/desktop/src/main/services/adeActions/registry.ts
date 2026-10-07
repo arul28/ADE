@@ -414,13 +414,16 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`The webhook automation was not saved: ${message}`);
       }
-      const trigger = webhookTriggersOf(saved.rule)[0]!;
+      // The rule and URL exist from here on, so describing them must not fail
+      // the call: a retry would make a second of each. The URL read back falls
+      // back to the one just made, and the trigger to the draft's.
+      const trigger = webhookTriggersOf(saved.rule)[0] ?? webhookTriggersOf(draft)[0]!;
       const secretName = trigger.signature?.secretName ?? null;
       return {
         rule: automationService.list().find((rule) => rule.id === saved.rule!.id) ?? null,
         hookId: endpoint.hookId,
         setup: webhookSetupGuide({
-          endpoint: await webhooks.getEndpoint({ hookId: endpoint.hookId }),
+          endpoint: await webhooks.getEndpoint({ hookId: endpoint.hookId }).catch(() => endpoint),
           trigger,
           secretSaved: Boolean(secretName && listProjectSecretNames(runtime.projectSecretService).has(secretName)),
         }),

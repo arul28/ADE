@@ -6124,15 +6124,20 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
  * rather than a namespace whose every call throws.
  */
 function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  // Not advertised unless the runtime wires a source, so a client's
+  // capability check hides the Webhooks pane on such a host.
+  const getWebhookAutomations = args.getWebhookAutomations;
+  if (!getWebhookAutomations) return;
   // Late-bound: the ingress service that owns webhook URLs can start after
   // this registry exists, and a runtime without automations has none.
   const resolve = (): WebhookRemoteSource => {
-    const source = args.getWebhookAutomations?.() ?? null;
+    const source = getWebhookAutomations();
     if (!source) throw new Error("Webhook automations are not available on this machine.");
     return source;
   };
   const entries = createWebhookRemoteCommandHandlers({
-    list: () => resolve().list(),
+    // No automations here yet (or at all) reads as no webhooks.
+    list: async () => (await getWebhookAutomations()?.list()) ?? [],
     listDeliveries: (input) => resolve().listDeliveries(input),
     getDelivery: (input) => resolve().getDelivery(input),
   });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CaretDown, CaretRight, CheckCircle, Copy, Key, WebhooksLogo, Warning } from "@phosphor-icons/react";
 import type { AutomationWebhookDeliverySummary, AutomationWebhookListEntry } from "../../../shared/types";
 import { webhookPresetDef } from "../../../shared/automationWebhooks";
@@ -21,6 +21,9 @@ export function WebhookOverview({ intro }: { intro?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [openHookId, setOpenHookId] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<AutomationWebhookDeliverySummary[]>([]);
+  // The open hook, tracked outside render state so a slow response can tell
+  // whether the panel it was fetched for is still the one on screen.
+  const openHookIdRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -38,15 +41,20 @@ export function WebhookOverview({ intro }: { intro?: string }) {
 
   const toggle = async (hookId: string) => {
     if (openHookId === hookId) {
+      openHookIdRef.current = null;
       setOpenHookId(null);
       return;
     }
+    openHookIdRef.current = hookId;
     setOpenHookId(hookId);
     setDeliveries([]);
     try {
-      setDeliveries(await window.ade.automations.webhooks.listDeliveries({ hookId, limit: 20 }));
+      const result = await window.ade.automations.webhooks.listDeliveries({ hookId, limit: 20 });
+      // A response for a hook that is no longer open must not land in the
+      // panel now showing a different hook.
+      if (openHookIdRef.current === hookId) setDeliveries(result);
     } catch {
-      setDeliveries([]);
+      if (openHookIdRef.current === hookId) setDeliveries([]);
     }
   };
 

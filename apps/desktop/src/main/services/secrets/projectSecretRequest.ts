@@ -113,7 +113,9 @@ export async function requestProjectSecretFromUser(
   const beforeAccept = (answers: Record<string, string[]>): void => {
     const action = answers[PROJECT_SECRET_ACTION_QUESTION_ID]?.[0] ?? null;
     const value = answers[PROJECT_SECRET_VALUE_QUESTION_ID]?.[0] ?? "";
-    if (!value || (exists && action === "keep")) return;
+    // An existing value is replaced only on an explicit "replace"; an answer
+    // that skips the pick keeps it.
+    if (!value || (exists && action !== "replace")) return;
     try {
       deps.projectSecrets.set({ name, value });
     } catch (error) {
