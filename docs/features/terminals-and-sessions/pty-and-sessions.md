@@ -709,7 +709,7 @@ command argument whenever structured resume metadata is available.
 ### AI-driven titles
 
 CLI sessions are always ADE-named. The cheap helper for the ADE
-provider (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
+provider (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
 `resumeMetadata.launch.model`, then the deterministic title already on
 the row. ADE does not prefer Claude JSONL `ai-title` or Codex thread
 names over that chain.

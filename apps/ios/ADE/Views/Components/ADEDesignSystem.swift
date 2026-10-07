@@ -165,6 +165,8 @@ enum ADEColor {
     "anthropic/claude-sonnet-5": 0x8B5CF6,
     "claude-sonnet-5": 0x8B5CF6,
     "sonnet": 0x8B5CF6,
+    "anthropic/claude-haiku-5-5": 0x06B6D4,
+    "claude-haiku-5-5": 0x06B6D4,
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
     // OpenAI / Codex
@@ -305,12 +307,17 @@ enum ADEColor {
       append("anthropic/claude-sonnet-5")
       append("claude-sonnet-5")
       append("opencode/anthropic/claude-sonnet-5")
-    case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
-         "opencode/anthropic/claude-haiku-4-5":
-      append("anthropic/claude-haiku-4-5")
-      append("claude-haiku-4-5")
-      append("opencode/anthropic/claude-haiku-4-5")
+    case "haiku", "haiku-5.5", "haiku-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-haiku-5-5-api",
+         "claude-haiku-5-5", "opencode/anthropic/claude-haiku-5-5",
+         "haiku-4.5", "haiku-4-5", "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-api",
+         "claude-haiku-4-5", "claude-haiku-4-5-20251001":
+      append("anthropic/claude-haiku-5-5")
+      append("claude-haiku-5-5")
+      append("opencode/anthropic/claude-haiku-5-5")
       append("haiku")
+    case "opencode/anthropic/claude-haiku-4-5":
+      append("opencode/anthropic/claude-haiku-4-5")
+      append("anthropic/claude-haiku-4-5")
     default:
       break
     }
@@ -371,6 +378,8 @@ enum ADEColor {
     "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
     "claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "anthropic/claude-haiku-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "claude-haiku-5-5": ["low", "medium", "high", "xhigh", "max"],
     "sonnet": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
     "claude-sonnet-5": ["low", "medium", "high", "max"],

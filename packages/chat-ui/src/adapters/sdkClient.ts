@@ -27,7 +27,7 @@
  *   import { adaptSdkClient } from "@ade-dev/chat-ui";
  *
  *   const client = adaptSdkClient(sdkClient, {
- *     defaults: { provider: "claude", model: "anthropic/claude-haiku-4-5" },
+ *     defaults: { provider: "claude", model: "anthropic/claude-haiku-5-5" },
  *   });
  */
 

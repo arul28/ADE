@@ -483,22 +483,39 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "medium",
   },
   {
-    id: "anthropic/claude-haiku-4-5",
+    id: "anthropic/claude-haiku-5-5",
     shortId: "haiku",
-    aliases: ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5-api"],
-    displayName: "Claude Haiku 4.5",
+    aliases: [
+      "haiku",
+      "haiku-5.5",
+      "haiku-5-5",
+      "claude-haiku-5-5",
+      "anthropic/claude-haiku-5-5-api",
+      // Haiku 4.5 is retired from ADE; saved selections run on Haiku 5.5.
+      "haiku-4.5",
+      "haiku-4-5",
+      "claude-haiku-4-5",
+      "claude-haiku-4-5-20251001",
+      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-haiku-4-5-api",
+    ],
+    displayName: "Claude Haiku 5.5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    capabilities: NO_REASONING,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     color: "#06B6D4",
     providerRoute: "claude-cli",
-    providerModelId: "claude-haiku-4-5",
+    providerModelId: "claude-haiku-5-5",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 1,
-    outputPricePer1M: 5,
+    // Base rates for prompts up to 100k tokens; longer prompts bill at 5x
+    // (models.dev carries the tier, see usagePricing).
+    inputPricePer1M: 0.1,
+    outputPricePer1M: 0.5,
     costTier: "low",
   },
   {
@@ -2008,6 +2025,24 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
       capabilities: ALL_CAPS,
       reasoningTiers: ["low", "medium", "high", "max"],
       wasAlias: normalized !== "claude-sonnet-5",
+    };
+  }
+  // Explicit 5.5 ids only: a harness's own `haiku` or Haiku 4.5 row keeps the
+  // model that harness actually serves.
+  if (
+    normalized === "claude-haiku-5-5"
+    || normalized === "haiku-5.5"
+    || normalized === "haiku-5-5"
+  ) {
+    return {
+      modelId: "claude-haiku-5-5",
+      displayName: "Claude Haiku 5.5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      wasAlias: normalized !== "claude-haiku-5-5",
     };
   }
   if (

@@ -147,6 +147,8 @@ export function makeCodexCompatibleJsonSchema(schema: unknown): unknown {
   return strictifyJsonSchema(schema, false);
 }
 
+const CLAUDE_CLI_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
 function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): string {
   if (mode === "full-auto") return "bypassPermissions";
   if (mode === "edit") return "acceptEdits";
@@ -154,11 +156,11 @@ function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): strin
 }
 
 /**
- * Codex rejects an effort a model does not advertise, so only forward a tier the
- * descriptor actually lists. An unknown tier falls back to the CLI default rather
- * than failing the whole task.
+ * Codex and Claude reject an effort a model does not advertise, so only forward
+ * a tier the descriptor actually lists. An unknown tier falls back to the CLI
+ * default rather than failing the whole task.
  */
-function resolveCodexTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
+function resolveTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
   const effort = String(args.reasoningEffort ?? "").trim();
   if (!effort) return null;
   const tiers = args.descriptor.reasoningTiers;
@@ -274,6 +276,12 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   if (args.jsonSchema) {
     cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
   }
+  // `--effort` takes only the API levels; Fable's `ultracode` is a settings
+  // flag, not an effort, so it keeps the CLI default here.
+  const effort = args.descriptor.capabilities?.reasoning === false ? null : resolveTaskReasoningEffort(args);
+  if (effort && CLAUDE_CLI_EFFORTS.has(effort)) {
+    cliArgs.push("--effort", effort);
+  }
   if (sessionId) {
     cliArgs.push("--session-id", sessionId);
   } else {
@@ -324,7 +332,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
   if (codexModel) {
     cliArgs.push("--model", codexModel);
   }
-  cliArgs.push(...codexReasoningEffortFlags(resolveCodexTaskReasoningEffort(args)));
+  cliArgs.push(...codexReasoningEffortFlags(resolveTaskReasoningEffort(args)));
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");
