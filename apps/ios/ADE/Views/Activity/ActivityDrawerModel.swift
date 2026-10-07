@@ -161,10 +161,21 @@ public final class ActivityDrawerModel: ObservableObject {
             // none. Degrading to a narrower merge is always better than
             // degrading to stale data.
             let liveMachine = Self.liveMachine(from: live, knownTo: machines)
+            // The relay row for a session carries the brain's Work-board column;
+            // the socket row does not. Keep the relay's wait on the live row.
+            let relayBySession = Dictionary(
+                active.compactMap { item in Self.sessionId(item).map { ($0, item) } },
+                uniquingKeysWith: { first, _ in first }
+            )
             let liveItems = Self.accountItems(
                 from: live,
                 machine: liveMachine ?? Self.unidentifiedLiveMachine(from: live)
-            )
+            ).map { item in
+                guard let session = Self.sessionId(item), let relay = relayBySession[session] else {
+                    return item
+                }
+                return item.inheritingWait(from: relay)
+            }
             // Session identity is the net that always applies: the live
             // projection ids rows `live:<sessionId>` while the relay ids the
             // same chat `agent:<machineKey>:<sessionId>`, so without it one

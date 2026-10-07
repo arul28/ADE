@@ -767,10 +767,10 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     /// (`needs_you`, `working`, `waiting`, `done`). Kept as a raw wire string so
     /// an unknown value falls back to the phase instead of dropping the item.
     /// Read it through `activityBoardColumn(_:)`, never directly.
-    public let boardColumn: String?
+    public private(set) var boardColumn: String?
     /// Why a Waiting item waits (`snoozed`, `ci`, `review`). Read it through
     /// `activityWaitingReason(_:)`.
-    public let waitingReason: String?
+    public private(set) var waitingReason: String?
     public let statusSince: Date?
     public private(set) var machine: AccountAttentionMachine
     public let project: AccountAttentionProject
@@ -1095,4 +1095,32 @@ public func accountAttentionSnapshotForCommit(
     incoming: AccountAttentionSnapshot
 ) -> AccountAttentionSnapshot {
     current?.merging(incoming) ?? normalizedAccountAttentionSnapshot(incoming)
+}
+
+extension AccountAttentionItem {
+    /// This live row with the wait a relay row for the same session reported.
+    ///
+    /// A row built from the connected machine's socket has no Work-board
+    /// column, so it would read Working (or Done) where the brain filed the
+    /// session under Waiting. The rule is the brain's own (`withRosterWait`):
+    /// keep a CI, review or snooze wait over a working row, and a scheduled
+    /// wait over a finished one. A row that needs the user never inherits a
+    /// wait.
+    public func inheritingWait(from relay: AccountAttentionItem) -> AccountAttentionItem {
+        guard activityBoardColumn(relay) == .waiting,
+              let column = activityBoardColumn(self),
+              column != .needsYou else { return self }
+        let reason = ActivityWaitingReason(wireValue: relay.waitingReason)
+        let keepsWait: Bool
+        switch reason {
+        case .ci, .review, .snoozed, .subagent: keepsWait = column == .working
+        case .scheduled: keepsWait = column == .done
+        case nil: keepsWait = column == .working
+        }
+        guard keepsWait else { return self }
+        var copy = self
+        copy.boardColumn = ActivityBoardColumn.waiting.wireValue
+        copy.waitingReason = relay.waitingReason
+        return copy
+    }
 }

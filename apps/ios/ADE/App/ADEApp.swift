@@ -177,6 +177,19 @@ struct ADEApp: App {
 /// Kept in a tiny bridge so App Intent actions do not link `SyncService`.
 @MainActor
 private final class ADESyncIntentBridge: ADEIntentCommandBridge {
+  /// A notification action can launch the app in the background before the
+  /// account has started. Restore the account and its machine list first, so
+  /// the push's machine can be found. When the account cannot load, the action
+  /// falls back to the reconnect logic below instead of being dropped.
+  @MainActor
+  private static func accountMachinesReady() async -> Bool {
+    let account = AccountService.shared
+    await account.bootstrap()
+    guard account.phase == .signedIn else { return false }
+    if account.machines.isEmpty { await account.loadMachines() }
+    return !account.machines.isEmpty
+  }
+
   static let shared = ADESyncIntentBridge()
 
   private init() {}
@@ -196,6 +209,7 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     if let machineKey = (payload["accountMachineKey"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
       !machineKey.isEmpty,
+      await Self.accountMachinesReady(),
       !sync.accountMachineIsCurrent(machineKey) {
       guard await sync.ensureAccountMachineForNavigation(machineKey) else {
         let name = AccountService.shared.machines

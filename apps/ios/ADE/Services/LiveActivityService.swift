@@ -649,6 +649,10 @@ final class LiveActivityService {
         }
     }
 
+    /// How often unchanged counts are rewritten while the app is alive. Well
+    /// inside `localStaleWindow`, so a live feed never lets the activity go stale.
+    private static let localRefreshInterval: TimeInterval = 120
+
     private func writeLocalContent(items: [AccountAttentionItem]) async {
         let activities = Activity<ADEAgentRunsAttributes>.activities
             .filter { $0.attributes.isAccountWide && $0.activityState == .active }
@@ -661,12 +665,17 @@ final class LiveActivityService {
         )
         // `updatedAt` moves on every call by construction, so it is excluded
         // from the hash — including it would defeat the dedupe entirely and
-        // make this write on every single feed tick.
+        // make this write on every single feed tick. Unchanged counts still
+        // rewrite once per `localRefreshInterval`, so a fresh feed renews the
+        // stale date instead of letting the tiles read as old data.
         var hasher = Hasher()
         hasher.combine(state.columns)
         hasher.combine(state.activeCount)
         let hash = hasher.finalize()
-        guard hash != lastLocalContentHash else { return }
+        let refreshDue = lastLocalUpdateAt.map {
+            Date().timeIntervalSince($0) >= Self.localRefreshInterval
+        } ?? true
+        guard hash != lastLocalContentHash || refreshDue else { return }
         lastLocalContentHash = hash
         lastLocalUpdateAt = Date()
 

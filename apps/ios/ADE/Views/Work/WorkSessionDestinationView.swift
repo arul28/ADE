@@ -1372,6 +1372,10 @@ struct WorkSessionDestinationView: View {
         ownerResolved = true
         _ = await syncService.ensureAccountMachineForNavigation(ownerKey, sessionId: sessionId)
         if Task.isCancelled { return }
+        // The wait above can include the Wake & open prompt, however long the
+        // person took. Give the chat a fresh window to load on the machine
+        // it just reached.
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
       }
       // Connected to the chat's own machine: the chat is loading, however
       // slowly. Only an unreachable owner runs the clock down.
