@@ -301,10 +301,14 @@ final class MachineFleet: ObservableObject {
   }
 
   /// True when connecting one more machine would go over the limit.
-  var isAtLiveLimit: Bool {
+  var isAtLiveLimit: Bool { isAtLiveLimit(pending: 0) }
+
+  /// True when `pending` more machines (pairings still in flight) plus one
+  /// more would go over the limit.
+  func isAtLiveLimit(pending: Int) -> Bool {
     let focused = syncService?.focusedMachineKey
     let connectedOthers = pinnedKeys.filter { $0 != focused }.count
-    return connectedOthers >= liveOtherMachineLimit
+    return connectedOthers + pending >= liveOtherMachineLimit
   }
 
   /// Adds `machineKey` to the connected set without dialing it, e.g. the
@@ -551,8 +555,6 @@ final class HiddenMachineStore: ObservableObject {
 
   struct Record: Codable, Equatable {
     var hiddenAt: Date
-    /// Seen off the account, or offline, since it was hidden.
-    var sawGone: Bool
   }
 
   /// Keyed by `HiddenMachineStore.key(forIdentity:)`.
@@ -608,11 +610,9 @@ final class HiddenMachineStore: ObservableObject {
     records[Self.key(forIdentity: identity)] != nil
   }
 
-  /// `isAvailableNow`: on the account and online right now (or, for a saved
-  /// machine, reachable). A machine that is not can come back as soon as it is.
-  func hide(identity: String, isAvailableNow: Bool) {
+  func hide(identity: String) {
     var next = records
-    next[Self.key(forIdentity: identity)] = Record(hiddenAt: Date(), sawGone: !isAvailableNow)
+    next[Self.key(forIdentity: identity)] = Record(hiddenAt: Date())
     commit(next)
   }
 
@@ -622,9 +622,8 @@ final class HiddenMachineStore: ObservableObject {
     commit(next)
   }
 
-  /// Applies a freshly loaded account directory: a hidden machine that is off
-  /// the account or offline is marked gone; one that was gone and is now on the
-  /// account and online is shown again.
+  /// Applies a freshly loaded account directory: a hidden machine the account
+  /// shows online is listed again.
   func reconcile(accountMachines: [(identity: String, online: Bool)]) {
     guard !records.isEmpty else { return }
     var onlineByKey: [String: Bool] = [:]
@@ -633,12 +632,8 @@ final class HiddenMachineStore: ObservableObject {
       onlineByKey[key] = (onlineByKey[key] ?? false) || machine.online
     }
     var next = records
-    for (key, record) in records {
-      if onlineByKey[key] == true {
-        next.removeValue(forKey: key)
-      } else if !record.sawGone {
-        next[key]?.sawGone = true
-      }
+    for key in records.keys where onlineByKey[key] == true {
+      next.removeValue(forKey: key)
     }
     commit(next)
   }

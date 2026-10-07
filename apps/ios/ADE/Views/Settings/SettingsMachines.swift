@@ -227,6 +227,8 @@ final class SettingsMachineController: ObservableObject {
   /// Rows with an action in flight. Per row: one machine connecting never
   /// locks the others.
   @Published var busyMachineIds: Set<String> = []
+  /// Rows pairing next to the primary right now; each counts toward the limit.
+  private var pairingAlongsideIds: Set<String> = []
   @Published var toast: ADEToastMessage?
   @Published var errors: [String: String] = [:]
   @Published var limitPrompt: SettingsMachineLimitPrompt?
@@ -260,7 +262,9 @@ final class SettingsMachineController: ObservableObject {
     errors[machine.id] = nil
     // With no primary attached the machine becomes primary (see
     // `performConnect`), so it does not count against the limit.
-    if syncService.primaryIsAttached, fleet.isAtLiveLimit {
+    // A pairing still in flight takes a slot too: two pairings started back to
+    // back must not both slip under the limit and silently push a machine out.
+    if syncService.primaryIsAttached, fleet.isAtLiveLimit(pending: pairingAlongsideIds.count) {
       var candidates = fleet.connectedMachinesLeastRecentFirst.map { (key: $0.machineKey, name: $0.name) }
       if machine.machineKey != nil, let primary = syncService.focusedMachineKey {
         candidates.append((key: primary, name: syncService.focusedMachineDisplayName))
@@ -328,7 +332,9 @@ final class SettingsMachineController: ObservableObject {
     // A primary is up: pair next to it, like desktop. The primary's connection
     // is never touched, and the toast waits for the new machine's link.
     var live = false
+    pairingAlongsideIds.insert(machine.id)
     run(machine, successToast: { live ? "\(machine.name) connected" : "\(machine.name) paired · connecting…" }) {
+      defer { self.pairingAlongsideIds.remove(machine.id) }
       switch await syncService.pairAccountMachineAlongsidePrimary(accountMachine, authorization: authorization) {
       case .failure(let failure):
         self.errors[machine.id] = failure.message
@@ -386,8 +392,7 @@ final class SettingsMachineController: ObservableObject {
     guard let syncService else { return }
     syncService.forgetMachineOnThisPhone(
       machineKey: machine.machineKey,
-      hiddenIdentity: machine.hiddenIdentity,
-      isAvailableNow: machine.online
+      hiddenIdentity: machine.hiddenIdentity
     )
     toast = ADEToastMessage(text: "\(machine.name) forgotten on this phone")
     ADEHaptics.light()
@@ -404,8 +409,7 @@ final class SettingsMachineController: ObservableObject {
       }
       self.syncService?.forgetMachineOnThisPhone(
         machineKey: machine.machineKey,
-        hiddenIdentity: machine.hiddenIdentity,
-        isAvailableNow: machine.online
+        hiddenIdentity: machine.hiddenIdentity
       )
       return true
     }

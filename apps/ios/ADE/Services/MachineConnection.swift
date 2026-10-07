@@ -604,68 +604,66 @@ final class MachineConnection {
 
   // MARK: - Relay authorization
 
-  /// Keeps a relay socket's account proof fresh: refresh shortly before the
-  /// lease expires, retry within the lease, and give up only when the lease
-  /// runs out (the host then closes the socket and the run loop redials).
+  /// Keeps a relay socket's account proof fresh with the same loop the
+  /// focused connection runs (`syncRunRelayReauthorizationLoop`). When it
+  /// stops (an account change, or retries past the lease) the host closes the
+  /// socket at expiry and the run loop redials.
   private func startRelayReauthorization(lease: SyncRelayAuthorizationLease, generation leaseGeneration: UInt64) {
+    guard let pairedDeviceId = nonEmptyTrimmed(profile.pairedDeviceId) else { return }
     relayReauthorizationTask?.cancel()
     relayReauthorizationTask = Task { @MainActor [weak self] in
-      var activeLease = lease
-      var retryAttempt = 0
-      while !Task.isCancelled {
-        if retryAttempt == 0 {
-          let delay = syncRelayReauthorizationScheduleDelayNanoseconds(
-            lease: activeLease,
-            nowMilliseconds: Date().timeIntervalSince1970 * 1_000
-          )
-          if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
-        }
-        guard let self, !Task.isCancelled, self.generation == leaseGeneration, self.socket != nil else { return }
-        do {
-          activeLease = try await self.relayReauthorize(lease: activeLease)
-          retryAttempt = 0
-        } catch is CancellationError {
-          return
-        } catch {
-          guard self.generation == leaseGeneration else { return }
-          guard let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
-            attempt: retryAttempt,
-            lease: activeLease,
-            nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      guard let self else { return }
+      await syncRunRelayReauthorizationLoop(
+        lease: lease,
+        isCurrent: { [weak self] in
+          guard let self else { return false }
+          return self.generation == leaseGeneration && self.socket != nil
+        },
+        makeAttempt: { activeLease -> (requestId: String, payload: [String: Any]) in
+          let relaySession = try await AccountService.shared.freshRelaySession()
+          guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
+            deviceId: pairedDeviceId,
+            relayAccountToken: relaySession.token,
+            challenge: activeLease.challenge
           ) else {
-            machineConnectionLog.notice(
-              "fleet relay reauthorization gave up machine=\(self.machineKey, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            throw RelayReauthorizationFailure(
+              code: "invalid_proof",
+              message: "This iPhone could not refresh its secure Relay proof.",
+              retryable: false,
+              receivedHostResult: true
             )
-            return
           }
-          retryAttempt += 1
-          try? await Task.sleep(nanoseconds: retryDelay)
+          return (
+            requestId: UUID().uuidString,
+            payload: ["deviceId": pairedDeviceId, "relayAccountToken": relaySession.token, "proof": proof]
+          )
+        },
+        perform: { [weak self] attempt in
+          guard let self else { throw CancellationError() }
+          let raw = try await self.request(
+            type: "relay_reauthorize",
+            payload: attempt.payload,
+            requestId: attempt.requestId,
+            timeoutNanoseconds: 6_000_000_000,
+            timeoutMessage: "Relay authorization refresh timed out."
+          )
+          return try syncRelayReauthorizationLease(from: raw)
+        },
+        install: { _ in },
+        onAccountChanged: { [weak self] failure in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay account changed machine=\(self.machineKey, privacy: .public) code=\(failure.code, privacy: .public)"
+          )
+        },
+        onGiveUp: { [weak self] error in
+          guard let self else { return }
+          machineConnectionLog.notice(
+            "fleet relay reauthorization gave up machine=\(self.machineKey, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
         }
-      }
+      )
     }
-  }
-
-  private func relayReauthorize(lease: SyncRelayAuthorizationLease) async throws -> SyncRelayAuthorizationLease {
-    guard let pairedDeviceId = nonEmptyTrimmed(profile.pairedDeviceId) else { throw CancellationError() }
-    let relaySession = try await AccountService.shared.freshRelaySession()
-    guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
-      deviceId: pairedDeviceId,
-      relayAccountToken: relaySession.token,
-      challenge: lease.challenge
-    ) else {
-      throw NSError(domain: "ADE", code: 37, userInfo: [NSLocalizedDescriptionKey: "This iPhone could not refresh its secure Relay proof."])
-    }
-    let raw = try await request(
-      type: "relay_reauthorize",
-      payload: [
-        "deviceId": pairedDeviceId,
-        "relayAccountToken": relaySession.token,
-        "proof": proof,
-      ],
-      timeoutNanoseconds: 6_000_000_000,
-      timeoutMessage: "Relay authorization refresh timed out."
-    )
-    return try syncRelayReauthorizationLease(from: raw)
   }
 
   // MARK: - Roster

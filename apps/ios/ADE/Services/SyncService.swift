@@ -994,17 +994,6 @@ struct SyncConnectAttemptTarget: Equatable {
   let machineIdentity: String?
 }
 
-/// Why the most recent user-initiated attempt failed. Separate from `lastError`
-/// because a failed switch restores the connection it interrupted, and that
-/// restore's `hello_ok` clears `lastError` — which would erase the explanation
-/// for the failure the user just watched. Scoped to one attempt: every new
-/// attempt clears it, so it never needs to carry which machine it was about.
-///
-/// It does carry the machine's NAME, though, and whether that machine was
-/// asleep: the restore that follows a failed switch clears the attempt target,
-/// and without those two the connection card cannot say "MacBook Pro (97) is
-/// asleep — you're still on Arul's Mac Studio" once the dust settles. Both
-/// default to absent so a failure that knows neither reads exactly as before.
 /// A project the machine would not open, for the hub to say so.
 struct SyncProjectOpenFailure: Equatable, Identifiable {
   let id = UUID()
@@ -1017,6 +1006,17 @@ struct SyncPairAlongsideFailure: Error, Equatable {
   let message: String
 }
 
+/// Why the most recent user-initiated attempt failed. Separate from `lastError`
+/// because a failed switch restores the connection it interrupted, and that
+/// restore's `hello_ok` clears `lastError` — which would erase the explanation
+/// for the failure the user just watched. Scoped to one attempt: every new
+/// attempt clears it, so it never needs to carry which machine it was about.
+///
+/// It does carry the machine's NAME, though, and whether that machine was
+/// asleep: the restore that follows a failed switch clears the attempt target,
+/// and without those two the connection card cannot say "MacBook Pro (97) is
+/// asleep — you're still on Arul's Mac Studio" once the dust settles. Both
+/// default to absent so a failure that knows neither reads exactly as before.
 struct SyncConnectAttemptFailure: Equatable {
   let message: String
   var machineName: String?
@@ -4428,10 +4428,6 @@ final class SyncService: ObservableObject {
   /// the switch failed). The hub shows it: a refused open used to look like a
   /// tap that hung.
   @Published var projectOpenFailure: SyncProjectOpenFailure?
-  /// Account adoptions running next to the primary
-  /// (`pairAccountMachineAlongsidePrimary`): they speak as roster peers and
-  /// leave the primary's connect copy alone.
-  private var adoptionsAlongsidePrimary = 0
   /// The roster connections to every other live machine. Not owned here.
   weak var machineFleet: MachineFleet?
   #if DEBUG
@@ -7453,6 +7449,7 @@ final class SyncService: ObservableObject {
     authorization: AccountPairingAuthorization,
     generation: UInt64,
     connectionAttempt: SyncConnectionAttemptMetadata,
+    rosterPeer: Bool,
     isCurrentCandidate: @escaping () -> Bool
   ) async throws -> Any {
     guard isCurrentConnectAttempt(generation) else {
@@ -7463,7 +7460,7 @@ final class SyncService: ObservableObject {
       guard let signingPublicKey else {
         throw AccountAdoptionIdentityVerificationError(machineName: machineName)
       }
-      if adoptionsAlongsidePrimary == 0 {
+      if !rosterPeer {
         publishAccountConnectStage("Verifying it's really \(machineName)…")
       }
       challenge = try await performAccountAdoptionChallenge(
@@ -7536,7 +7533,7 @@ final class SyncService: ObservableObject {
       payload: [
         // Next to the primary the adoption socket is a roster peer: it closes
         // once the pairing is saved, so the host must not start a replica.
-        "peer": adoptionsAlongsidePrimary > 0
+        "peer": rosterPeer
           ? self.fleetPeerMetadata(connectionAttempt: connectionAttempt)
           : self.currentPeerMetadata(connectionAttempt: connectionAttempt),
         "auth": auth,
@@ -7586,7 +7583,8 @@ final class SyncService: ObservableObject {
     owner: String,
     authorization: AccountPairingAuthorization,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    rosterPeer: Bool
   ) async throws -> AdoptedConnectionCandidate {
     guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
     let endpoint = candidate.endpoint
@@ -7625,7 +7623,8 @@ final class SyncService: ObservableObject {
           owner: owner,
           authorization: authorization,
           connectAttemptGeneration: connectAttemptGeneration,
-          connectionAttempt: connectionAttempt
+          connectionAttempt: connectionAttempt,
+          rosterPeer: rosterPeer
         )
       } catch SyncRelayReadyNegotiationError.retryLegacySocket {
         guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
@@ -7652,7 +7651,8 @@ final class SyncService: ObservableObject {
       owner: owner,
       authorization: authorization,
       connectAttemptGeneration: connectAttemptGeneration,
-      connectionAttempt: connectionAttempt
+      connectionAttempt: connectionAttempt,
+      rosterPeer: rosterPeer
     )
   }
 
@@ -7668,7 +7668,8 @@ final class SyncService: ObservableObject {
     owner: String,
     authorization: AccountPairingAuthorization,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    rosterPeer: Bool
   ) async throws -> AdoptedConnectionCandidate {
     let dialKey = isRelay ? syncRelayMachineKey(from: url.absoluteString) : nil
     var dialToken: UUID?
@@ -7734,6 +7735,7 @@ final class SyncService: ObservableObject {
           authorization: authorization,
           generation: connectAttemptGeneration,
           connectionAttempt: connectionAttempt,
+          rosterPeer: rosterPeer,
           isCurrentCandidate: isCurrentCandidate
         )
         guard let helloPayload = raw as? [String: Any] else {
@@ -7768,7 +7770,8 @@ final class SyncService: ObservableObject {
     machineName: String,
     owner: String,
     authorization: AccountPairingAuthorization,
-    connectAttemptGeneration: UInt64
+    connectAttemptGeneration: UInt64,
+    rosterPeer: Bool = false
   ) async throws -> AdoptedConnectionCandidate {
     guard !candidates.isEmpty else { throw noConnectableAddressError() }
     let connectionAttempt = makeConnectionAttemptMetadata()
@@ -7804,7 +7807,8 @@ final class SyncService: ObservableObject {
               owner: owner,
               authorization: authorization,
               connectAttemptGeneration: connectAttemptGeneration,
-              connectionAttempt: connectionAttempt
+              connectionAttempt: connectionAttempt,
+              rosterPeer: rosterPeer
             ))
           } catch {
             return .failed(candidateId: candidate.id, error: error)
@@ -7891,6 +7895,119 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// The routes an account-directory machine advertises, split the way the
+  /// adoption race and a saved profile use them.
+  private struct AccountMachineRoutes {
+    let direct: [String]
+    let relay: [String]
+    let lan: [String]
+    let tailnet: [String]
+    let preferredDirectPort: Int?
+  }
+
+  private func accountMachineRoutes(_ machine: AccountMachine) -> AccountMachineRoutes {
+    let direct = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind != .relay else { return nil }
+      if let host = syncNonEmpty(endpoint.host) { return host }
+      return endpoint.url.flatMap(syncEndpointHost)
+    })
+    let relay = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind == .relay,
+            let url = syncNonEmpty(endpoint.url),
+            syncIsFullWebSocketRoute(url),
+            URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
+      return url
+    })
+    let classified = machine.reachableEndpoints.compactMap {
+      endpoint -> (kind: AccountMachineEndpoint.Kind, attempt: SyncConnectionEndpointAttempt)? in
+      guard endpoint.kind != .relay, let attempt = syncAccountAdoptionEndpointAttempt(endpoint) else { return nil }
+      return (endpoint.kind, attempt)
+    }
+    return AccountMachineRoutes(
+      direct: direct,
+      relay: relay,
+      lan: deduplicatedAddresses(classified.compactMap { $0.kind == .lan ? $0.attempt.address : nil }),
+      tailnet: deduplicatedAddresses(classified.compactMap { $0.kind == .tailnet ? $0.attempt.address : nil }),
+      preferredDirectPort: classified.first(where: { $0.kind == .lan })?.attempt.port
+        ?? classified.first(where: { $0.kind == .tailnet })?.attempt.port
+    )
+  }
+
+  /// Folds a machine's advertised routes into its saved profile and records
+  /// the account that may use its relay routes.
+  private func mergeAccountMachineRoutes(
+    _ routes: AccountMachineRoutes,
+    into profile: inout HostConnectionProfile,
+    owner: String
+  ) {
+    profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + routes.direct)
+    profile.savedRelayCandidates = deduplicatedAddresses((profile.savedRelayCandidates ?? []) + routes.relay)
+    profile.relayAccountOwnerId = owner
+    profile.updatedAt = syncDateFormatter.string(from: Date())
+  }
+
+  /// The saved profile, with a usable credential, of the account machine with
+  /// this device identity. `requiringDeviceBoundSecret` keeps only "paired"
+  /// profiles, the only kind the fleet can dial.
+  private func savedAccountMachineProfile(
+    identity: String,
+    requiringDeviceBoundSecret: Bool
+  ) -> (key: String, profile: HostConnectionProfile)? {
+    let wanted = identity.lowercased()
+    return loadSavedProfiles().first { _, profile in
+      profile.machineIdentity == wanted
+        && tokenForProfile(profile) != nil
+        && (!requiringDeviceBoundSecret || profile.authKind == "paired")
+    }.map { (key: $0.key, profile: $0.value) }
+  }
+
+  /// Checks an account-adoption hello and builds what pairing commits from it:
+  /// the device-bound secret and the machine's saved profile.
+  private func accountAdoptionPrepared(
+    rawHello raw: Any,
+    machine: AccountMachine,
+    expectedHostIdentity: String,
+    routes: AccountMachineRoutes,
+    route: AccountAdoptionRoute,
+    owner: String
+  ) throws -> (payload: [String: Any], pairedSecret: String, profile: HostConnectionProfile) {
+    guard let payload = raw as? [String: Any],
+          let brain = payload["brain"] as? [String: Any],
+          syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
+    }
+    guard let pairedSecret = syncResolveAccountHelloPairedSecret(
+      payload: payload,
+      expectedDeviceId: deviceId,
+      storedSecret: storedPairedSecret(forHostIdentity: expectedHostIdentity)
+    ) else {
+      throw NSError(
+        domain: "ADE",
+        code: 33,
+        userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."]
+      )
+    }
+    let advertisedRelay = syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
+    let profile = HostConnectionProfile(
+      hostIdentity: expectedHostIdentity,
+      hostName: syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
+      siteId: syncNonEmpty(brain["siteId"] as? String),
+      port: routes.preferredDirectPort ?? route.endpoint.port,
+      authKind: "paired",
+      pairedDeviceId: deviceId,
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: expectedHostIdentity,
+      lastSuccessfulAddress: route.endpoint.address,
+      savedAddressCandidates: routes.direct,
+      discoveredLanAddresses: routes.lan,
+      tailscaleAddress: routes.tailnet.first,
+      savedRelayCandidates: deduplicatedAddresses(routes.relay + (advertisedRelay.map { [$0] } ?? [])),
+      accountOwnerId: owner,
+      relayAccountOwnerId: owner
+    )
+    return (payload: payload, pairedSecret: pairedSecret, profile: profile)
+  }
+
   /// Connects a directory machine using the signed-in Clerk session. The
   /// bearer token is used over the directory-verified WSS relay to mint the
   /// same device-bound paired secret used by QR/PIN/SSH. Later direct reconnects
@@ -7952,57 +8069,25 @@ final class SyncService: ObservableObject {
           ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
           return false
         }
-        let learnedDirect = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-          guard endpoint.kind != .relay else { return nil }
-          if let host = syncNonEmpty(endpoint.host) { return host }
-          return endpoint.url.flatMap(syncEndpointHost)
-        })
-        let learnedRelays = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-          guard endpoint.kind == .relay,
-                let url = syncNonEmpty(endpoint.url),
-                syncIsFullWebSocketRoute(url),
-                URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
-          return url
-        })
-        existing.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + learnedDirect)
-        existing.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + learnedRelays)
-        existing.relayAccountOwnerId = owner
-        existing.updatedAt = syncDateFormatter.string(from: Date())
+        mergeAccountMachineRoutes(accountMachineRoutes(machine), into: &existing, owner: owner)
         saveProfile(existing)
       }
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.reconnected)
       return true
     }
 
-    let directHosts = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-      guard endpoint.kind != .relay else { return nil }
-      if let host = syncNonEmpty(endpoint.host) { return host }
-      return endpoint.url.flatMap(syncEndpointHost)
-    })
-    let relayRoutes = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-      guard endpoint.kind == .relay,
-            let url = syncNonEmpty(endpoint.url),
-            syncIsFullWebSocketRoute(url),
-            URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
-      return url
-    })
+    let machineRoutes = accountMachineRoutes(machine)
 
     // A direct pairing to this same Mac remains direct-owned. Signing in must
     // never retroactively make a QR/link/SSH machine disappear on sign-out.
-    if var existing = loadSavedProfiles().values.first(where: { profile in
-      (profile.hostIdentity == expectedHostIdentity || profile.lastHostDeviceId == expectedHostIdentity)
-        && tokenForProfile(profile) != nil
-    }) {
+    if var existing = savedAccountMachineProfile(identity: expectedHostIdentity, requiringDeviceBoundSecret: false)?.profile {
       guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
         lastError = "This saved computer belongs to a different signed-in account."
         connectionState = .error
         ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
         return false
       }
-      existing.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + directHosts)
-      existing.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + relayRoutes)
-      existing.relayAccountOwnerId = owner
-      existing.updatedAt = syncDateFormatter.string(from: Date())
+      mergeAccountMachineRoutes(machineRoutes, into: &existing, owner: owner)
       // Same hazard as the adoption path below: `saveProfile` makes the target
       // the active machine before anything has proven it answers, so a failed
       // reconnect used to leave the user pointed at a machine they are not on
@@ -8070,23 +8155,6 @@ final class SyncService: ObservableObject {
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
     }
-
-    let classifiedDirectEndpoints = machine.reachableEndpoints.compactMap {
-      endpoint -> (kind: AccountMachineEndpoint.Kind, attempt: SyncConnectionEndpointAttempt)? in
-      guard endpoint.kind != .relay,
-            let attempt = syncAccountAdoptionEndpointAttempt(endpoint) else {
-        return nil
-      }
-      return (endpoint.kind, attempt)
-    }
-    let lanHosts = deduplicatedAddresses(
-      classifiedDirectEndpoints.compactMap { $0.kind == .lan ? $0.attempt.address : nil }
-    )
-    let tailnetHosts = deduplicatedAddresses(
-      classifiedDirectEndpoints.compactMap { $0.kind == .tailnet ? $0.attempt.address : nil }
-    )
-    let preferredDirectPort = classifiedDirectEndpoints.first(where: { $0.kind == .lan })?.attempt.port
-      ?? classifiedDirectEndpoints.first(where: { $0.kind == .tailnet })?.attempt.port
 
     // What to fall back to if this attempt fails.
     //
@@ -8176,43 +8244,14 @@ final class SyncService: ObservableObject {
         authorization: authorization,
         receiveHello: { winner.helloPayload },
         prepare: { raw in
-          guard let payload = raw as? [String: Any],
-                let brain = payload["brain"] as? [String: Any],
-                self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
-            throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
-          }
-          guard let pairedSecret = syncResolveAccountHelloPairedSecret(
-            payload: payload,
-            expectedDeviceId: self.deviceId,
-            storedSecret: self.storedPairedSecret(forHostIdentity: expectedHostIdentity)
-          ) else {
-            throw NSError(
-              domain: "ADE",
-              code: 33,
-              userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."]
-            )
-          }
-
-          let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
-          let allRelays = self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? []))
-          let profile = HostConnectionProfile(
-            hostIdentity: expectedHostIdentity,
-            hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
-            siteId: self.syncNonEmpty(brain["siteId"] as? String),
-            port: preferredDirectPort ?? route.endpoint.port,
-            authKind: "paired",
-            pairedDeviceId: self.deviceId,
-            lastRemoteDbVersion: 0,
-            lastHostDeviceId: expectedHostIdentity,
-            lastSuccessfulAddress: route.endpoint.address,
-            savedAddressCandidates: directHosts,
-            discoveredLanAddresses: lanHosts,
-            tailscaleAddress: tailnetHosts.first,
-            savedRelayCandidates: allRelays,
-            accountOwnerId: owner,
-            relayAccountOwnerId: owner
+          try self.accountAdoptionPrepared(
+            rawHello: raw,
+            machine: machine,
+            expectedHostIdentity: expectedHostIdentity,
+            routes: machineRoutes,
+            route: route,
+            owner: owner
           )
-          return (payload: payload, pairedSecret: pairedSecret, profile: profile)
         },
         isAuthorized: { candidate in
           AccountService.shared.isPairingCommitAuthorized(candidate)
@@ -19203,38 +19242,26 @@ final class SyncService: ObservableObject {
           self.relayReauthorizationTaskId = nil
         }
       }
-      var activeLease = lease
-      var activeAttempt: RelayReauthorizationAttempt?
-      var refreshNow = refreshImmediately
-      var retryAttempt = 0
-      while !Task.isCancelled {
-        guard syncRelayReauthorizationContextIsCurrent(
-          scheduledGeneration: scheduledGeneration,
-          currentGeneration: self.connectionGeneration,
-          scheduledSocketIdentifier: scheduledSocketIdentifier,
-          currentSocketIdentifier: self.socket.map(ObjectIdentifier.init)
-        ) else { return }
-
-        if !refreshNow {
-          let delay = syncRelayReauthorizationScheduleDelayNanoseconds(
-            lease: activeLease,
-            nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+      await syncRunRelayReauthorizationLoop(
+        lease: lease,
+        refreshImmediately: refreshImmediately,
+        isCurrent: {
+          syncRelayReauthorizationContextIsCurrent(
+            scheduledGeneration: scheduledGeneration,
+            currentGeneration: self.connectionGeneration,
+            scheduledSocketIdentifier: scheduledSocketIdentifier,
+            currentSocketIdentifier: self.socket.map(ObjectIdentifier.init)
           )
-          if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
-          guard !Task.isCancelled else { return }
-        }
-        refreshNow = true
-
-        do {
-          if activeAttempt == nil {
-            activeAttempt = try await self.makeRelayReauthorizationAttempt(
-              lease: activeLease,
-              scheduledGeneration: scheduledGeneration,
-              scheduledSocketIdentifier: scheduledSocketIdentifier
-            )
-          }
-          guard let attemptToSend = activeAttempt else { throw CancellationError() }
-          let refreshed = try await self.performRelayReauthorization(attemptToSend)
+        },
+        makeAttempt: { activeLease in
+          try await self.makeRelayReauthorizationAttempt(
+            lease: activeLease,
+            scheduledGeneration: scheduledGeneration,
+            scheduledSocketIdentifier: scheduledSocketIdentifier
+          )
+        },
+        perform: { attempt in try await self.performRelayReauthorization(attempt) },
+        install: { refreshed in
           try installRelayReauthorizationLeaseIfCurrent(
             refreshed,
             scheduledGeneration: scheduledGeneration,
@@ -19244,53 +19271,10 @@ final class SyncService: ObservableObject {
           ) { currentLease in
             self.relayAuthorizationLease = currentLease
           }
-          activeLease = refreshed
-          activeAttempt = nil
-          retryAttempt = 0
-          refreshNow = false
-        } catch is CancellationError {
-          return
-        } catch let failure as RelayReauthorizationFailure {
-          let retryAction = syncRelayReauthorizationRetryAction(
-            receivedHostResult: failure.receivedHostResult,
-            errorCode: failure.code,
-            retryable: failure.retryable
-          )
-          if retryAction == .accountChanged {
-            self.handleTerminalRelayAccountChange(failure)
-            return
-          }
-          if retryAction == .rebuildAttempt {
-            activeAttempt = nil
-          }
-          let nowMilliseconds = Date().timeIntervalSince1970 * 1_000
-          guard retryAction == .retryExactAttempt || retryAction == .rebuildAttempt,
-                let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
-                  attempt: retryAttempt,
-                  lease: activeLease,
-                  nowMilliseconds: nowMilliseconds
-                ) else {
-            self.beginAutomaticTransportRecovery(failure)
-            return
-          }
-          retryAttempt += 1
-          try? await Task.sleep(nanoseconds: retryDelay)
-          guard !Task.isCancelled else { return }
-        } catch {
-          let nowMilliseconds = Date().timeIntervalSince1970 * 1_000
-          guard let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
-            attempt: retryAttempt,
-            lease: activeLease,
-            nowMilliseconds: nowMilliseconds
-          ) else {
-            self.beginAutomaticTransportRecovery(error)
-            return
-          }
-          retryAttempt += 1
-          try? await Task.sleep(nanoseconds: retryDelay)
-          guard !Task.isCancelled else { return }
-        }
-      }
+        },
+        onAccountChanged: { failure in self.handleTerminalRelayAccountChange(failure) },
+        onGiveUp: { error in self.beginAutomaticTransportRecovery(error) }
+      )
     }
   }
 
@@ -20352,8 +20336,10 @@ final class SyncService: ObservableObject {
     // The per-project-DB cursors belong to this machine and outlive one hello:
     // dropping them made every project switch, and every return to this
     // machine, replay the project's whole changeset history from 0.
+    // From the saved copy: the in-memory profile does not republish on a
+    // cursor-only save, so it can hold an older (or a pre-rewind) map.
     let carriedDbVersionBySite = syncCarriedRemoteDbVersionBySite(
-      from: activeHostProfile,
+      from: loadProfile(),
       helloHostIdentity: remoteHostIdentity
     )
     let profile = HostConnectionProfile(
@@ -25523,7 +25509,7 @@ extension SyncService {
   /// its saved pairing (profile and token) is dropped, and it is hidden from
   /// this phone's lists while it is offline (`HiddenMachineStore`). An online
   /// account machine stays listed as Available, ready to connect again.
-  func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String, isAvailableNow: Bool) {
+  func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String) {
     remoteLaneDetails.removeAll()
     if let machineKey {
       machineFleet?.stopKeepingLive(machineKey: machineKey)
@@ -25532,7 +25518,7 @@ extension SyncService {
         removeSavedHost(host)
       }
     }
-    HiddenMachineStore.shared.hide(identity: hiddenIdentity, isAvailableNow: isAvailableNow)
+    HiddenMachineStore.shared.hide(identity: hiddenIdentity)
   }
 
   /// Pairs an account machine this phone never paired, next to the machines
@@ -25578,37 +25564,20 @@ extension SyncService {
     else { return fail("Sign in again, then try connecting.") }
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
 
-    let directHosts = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-      guard endpoint.kind != .relay else { return nil }
-      if let host = syncNonEmpty(endpoint.host) { return host }
-      return endpoint.url.flatMap(syncEndpointHost)
-    })
-    let relayRoutes = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
-      guard endpoint.kind == .relay,
-            let url = syncNonEmpty(endpoint.url),
-            syncIsFullWebSocketRoute(url),
-            URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
-      return url
-    })
+    let machineRoutes = accountMachineRoutes(machine)
 
     // Already paired on this phone (the row only looked unpaired, e.g. a
     // pairing the fleet had not listed yet): learn the advertised routes and
     // connect it. No adoption, no new secret.
-    var saved = loadSavedProfilesRaw()
-    // Only a device-bound ("paired") secret: anything else adopts afresh below.
-    if let (key, existing) = saved.first(where: { _, profile in
-      profile.authKind == "paired"
-        && profile.machineIdentity == expectedHostIdentity.lowercased()
-        && tokenForProfile(profile) != nil
-    }) {
+    // Only a device-bound ("paired") secret: the fleet dials nothing else, so
+    // any other saved profile adopts afresh below.
+    if let (key, existing) = savedAccountMachineProfile(identity: expectedHostIdentity, requiringDeviceBoundSecret: true) {
       guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
         return fail("This saved computer belongs to a different signed-in account.")
       }
       var updated = existing
-      updated.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + directHosts)
-      updated.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + relayRoutes)
-      updated.relayAccountOwnerId = owner
-      updated.updatedAt = syncDateFormatter.string(from: Date())
+      mergeAccountMachineRoutes(machineRoutes, into: &updated, owner: owner)
+      var saved = loadSavedProfilesRaw()
       saved[key] = updated
       saveSavedProfiles(saved)
       machineFleet?.savedMachinesChanged()
@@ -25627,22 +25596,10 @@ extension SyncService {
     guard !routes.isEmpty else {
       return fail("That computer is not ready for account connection yet. Open ADE on the computer and try again.")
     }
-    let classifiedDirectEndpoints = machine.reachableEndpoints.compactMap {
-      endpoint -> (kind: AccountMachineEndpoint.Kind, attempt: SyncConnectionEndpointAttempt)? in
-      guard endpoint.kind != .relay, let attempt = syncAccountAdoptionEndpointAttempt(endpoint) else { return nil }
-      return (endpoint.kind, attempt)
-    }
-    let lanHosts = deduplicatedAddresses(classifiedDirectEndpoints.compactMap { $0.kind == .lan ? $0.attempt.address : nil })
-    let tailnetHosts = deduplicatedAddresses(classifiedDirectEndpoints.compactMap { $0.kind == .tailnet ? $0.attempt.address : nil })
-    let preferredDirectPort = classifiedDirectEndpoints.first(where: { $0.kind == .lan })?.attempt.port
-      ?? classifiedDirectEndpoints.first(where: { $0.kind == .tailnet })?.attempt.port
-
     // The primary's attempt generation, NOT a new one: the adoption must not
     // supersede (or be mistaken for) the primary connection. If the primary
     // does start a new attempt meanwhile, this adoption is abandoned.
     let generation = connectAttemptGeneration
-    adoptionsAlongsidePrimary += 1
-    defer { adoptionsAlongsidePrimary -= 1 }
     let routesByEndpoint = Dictionary(routes.map { ($0.endpoint, $0) }, uniquingKeysWith: { first, _ in first })
     do {
       let winner: AdoptedConnectionCandidate
@@ -25655,7 +25612,10 @@ extension SyncService {
           machineName: machine.displayName,
           owner: owner,
           authorization: authorization,
-          connectAttemptGeneration: generation
+          connectAttemptGeneration: generation,
+          // A roster peer: the host keeps no replica for a socket that closes
+          // once the pairing is saved, and the primary's copy stays untouched.
+          rosterPeer: true
         )
       } catch let failure as AccountAdoptionRaceFailure {
         throw failure.underlying
@@ -25665,38 +25625,15 @@ extension SyncService {
       let key: String = try await performAuthorizedAccountPairingCommit(
         authorization: authorization,
         receiveHello: { winner.helloPayload },
-        prepare: { raw -> (secret: String, profile: HostConnectionProfile) in
-          guard let payload = raw as? [String: Any],
-                let brain = payload["brain"] as? [String: Any],
-                self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
-            throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
-          }
-          guard let secret = syncResolveAccountHelloPairedSecret(
-            payload: payload,
-            expectedDeviceId: self.deviceId,
-            storedSecret: self.storedPairedSecret(forHostIdentity: expectedHostIdentity)
-          ) else {
-            throw NSError(domain: "ADE", code: 33, userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."])
-          }
-          let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
-          let profile = HostConnectionProfile(
-            hostIdentity: expectedHostIdentity,
-            hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
-            siteId: self.syncNonEmpty(brain["siteId"] as? String),
-            port: preferredDirectPort ?? route.endpoint.port,
-            authKind: "paired",
-            pairedDeviceId: self.deviceId,
-            lastRemoteDbVersion: 0,
-            lastHostDeviceId: expectedHostIdentity,
-            lastSuccessfulAddress: route.endpoint.address,
-            savedAddressCandidates: directHosts,
-            discoveredLanAddresses: lanHosts,
-            tailscaleAddress: tailnetHosts.first,
-            savedRelayCandidates: self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? [])),
-            accountOwnerId: owner,
-            relayAccountOwnerId: owner
+        prepare: { raw in
+          try self.accountAdoptionPrepared(
+            rawHello: raw,
+            machine: machine,
+            expectedHostIdentity: expectedHostIdentity,
+            routes: machineRoutes,
+            route: route,
+            owner: owner
           )
-          return (secret, profile)
         },
         isAuthorized: { AccountService.shared.isPairingCommitAuthorized($0) },
         isCurrentCandidate: { self.isCurrentConnectAttempt(generation) },
@@ -25704,7 +25641,7 @@ extension SyncService {
           guard let key = self.profileStorageKey(prepared.profile) else {
             throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
           }
-          self.keychain.saveToken(prepared.secret, hostKey: key)
+          self.keychain.saveToken(prepared.pairedSecret, hostKey: key)
           var profiles = self.loadSavedProfilesRaw()
           profiles[key] = prepared.profile
           self.saveSavedProfiles(profiles)

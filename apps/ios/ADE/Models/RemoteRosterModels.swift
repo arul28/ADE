@@ -743,10 +743,12 @@ extension RemoteRosterChat {
 }
 
 extension RemoteRosterChat {
-  /// The provider and model this roster row already carries, as a chat
-  /// summary. A chat on another machine opens from its roster row and never
-  /// fetches `chat.getSummary` (that would boot its project there), so without
-  /// this its composer had no model pill and no provider color. A row without
+  /// The provider and model this roster row already carries, as a stand-in
+  /// chat summary. A chat on another machine has no summary on this phone
+  /// until its own machine answers `chat.getSummary`; this keeps the composer's
+  /// model pill and provider colour on screen meanwhile (and when that machine
+  /// cannot answer). Its access mode is unknown, so it is marked
+  /// `rosterDerived` and the composer shows no mode for it. A row without
   /// a provider falls back to its tool type's family, and a row without a
   /// model shows the provider with a generic "Model" label. Nil only for a row
   /// that names no provider at all.
