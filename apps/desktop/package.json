@@ -321,6 +321,7 @@
         "to": "whisper",
         "filter": [
           "**/*",
+          "!*.gguf",
           "!ggml-base.en.bin"
         ]
       },
@@ -445,7 +446,7 @@
       "provisioningProfile": "build/ade-desktop.provisionprofile",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,whisper-cli}{,/**}",
+      "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,transcribe-cli}{,/**}",
       "artifactName": "ADE-${version}-${arch}.${ext}",
       "extraResources": [
         {

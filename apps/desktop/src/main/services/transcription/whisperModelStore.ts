@@ -7,29 +7,45 @@ import https from "node:https";
 import path from "node:path";
 
 /**
- * Runtime store for the whisper.cpp speech model (`ggml-base.en.bin`).
+ * Runtime store for the on-device speech model: NVIDIA Parakeet TDT 0.6B v3
+ * post-trained by Moondream ("Parakeet Ultra"), as a Q4_K_M GGUF for the
+ * bundled transcribe.cpp CLI. It punctuates and capitalizes on its own and
+ * makes fewer mistakes than the whisper base.en model it replaced, at a similar
+ * speed on CPU and about 2x faster on Apple Silicon via Metal.
  *
- * The ~141 MB model is NO LONGER bundled in the app (it inflated the macOS
- * auto-update zip past what Squirrel.Mac's in-memory download path tolerates and
- * crashed the updater). Instead it is hosted on a dedicated GitHub release asset
- * and downloaded once, on first dictation, into a writable runtime directory
- * (`<userData>/whisper/`). The tiny `whisper-cli` binary stays bundled.
+ * The ~464 MB model is NOT bundled in the app (bundling the old 141 MB model
+ * inflated the macOS auto-update zip past what Squirrel.Mac's in-memory download
+ * path tolerates and crashed the updater). It is downloaded once, from a
+ * commit-pinned Hugging Face URL, into a writable runtime directory
+ * (`<userData>/whisper/`). The small `transcribe-cli` binary stays bundled.
  *
- * The download STREAMS to disk (never buffers the whole file in memory — that is
- * exactly the failure mode we are moving away from), verifies sha256 against a
- * pinned digest, and installs atomically via rename so a partial/aborted download
- * can never present as a valid model.
+ * The download STREAMS to disk (never buffers the whole file in memory), verifies
+ * sha256 against a pinned digest, and installs atomically via rename so a
+ * partial/aborted download can never present as a valid model.
+ *
+ * Licensing: the model is CC-BY-4.0 (attribution in NOTICE).
  */
 
-export const WHISPER_MODEL_BASENAME = "ggml-base.en.bin";
+export const WHISPER_MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
 
-/** Pinned model asset. Overridable via env for tests / mirrors. */
+/**
+ * Models earlier ADE versions downloaded into the same directory (plus their
+ * in-flight partials). Nothing reads them any more, so they are deleted when the
+ * transcription service starts, whether or not the user downloads the new model.
+ */
+const LEGACY_MODEL_BASENAMES = ["ggml-base.en.bin", "ggml-base.en.bin.part"];
+
+/**
+ * Pinned model asset: an immutable Hugging Face commit, not `main`, so the
+ * bytes behind the URL can never change under the pinned digest. Overridable via
+ * env for tests / mirrors (an override must bring its own sha256).
+ */
 export const DEFAULT_WHISPER_MODEL_URL =
-  "https://github.com/arul28/ADE/releases/download/whisper-models-v1/ggml-base.en.bin";
+  "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/39eeb55181f0d354fd934f06e92fd8d5037fed8e/parakeet-ultra-Q4_K_M.gguf";
 export const DEFAULT_WHISPER_MODEL_SHA256 =
-  "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
-export const DEFAULT_WHISPER_MODEL_BYTES = 147_964_211;
-const MIN_PLAUSIBLE_MODEL_BYTES = 50 * 1024 * 1024; // base.en is ~141 MB; guard truncation.
+  "c69b7a5f9071a7afd8a1818ef7ae542c386c4b01ed0cac380c19a99947646bf9";
+export const DEFAULT_WHISPER_MODEL_BYTES = 486_280_096;
+const MIN_PLAUSIBLE_MODEL_BYTES = 400 * 1024 * 1024; // ~464 MB; guard truncation.
 
 const maxDownloadRedirects = 10;
 const downloadTimeoutMs = 120_000;
@@ -43,8 +59,8 @@ export type WhisperModelSource = {
 
 export function defaultWhisperModelSource(): WhisperModelSource {
   return {
-    url: process.env.ADE_WHISPER_MODEL_URL?.trim() || DEFAULT_WHISPER_MODEL_URL,
-    sha256: process.env.ADE_WHISPER_MODEL_SHA256?.trim() || DEFAULT_WHISPER_MODEL_SHA256,
+    url: process.env.ADE_SPEECH_MODEL_URL?.trim() || DEFAULT_WHISPER_MODEL_URL,
+    sha256: process.env.ADE_SPEECH_MODEL_SHA256?.trim() || DEFAULT_WHISPER_MODEL_SHA256,
     expectedBytes: DEFAULT_WHISPER_MODEL_BYTES,
   };
 }
@@ -105,7 +121,7 @@ function streamDownload(
       if (status >= 300 && status < 400 && response.headers.location) {
         response.resume();
         if (redirectsRemaining <= 0) {
-          fail(new Error("Too many redirects downloading whisper model"));
+          fail(new Error("Too many redirects downloading speech model"));
           return;
         }
         const next = new URL(response.headers.location, url).toString();
@@ -114,7 +130,7 @@ function streamDownload(
       }
       if (status !== 200) {
         response.resume();
-        fail(new Error(`HTTP ${status || "unknown"} downloading whisper model`));
+        fail(new Error(`HTTP ${status || "unknown"} downloading speech model`));
         return;
       }
 
@@ -135,7 +151,7 @@ function streamDownload(
       });
     });
     request.setTimeout(downloadTimeoutMs, () => {
-      fail(new Error("Timed out downloading whisper model"));
+      fail(new Error("Timed out downloading speech model"));
     });
     request.once("error", fail);
   });
@@ -145,10 +161,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export async function removeLegacyModels(modelDir: string): Promise<void> {
+  for (const basename of LEGACY_MODEL_BASENAMES) {
+    await fsp.rm(path.join(modelDir, basename), { force: true });
+  }
+}
+
 export type DownloadWhisperModelResult = { modelPath: string };
 
 /**
- * Ensure the model is installed at `<modelDir>/ggml-base.en.bin`. If already
+ * Ensure the model is installed at `<modelDir>/<WHISPER_MODEL_BASENAME>`. If already
  * present (and non-truncated) this is a no-op. Otherwise download with bounded
  * retry, verify sha256, and install atomically. Concurrent callers are NOT
  * deduped here — the caller (transcription service) serializes via a single
@@ -176,17 +198,17 @@ export async function downloadWhisperModel(args: {
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    if (args.signal?.aborted) throw new Error("Whisper model download cancelled");
+    if (args.signal?.aborted) throw new Error("Speech model download cancelled");
     await fsp.rm(partialPath, { force: true });
     try {
       await streamDownload(source.url, partialPath, args.onProgress, maxDownloadRedirects);
       const digest = await sha256OfFile(partialPath);
       if (source.sha256 && digest.toLowerCase() !== source.sha256.toLowerCase()) {
-        throw new Error(`Whisper model checksum mismatch (got ${digest})`);
+        throw new Error(`Speech model checksum mismatch (got ${digest})`);
       }
       const stat = await fsp.stat(partialPath);
       if (stat.size < minBytes) {
-        throw new Error(`Whisper model looks truncated (${stat.size} bytes)`);
+        throw new Error(`Speech model looks truncated (${stat.size} bytes)`);
       }
       await fsp.rename(partialPath, modelPath);
       return { modelPath };

@@ -9,8 +9,9 @@ import { resolveBundledResource } from "./bundledResources";
  *
  * Schema mirrors the iOS bundle copy at `apps/ios/ADE/Resources/VoiceGlossary.json`:
  *   - `contextualTerms`: recognizer biasing hints (unused by the desktop
- *     deterministic pass; Whisper has no contextual-strings API, so they only
- *     matter on iOS — kept here so both platforms read one schema).
+ *     deterministic pass; the desktop Parakeet model has no vocabulary-biasing
+ *     support, so they only matter on iOS — kept here so both platforms read
+ *     one schema).
  *   - `corrections`: misheard (lowercased) -> canonical replacement, applied
  *     case-insensitively on whole-phrase/word boundaries.
  *   - `fillers`: removed only as standalone tokens/phrases.
