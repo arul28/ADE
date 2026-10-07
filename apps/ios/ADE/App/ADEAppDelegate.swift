@@ -20,6 +20,10 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         // A push-to-start notification wakes the process before SwiftUI scene
         // tasks are guaranteed to run. Install ActivityKit observers at launch
         // so the newly-created activity and its update token cannot be missed.
+        #if DEBUG
+        // Fixture-screen mode starts none of the app's live machinery.
+        if ADEPreviewScreen.requested != nil { return true }
+        #endif
         MainActor.assumeIsolated {
             LiveActivityService.shared.start()
         }

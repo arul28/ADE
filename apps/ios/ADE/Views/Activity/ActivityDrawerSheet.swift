@@ -1,5 +1,7 @@
+import ActivityKit
 import AppIntents
 import SwiftUI
+import WidgetKit
 
 /// Account-wide Activity, in two buckets: Sessions and Inbox.
 ///
@@ -654,3 +656,238 @@ private struct ActivityActionLabel: View {
         .contentShape(Capsule(style: .continuous))
     }
 }
+
+// MARK: - Fixture screens (DEBUG)
+
+#if DEBUG
+/// Fixture data for the Activity fixture screens (`-adePreviewScreen
+/// activity-hub | activity-drawer | chat-connecting | live-activity`). Lets a
+/// simulator with no sign-in and no machine show the four-state surfaces.
+enum ActivityPreviewData {
+  static let now = Date()
+
+  static func iso(minutesAgo: Double) -> String {
+    ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60))
+  }
+
+  static let project = MobileProjectSummary(
+    id: "preview-ade",
+    displayName: "ADE",
+    rootPath: "/Users/arul/Projects/ADE",
+    laneCount: 3,
+    isAvailable: true,
+    isCached: true
+  )
+
+  static let lanes = [
+    RemoteRosterLane(id: "lane-main", name: "Primary", color: "#7C8CFF"),
+    RemoteRosterLane(id: "lane-sync", name: "sync-retry", color: "#3FB37F", prWaitingReason: "ci"),
+    RemoteRosterLane(id: "lane-docs", name: "docs-refresh", color: "#E7A23A"),
+  ]
+
+  static func chat(
+    _ id: String,
+    lane: String,
+    title: String,
+    status: RemoteRosterChatStatus,
+    minutesAgo: Double,
+    awaiting: Bool? = nil,
+    snoozedUntil: String? = nil
+  ) -> RemoteRosterChat {
+    var chat = RemoteRosterChat(
+      id: id, laneId: lane, chatSessionId: nil, title: title, provider: "claude",
+      model: "claude-opus-5-5", toolType: "claude-chat", status: status,
+      awaitingInput: awaiting, pinned: nil, archived: nil,
+      lastActivityAt: iso(minutesAgo: minutesAgo), preview: nil
+    )
+    chat.snoozedUntil = snoozedUntil
+    return chat
+  }
+
+  static let roster = RemoteRosterProject(
+    projectId: "preview-ade",
+    rootPath: "/Users/arul/Projects/ADE",
+    displayName: "ADE",
+    booted: true,
+    runningCount: 2,
+    attentionCount: 1,
+    lanes: lanes,
+    chats: [
+      chat("c1", lane: "lane-main", title: "Should I force-push the rebase?", status: .awaiting, minutesAgo: 2, awaiting: true),
+      chat("c2", lane: "lane-main", title: "Credential store hardening", status: .failed, minutesAgo: 9),
+      chat("c3", lane: "lane-main", title: "Explore sync transport", status: .running, minutesAgo: 1),
+      chat("c4", lane: "lane-sync", title: "Fix the sync retry", status: .running, minutesAgo: 3),
+      chat("c5", lane: "lane-docs", title: "Rewrite the pairing guide", status: .idle, minutesAgo: 30,
+           snoozedUntil: ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))),
+      chat("c6", lane: "lane-docs", title: "Release notes for 1.4", status: .idle, minutesAgo: 120),
+      chat("c7", lane: "lane-main", title: "Widget freshness tag", status: .ended, minutesAgo: 600),
+    ]
+  )
+
+  static let machine = AccountAttentionMachine(
+    machineKey: "studio", accountMachineKey: nil, name: "Arul's Mac Studio", online: true, lastSeenAt: now
+  )
+
+  static func item(
+    _ id: String,
+    title: String,
+    phase: AccountAttentionPhase,
+    tier: String? = nil,
+    column: String? = nil,
+    reason: String? = nil,
+    minutesAgo: Double
+  ) -> AccountAttentionItem {
+    let at = now.addingTimeInterval(-minutesAgo * 60)
+    return AccountAttentionItem(
+      id: "agent:studio:\(id)", revision: 1, fingerprint: id, kind: .agent,
+      eventKind: phase == .needsYou ? .agentNeedsYou : phase == .failed ? .agentFailed : .agentRunning,
+      phase: phase, activityTier: tier, boardColumn: column, waitingReason: reason,
+      statusSince: at, machine: machine,
+      project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
+      laneName: "Primary", provider: "claude", model: "claude-opus-5-5",
+      title: title, preview: "", privacyPreview: "An ADE agent", destination: .session(sessionId: id, itemId: nil, eventId: nil),
+      occurredAt: at, updatedAt: at
+    )
+  }
+
+  static let snapshot = AccountAttentionSnapshot(
+    revision: 1,
+    generatedAt: now,
+    machines: [machine],
+    items: [
+      item("c1", title: "Should I force-push the rebase?", phase: .needsYou, column: "needs_you", minutesAgo: 2),
+      item("c2", title: "Credential store hardening", phase: .failed, column: "needs_you", minutesAgo: 9),
+      item("c3", title: "Explore sync transport", phase: .running, column: "working", minutesAgo: 1),
+      item("c4", title: "Fix the sync retry", phase: .running, column: "waiting", reason: "ci", minutesAgo: 3),
+      item("c5", title: "Rewrite the pairing guide", phase: .stale, tier: "idle", column: "waiting", reason: "snoozed", minutesAgo: 30),
+      item("c6", title: "Release notes for 1.4", phase: .completed, tier: "idle", column: "done", minutesAgo: 120),
+      item("c7", title: "Widget freshness tag", phase: .completed, tier: "idle", column: "done", minutesAgo: 600),
+    ]
+  )
+}
+
+/// The Hub's five chips over a fixture project, filtering live.
+struct ActivityHubPreviewHost: View {
+  @State private var filter: HubRosterFilter = .all
+  @State private var collapsedLaneKeys: Set<String> = []
+  @State private var toast: ADEToastMessage?
+
+  private var presentation: HubProjectPresentation {
+    buildHubProjectPresentation(
+      project: ActivityPreviewData.project,
+      roster: ActivityPreviewData.roster,
+      isActive: true,
+      isSwitching: false
+    )
+  }
+
+  var body: some View {
+    let all = presentation
+    VStack(spacing: 0) {
+      HubRosterFilterBar(
+        counts: Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map {
+          ($0, hubRosterFilterCount([all], filter: $0))
+        }),
+        selection: $filter
+      )
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+      ScrollView {
+        if let shown = hubProjectPresentation(all, matching: filter) {
+          HubProjectCard(
+            presentation: shown,
+            isCollapsed: false,
+            collapsedLaneKeysSnapshot: collapsedLaneKeys,
+            collapsedLaneKeys: $collapsedLaneKeys,
+            allowsCollapse: false,
+            onToggleCollapse: {}, onOpenProject: {}, onOpenChat: { _, _ in },
+            onViewLaneInWork: { _ in }, onViewLaneInLanes: { _ in },
+            onArchiveChat: { _ in }, onDeleteChat: { _ in }, onForget: {}
+          )
+          .padding(.horizontal, 16)
+        } else {
+          HubRosterFilterEmptyState(filter: filter)
+        }
+      }
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .adeToast($toast)
+    .task {
+      guard ProcessInfo.processInfo.arguments.contains("-adePreviewHubNotice") else { return }
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      toast = ADEToastMessage(text: "Arul's Mac Studio is offline.", kind: .info)
+    }
+  }
+}
+
+/// The real Activity drawer over a fixture account snapshot.
+struct ActivityDrawerPreviewHost: View {
+  @StateObject private var drawer = ActivityDrawerModel(
+    defaults: UserDefaults(suiteName: "ade.preview.activity") ?? .standard
+  )
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .sheet(isPresented: .constant(true)) {
+        ActivityDrawerSheet()
+          .environmentObject(drawer)
+      }
+      .onAppear {
+        drawer.rebuild(from: ActivityPreviewData.snapshot)
+      }
+  }
+}
+
+/// The chat frame a restored chat shows while it connects.
+struct ChatConnectingPreviewHost: View {
+  var body: some View {
+    NavigationStack {
+      WorkChatConnectingFrame(machineName: "Arul's Mac Studio")
+        .workSessionNavigationChrome(
+          mode: .pushedDetail,
+          title: "Fix the sync retry",
+          subtitle: "Arul's Mac Studio"
+        ) { EmptyView() }
+    }
+  }
+}
+
+/// Starts a local Live Activity with fixture column counts, and writes the
+/// fixture feed for the widgets, so the lock screen, the Dynamic Island and the
+/// widgets can be screenshotted. Machine-scoped so the widget
+/// renders it without an account; `LiveActivityService` does not run in
+/// fixture mode, so nothing ends it.
+struct LiveActivityPreviewHost: View {
+  @State private var status = "Starting the Live Activity…"
+
+  var body: some View {
+    Text(status)
+      .font(.headline)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .task {
+        // The widgets read the same fixture feed from the App Group.
+        ADESharedContainer.writeAttentionSnapshot(ActivityPreviewData.snapshot)
+        WidgetCenter.shared.reloadAllTimelines()
+        for activity in Activity<ADEAgentRunsAttributes>.activities {
+          await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        let state = ADEAgentRunsAttributes.ContentState(
+          updatedAt: Date().timeIntervalSince1970,
+          columns: .init(needsYou: 2, working: 5, waiting: 1, done: 12),
+          activeCount: 8,
+          runs: []
+        )
+        do {
+          _ = try Activity.request(
+            attributes: ADEAgentRunsAttributes(machineName: "Preview", accountWide: false),
+            content: ActivityContent(state: state, staleDate: nil)
+          )
+          status = "Live Activity started: 2 need you · 5 working · 1 waiting · 12 done"
+        } catch {
+          status = "Live Activity failed: \(error.localizedDescription)"
+        }
+      }
+  }
+}
+#endif

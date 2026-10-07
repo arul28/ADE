@@ -1352,6 +1352,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   case prFiles = "pr-files"
   case prDiff = "pr-diff"
   case prChecks = "pr-checks"
+  /// The Activity surfaces on the four board columns. See
+  /// `ActivityDrawerSheet.swift` (fixture screens).
+  case activityHub = "activity-hub"
+  case activityDrawer = "activity-drawer"
+  case chatConnecting = "chat-connecting"
+  case liveActivity = "live-activity"
   /// AI accounts. See `SettingsProviderAccountsPreviews.swift`.
   case accounts = "accounts"
   case accountsOtherMachine = "accounts-other-machine"
@@ -1444,6 +1450,14 @@ struct ADEPreviewScreenHost: View {
       PrDiffPreviewHost()
     case .prChecks:
       PrDetailPreviewHost(tab: .checks, state: "open")
+    case .activityHub:
+      ActivityHubPreviewHost()
+    case .activityDrawer:
+      ActivityDrawerPreviewHost()
+    case .chatConnecting:
+      ChatConnectingPreviewHost()
+    case .liveActivity:
+      LiveActivityPreviewHost()
     case .accounts:
       ProviderAccountsPreviewHost(screen: .list)
     case .accountsOtherMachine:
