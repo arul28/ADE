@@ -12505,6 +12505,8 @@ export function AgentChatPane({
     });
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
+  /** The banner text a failed card answer raised, so its successful retry can clear it. */
+  const approvalErrorRef = useRef<string | null>(null);
   const handleApproval = useCallback(async (
     itemId: string,
     decision: AgentChatApprovalDecision,
@@ -12527,11 +12529,18 @@ export function AgentChatPane({
         [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
       }));
       setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      // A retry that went through clears the banner its own failure raised.
+      const staleApprovalError = approvalErrorRef.current;
+      approvalErrorRef.current = null;
+      if (staleApprovalError) setError((current) => (current === staleApprovalError ? null : current));
       await refreshSessions().catch(() => {});
       return true;
     } catch (approvalError) {
       setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
+      const rawApprovalError = approvalError instanceof Error ? approvalError.message : String(approvalError);
+      const message = stripElectronErrorWrapper(rawApprovalError) || rawApprovalError;
+      approvalErrorRef.current = message;
+      setError(message);
       return false;
     }
   }, [refreshSessions, selectedSessionId, touchSession]);

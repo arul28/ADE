@@ -264,6 +264,35 @@ ADE_GITHUB_RELAY_REMOTE_PROJECT_ID=<stable-project-id>
 ADE_GITHUB_RELAY_ACCESS_TOKEN=<relay-token>
 ```
 
+## Custom webhook URLs
+
+Any service can ring an automation's URL: `GET|POST|PUT|PATCH /hooks/:hookId/:token`
+(`src/customHooks.ts`, D1 tables from `migrations/0010_custom_hooks.sql`).
+
+- **The relay is a mailbox, not a judge.** It stores only a SHA-256 of the
+  token and compares it in constant time; a wrong token and an unknown hook are
+  the same `404`. It never sees the signing secret: the ADE machine that runs
+  the automation verifies signatures after it drains the request.
+- **Held until drained.** Each request (method, query, headers minus
+  `cf-*`/`x-forwarded-*`/cookies/hop-by-hop, raw body; base64 when it is not
+  UTF-8) is written to `custom_hook_events` and answered `202 {queued:true}`.
+  Limits: 1 MiB per body (`413`), 200 undelivered requests per hook
+  (`503 inbox_full`), 100 hooks per account. Undelivered requests expire after
+  3 days.
+- **Drain, then acknowledge.** `GET /hooks/events?hooks=<ids>` (account
+  token) returns every request still held for those hooks, oldest first. ADE
+  processes them, then `POST /hooks/ack {eventIds}` deletes exactly those. There
+  is no cursor, so a lost or stale cursor can neither skip a request nor delete
+  one ADE has not seen; a lost acknowledgement only redelivers, and ADE's
+  duplicate check (keyed on the relay's delivery id) keeps it from running twice.
+- **Wake-ups.** `GET /hooks/subscribe` (WebSocket, account token) joins the
+  `hooks-account:<accountId>` topic on `RepoEventsDurableObject`; every delivery
+  sends one `hook_delivery` hint after the response.
+- **Registration.** `POST /hooks/register {hookId, token, label?}` (account
+  token) creates or rotates a hook; rotating replaces the hash so the old URL
+  dies at once. `DELETE` removes the hook and everything it holds. Unlinking the
+  account through `DELETE /account/integrations` removes all of its hooks.
+
 ## Linear setup
 
 ADE performs the Linear setup flow after the user connects a workspace with a

@@ -47,6 +47,7 @@ import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
+import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
 /** How a handoff step's lane target reads in the simulation list. */
 function handoffLaneSummary(action: AutomationAction): string {
@@ -741,8 +742,12 @@ function normalizeDraft(args: {
       if (start && end) trigger.activeHours = { start, end, timezone };
     }
     const secretRef = safeTrim(raw?.secretRef);
-    if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
+    const webhook = normalizeWebhookTriggerConfig(raw?.webhook);
+    if (webhook) trigger.webhook = webhook;
+    if (triggerType === "github-webhook" && !secretRef) {
       issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });
+    } else if (triggerType === "webhook" && !webhook && !secretRef) {
+      issues.push({ level: "error", path: `triggers[${index}].webhook`, message: "Webhook triggers need a webhook URL. Create one with automations.webhookCreateEndpoint." });
     } else if (secretRef) {
       trigger.secretRef = secretRef;
     }
@@ -1016,6 +1021,9 @@ function normalizeDraft(args: {
             ? {
                 session: {
                   ...(safeTrim(requestedExecution.session?.title) ? { title: safeTrim(requestedExecution.session?.title) } : {}),
+                  ...(safeTrim(requestedExecution.session?.chatSessionId)
+                    ? { chatSessionId: safeTrim(requestedExecution.session?.chatSessionId) }
+                    : {}),
                   ...(safeTrim(requestedExecution.session?.reasoningEffort)
                     ? { reasoningEffort: safeTrim(requestedExecution.session?.reasoningEffort) }
                     : {}),

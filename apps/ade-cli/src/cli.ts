@@ -219,6 +219,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
+import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/secrets/projectSecretRequest";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -590,6 +591,12 @@ export type FormatterId =
   | "automation-ingress"
   | "automation-linear-ingress"
   | "automation-cleanups"
+  | "automation-webhook-setup"
+  | "automation-webhook-list"
+  | "automation-webhook-endpoint"
+  | "automation-webhook-deliveries"
+  | "automation-webhook-delivery"
+  | "automation-webhook-test"
   | "search-results"
   | "search-status"
   | "external-sessions"
@@ -1105,7 +1112,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -3334,6 +3341,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
+
+  Asking the person for a secret (agents: use this, never ask them to paste a
+  secret into chat). The chat shows a private card; the value is saved to this
+  project's secrets and only the outcome comes back — never the value:
+
+    $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
+      --generate offers a strong random value first; --timeout 30m (default)
+      Prints {name, saved: true} | {name, saved: false, kept: true} | {name, saved: false, declined: true}
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -3425,6 +3440,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
+    $ ade automations webhook create --preset github [--filter body.action=opened]
+                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+                 [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
+                                                     One step: a private URL + the rule, then paste steps
+    $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
+    $ ade automations webhook deliveries <wh-id> [--text]
+                                                     What arrived and why it ran or was skipped
+    $ ade automations webhook delivery <whd-id> [--text]
+                                                     One delivery: the prompt the agent got, headers, body
+    $ ade automations webhook test <wh-id> [--body <json>]
+                                                     Ring the URL like the real service (signed)
+    $ ade automations webhook replay <whd-id>        Run a logged delivery again
+    $ ade automations webhook url|rotate|retire <wh-id>
+                                                     Show, replace, or stop a URL
     $ ade automations cleanups list [--text]          List scheduled lane cleanups
     $ ade automations cleanups cancel <id>            Cancel a scheduled lane cleanup
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
@@ -15907,6 +15936,36 @@ function buildSecretsPlan(args: string[]): CliPlan {
       })],
     };
   }
+  if (sub === "request" || sub === "ask") {
+    // The private secret card: ask the person in this chat, store the answer,
+    // and print only the outcome. The value never reaches the agent.
+    const name = readValue(args, ["--name"]) ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    if (!reason?.trim()) {
+      throw new CliUsageError("secrets request needs --reason \"…\": one line telling the person what the secret is for.");
+    }
+    const generate = readFlag(args, ["--generate"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    return {
+      kind: "execute",
+      label: "secrets request",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "request", {
+        name,
+        reason: reason.trim(),
+        timeoutMs,
+        ...(generate ? { generate: true } : {}),
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user for ${name} in the chat. Waiting for them to save or decline…`,
+    };
+  }
   if (sub === "delete" || sub === "remove" || sub === "rm") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
@@ -15925,7 +15984,7 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [listActionsStep("result", "project_secret")],
     };
   }
-  throw new CliUsageError("secrets supports list, get, set, delete, or actions.");
+  throw new CliUsageError("secrets supports list, get, set, request, delete, or actions.");
 }
 
 function buildProxyPlan(args: string[]): CliPlan {
@@ -16436,7 +16495,9 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     return { kind: "help", text: automationsExampleText() };
   }
 
-  if (sub === "ingress" || sub === "webhook" || sub === "webhook-gateway") {
+  // `webhook` is the webhook-automation command below; the gateway keeps
+  // `ingress` and `webhook-gateway`.
+  if (sub === "ingress" || sub === "webhook-gateway") {
     const mode = firstPositional(args) ?? "status";
     if (mode === "status" || mode === "show") {
       return {
@@ -16561,6 +16622,131 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     }
     throw new CliUsageError(
       "automations cleanups supports list or cancel <id>.",
+    );
+  }
+
+  if (sub === "webhook" || sub === "webhooks") {
+    const mode = firstPositional(args) ?? "list";
+    const target = () => readValue(args, ["--hook", "--id"]) ?? firstPositional(args);
+    if (mode === "create") {
+      // One step: URL + rule. Everything has a sensible default from the preset.
+      const preset = readValue(args, ["--preset", "--service"]);
+      const filters = readRepeatedValues(args, ["--filter", "--only-when"]);
+      const confirmations = readRepeatedValues(args, ["--confirm"]);
+      const inThisChat = readFlag(args, ["--in-this-chat"]);
+      const chat = readValue(args, ["--chat"]);
+      const noSignature = readFlag(args, ["--no-signature"]);
+      const anyRequest = readFlag(args, ["--any-request"]);
+      const disabled = readFlag(args, ["--disabled"]);
+      // readValue consumes the flag, so each one is read exactly once.
+      const name = readValue(args, ["--name"]);
+      const prompt = readValue(args, ["--prompt"]);
+      const secretName = readValue(args, ["--secret-name"]);
+      const modelId = readValue(args, ["--model"]);
+      const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
+      const input: JsonObject = {
+        ...(name ? { name } : {}),
+        ...(preset ? { preset } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(filters.length ? { filters } : anyRequest ? { filters: [] } : {}),
+        ...(noSignature ? { requireSignature: false } : {}),
+        ...(secretName ? { secretName } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(inThisChat ? { chatSessionId: "this" } : chat ? { chatSessionId: chat } : {}),
+        ...(disabled ? { enabled: false } : {}),
+        ...(confirmations.length ? { confirmations } : {}),
+      };
+      return {
+        kind: "execute",
+        label: "automations webhook create",
+        formatter: "automation-webhook-setup",
+        steps: [actionStep("result", "automations", "webhookCreateAutomation", input)],
+      };
+    }
+    if (mode === "list" || mode === "ls") {
+      return {
+        kind: "execute",
+        label: "automations webhook list",
+        formatter: "automation-webhook-list",
+        steps: [actionStep("result", "automations", "webhookList")],
+      };
+    }
+    if (mode === "new") {
+      const label = readValue(args, ["--label"]);
+      return {
+        kind: "execute",
+        label: "automations webhook new",
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookCreateEndpoint", label ? { label } : {})],
+      };
+    }
+    if (mode === "url" || mode === "show") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook url ${hookId}`,
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookGetEndpoint", { hookId })],
+      };
+    }
+    if (mode === "rotate") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook rotate ${hookId}`,
+        formatter: "automation-webhook-endpoint",
+        steps: [actionStep("result", "automations", "webhookRotateEndpoint", { hookId })],
+      };
+    }
+    if (mode === "retire") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      return {
+        kind: "execute",
+        label: `automations webhook retire ${hookId}`,
+        steps: [actionStep("result", "automations", "webhookRetire", { hookId })],
+      };
+    }
+    if (mode === "deliveries" || mode === "log") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      const limit = readIntOption(args, ["--limit"]);
+      return {
+        kind: "execute",
+        label: `automations webhook deliveries ${hookId}`,
+        formatter: "automation-webhook-deliveries",
+        steps: [actionStep("result", "automations", "webhookListDeliveries", { hookId, ...(typeof limit === "number" ? { limit } : {}) })],
+      };
+    }
+    if (mode === "delivery") {
+      const id = requireValue(target(), "delivery id (whd_…)");
+      return {
+        kind: "execute",
+        label: `automations webhook delivery ${id}`,
+        formatter: "automation-webhook-delivery",
+        steps: [actionStep("result", "automations", "webhookGetDelivery", { id })],
+      };
+    }
+    if (mode === "replay") {
+      const id = requireValue(target(), "delivery id (whd_…)");
+      return {
+        kind: "execute",
+        label: `automations webhook replay ${id}`,
+        formatter: "automation-webhook-deliveries",
+        steps: [actionStep("result", "automations", "webhookReplayDelivery", { id })],
+      };
+    }
+    if (mode === "test") {
+      const hookId = requireValue(target(), "webhook id (wh-…)");
+      const body = readValue(args, ["--body"]);
+      return {
+        kind: "execute",
+        label: `automations webhook test ${hookId}`,
+        formatter: "automation-webhook-test",
+        steps: [actionStep("result", "automations", "webhookSendTest", { hookId, ...(body ? { body } : {}) })],
+      };
+    }
+    throw new CliUsageError(
+      "automations webhook supports create, list, new, url <wh-id>, rotate <wh-id>, retire <wh-id>, deliveries <wh-id>, delivery <whd-id>, replay <whd-id>, or test <wh-id>. See `ade help automations`.",
     );
   }
 
@@ -25995,6 +26181,124 @@ function formatAutomationLinearIngress(value: unknown): string {
   ]);
 }
 
+function textOr(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+/** `ade automations webhook create`: everything the person needs next, in order. */
+function formatWebhookSetup(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result) || !isRecord(result.setup)) return JSON.stringify(result, null, 2);
+  const setup = result.setup;
+  const rule = isRecord(result.rule) ? result.rule : {};
+  const signature = isRecord(setup.signature) ? setup.signature : {};
+  const lines = [
+    `Created ${textOr(rule.name, "the webhook automation")} (${textOr(rule.id)}) · webhook ${textOr(result.hookId)}`,
+    "",
+    `URL  ${textOr(setup.url, "(no URL on this machine)")}`,
+  ];
+  if (textOr(setup.urlWarning)) lines.push(`     ! ${setup.urlWarning}`);
+  lines.push("", `Paste it into ${textOr(setup.service, "the service")}:`);
+  (Array.isArray(setup.pasteSteps) ? setup.pasteSteps : []).forEach((step, index) => lines.push(`  ${index + 1}. ${String(step)}`));
+  lines.push("");
+  if (signature.required === true) {
+    const name = textOr(signature.secretName, "the signing secret");
+    if (signature.secretSaved === true) {
+      lines.push(`Signature: required · ${name} is saved in this project.`);
+    } else if (signature.secretSource === "sender") {
+      lines.push(`Signature: required · paste the service's signing secret into project secret ${name}`);
+      lines.push(`  (from a chat: ade secrets request ${name} --reason "…"; or the automation's webhook panel).`);
+    } else {
+      lines.push(`Signature: required · save a secret as ${name}, then paste the same value into the service`);
+      lines.push(`  (from a chat: ade secrets request ${name} --reason "…" --generate).`);
+    }
+  } else {
+    lines.push("Signature: not required (anyone with the URL can start a run).");
+  }
+  const filters = Array.isArray(setup.filters) ? setup.filters.map(String) : [];
+  lines.push(filters.length ? `Only runs when: ${filters.join(" and ")}` : "Runs on every request.");
+  lines.push("", `Check it: ade automations webhook test ${textOr(result.hookId)} · then ade automations webhook deliveries ${textOr(result.hookId)}`);
+  return lines.join("\n");
+}
+
+function formatWebhookList(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const entries = Array.isArray(result) ? result.filter((entry): entry is JsonObject => isRecord(entry)) : [];
+  return renderTable(
+    ["automation", "webhook", "service", "url", "signature", "last delivery"],
+    entries.map((entry) => {
+      const last = isRecord(entry.lastDelivery) ? entry.lastDelivery : null;
+      return [
+        `${textOr(entry.ruleName)}${entry.enabled === false ? " (off)" : ""}`,
+        entry.hookId,
+        entry.preset,
+        entry.url ? `${entry.route === "relay" || entry.route === "gateway" ? "" : "[this computer] "}${String(entry.url)}` : "(other machine)",
+        entry.signatureRequired === true ? (entry.secretSaved === true ? "ok" : `missing ${textOr(entry.secretName)}`) : "none",
+        last ? `${textOr(last.outcome)} ${textOr(last.eventLabel)} ${textOr(last.receivedAt)}`.trim() : "never",
+      ];
+    }),
+    "(no webhook automations)",
+  );
+}
+
+function formatWebhookEndpoint(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  return renderKeyValues("ADE webhook URL", [
+    ["webhook", result.hookId],
+    ["url", result.url ?? "(none on this machine)"],
+    ["route", result.route],
+    ["note", result.setupError],
+    ["lastDelivery", result.lastDeliveryAt],
+  ]);
+}
+
+function formatWebhookDeliveries(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const entries = (Array.isArray(result) ? result : result ? [result] : []).filter((entry): entry is JsonObject => isRecord(entry));
+  return renderTable(
+    ["id", "outcome", "method", "event", "via", "received", "why"],
+    entries.map((entry) => [entry.id, entry.outcome, entry.method, entry.eventLabel ?? "", entry.via, entry.receivedAt, entry.detail ?? ""]),
+    "(no deliveries yet)",
+  );
+}
+
+function formatWebhookDelivery(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return "(that delivery is no longer in the log)";
+  const headers = isRecord(result.headers) ? Object.entries(result.headers).map(([name, header]) => `  ${name}: ${String(header)}`) : [];
+  return [
+    renderKeyValues("ADE webhook delivery", [
+      ["id", result.id],
+      ["outcome", result.outcome],
+      ["why", result.detail],
+      ["signature", result.signature],
+      ["event", result.eventLabel],
+      ["via", result.via],
+      ["received", result.receivedAt],
+      ["run", result.runId],
+      ["chat", result.chatSessionId],
+    ]),
+    "",
+    "Prompt the agent got:",
+    textOr(result.prompt, "(no run started)"),
+    "",
+    "Headers:",
+    ...headers,
+    "",
+    "Body:",
+    textOr(result.body, "(empty)"),
+  ].join("\n");
+}
+
+function formatWebhookTest(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return JSON.stringify(result, null, 2);
+  const ok = result.ok === true;
+  return `${ok ? "Delivered" : "Not delivered"} through ${textOr(result.route, "?")} (HTTP ${String(result.status)}). `
+    + (ok ? "See it with: ade automations webhook deliveries <wh-id>" : textOr(result.response));
+}
+
 function formatAutomationCleanups(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   const cleanups = Array.isArray(result) ? result : [];
@@ -28669,6 +28973,15 @@ function formatProjectSecrets(value: unknown): string {
   if (typeof record.value === "string") {
     return record.value;
   }
+  if (typeof record.name === "string" && typeof record.saved === "boolean") {
+    // `secrets request`: the outcome only. The value never comes back.
+    if (record.saved) {
+      return `${record.replaced ? "Replaced" : "Saved"} project secret ${record.name}. The value stays hidden; use it by name.`;
+    }
+    return record.kept
+      ? `Kept the existing project secret ${record.name}.`
+      : `The user declined to provide ${record.name}.`;
+  }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
       ? `Deleted ADE secret ${record.name}.`
@@ -29510,6 +29823,18 @@ function formatTextOutput(
       return formatAutomationLinearIngress(value);
     case "automation-cleanups":
       return formatAutomationCleanups(value);
+    case "automation-webhook-setup":
+      return formatWebhookSetup(value);
+    case "automation-webhook-list":
+      return formatWebhookList(value);
+    case "automation-webhook-endpoint":
+      return formatWebhookEndpoint(value);
+    case "automation-webhook-deliveries":
+      return formatWebhookDeliveries(value);
+    case "automation-webhook-delivery":
+      return formatWebhookDelivery(value);
+    case "automation-webhook-test":
+      return formatWebhookTest(value);
     case "search-results":
       return formatSearchResults(value);
     case "search-status":

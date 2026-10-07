@@ -14,7 +14,7 @@ const MAX_TOPIC_FRAME_BYTES = 4 * 1024;
 function isValidTopic(topic: string): boolean {
   return topic.length > 0
     && topic.length <= MAX_TOPIC_LENGTH
-    && (topic.startsWith("linear-account:") || topic.startsWith("linear-org:"));
+    && (topic.startsWith("linear-account:") || topic.startsWith("linear-org:") || topic.startsWith("hooks-account:"));
 }
 
 type SocketAttachment = {

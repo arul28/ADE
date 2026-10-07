@@ -5557,6 +5557,68 @@ async function runTool(args: {
         );
       }
     }
+    if (domain === "project_secret" && action === "request") {
+      // The private secret card is raised in a chat, and a session-bound agent
+      // may raise it only in its OWN chat — the person answering must be
+      // looking at the agent that asked. User clients and the CTO may name a
+      // chat explicitly. It shares ask_user's rate limit: both put a blocking
+      // card in front of the person.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "project_secret.request requires object arguments.");
+      }
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const { sessionId: requestedSessionAlias, chatSessionId: requestedChatSessionId, ...secretArgs } = rawObjectArgs;
+      const requestedSessionId = asOptionalTrimmedString(requestedChatSessionId)
+        ?? asOptionalTrimmedString(requestedSessionAlias);
+      if (boundChatSessionId && requestedSessionId && requestedSessionId !== boundChatSessionId && !callerIsCto) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "project_secret.request asks in your own chat only.",
+        );
+      }
+      const targetChatSessionId = requestedSessionId && (isUserClient || callerIsCto)
+        ? requestedSessionId
+        : boundChatSessionId;
+      if (!targetChatSessionId) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "project_secret.request needs a chat to ask in. Run `ade secrets request` from inside an ADE chat, or pass --session <chat id>.",
+        );
+      }
+      ensureAskUserAllowed(session);
+      scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
+    }
+    if (domain === "automations" && action === "webhookCreateAutomation") {
+      // The calling chat is derived from the caller's identity, never taken
+      // from its arguments. `chatSessionId: "this"` binds the automation to
+      // that chat; a session-bound agent may bind it to its own chat only, so
+      // it cannot route webhook-started turns into someone else's chat.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "automations.webhookCreateAutomation requires object arguments.");
+      }
+      const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      const { callerChatSessionId: _ignoredCaller, chatSessionId: requestedChat, ...createArgs } = rawObjectArgs;
+      let chatSessionId = asOptionalTrimmedString(requestedChat);
+      if (chatSessionId === "this") {
+        if (!boundChatSessionId) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "--in-this-chat needs a chat: run it from inside an ADE chat, or pass --chat <chat id>.",
+          );
+        }
+        chatSessionId = boundChatSessionId;
+      }
+      if (chatSessionId && boundChatSessionId && chatSessionId !== boundChatSessionId && !callerIsCto && !isUserClient) {
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "An agent can send webhook runs only to its own chat.");
+      }
+      scopedObjectArgs = {
+        ...createArgs,
+        ...(chatSessionId ? { chatSessionId } : {}),
+        ...(boundChatSessionId ? { callerChatSessionId: boundChatSessionId } : {}),
+      };
+    }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(

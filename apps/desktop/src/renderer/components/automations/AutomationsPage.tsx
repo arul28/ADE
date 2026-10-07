@@ -2,7 +2,8 @@ import { type ReactElement, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { AutomationsWorkspace } from "./AutomationsWorkspace";
-import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
+import { ProductionAutomationsComingSoon, WebAutomationsOverview } from "./AutomationsComingSoon";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
@@ -57,7 +58,7 @@ export function AutomationsProductionGate({ children }: { children: ReactElement
     );
   }
 
-  if (state === "disabled") return <ProductionAutomationsComingSoon />;
+  if (state === "disabled") return isWebClientMode() ? <WebAutomationsOverview /> : <ProductionAutomationsComingSoon />;
 
   return children;
 }

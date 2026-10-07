@@ -207,6 +207,8 @@ import type {
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookTriggerConfig,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
   AutomationRun,
@@ -1033,6 +1035,7 @@ import type {
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
+import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -6626,6 +6629,43 @@ export function registerIpc({
     await ctx.linearIngressService.pollNow();
     return ctx.linearIngressService.getStatus();
   });
+
+  const requireWebhookIngress = () => {
+    const service = getCtx().automationIngressService;
+    if (!service) throw new Error("Automation ingress service is not available.");
+    return service.webhooks;
+  };
+  ipcMain.handle(IPC.automationsWebhookList, async () => {
+    const ctx = getCtx();
+    const webhooks = requireWebhookIngress();
+    if (!ctx.automationService) return [];
+    return await listWebhookAutomations({
+      rules: ctx.automationService.list(),
+      getEndpoint: (input) => webhooks.getEndpoint(input),
+      listDeliveries: (input) => webhooks.listDeliveries(input),
+      secretNames: (() => {
+        try {
+          return new Set((ctx.projectSecretService?.list().secrets ?? []).map((secret) => secret.name));
+        } catch {
+          return new Set<string>();
+        }
+      })(),
+    });
+  });
+  ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) =>
+    requireWebhookIngress().createEndpoint(arg ?? {}));
+  ipcMain.handle(IPC.automationsWebhookGetEndpoint, async (_event, arg: { hookId: string }) =>
+    requireWebhookIngress().getEndpoint(arg));
+  ipcMain.handle(IPC.automationsWebhookRotateEndpoint, async (_event, arg: { hookId: string }) =>
+    requireWebhookIngress().rotateEndpoint(arg));
+  ipcMain.handle(IPC.automationsWebhookListDeliveries, async (_event, arg: { hookId: string; limit?: number }) =>
+    requireWebhookIngress().listDeliveries(arg));
+  ipcMain.handle(IPC.automationsWebhookGetDelivery, async (_event, arg: { id: string }) =>
+    requireWebhookIngress().getDelivery(arg));
+  ipcMain.handle(IPC.automationsWebhookReplayDelivery, async (_event, arg: { id: string }) =>
+    requireWebhookIngress().replayDelivery(arg));
+  ipcMain.handle(IPC.automationsWebhookSendTest, async (_event, arg: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }) =>
+    requireWebhookIngress().sendTest(arg));
 
   ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
     const ctx = getCtx();

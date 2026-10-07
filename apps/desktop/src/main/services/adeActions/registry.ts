@@ -52,6 +52,11 @@ import type {
   AutomationRunListArgs,
   AutomationRuleSummary,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookEndpoint,
+  AutomationWebhookDeliverySummary,
+  AutomationWebhookDelivery,
+  AutomationWebhookTestResult,
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
@@ -86,6 +91,18 @@ import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpPr
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
+import type { AutomationWebhookTriggerConfig } from "../../../shared/types/config";
+import {
+  buildWebhookAutomationDraft,
+  listWebhookAutomations,
+  webhookSetupGuide,
+  webhookTriggersOf,
+  type WebhookAutomationCreateArgs,
+  type WebhookAutomationListEntry,
+  type WebhookSetupGuide,
+} from "../automations/webhookAutomationFactory";
+import { describeWebhookFilter } from "../../../shared/automationWebhooks";
+import { getAppDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import {
   buildPrAiResolutionContextKey,
   isTrackedAgentCliToolType,
@@ -216,6 +233,7 @@ import {
 } from "./actionArgs";
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
+import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -301,7 +319,26 @@ type AutomationsDomainService = {
   linearIngressSetup(): Promise<LinearIngressStatus>;
   linearIngressTeardown(): Promise<LinearIngressStatus>;
   linearIngressPollNow(): Promise<LinearIngressStatus>;
+  webhookCreateEndpoint(args?: { label?: string | null }): Promise<AutomationWebhookEndpoint>;
+  webhookGetEndpoint(args: { hookId: string }): Promise<AutomationWebhookEndpoint>;
+  webhookRotateEndpoint(args: { hookId: string }): Promise<AutomationWebhookEndpoint>;
+  webhookListDeliveries(args: { hookId: string; limit?: number }): AutomationWebhookDeliverySummary[];
+  webhookGetDelivery(args: { id: string }): AutomationWebhookDelivery | null;
+  webhookReplayDelivery(args: { id: string }): Promise<AutomationWebhookDeliverySummary | null>;
+  webhookSendTest(args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }): Promise<AutomationWebhookTestResult>;
+  webhookCreateAutomation(args: WebhookAutomationCreateArgs & { callerChatSessionId?: string | null }): Promise<{
+    rule: AutomationRuleSummary | null;
+    hookId: string;
+    setup: WebhookSetupGuide;
+  }>;
+  webhookList(): Promise<WebhookAutomationListEntry[]>;
+  webhookRetire(args: { hookId: string }): Promise<{ hookId: string; retired: boolean; stillUsedBy: string[] }>;
 };
+
+function requireWebhooks(runtime: AdeRuntime) {
+  if (!runtime.automationIngressService) throw new Error("Automation ingress service is not available.");
+  return runtime.automationIngressService.webhooks;
+}
 
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
   const automationService = runtime.automationService;
@@ -341,7 +378,75 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       await service.pollNow();
       return service.getStatus();
     },
+    webhookCreateEndpoint: (args = {}) => requireWebhooks(runtime).createEndpoint(args),
+    webhookGetEndpoint: (args) => requireWebhooks(runtime).getEndpoint(args),
+    webhookRotateEndpoint: (args) => requireWebhooks(runtime).rotateEndpoint(args),
+    webhookListDeliveries: (args) => requireWebhooks(runtime).listDeliveries(args),
+    webhookGetDelivery: (args) => requireWebhooks(runtime).getDelivery(args),
+    webhookReplayDelivery: (args) => requireWebhooks(runtime).replayDelivery(args),
+    webhookSendTest: (args) => requireWebhooks(runtime).sendTest(args),
+    webhookCreateAutomation: async (args) => {
+      const webhooks = requireWebhooks(runtime);
+      const endpoint = await webhooks.createEndpoint({ label: args.name ?? null });
+      const draft = buildWebhookAutomationDraft({
+        ...args,
+        // A chat creating the rule is its origin; "this chat" is the caller's own chat.
+        originChatSessionId: args.originChatSessionId ?? args.callerChatSessionId ?? null,
+        hookId: endpoint.hookId,
+        // The same default a new automation gets in the builder.
+        defaultModelId: getAppDefaultModelDescriptor()?.id ?? "anthropic/claude-sonnet-5",
+      });
+      let saved: AutomationSaveDraftResult;
+      try {
+        saved = plannerService.saveDraft({ draft, confirmations: args.confirmations ?? [] });
+      } catch (error) {
+        // Nothing saved: the URL must not linger as an orphan.
+        await webhooks.retireEndpoint(endpoint.hookId).catch(() => false);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`The webhook automation was not saved: ${message}`);
+      }
+      const trigger = webhookTriggersOf(saved.rule)[0]!;
+      const secretName = trigger.signature?.secretName ?? null;
+      return {
+        rule: automationService.list().find((rule) => rule.id === saved.rule!.id) ?? null,
+        hookId: endpoint.hookId,
+        setup: webhookSetupGuide({
+          endpoint: await webhooks.getEndpoint({ hookId: endpoint.hookId }),
+          trigger,
+          secretSaved: Boolean(secretName && projectSecretNames(runtime).has(secretName)),
+          describeFilter: describeWebhookFilter,
+        }),
+      };
+    },
+    webhookList: async () => {
+      const webhooks = requireWebhooks(runtime);
+      return await listWebhookAutomations({
+        rules: automationService.list(),
+        getEndpoint: (input) => webhooks.getEndpoint(input),
+        listDeliveries: (input) => webhooks.listDeliveries(input),
+        secretNames: projectSecretNames(runtime),
+      });
+    },
+    webhookRetire: async ({ hookId }) => {
+      const id = hookId?.trim();
+      if (!id) throw new Error("hookId is required (wh-…).");
+      const stillUsedBy = automationService.list()
+        .filter((rule) => webhookTriggersOf(rule).some((trigger) => trigger.hookId === id))
+        .map((rule) => rule.name);
+      if (stillUsedBy.length) {
+        throw new Error(`Still used by ${stillUsedBy.join(", ")}. Delete or change that automation first; deleting it retires the URL.`);
+      }
+      return { hookId: id, retired: await requireWebhooks(runtime).retireEndpoint(id), stillUsedBy };
+    },
   };
+}
+
+function projectSecretNames(runtime: AdeRuntime): Set<string> {
+  try {
+    return new Set((runtime.projectSecretService?.list().secrets ?? []).map((secret) => secret.name));
+  } catch {
+    return new Set();
+  }
 }
 
 function requireLinearIngress(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
@@ -3503,6 +3608,28 @@ export function buildProviderInstancesDomainService(
   } as OpaqueService;
 }
 
+/**
+ * The project secret service, plus `request`: ask the person in a chat for a
+ * secret through the private secret card. `request` needs the chat service,
+ * so it is absent on a runtime without one.
+ */
+function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const projectSecretService = runtime.projectSecretService;
+  if (!projectSecretService) return null;
+  const agentChatService = runtime.agentChatService;
+  return {
+    ...(projectSecretService as unknown as OpaqueService),
+    ...(agentChatService
+      ? {
+          request: (args?: unknown) => requestProjectSecretFromUser({
+            requestChatInput: (input) => agentChatService.requestChatInput(input),
+            projectSecrets: projectSecretService,
+          }, args),
+        }
+      : {}),
+  };
+}
+
 function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const storageInsightsService = runtime.storageInsightsService;
   if (!storageInsightsService) return null;
@@ -3553,7 +3680,7 @@ export function getAdeActionDomainServices(
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
-    project_secret: toService(runtime.projectSecretService),
+    project_secret: toService(buildProjectSecretDomainService(runtime)),
     account_settings: toService(runtime.accountSettingsStore),
     account_vault: toService(runtime.accountVaultStore),
     linear_credentials: toService(runtime.linearCredentialService),

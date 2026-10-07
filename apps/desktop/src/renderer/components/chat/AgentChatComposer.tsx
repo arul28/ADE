@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -148,6 +148,14 @@ import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
+import { showToast } from "../app/toast/toastStore";
+import {
+  AddProjectSecretDialog,
+  ProjectSecretRequestComposer,
+  projectSecretKeepAnswers,
+  projectSecretSaveAnswers,
+} from "./ProjectSecretCard";
+import { projectSecretComposerNote, readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { approvalDetailIsRedundant, approvalRequestDetail } from "./approvalRequestDetail";
 import { formatCursorModeLabel } from "../../../shared/cursorModes";
@@ -2357,6 +2365,7 @@ export function AgentChatComposer({
     return () => window.clearTimeout(timer);
   }, [attachNotice]);
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
+  const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
   const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
@@ -6997,6 +7006,16 @@ export function AgentChatComposer({
                     setIssueContextMenuOpen((open) => !open);
                   },
                 },
+                {
+                  // The person adds a project secret themselves. The value goes
+                  // to the project's encrypted secrets; only the name lands in
+                  // the draft, so the agent learns it exists and nothing more.
+                  id: "add-secret",
+                  label: "Add secret…",
+                  icon: <LockKey size={14} weight="regular" />,
+                  disabled: composerInputLocked,
+                  onSelect: () => setAddSecretOpen(true),
+                },
                 ...(cursorCloudPanelAvailable && onToggleCursorCloudPanel
                   ? [{
                       id: "cursor-cloud-panel",
@@ -7049,6 +7068,20 @@ export function AgentChatComposer({
                     }]
                   : []),
               ]}
+            />
+
+            <AddProjectSecretDialog
+              open={addSecretOpen}
+              onOpenChange={setAddSecretOpen}
+              onSaved={(name) => {
+                const note = projectSecretComposerNote(name);
+                onDraftChange(draft.trim().length ? `${draft.replace(/\s+$/, "")}\n\n${note}` : note);
+                showToast({
+                  tone: "success",
+                  title: `${name} saved to this project`,
+                  message: "The value stays hidden. A note naming it is in your draft.",
+                });
+              }}
             />
 
             {/* Codex voice: talk with this chat. */}
@@ -7539,6 +7572,24 @@ export function AgentChatComposer({
           </div>
         </div>
         );
+
+        const secretRequestCard = askQuestionRequest ? readProjectSecretRequestCard(askQuestionRequest) : null;
+        if (askQuestionRequest && secretRequestCard) {
+          // The private secret card. Its value travels only as the answer to
+          // the request's `isSecret` question; the composer draft is never
+          // touched, so nothing typed here can ride a later message.
+          return (
+            <ProjectSecretRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={secretRequestCard}
+              responding={approvalResponding ?? false}
+              onSave={(value) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value)); }}
+              onKeepExisting={() => { void onApproval("accept", null, projectSecretKeepAnswers()); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
 
         if (askQuestionRequest) {
           return (

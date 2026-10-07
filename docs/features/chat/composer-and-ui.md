@@ -2516,6 +2516,48 @@ full-auto mode does not auto-answer these app/connector consent requests.
 `serverRequest/resolved` emits the usual resolution event so a request
 completed outside the card cannot leave the composer locked.
 
+### Private secret card
+
+An agent never asks the person to paste a secret into chat. It runs
+`ade secrets request NAME --reason "…" [--generate] [--timeout 30m]` (the ADE
+action `project_secret.request`), and the chat shows the private secret card in
+the composer's place: the secret name, the agent's reason, a password field
+with show/hide and copy, a "Generate a strong one" button (32 random bytes as
+hex; the agent's `--generate` marks it as suggested), and one line of copy —
+"Saved encrypted to this project's secrets. The agent only sees the name." Enter
+saves, Esc declines. When the name already exists the card opens on "Keep
+existing" (Enter) with "Replace" one click away.
+
+The card is an ordinary pending-input request (`requestChatInput`, kind
+`question`) marked by `providerMetadata.projectSecretRequest` (`name`, `reason`,
+`generate`, `exists`; `shared/projectSecretRequest.ts`). The value travels as
+the answer to the request's `isSecret` question `secret_value`, so the
+transcript writer drops it, and the brain's `requestProjectSecretFromUser`
+(`main/services/secrets/projectSecretRequest.ts`) passes it straight to
+`projectSecretService.set` **before the card resolves**: `requestChatInput`'s
+`beforeAccept` hook runs inside the user's `respondToInput` call, so a save that
+fails keeps the card open with the error and never produces a "saved" receipt;
+the retry from the same card clears that error. The value is stored exactly as
+typed (`normalizePendingInputAnswers` does not trim `isSecret` answers). The
+action returns only `{name, saved: true, replaced}`,
+`{name, saved: false, kept: true}` or `{name, saved: false, declined: true}`.
+A name that exists adds a non-secret `secret_action` pick (`keep` / `replace`),
+which is what lets the receipt say which happened. The card is user-only
+(`isUserOnlyConsentCard`): no agent caller may answer it. A session-bound agent
+can raise it only in its own chat, and it shares `ask_user`'s rate limit. A
+client that does not draw the card (the phone, the TUI, an older desktop) still
+gets a working password question; the TUI draws the draft as dots while the
+open question is a secret. Once answered, the transcript keeps one line
+behind a lock glyph: "NAME saved to this project · never shown to the agent",
+"NAME · kept the existing value", or "NAME · declined". `ade.agentChat.respondToInput` redacts `answers` and
+`responseText` in IPC traces.
+
+The person can add one themselves from the composer's overflow menu ("Add
+secret…"): the same fields in a `Dialog`, saved through
+`window.ade.projectSecrets.set`. On save, a note naming the secret (never its
+value) is appended to the draft, so the next message tells the agent the name
+exists and how to use it without printing it.
+
 ### Approval vs question
 
 `approval_request.kind` describes the *shape* of the thing being confirmed

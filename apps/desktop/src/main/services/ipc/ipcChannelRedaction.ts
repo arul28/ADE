@@ -47,6 +47,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.projectSecretsSet]: new Set(["value"]),
   [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
   [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
+  // An answer can be a secret: the private secret card and every `isSecret`
+  // question send their value here, under a generic word.
+  [IPC.agentChatRespondToInput]: new Set(["answers", "responseText"]),
 };
 
 /**

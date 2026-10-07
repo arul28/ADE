@@ -194,6 +194,9 @@ struct ConnectionSettingsView: View {
         linkRow("Usage", systemImage: "chart.line.uptrend.xyaxis") {
           SettingsUsagePage(syncService: syncService)
         }
+        linkRow("Webhooks", systemImage: "bell.badge.waveform") {
+          SettingsWebhooksPage(syncService: syncService)
+        }
         linkRow("AI accounts", systemImage: "person.2.badge.key") {
           SettingsProviderAccountsPage(syncService: syncService)
         }

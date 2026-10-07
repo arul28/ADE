@@ -172,6 +172,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   project_secret: {
+    request: {
+      description: "Ask the person in this chat for a project secret through the private secret card, and save their answer to this project's encrypted secrets. Blocks until they save, keep the existing value, or decline. Returns {name, saved: true, replaced} | {name, saved: false, kept: true} | {name, saved: false, declined: true}; the value is never returned, logged, or written to the transcript. Use this instead of asking a person to paste a secret into chat.",
+      input: "object { name: string, reason: string, generate?: boolean, timeoutMs?: number }",
+      example: "ade secrets request GITHUB_WEBHOOK_SECRET --reason \"Signs GitHub deliveries to your triage webhook\" --generate",
+    },
     list: {
       description: "List ADE project secret names and metadata without revealing values.",
       input: "no input",
@@ -567,6 +572,63 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   automations: {
+    webhookCreateAutomation: {
+      description:
+        "One step: make a private webhook URL and the automation that runs on it. Returns { rule, hookId, setup } where setup has the URL, "
+        + "numbered paste steps for the service, the signature/secret state, and the filters in words. Defaults come from the preset "
+        + "(GitHub/Stripe/Linear/Sentry signature format, suggested filters and prompt). chatSessionId \"this\" sends every delivery to the "
+        + "calling chat as a new turn; an agent may bind only its own chat. Failures leave no URL behind.",
+      input:
+        "object { preset?: \"github\" | \"stripe\" | \"linear\" | \"sentry\" | \"generic\", name?: string, prompt?: string (use {{trigger.body.<path>}}), "
+        + "filters?: Array<string like \"body.action=opened\" | \"headers.x-github-event=issues\" | \"body.ref~main\" | \"body.draft!=true\" | \"body.issue\"> ([] = every request), "
+        + "requireSignature?: boolean, secretName?: string, modelId?: string, reasoningEffort?: string, chatSessionId?: string | \"this\", enabled?: boolean, confirmations?: string[] }",
+      example: "ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text",
+    },
+    webhookList: {
+      description: "Every webhook automation in this project: its URL and route (relay / gateway / this computer), signature and secret state, filters, bound chat, and last delivery.",
+      input: "no input",
+      example: "ade automations webhook list --text",
+    },
+    webhookCreateEndpoint: {
+      description: "Make a bare private webhook URL (no rule). Prefer webhookCreateAutomation, which makes the URL and the rule together.",
+      input: "object { label?: string }",
+      example: "ade automations webhook new --label \"Deploy failures\" --text",
+    },
+    webhookGetEndpoint: {
+      description: "Read one webhook URL: url, route, whether its token lives on this machine, and the last delivery time. Registers it with ADE's relay if that has not happened yet.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook url wh-0123456789abcdef --text",
+    },
+    webhookRotateEndpoint: {
+      description: "Replace a webhook URL's secret token. The old URL stops working at once; the person must paste the new one into the service.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook rotate wh-0123456789abcdef --text",
+    },
+    webhookRetire: {
+      description: "Stop a webhook URL that no automation uses any more (deleting an automation already does this). Refuses while a rule still names it.",
+      input: "object { hookId: string }",
+      example: "ade automations webhook retire wh-0123456789abcdef --text",
+    },
+    webhookListDeliveries: {
+      description: "The newest deliveries to one webhook URL with their outcome (ran, filtered, bad_signature, missing_signature, duplicate, expired, no_rule, disabled, rate_limited, too_large, error) and a one-sentence reason.",
+      input: "object { hookId: string, limit?: number (max 50) }",
+      example: "ade automations webhook deliveries wh-0123456789abcdef --text",
+    },
+    webhookGetDelivery: {
+      description: "One delivery in full: outcome and reason, signature state, the exact prompt the agent got, headers (authorization/cookies hidden), body, and the run's id and chat.",
+      input: "object { id: string }",
+      example: "ade automations webhook delivery whd_0123456789abcdef01 --text",
+    },
+    webhookReplayDelivery: {
+      description: "Run a logged delivery again against the automation as it is now (no signature or duplicate check). Returns the new delivery.",
+      input: "object { id: string }",
+      example: "ade automations webhook replay whd_0123456789abcdef01 --text",
+    },
+    webhookSendTest: {
+      description: "Ring a webhook URL with a sample request signed the way the configured service signs it, through the real route (relay when public). Then read webhookListDeliveries to see the outcome.",
+      input: "object { hookId: string, body?: string (JSON), headers?: Record<string,string> }",
+      example: "ade automations webhook test wh-0123456789abcdef --text",
+    },
     list: {
       description: "List this project's automation rules with their last/next run state.",
       input: "no input",

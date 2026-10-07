@@ -214,6 +214,13 @@ import type {
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
+  AutomationWebhookTestRequest,
+  AutomationWebhookListEntry,
+  AutomationWebhookTriggerConfig,
+  AutomationWebhookEndpoint,
+  AutomationWebhookDeliverySummary,
+  AutomationWebhookDelivery,
+  AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   AutomationManualTriggerRequest,
   AutomationRuleSummary,
@@ -4213,7 +4220,8 @@ function toAutomationsRuntimeEvent(
   if (
     payload.type !== "runs-updated" &&
     payload.type !== "webhook-status-updated" &&
-    payload.type !== "ingress-updated"
+    payload.type !== "ingress-updated" &&
+    payload.type !== "webhook-deliveries-updated"
   ) {
     return null;
   }
@@ -6101,6 +6109,40 @@ const adeBridge = {
           "linearIngressPollNow",
           {},
           () => ipcRenderer.invoke(IPC.automationsLinearIngressPollNow),
+        ),
+    },
+    webhooks: {
+      list: async (pin?: OpenProjectBinding | null): Promise<AutomationWebhookListEntry[]> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookList", {}, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookList),
+        ),
+      createEndpoint: async (args?: { label?: string | null }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookEndpoint> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookCreateEndpoint", { args: args ?? {} }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookCreateEndpoint, args ?? {}),
+        ),
+      getEndpoint: async (args: { hookId: string }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookEndpoint> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookGetEndpoint", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookGetEndpoint, args),
+        ),
+      rotateEndpoint: async (args: { hookId: string }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookEndpoint> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookRotateEndpoint", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookRotateEndpoint, args),
+        ),
+      listDeliveries: async (args: { hookId: string; limit?: number }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookDeliverySummary[]> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookListDeliveries", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookListDeliveries, args),
+        ),
+      getDelivery: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookDelivery | null> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookGetDelivery", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookGetDelivery, args),
+        ),
+      replayDelivery: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookDeliverySummary | null> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookReplayDelivery", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookReplayDelivery, args),
+        ),
+      sendTest: async (args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }, pin?: OpenProjectBinding | null): Promise<AutomationWebhookTestResult> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "automations", "webhookSendTest", { args: args }, () =>
+          ipcRenderer.invoke(IPC.automationsWebhookSendTest, args),
         ),
     },
     onEvent: subscribeAutomationsEvents,

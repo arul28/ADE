@@ -73,8 +73,25 @@ Two filters apply to these triggers:
 
 ### Webhook
 
-- `webhook` — custom inbound webhook. Optional `event` filter and shared-secret verification.
-- `github-webhook` — GitHub-signed webhook. Signature verified via HMAC-SHA256 with a timing-safe compare. Event payload normalized before matching.
+- `webhook` — a custom webhook URL any service can call ("Any service" in the builder). The trigger carries `webhook: AutomationWebhookTriggerConfig`:
+  - `hookId` — the stable id in the URL (`wh-…`). The **token** that makes the URL secret is not in config: it lives in the machine-local `automation_webhook_hooks` table of the machine that made the URL, so a copied project config cannot receive on it.
+  - `preset` — `github`, `stripe`, `linear`, `sentry` or `generic`. Drives the builder's paste instructions, the signature defaults, the sample used by **Send test**, and the event label in the delivery log (`shared/automationWebhooks.ts`).
+  - `signature` — optional. `scheme: "hmac"` is HMAC-SHA256 of the raw body in `header`, with `prefix` and `encoding` (`hex`/`base64`); this covers GitHub (`x-hub-signature-256`, `sha256=`), Linear (`linear-signature`), Sentry (`sentry-hook-signature`) and most senders. `scheme: "stripe"` verifies Stripe's `t=…,v1=…` header over `<t>.<body>` with a 5-minute tolerance measured from when the request reached ADE (relay hold time does not fail it). `secretName` names a **project secret**; the value is never in config and never leaves the machine.
+  - `filters` — "only run when" conditions on `body.*`, `headers.*` or `query.*` (`equals`, `not_equals`, `contains`, `exists`, `matches`), all of which must pass. Checked before anything starts, so noise never costs a run.
+  - `maxAgeMinutes` — skip deliveries the relay held longer than this.
+  - Placeholders: `{{trigger.body.a.b}}`, `{{trigger.headers.x-github-event}}`, `{{trigger.query.env}}`, `{{trigger.method}}`, and `{{trigger.body}}` for the whole body. Every webhook-started prompt is prefixed with `WEBHOOK_UNTRUSTED_NOTICE`, which tells the agent that text from the request is data, not instructions.
+  - A legacy `webhook` trigger with only `secretRef` (no `webhook.hookId`) still works on the local `/automation-webhooks/:automationId` route with an `x-ade-signature` header.
+- `github-webhook` — GitHub-signed webhook to the local server. Signature verified via HMAC-SHA256 with a timing-safe compare. Event payload normalized before matching.
+
+#### Deleting a webhook automation
+
+Deleting a rule retires the URLs its webhook triggers used (unless another rule still names them): the relay forgets the hook and drops anything it held, and this machine deletes the token and the delivery log, so the URL answers `404` from then on (`automationService.onRuleDeleted` → `customWebhookService.retireForDeletedRule`). URLs no saved rule has named for 7 days (a draft that was never saved, or a trigger that stopped being a webhook) are retired by a sweep when the ingress service starts.
+
+#### How a custom webhook delivery is handled
+
+`customWebhookService.ts` receives every request, whether it came straight to this machine (`/hooks/:hookId/:token` on the local listener, or through the user's own public gateway) or was held by ADE's relay and drained. Checks run cheapest and least revealing first: token (direct requests only; the relay already checked its hash) → a saved rule uses this hook → 1 MiB size cap → 60 requests/minute per hook → max age → signature → rule enabled → filters → duplicate (sender delivery ids such as `x-github-delivery`, `svix-id`, Stripe `evt_…`, else the relay's id) → run. A wrong token and an unknown hook both answer `404` and are not logged. The service replies `202` before the run starts.
+
+Every other outcome is written to the machine-local `automation_webhook_deliveries` table — newest 50 per hook, headers (authorization/cookies hidden) and up to 64 KB of body — with one plain sentence explaining it (`ran`, `no_rule`, `disabled`, `filtered`, `bad_signature`, `missing_signature`, `duplicate`, `expired`, `rate_limited`, `too_large`, `error`). A rate-limit storm logs only its first rejection per window. A `ran` row also stores the filled-in prompt and links to its run through `ingress_event_id`. **Run it again** replays a logged delivery against the rule as it is now (no signature or duplicate check: it was checked when it arrived, or the user is deliberately pushing it through). **Send test** signs a sample exactly as the configured sender would and posts it to the real URL, so a relay URL is exercised end to end.
 
 ### Linear-context
 

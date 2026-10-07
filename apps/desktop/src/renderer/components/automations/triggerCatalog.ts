@@ -156,10 +156,10 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     label: "Webhook",
     icon: WebhooksLogo,
     accent: "#EC6CB9",
-    hint: "External events",
+    hint: "Any service that can call a URL",
     events: [
-      { value: "github-webhook", label: "GitHub webhook" },
-      { value: "webhook", label: "Custom webhook" },
+      { value: "webhook", label: "Any service (your own URL)" },
+      { value: "github-webhook", label: "GitHub App webhook (local server)" },
     ],
   },
   {
@@ -234,7 +234,7 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
     case "session":
       return { type: "session-end" };
     case "webhook":
-      return { type: "github-webhook", event: "pull_request" };
+      return { type: "webhook" };
     case "manual":
       return { type: "manual" };
   }

@@ -55,6 +55,13 @@ const LANE_VARS: TemplateVariable[] = [
   { token: "{{trigger.branch}}", label: "Branch" },
 ];
 
+const WEBHOOK_VARS: TemplateVariable[] = [
+  { token: "{{trigger.body}}", label: "Whole request body" },
+  { token: "{{trigger.summary}}", label: "Event (e.g. issues.opened)" },
+  { token: "{{trigger.method}}", label: "HTTP method" },
+  { token: "{{trigger.query}}", label: "Query string values" },
+];
+
 const DATE_VARS: TemplateVariable[] = [
   { token: "{{date}}", label: "Date (today)" },
   { token: "{{time}}", label: "Time (now)" },
@@ -72,6 +79,10 @@ export function variablesForTrigger(triggerType: string): VariableGroup[] {
     groups.push({ title: "Linear issue", variables: LINEAR_VARS });
   } else if (source === "cursor") {
     groups.push({ title: "Cursor Cloud", variables: CURSOR_CLOUD_VARS });
+  } else if (source === "webhook" && triggerType === "webhook") {
+    // Specific fields (`{{trigger.body.issue.title}}`) come from the webhook
+    // panel's field picker, which reads them from a real delivery.
+    groups.push({ title: "Webhook request", variables: WEBHOOK_VARS });
   } else if (source === "lane" || source === "git") {
     groups.push({ title: "Lane", variables: LANE_VARS });
   }

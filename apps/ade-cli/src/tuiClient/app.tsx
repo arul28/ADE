@@ -5885,6 +5885,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     pendingQuestionStateRef.current = pendingQuestionState;
   }, [pendingQuestionState]);
+  // While the open question is a secret (the private secret card), the draft
+  // is drawn as dots: the value is never sent to the agent, and it must not
+  // sit readable on screen either.
+  const promptIsSecret = useMemo(() => {
+    const questions = pendingApproval?.request?.questions ?? [];
+    return questions[pendingQuestionState?.activeQuestionIndex ?? 0]?.isSecret === true;
+  }, [pendingApproval, pendingQuestionState]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
@@ -18962,7 +18969,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               {formatPromptSmartLinkStrip(promptSmartLinks, promptModelMentions)}
             </Text>
           ) : null}
-          {promptRows.map((line, index) => {
+          {promptRows.map((rawLine, index) => {
+            const line = promptIsSecret ? { ...rawLine, text: Array.from(rawLine.text, () => "•").join("") } : rawLine;
             const cursorColumn = promptFocused ? line.cursorColumn : null;
             const hasCursor = cursorColumn != null;
             const cursorParts = hasCursor ? splitByDisplayCells(line.text, cursorColumn, cursorColumn + 1) : null;

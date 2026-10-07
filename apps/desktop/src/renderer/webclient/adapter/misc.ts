@@ -820,7 +820,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
     providerInstances: createProviderAccountsNamespace(call),
-    automations: createAutomationStubs() as AdeNamespace<"automations">,
+    automations: createAutomationStubs(call) as AdeNamespace<"automations">,
   };
 }
 
@@ -1150,10 +1150,29 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   } as Partial<Window["ade"]["usage"]>;
 }
 
-function createAutomationStubs(): Record<string, unknown> {
+/**
+ * Automations run on the user's computer; the web client cannot build or run
+ * them. It can read webhook automations (the `automations.webhook*` remote
+ * commands), so it shows what each URL is doing. Anything that changes a URL
+ * stays on the computer.
+ */
+function createAutomationStubs(call: <T>(action: string, args: unknown, fallback: T | (() => T | Promise<T>), idempotent?: boolean) => Promise<T>): Record<string, unknown> {
+  const onComputer = async () => {
+    throw new Error("Make or change webhooks in ADE on your computer.");
+  };
   return {
     list: async () => [],
     onEvent: () => () => {},
+    webhooks: {
+      list: async () => await call("automations.webhookList", {}, []),
+      listDeliveries: async (args: { hookId: string; limit?: number }) => await call("automations.webhookListDeliveries", args, []),
+      getDelivery: async (args: { id: string }) => await call("automations.webhookGetDelivery", args, null),
+      createEndpoint: onComputer,
+      getEndpoint: onComputer,
+      rotateEndpoint: onComputer,
+      replayDelivery: onComputer,
+      sendTest: onComputer,
+    },
   };
 }
 

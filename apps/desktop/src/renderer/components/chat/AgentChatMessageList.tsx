@@ -208,6 +208,8 @@ import {
 import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
+import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
+import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -3708,6 +3710,19 @@ function renderEvent(
        resolves, and a one-line "awaiting you" row while it is still open (which
        is also where a *queued* second question waits until it becomes the
        composer's primary gate). */
+    const secretRequestCard = pendingRequest ? readProjectSecretRequestCard(pendingRequest) : null;
+    if (secretRequestCard) {
+      // The private secret card's record. Its value never reached the event,
+      // so the receipt is built from the name and the outcome alone.
+      return (
+        <ProjectSecretRequestReceipt
+          card={secretRequestCard}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
     if (isAskUser && pendingRequest && pendingRequest.questions.length > 0) {
       if (!isResolved) {
         return (

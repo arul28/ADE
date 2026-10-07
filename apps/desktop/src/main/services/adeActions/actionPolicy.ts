@@ -850,7 +850,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount"],
+  // `request` asks the person through the private secret card; it returns the
+  // outcome only, never the value, so it is not secret-bearing.
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
   // Reads and writes of the user's own account-scoped settings. No secret
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"
@@ -1123,6 +1125,19 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linearIngressSetup",
     "linearIngressTeardown",
     "linearIngressPollNow",
+    // Webhook URLs: an agent that builds a webhook automation needs the URL to
+    // hand back, and the log to check its work. `saveRule` (already open)
+    // carries more power than any of these.
+    "webhookCreateEndpoint",
+    "webhookGetEndpoint",
+    "webhookRotateEndpoint",
+    "webhookListDeliveries",
+    "webhookGetDelivery",
+    "webhookReplayDelivery",
+    "webhookSendTest",
+    "webhookCreateAutomation",
+    "webhookList",
+    "webhookRetire",
   ],
   issue: [
     "addComment",
