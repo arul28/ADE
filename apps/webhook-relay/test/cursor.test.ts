@@ -8,6 +8,7 @@ type StoredCursorSecret = {
   registered_at: string;
   updated_at: string;
   unlinked_account_id: string | null;
+  last_polled_at?: string | null;
 };
 
 type StoredCursorEvent = {
@@ -62,7 +63,7 @@ class FakeCursorD1Database {
     if (sql.includes("from cursor_webhook_secrets where webhook_secret = ?")) {
       const row = this.secrets.find((entry) => entry.webhook_secret === values[0]);
       return row
-        ? ({ id: row.id, webhook_secret: row.webhook_secret, account_id: row.account_id, last_polled_at: null } as T)
+        ? ({ id: row.id, webhook_secret: row.webhook_secret, account_id: row.account_id, last_polled_at: row.last_polled_at ?? null } as T)
         : null;
     }
     if (sql.includes("select event_id from cursor_events")) {
@@ -79,7 +80,8 @@ class FakeCursorD1Database {
 
   all<T>(sql: string, values: unknown[]): T[] {
     if (sql.includes("from cursor_webhook_secrets") && sql.includes("select id, webhook_secret")) {
-      return this.secrets.map((entry) => ({
+      const activeOnly = sql.includes("last_polled_at is not null");
+      return this.secrets.filter((entry) => !activeOnly || entry.account_id != null || entry.last_polled_at != null).map((entry) => ({
         id: entry.id,
         webhook_secret: entry.webhook_secret,
         account_id: entry.account_id,
@@ -117,6 +119,10 @@ class FakeCursorD1Database {
   }
 
   run(sql: string, values: unknown[]): void {
+    if (sql.includes("update cursor_webhook_secrets set last_polled_at")) {
+      const row = this.secrets.find((entry) => entry.id === String(values[1]));
+      if (row) row.last_polled_at = String(values[0]);
+    }
     if (sql.includes("insert into cursor_webhook_secrets")) {
       const [id, secret, accountId, registeredAt, updatedAt] = values;
       const existing = this.secrets.find((entry) => entry.id === String(id));
