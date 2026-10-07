@@ -708,6 +708,10 @@ Preload bridge:
   the runtime `external-sessions` ADE action domain and fall back to the
   legacy desktop IPC handlers only when no runtime binding exists. The
   preview watch (`watchDetail` / `onDetailUpdated`) is always local IPC.
+  It reads this computer's provider stores directly, so it works in a
+  runtime-backed project whose desktop context has no external sessions
+  service. If the watch still fails, the preview falls back to one
+  `getDetail` read before it shows the list row's message snippets.
 - `apps/desktop/src/preload/global.d.ts` — renderer-visible typing for
   the `window.ade.externalSessions` bridge (`list`, `import`, `getDetail`,
   and the watch calls).

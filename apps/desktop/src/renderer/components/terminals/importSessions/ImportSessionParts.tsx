@@ -28,22 +28,14 @@ export function PlaceLabel({ place, className }: { place: SessionPlace; classNam
 }
 
 export function LiveBadge({ compact = false }: { compact?: boolean }) {
-  if (compact) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-emerald-300/90">
-        <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.8)]" />
-        Live
-      </span>
-    );
-  }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/[0.12] px-2 py-0.5 text-[10px] font-medium text-emerald-200">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.8)]" />
+    <span className={compact ? "import-live" : "kit-tag import-live"} data-tone={compact ? undefined : "ok"}>
+      <span className="kit-dot" data-state="ok" />
       Live
     </span>
   );
 }
 
 export function MetaSeparator() {
-  return <span aria-hidden="true" className="text-muted-fg/30">·</span>;
+  return <span aria-hidden="true" className="import-meta-sep">·</span>;
 }

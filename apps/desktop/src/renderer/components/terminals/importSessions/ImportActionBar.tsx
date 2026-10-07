@@ -1,6 +1,5 @@
 import { CircleNotch, LockSimple } from "@phosphor-icons/react";
 import type { ImportPlan, ImportPlanAction, ImportSurface } from "../../../../shared/externalSessionPolicy";
-import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
@@ -56,14 +55,12 @@ function PrimaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={cn(
-        "inline-flex h-8 shrink-0 items-center gap-2 rounded-lg px-3.5 text-[12px] font-semibold text-(color:--ade-on-tone-ink) transition-[filter,background-color] duration-100 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100",
-        tone === "warning" ? "bg-amber-300" : "bg-violet-400",
-      )}
+      className="kit-btn kit-btn-primary"
+      data-tone={tone === "warning" ? "warn" : undefined}
     >
       {busy ? <CircleNotch size={13} className="animate-spin" /> : null}
       {label}
-      <kbd className="rounded bg-black/[0.14] px-1 font-sans text-[10px] font-medium leading-4 text-black/60">⏎</kbd>
+      <kbd className="import-kbd" aria-hidden="true">⏎</kbd>
     </button>
   );
 }
@@ -80,14 +77,10 @@ function SurfaceSwitch({
   onChange: (surface: ImportSurface) => void;
 }) {
   if (surfaces.length < 2) {
-    return <span className="inline-flex h-7 items-center text-[11.5px] font-medium text-fg/80">{SURFACE_LABELS[value]}</span>;
+    return <span className="text-[12px] font-medium text-(--kit-text-2)">{SURFACE_LABELS[value]}</span>;
   }
   return (
-    <div
-      role="radiogroup"
-      aria-label="Open as"
-      className="inline-flex h-7 shrink-0 items-center rounded-full border border-fg/[0.07] bg-fg/[0.03] p-0.5"
-    >
+    <div role="radiogroup" aria-label="Open as" className="kit-seg shrink-0" data-case="sentence">
       {surfaces.map((surface) => {
         const selected = surface === value;
         return (
@@ -98,10 +91,6 @@ function SurfaceSwitch({
             aria-checked={selected}
             disabled={disabled}
             onClick={() => onChange(surface)}
-            className={cn(
-              "inline-flex h-6 items-center rounded-full px-2.5 text-[11px] font-medium transition-colors duration-100 disabled:cursor-not-allowed",
-              selected ? "bg-fg/[0.1] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]" : "text-muted-fg/70 hover:text-fg",
-            )}
           >
             {SURFACE_LABELS[surface]}
           </button>
@@ -118,7 +107,7 @@ function LockedLanePill({ name, color, reason }: { name: string; color: string |
         tabIndex={0}
         data-testid="import-locked-lane"
         aria-label={`${name}. ${reason}`}
-        className="inline-flex h-7 min-w-0 max-w-[260px] cursor-default items-center gap-1.5 rounded-full border border-fg/[0.05] px-2.5 text-[11px] text-fg/75 outline-none focus-visible:border-fg/[0.16]"
+        className="inline-flex h-[30px] min-w-0 max-w-[260px] cursor-default items-center gap-1.5 rounded-md border border-(--kit-rule) px-2.5 text-[11.5px] text-(--kit-text-2) outline-none focus-visible:border-fg/[0.2]"
       >
         <LaneDot color={color} />
         <span className="min-w-0 truncate">{name}</span>
@@ -154,10 +143,10 @@ export function ImportActionBar({
 
   if (openExisting) {
     return (
-      <footer className="shrink-0 border-t border-fg/[0.06] px-5 py-3">
-        <div className="flex items-center gap-3">
-          <span className="text-[11.5px] text-muted-fg/65">Already in ADE.</span>
-          <div className="ml-auto">
+      <footer className="import-actions">
+        <div className="import-actions-row">
+          <span className="import-actions-label">Already in ADE.</span>
+          <div className="import-actions-end">
             <PrimaryButton label="Open in ADE" busy={false} disabled={busy} onClick={openExisting.onOpen} />
           </div>
         </div>
@@ -175,11 +164,11 @@ export function ImportActionBar({
   );
 
   return (
-    <footer className="shrink-0 border-t border-fg/[0.06] px-5 py-3">
+    <footer className="import-actions">
       {plan.surface ? (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="import-actions-row">
           <SurfaceSwitch surfaces={plan.surfaces} value={plan.surface} disabled={busy} onChange={onSurfaceChange} />
-          <span className="text-[11px] text-muted-fg/50">in</span>
+          <span className="import-actions-label">in</span>
           {plan.laneLocked ? (
             <LockedLanePill
               name={targetLane?.name ?? homeLane?.name ?? "Its lane"}
@@ -191,25 +180,18 @@ export function ImportActionBar({
               lanes={lanes}
               value={plan.targetLaneId ?? ""}
               onChange={onTargetLaneChange}
-              variant="pill"
-              size="compact"
               aria-label="Import into lane"
             />
           )}
           {showModel && model ? (
             <div className="min-w-0 max-w-[220px]" data-testid="import-model">
-              <ModelPicker value={model} onChange={(next) => onModelChange(next)} compact disabled={busy} />
+              <ModelPicker value={model} onChange={(next) => onModelChange(next)} disabled={busy} />
             </div>
           ) : null}
-          <div className="ml-auto flex items-center gap-1">
+          <div className="import-actions-end">
             {copyArmed && secondary ? (
               <>
-                <button
-                  type="button"
-                  onClick={onCancelCopy}
-                  disabled={busy}
-                  className="inline-flex h-8 items-center rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-fg/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-                >
+                <button type="button" onClick={onCancelCopy} disabled={busy} className="kit-btn kit-btn-ghost">
                   Cancel
                 </button>
                 <PrimaryButton
@@ -226,7 +208,7 @@ export function ImportActionBar({
                     type="button"
                     onClick={() => onRun(secondary)}
                     disabled={busy}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-fg/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+                    className="kit-btn kit-btn-ghost"
                   >
                     {running === secondary.mode ? <CircleNotch size={12} className="animate-spin" /> : null}
                     {secondary.label}
@@ -247,7 +229,7 @@ export function ImportActionBar({
         </div>
       ) : null}
       {!primary ? (
-        <p className={cn("text-[11px] text-muted-fg/55", plan.surface ? "mt-2" : null)}>
+        <p className="import-actions-note" style={plan.surface ? undefined : { marginTop: 0 }}>
           Nothing to do for this session here.
         </p>
       ) : null}
@@ -259,7 +241,7 @@ export function ImportActionBar({
             model={{ id: "import-session-action-warning", tone: "warning", title: plan.note }}
           />
         ) : (
-          <p className="mt-2 text-[11px] text-muted-fg/55">{plan.note}</p>
+          <p className="import-actions-note">{plan.note}</p>
         )
       ) : null}
       {error ? (

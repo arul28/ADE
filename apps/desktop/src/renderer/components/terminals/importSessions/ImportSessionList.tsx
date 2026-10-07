@@ -1,13 +1,56 @@
 import { memo, useEffect, useRef, type ReactNode } from "react";
-import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
 import { ToolLogo } from "../ToolLogos";
-import { PROVIDER_TOOL_TYPE, type ExternalSessionSummary } from "./contract";
-import { sessionKey, type SessionPlace } from "./importBrowserModel";
+import { importProviderLabel } from "../../../../shared/externalSessionPolicy";
+import { PROVIDER_TOOL_TYPE, type ExternalSessionProvider, type ExternalSessionSummary } from "./contract";
+import { sessionKey, type ProviderFilter, type SessionPlace } from "./importBrowserModel";
 import { LiveBadge, MetaSeparator, PlaceLabel } from "./ImportSessionParts";
 import { formatPromptCount, formatUpdatedAtCompact, sessionHeading } from "./sessionPresentation";
 
 export type SessionGroup = { label: string; rows: ExternalSessionSummary[] };
+
+/**
+ * Provider filter over the session list: one segmented control, each option a
+ * logo, a name and its count, so it reads as a summary and filters the list.
+ */
+export function ImportProviderFilter({
+  providerChips,
+  totalCount,
+  providerFilter,
+  onProviderFilterChange,
+}: {
+  providerChips: Array<{ provider: ExternalSessionProvider; count: number }>;
+  totalCount: number;
+  providerFilter: ProviderFilter;
+  onProviderFilterChange: (filter: ProviderFilter) => void;
+}) {
+  return (
+    <div className="import-providers">
+      <div className="kit-seg" data-case="sentence" role="group" aria-label="Provider">
+        <button
+          type="button"
+          aria-pressed={providerFilter === "all"}
+          onClick={() => onProviderFilterChange("all")}
+        >
+          All
+          <span className="kit-num">{totalCount}</span>
+        </button>
+        {providerChips.map((chip) => (
+          <button
+            key={chip.provider}
+            type="button"
+            aria-pressed={providerFilter === chip.provider}
+            onClick={() => onProviderFilterChange(chip.provider)}
+          >
+            <ToolLogo toolType={PROVIDER_TOOL_TYPE[chip.provider]} size={13} />
+            {importProviderLabel(chip.provider)}
+            <span className="kit-num">{chip.count}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const ImportSessionRow = memo(function ImportSessionRow({
   summary,
@@ -34,33 +77,26 @@ const ImportSessionRow = memo(function ImportSessionRow({
       tabIndex={active ? 0 : -1}
       data-import-row={key}
       onClick={() => onSelect(key)}
-      className={cn(
-        "group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors duration-75",
-        active
-          ? "bg-fg/[0.07] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
-          : "hover:bg-fg/[0.035] focus-visible:bg-fg/[0.035]",
-      )}
+      className="import-row"
     >
       <ToolLogo
         toolType={PROVIDER_TOOL_TYPE[summary.provider]}
         size={16}
-        className={cn("mt-[1px] shrink-0 transition-opacity", active ? "opacity-100" : "opacity-80")}
+        className="mt-[1px] shrink-0"
       />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
-          <span className={cn("min-w-0 flex-1 truncate text-[12.5px] font-medium", active ? "text-fg" : "text-fg/85")}>
-            {sessionHeading(summary)}
-          </span>
+          <span className="import-row-title">{sessionHeading(summary)}</span>
           {summary.possiblyActive ? <LiveBadge compact /> : null}
         </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-fg/60">
+        <span className="import-meta mt-0.5">
           {showPlace ? <PlaceLabel place={place} className="max-w-[150px]" /> : null}
-          {when ? <>{showPlace ? <MetaSeparator /> : null}<span className="shrink-0">{when}</span></> : null}
+          {when ? <>{showPlace ? <MetaSeparator /> : null}<span className="kit-num shrink-0">{when}</span></> : null}
           {prompts ? <><MetaSeparator /><span className="shrink-0 truncate">{prompts}</span></> : null}
           {summary.alreadyImported ? (
-            <span className="ml-auto shrink-0 text-[10px] text-muted-fg/45">In ADE</span>
+            <span className="ml-auto shrink-0">In ADE</span>
           ) : summary.importedBefore ? (
-            <span className="ml-auto shrink-0 text-[10px] text-muted-fg/45">Copied before</span>
+            <span className="ml-auto shrink-0">Copied before</span>
           ) : null}
         </span>
       </span>
@@ -73,10 +109,10 @@ function SkeletonRows({ count }: { count: number }) {
     <div className="flex flex-col gap-1 px-2 pt-1" aria-hidden="true">
       {Array.from({ length: count }, (_, index) => (
         <div key={index} className="flex items-start gap-2.5 px-2.5 py-2">
-          <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-fg/[0.05]" />
+          <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-(--kit-track)" />
           <div className="min-w-0 flex-1">
-            <div className="h-3 animate-pulse rounded bg-fg/[0.05]" style={{ width: `${78 - index * 9}%` }} />
-            <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-fg/[0.035]" />
+            <div className="h-3 animate-pulse rounded bg-(--kit-track)" style={{ width: `${78 - index * 9}%` }} />
+            <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-(--kit-hover)" />
           </div>
         </div>
       ))}
@@ -134,11 +170,7 @@ export function ImportSessionList({
         <div role="listbox" aria-label="Sessions">
           {groups.map((group) => (
             <div key={group.label} role="group" aria-label={group.label}>
-              <div
-                aria-hidden="true"
-                className="sticky top-0 z-[1] px-4 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-fg/45"
-                style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
-              >
+              <div aria-hidden="true" className="kit-eyebrow import-group-label">
                 {group.label}
               </div>
               <div className="flex flex-col gap-px px-2">

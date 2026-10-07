@@ -771,6 +771,7 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSummary,
   ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
   ProviderInstance,
   ProviderInstanceCreateResult,
@@ -906,6 +907,7 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
+  loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
   startExternalSessionDetailWatch,
   stopExternalSessionDetailWatch,
@@ -6780,9 +6782,13 @@ export function registerIpc({
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
     const args = normalizeExternalSessionDetailArgs(arg);
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["externalSessionsService"]);
-    const externalSessionsService = ctx.externalSessionsService;
+    // The watch reads this computer's provider stores, so it needs no project
+    // runtime. A runtime-backed project has no local external sessions
+    // service; read the same stores directly instead of refusing.
+    const externalSessionsService = getCtx().externalSessionsService;
+    const loadDetail = externalSessionsService
+      ? (detailArgs: ExternalSessionDetailArgs) => externalSessionsService.getDetail(detailArgs)
+      : (detailArgs: ExternalSessionDetailArgs) => loadExternalSessionDetail(detailArgs);
     const sender = event.sender;
     const senderId = sender.id;
     if (!detailWatchCleanupSenders.has(senderId)) {
@@ -6797,7 +6803,7 @@ export function registerIpc({
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
-      loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs),
+      loadDetail,
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
