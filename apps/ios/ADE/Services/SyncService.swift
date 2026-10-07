@@ -8556,6 +8556,23 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Is this account machine the one the phone is attached to, whether or not
+  /// the socket is up yet? Lets a cold launch tell "the owner is the machine we
+  /// are reconnecting to" apart from "the owner is another machine".
+  func accountMachineIsFocused(_ rawMachineKey: String?) -> Bool {
+    guard let machine = syncAccountMachineNavigationTarget(
+      rawMachineKey: rawMachineKey,
+      machines: AccountService.shared.machines
+    ) else { return false }
+    return syncAccountMachineNavigationIsCurrent(
+      targetDeviceId: syncNonEmpty(machine.deviceId),
+      activeHostIdentity: syncNonEmpty(
+        activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+      ),
+      connectionState: .connected
+    )
+  }
+
   /// Live wake prompt, or nil. The app root presents it; the only writer is
   /// `SyncService+MachineWake.swift`, which is why the setter is internal
   /// rather than `private(set)` — Swift's access control cannot scope a setter
