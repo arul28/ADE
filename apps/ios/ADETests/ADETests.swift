@@ -1023,6 +1023,8 @@ final class ADETests: XCTestCase {
       ("Um. Ship it.", "Ship it."),
       ("We ship it. Um, then merge.", "We ship it. Then merge."),
       ("Um, uh, ship it.", "Ship it."),
+      ("Um. Um. Ship it.", "Ship it."),
+      ("Uh. Um. Ship it.", "Ship it."),
       ("... so we ship.", "... So we ship."),
     ]
     for (raw, expected) in cases {

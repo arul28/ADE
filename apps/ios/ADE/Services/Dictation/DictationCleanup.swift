@@ -53,13 +53,22 @@ enum DictationCleanup {
   /// resulting double spaces.
   private static func removeFillers(_ input: String, fillers: [String]) -> String {
     var text = input
+    let alternatives = fillers
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .sorted { $0.count > $1.count }
+      .map { NSRegularExpression.escapedPattern(for: $0) }
+    // The run of fillers opening the transcript goes with the punctuation
+    // attached to each ("Um. Uh, ship it" -> "ship it"); a transcript that
+    // itself starts with ".env" keeps it. Longest filler first.
+    if !alternatives.isEmpty {
+      let opening = "^(?:(?:" + alternatives.joined(separator: "|") + ")\\b[,.;:]*\\s*)+"
+      text = replaceRegex(in: text, pattern: opening, with: "", caseInsensitive: true)
+    }
     for filler in fillers {
       let trimmed = filler.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { continue }
       let escaped = NSRegularExpression.escapedPattern(for: trimmed)
-      // An opening filler goes with the punctuation attached to it ("Um. Ship
-      // it" -> "Ship it"); a transcript that itself starts with ".env" keeps it.
-      text = replaceRegex(in: text, pattern: "^" + escaped + "\\b[,.;:]*\\s*", with: "", caseInsensitive: true)
       // A punctuating recognizer writes "Um, rebase"; take the comma too.
       let pattern = "\\b" + escaped + "\\b(?:\\s*,)?"
       text = replaceRegex(in: text, pattern: pattern, with: " ", caseInsensitive: true)

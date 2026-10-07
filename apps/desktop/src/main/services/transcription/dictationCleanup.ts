@@ -58,13 +58,19 @@ function wholePhraseRegExp(phrase: string): RegExp {
 }
 
 /**
- * A filler opening the transcript, with the punctuation attached to it
- * ("Um. Rebase" / "Um, rebase" -> "Rebase"). Only punctuation directly after
- * the filler goes, so a transcript that itself starts with ".env" keeps it.
+ * The run of fillers opening the transcript, each with the punctuation attached
+ * to it ("Um. Uh, rebase" -> "rebase"). Only punctuation directly after a
+ * filler goes, so a transcript that itself starts with ".env" keeps it.
+ * Longest filler first, so "you know" wins over a shorter prefix.
  */
-function openingFillerRegExp(phrase: string): RegExp {
-  const escaped = escapeRegExp(phrase.trim());
-  return new RegExp(`^(${escaped})(?=[^\\p{L}\\p{N}]|$)[,.;:]*\\s*`, "iu");
+function openingFillersRegExp(fillers: string[]): RegExp | null {
+  const alternatives = fillers
+    .map((filler) => filler.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp);
+  if (alternatives.length === 0) return null;
+  return new RegExp(`^(?:(?:${alternatives.join("|")})(?=[^\\p{L}\\p{N}]|$)[,.;:]*\\s*)+`, "iu");
 }
 
 /** Like {@link wholePhraseRegExp}, but also consumes a comma right after the filler. */
@@ -110,8 +116,9 @@ export function cleanTranscript(raw: string, glossary: PreparedGlossary): string
 
   // (b) Remove fillers as standalone tokens/phrases, together with the comma a
   // punctuating model puts after them ("Um, rebase" -> "rebase").
+  const opening = openingFillersRegExp(glossary.fillers);
+  if (opening) text = text.replace(opening, "");
   for (const filler of glossary.fillers) {
-    text = text.replace(openingFillerRegExp(filler), "");
     const matcher = fillerRegExp(filler);
     // Replace the matched phrase but keep the leading boundary char so adjacent
     // words don't fuse (e.g. "um so" -> " so", later collapsed).
