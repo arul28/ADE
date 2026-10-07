@@ -157,8 +157,7 @@ struct RemoteProjectAddSheet: View {
       RemoteProjectChoiceCard(
         icon: .system("folder"),
         title: "Open",
-        subtitle: "a folder you have",
-        tint: Color(red: 0.376, green: 0.647, blue: 0.980)
+        subtitle: "a folder you have"
       ) {
         actionError = nil
         browsePath = createParentDir.isEmpty ? browsePath : createParentDir
@@ -168,8 +167,7 @@ struct RemoteProjectAddSheet: View {
       RemoteProjectChoiceCard(
         icon: .system("sparkles"),
         title: "Create",
-        subtitle: "a brand-new project",
-        tint: Color(red: 0.655, green: 0.545, blue: 0.980)
+        subtitle: "a brand-new project"
       ) {
         actionError = nil
         screen = .create
@@ -178,8 +176,7 @@ struct RemoteProjectAddSheet: View {
       RemoteProjectChoiceCard(
         icon: .asset("ProviderGitHub"),
         title: "Clone",
-        subtitle: "from GitHub",
-        tint: Color(red: 0.204, green: 0.827, blue: 0.600)
+        subtitle: "from GitHub"
       ) {
         actionError = nil
         screen = .clone
@@ -251,60 +248,26 @@ private struct RemoteProjectChoiceCard: View {
   let icon: RemoteProjectChoiceIcon
   let title: String
   let subtitle: String
-  let tint: Color
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 16) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [tint.opacity(0.30), tint.opacity(0.09)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(tint.opacity(0.32), lineWidth: 1)
-            )
-            .frame(width: 58, height: 58)
-          iconView
-        }
-        VStack(alignment: .leading, spacing: 5) {
-          Text(title.uppercased())
-            .font(.system(.headline, design: .rounded).weight(.bold))
-            .tracking(3)
+      HStack(spacing: 14) {
+        iconView
+          .frame(width: 40, height: 40)
+          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text(subtitle)
-            .font(.system(.footnote, design: .rounded))
-            .foregroundStyle(ADEColor.textMuted)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
         }
         Spacer(minLength: 8)
-        Image(systemName: "chevron.right")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(tint.opacity(0.75))
+        ADESettingsChevron()
       }
-      .padding(18)
-      .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
-      .background {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(ADEColor.cardBackground.opacity(0.76))
-          .overlay {
-            LinearGradient(
-              colors: [tint.opacity(0.14), tint.opacity(0.035), .clear],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-          }
-      }
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(tint.opacity(0.42), lineWidth: 1)
-      )
+      .adeKitCard()
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(title), \(subtitle)")
@@ -315,15 +278,15 @@ private struct RemoteProjectChoiceCard: View {
     switch icon {
     case .system(let symbol):
       Image(systemName: symbol)
-        .font(.system(size: 24, weight: .semibold))
-        .foregroundStyle(tint)
+        .font(.system(size: 17, weight: .regular))
+        .foregroundStyle(ADEColor.textSecondary)
     case .asset(let name):
       Image(name)
         .renderingMode(.template)
         .resizable()
         .scaledToFit()
-        .frame(width: 28, height: 28)
-        .foregroundStyle(tint)
+        .frame(width: 20, height: 20)
+        .foregroundStyle(ADEColor.textPrimary)
     }
   }
 }

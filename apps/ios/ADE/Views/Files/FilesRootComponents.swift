@@ -253,7 +253,7 @@ struct FilesResultRow: View {
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .adeListCard(cornerRadius: 16)
+    .adeKitCard(padding: 12)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? filesTransitionId(kind: "container", workspaceId: workspaceId, path: path) : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(lastPathComponent(path)), file")

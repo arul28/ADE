@@ -92,7 +92,6 @@ enum ADEColor {
   static let heatmapLevel2 = adaptiveColor(light: hex(0x79ABA5), dark: hex(0x2F7A80))
   static let heatmapLevel3 = adaptiveColor(light: hex(0xC96C1E), dark: hex(0xDE6039))
   static let heatmapLevel4 = adaptiveColor(light: hex(0xB23A20), dark: hex(0xFF9A3D))
-  static let purpleGlow = purpleAccent.opacity(0.35)
   static let ctoAccent = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)  // #A78BFA
 
   static let tintProject = purpleAccent
@@ -552,13 +551,6 @@ enum ADEMotion {
   static func allowsMatchedGeometry(reduceMotion: Bool) -> Bool {
     !reduceMotion
   }
-}
-
-enum ADEUIKitAppearance {
-  /// Intentionally empty — ADE uses the system `TabView` tab bar so iOS 26
-  /// Liquid Glass stays native. Do not override `UITabBar.appearance()` here.
-  @MainActor
-  static func configureTabBar() {}
 }
 
 final class ADEImageCache {
@@ -1437,13 +1429,6 @@ extension View {
   func adePromptInputTraits() -> some View {
     textInputAutocapitalization(.sentences)
       .autocorrectionDisabled(false)
-  }
-
-  func adeListCard(
-    cornerRadius: CGFloat = ADEListRowMetrics.cornerRadius,
-    padding: CGFloat = ADEListRowMetrics.padding
-  ) -> some View {
-    adeKitCard(padding: padding)
   }
 
   func adeMatchedGeometry(id: String?, in namespace: Namespace.ID?) -> some View {

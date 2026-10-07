@@ -259,7 +259,7 @@ struct CtoSettingsScreen: View {
       .buttonStyle(.plain)
       .disabled(modelUpdateInFlight)
       .accessibilityLabel("Change CTO model")
-      .adeListCard(padding: 0)
+      .adeKitCard(padding: nil)
     }
   }
 
@@ -345,7 +345,7 @@ struct CtoSettingsScreen: View {
           connected: linearStatus?.connected == true
         )
       }
-      .adeListCard(padding: 0)
+      .adeKitCard(padding: nil)
     }
   }
 
@@ -553,7 +553,7 @@ private struct CtoMemoryCard: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .adeListCard()
+    .adeKitCard()
   }
 
   private func briefFields(_ fields: [CtoMemoryLayout.BriefField]) -> some View {
@@ -728,7 +728,7 @@ private struct IdentityCard: View {
         .padding(10)
         .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
-    .adeListCard()
+    .adeKitCard()
   }
 
   private var providerModelText: String {

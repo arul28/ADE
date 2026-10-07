@@ -32,6 +32,7 @@ struct LinearIssueDetailScreen: View {
       .padding(.bottom, 96)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(issue.identifier)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -89,7 +90,7 @@ struct LinearIssueDetailScreen: View {
               .foregroundStyle(ADEColor.textSecondary)
               .padding(.horizontal, 8)
               .padding(.vertical, 3)
-              .background(ADEColor.surfaceBackground, in: Capsule())
+              .background(ADEKit.track, in: Capsule())
               .overlay(Capsule().stroke(ADEKit.edge, lineWidth: 0.5))
           }
         }
@@ -306,8 +307,7 @@ struct LinearCommentRow: View {
         .foregroundStyle(ADEColor.textPrimary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(11)
-    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .adeKitCard(padding: 11)
   }
 }
 

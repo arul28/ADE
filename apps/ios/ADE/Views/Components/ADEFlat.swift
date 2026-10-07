@@ -3,8 +3,8 @@ import SwiftUI
 /// The flat content layer: rows on the page background with hairlines between
 /// them, like the desktop. Controls that float over content (bars, segmented
 /// controls, menus, sheets, toasts) stay Liquid Glass; content never gets a
-/// card fill. New screens build on these; old screens keep `adeGlassCard`
-/// until they are rebuilt.
+/// card fill. Cards use the kit (`ADEKit.swift`); `adeGlassCard` is left only
+/// for the Work composer and chat cards.
 enum ADEFlat {
   static let rowInsets = EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
   static let hairline = ADEColor.border.opacity(0.55)
@@ -141,18 +141,6 @@ struct ADEFlatChip: View {
     .padding(.horizontal, 6)
     .padding(.vertical, 2)
     .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-  }
-}
-
-/// The small live / not-live dot used next to machine names.
-struct ADELiveDot: View {
-  let isLive: Bool
-
-  var body: some View {
-    Circle()
-      .fill(isLive ? ADEColor.success : ADEColor.textMuted.opacity(0.5))
-      .frame(width: 7, height: 7)
-      .accessibilityHidden(true)
   }
 }
 

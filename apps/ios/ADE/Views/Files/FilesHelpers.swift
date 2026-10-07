@@ -82,10 +82,3 @@ func relativeDateDescription(from isoTimestamp: String?) -> String? {
   return filesRelativeTimeFormatter.localizedString(for: date, relativeTo: Date())
 }
 
-extension View {
-  func filesListRow() -> some View {
-    listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-  }
-}

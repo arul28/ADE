@@ -122,6 +122,7 @@ struct LinearLaunchScreen: View {
       .padding(16)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(laneOnly ? "New lane · \(issue.identifier)" : "Launch \(issue.identifier)")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -190,7 +191,7 @@ struct LinearLaunchScreen: View {
             .foregroundStyle(isSelected ? .white : ADEColor.textSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 9)
-            .background(isSelected ? LinearBrand.primary : ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
+            .background(isSelected ? LinearBrand.primary : ADEKit.track, in: Capsule())
             .overlay(Capsule().stroke(isSelected ? Color.clear : ADEKit.edge, lineWidth: 1))
           }
           .buttonStyle(.plain)
@@ -237,7 +238,7 @@ struct LinearLaunchScreen: View {
         .frame(minHeight: 120)
         .scrollContentBackground(.hidden)
         .padding(10)
-        .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEKit.edge, lineWidth: 1))
     }
   }

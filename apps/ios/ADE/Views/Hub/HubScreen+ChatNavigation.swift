@@ -452,8 +452,7 @@ private struct HubChatActivationFailedView: View {
         message: message
       ) {
         Button("Retry", action: onRetry)
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
       .padding(.horizontal, 20)
     }

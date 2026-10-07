@@ -246,8 +246,15 @@ glows, gradients or shadows), so it is cheap inside scrolling lists.
 | `ADEKitSegmented`, `ADEKitMenuLabel`, `ADEKitButtonStyle`, `ADEKitRowButtonStyle` | `.kit-seg`, menu buttons, `.kit-row` |
 | `ADEKitCountSegments` | `.kit-seg` with glyph + count per option: a summary that is also a filter (Hub status counts, Activity state strip) |
 | `ADEKitCircleIcon` | `.kit-icon-btn`: the quiet round top-bar button (Hub bell, add, settings, chats) |
+| `adeKitField()` | a text field's well: the kit track, no glass |
+| `prStateColor`, `PrStateIcon`, `PrStatePill` (`PRs/PrRowCard.swift`) | `--pr-open/merged/closed`, `.ade-home-pr-icon`, `.ade-home-pr-pill` |
 | `ADESettingsPage`, `ADESettingsSection`, `ADESettingsRows`, `ADESettingsRow` (+ `ValueRow`, `Link`, `ActionRow`, `Notice`) | `ModernPage`, `ModernSection`, `ModernRows`, `ModernRow` |
 | `adeSettingsList()`, `adeSettingsListRow()`, `ADESettingsListHeader` | the same panels in a `List`, for swipe actions |
+
+`ADEKitButtonStyle(prominent: true, brand:)` fills a provider's own primary
+button (Linear sign-in) with its brand colour; every other primary button is
+the accent. `adeGlassCard` and `adeInsetField` remain only for the Work
+composer and chat cards; everything else uses the kit card and field.
 
 The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
 (amber at 20% left, red at 5%), the mirror of `usageLeftLevel`.

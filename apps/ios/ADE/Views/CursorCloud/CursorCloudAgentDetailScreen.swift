@@ -62,7 +62,8 @@ struct CursorCloudAgentDetailScreen: View {
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(14)
-          .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+          .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
         }
         artifactsCard
         if let message {
@@ -71,7 +72,7 @@ struct CursorCloudAgentDetailScreen: View {
             .foregroundStyle(.red)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.08)))
+            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         if let successMessage {
           Text(successMessage)
@@ -79,13 +80,14 @@ struct CursorCloudAgentDetailScreen: View {
             .foregroundStyle(.green)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.08)))
+            .background(ADEColor.success.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
       }
       .padding(16)
       .padding(.bottom, 96)
     }
     .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(entry.agent.name.isEmpty ? "Cloud agent" : entry.agent.name)
     .navigationBarTitleDisplayMode(.inline)
     .safeAreaInset(edge: .bottom) { actionBar }
@@ -154,7 +156,8 @@ struct CursorCloudAgentDetailScreen: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(14)
-    .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+    .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
   }
 
   @ViewBuilder
@@ -181,7 +184,8 @@ struct CursorCloudAgentDetailScreen: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(14)
-      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+      .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
     }
   }
 
@@ -214,7 +218,8 @@ struct CursorCloudAgentDetailScreen: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(14)
-      .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+      .background(ADEKit.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
     }
   }
 
