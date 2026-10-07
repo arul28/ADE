@@ -358,7 +358,7 @@ async function accountActivityContentState(
   return {
     contentState,
     transitionFingerprint: await sha256Hex(
-      JSON.stringify(activityTransitionSource(items, tally, moreCount)),
+      JSON.stringify(activityTransitionSource(items, columns.needsYou)),
     ),
     countsFingerprint: `${columns.needsYou}.${columns.working}.${columns.waiting}.${columns.done}`,
     // The activity lives while any agent needs you, works, or waits. Done
@@ -378,37 +378,27 @@ async function accountActivityContentState(
  * path used to — spent a push on every single publish, including the 30s
  * machine heartbeat's no-op republish.
  *
- * The rule, reusing the publisher's alert-fingerprint semantics (identity =
+ * Two gates, reusing the publisher's alert-fingerprint semantics (identity =
  * `{id, eventKind, phase, statusSince, itemId}`, which deliberately excludes
  * preview copy AND `chatActivityMode`):
  *
- * - EXACT counts for `needs_you` and `failed`, plus the set of alert
- *   fingerprints in those two groups. Any delta pushes — including a swap where
- *   the count holds but a *different* run is the one waiting on you.
- * - PRESENCE ONLY (`> 0`) for `planning`, `working`, `idle` and `done`, and for
- *   `moreCount`. Work ticking 3→4 while the island still reads "working" is not
- *   worth a push; the band emptying out (working→idle, working→done) is. `idle`
- *   is presence-only for the same reason as the rest: sessions go quiet in
- *   batches on a machine sleep, and nobody is blocked on any of them — exact
- *   counts stay reserved for the two bands that can actually want you.
- * - Pull-request rows contribute their alert fingerprints exactly: PR phase
- *   entries are rare, so they carry no churn risk.
- * - `planning` never pushes on its own. It flips several times a turn, which is
- *   precisely why the publisher keeps it out of the alert fingerprint too; the
- *   violet notepad rides along on the next meaningful transition.
+ * - The urgent gate (this function) pushes at once. It holds the exact
+ *   Needs-you count, the alert fingerprints of the Needs-you items (so a swap
+ *   where the count holds but a different run now waits on you still pushes),
+ *   and the pull-request alert fingerprints, whose phase entries are rare.
+ *   Nothing else: a chat moving between working, waiting and done must never
+ *   reach this gate, or it would skip the rate limit below.
+ * - The count gate (`countsFingerprint`) holds the exact four column counts.
+ *   A change pushes, but at most once per `LIVE_ACTIVITY_COUNT_REFRESH_MS`, so
+ *   a busy account cannot exhaust the ActivityKit budget while every number
+ *   still settles within minutes.
  *
- * The four column counts the tiles show are a second, slower gate
- * (`countsFingerprint`): an exact change pushes, but at most once per
- * `LIVE_ACTIVITY_COUNT_REFRESH_MS`, so a busy account cannot exhaust the
- * ActivityKit budget while every number still settles within minutes.
- *
- * Everything else (previews, roster ordering, `updatedAt`) still ships — on the next push that the rule above
- * earns, never on a push of its own.
+ * Everything else (previews, roster ordering, `updatedAt`) still ships, on the
+ * next push one of the two gates earns, never on a push of its own.
  */
 function activityTransitionSource(
   items: ParsedAttentionItem[],
-  tally: Map<ActivityStateGroup, number>,
-  moreCount: number,
+  needsYouCount: number,
 ): Record<string, unknown> {
   const alerting = items
     .filter((item) => activityBoardColumn(item) === "needs_you")
@@ -419,13 +409,7 @@ function activityTransitionSource(
     .map((item) => item.alertFingerprint)
     .sort();
   return {
-    needsYou: tally.get("needs_you") ?? 0,
-    failed: tally.get("failed") ?? 0,
-    planning: (tally.get("planning") ?? 0) > 0,
-    working: (tally.get("working") ?? 0) > 0,
-    idle: (tally.get("idle") ?? 0) > 0,
-    done: (tally.get("done") ?? 0) > 0,
-    more: moreCount > 0,
+    needsYou: needsYouCount,
     alerting,
     pullRequests,
   };

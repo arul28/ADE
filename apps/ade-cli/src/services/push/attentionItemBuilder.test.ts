@@ -186,7 +186,7 @@ describe("buildAttentionItems", () => {
 
   it("prunes phase anchors for roster rows that are gone", async () => {
     const rosterPhaseAnchors = new Map([
-      ["agent:machine-1:vanished", { status: "running" as const, statusSinceAt: 1 }],
+      ["agent:machine-1:vanished", { status: "running" as const, column: "working:", statusSinceAt: 1 }],
     ]);
     await buildAttentionItems(context({
       includeRoster: true,

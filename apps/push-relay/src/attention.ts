@@ -1387,12 +1387,12 @@ function attentionAlertCopy(
       : alertLine(item.title);
     return {
       title: title ?? "Pull request",
-      body: [state, project].filter(Boolean).join(" · "),
+      body: alertLine([state, project].filter(Boolean).join(" · ")),
     };
   }
   return {
     title: alertLine(item.title) ?? "ADE agent",
-    body: [state, project, machine].filter(Boolean).join(" · "),
+    body: alertLine([state, project, machine].filter(Boolean).join(" · ")),
   };
 }
 

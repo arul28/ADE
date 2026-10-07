@@ -509,6 +509,18 @@ export function attentionMachineRef(args: {
 }
 
 /** Everything `buildAttentionItems` reads, stated explicitly. */
+/**
+ * When a roster row entered its current state. `column` is the board column
+ * plus its wait reason, so a running chat that starts waiting on CI gets a new
+ * "since" even though its roster status did not change: a wait is timed from
+ * when it began, not from when the chat started working.
+ */
+export type RosterPhaseAnchor = {
+  status: SyncRosterChatStatus;
+  column: string;
+  statusSinceAt: number;
+};
+
 export type AttentionItemBuildContext = {
   nowMs: number;
   includeRoster: boolean;
@@ -523,9 +535,10 @@ export type AttentionItemBuildContext = {
   /**
    * Phase-entry anchors for roster rows, mutated in place: a roster snapshot
    * carries no "since" of its own, so the publisher remembers when each row
-   * last changed status. Rows absent from this build are pruned.
+   * last changed status or Activity column. Rows absent from this build are
+   * pruned.
    */
-  rosterPhaseAnchors: Map<string, { status: SyncRosterChatStatus; statusSinceAt: number }>;
+  rosterPhaseAnchors: Map<string, RosterPhaseAnchor>;
   loadRoster: () => Promise<ActivityRosterProject[]>;
   canonicalProjectId: (rootPath: string | null | undefined) => string | null;
   /** Monotonic revision floors, so a republished row never moves backwards. */
@@ -686,11 +699,12 @@ async function buildRosterItems(
         waitingReason = "snoozed";
         snoozedItemIds.add(id);
       }
+      const column = `${boardColumn}:${waitingReason ?? ""}`;
       const existingAnchor = context.rosterPhaseAnchors.get(id);
-      const statusSinceAt = existingAnchor?.status === chat.status
+      const statusSinceAt = existingAnchor?.status === chat.status && existingAnchor.column === column
         ? existingAnchor.statusSinceAt
         : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
-      context.rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
+      context.rosterPhaseAnchors.set(id, { status: chat.status, column, statusSinceAt });
       const provider = providerDisplayName(chat.provider ?? chat.toolType);
       const preview = sanitizeAttentionPreview(
         chat.attentionMessage?.trim()
@@ -845,25 +859,30 @@ function buildPrItems(
 }
 
 /**
- * A live run knows its lane only by name, so it cannot see the lane's PR. When
- * it replaces a roster row that waits on CI or review, it keeps that wait: the
- * board shows the same session in Waiting.
+ * A live run cannot see the waits the roster knows about: it names its lane
+ * only by name, so it cannot read the lane's PR, and it does not carry the
+ * chat's scheduled wake. When it replaces a roster row that waits, it keeps
+ * that wait, as the board shows the same session in Waiting:
+ *
+ * - CI or review: a running run still waits on its lane's PR.
+ * - scheduled: a run that finished its turn still waits on its wake.
+ *
+ * A run that needs the user never inherits a wait: Needs you outranks it.
  */
-function withRosterPrWait(
+function withRosterWait(
   liveItem: AttentionItem,
   rosterItem: AttentionItem | undefined,
 ): AttentionItem {
-  if (
-    liveItem.boardColumn !== "working"
-    || rosterItem?.boardColumn !== "waiting"
-    || (rosterItem.waitingReason !== "ci" && rosterItem.waitingReason !== "review")
-  ) {
-    return liveItem;
-  }
+  if (rosterItem?.boardColumn !== "waiting") return liveItem;
+  const reason = rosterItem.waitingReason;
+  const keepsWait = (
+    (reason === "ci" || reason === "review") && liveItem.boardColumn === "working"
+  ) || (reason === "scheduled" && liveItem.boardColumn === "done");
+  if (!keepsWait) return liveItem;
   return withActivityFingerprints({
     ...liveItem,
     boardColumn: "waiting",
-    waitingReason: rosterItem.waitingReason,
+    waitingReason: reason,
   });
 }
 
@@ -928,7 +947,7 @@ export async function buildAttentionItems(
   for (const item of runItems) {
     const rosterItem = agentItems.get(item.id);
     if (shouldKeepRosterItem(rosterItem, item, snoozedItemIds)) continue;
-    agentItems.set(item.id, withRosterPrWait(item, rosterItem));
+    agentItems.set(item.id, withRosterWait(item, rosterItem));
   }
   return [...agentItems.values(), ...prItems].map((item) => {
     const revision = Math.max(

@@ -14,7 +14,6 @@ import {
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import type { SyncRosterChatStatus } from "../../../../desktop/src/shared/types/sync";
 import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
@@ -55,6 +54,7 @@ import type {
   AgentRunState,
   PrLiveActivityState,
   PushPrNotification,
+  RosterPhaseAnchor,
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
 
@@ -423,10 +423,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
-  const rosterPhaseAnchors = new Map<string, {
-    status: SyncRosterChatStatus;
-    statusSinceAt: number;
-  }>();
+  const rosterPhaseAnchors = new Map<string, RosterPhaseAnchor>();
   const lastMachineSnapshotItems = new Map<string, AttentionItem>();
   let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
