@@ -32,7 +32,9 @@ const INTERACTIVE = [
  * shuffle, light/dark, and Change background, which opens Settings ›
  * Appearance › Background.
  */
-export function useBackgroundContextMenu(pageEntries: ContextMenuEntry[] = []): {
+const NO_PAGE_ENTRIES: ContextMenuEntry[] = [];
+
+export function useBackgroundContextMenu(pageEntries: ContextMenuEntry[] = NO_PAGE_ENTRIES): {
   onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
   menu: JSX.Element;
 } {

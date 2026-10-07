@@ -25,10 +25,27 @@ const K = 7;
 
 const memory = new Map<string, ScenePalette>();
 
-function readCache(): Record<string, ScenePalette> {
+function isRgb(value: unknown): value is Rgb {
+  return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n));
+}
+
+/** A cached entry is trusted only in the exact shape this file writes. */
+function isScenePalette(value: unknown): value is ScenePalette {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { ramp?: unknown; luma?: unknown };
+  return (
+    Array.isArray(candidate.ramp)
+    && candidate.ramp.length === 5
+    && candidate.ramp.every(isRgb)
+    && typeof candidate.luma === "number"
+    && Number.isFinite(candidate.luma)
+  );
+}
+
+function readCache(): Record<string, unknown> {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, ScenePalette>) : {};
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
   } catch {
     return {};
   }
@@ -178,7 +195,9 @@ export function paletteFromPixels(data: Uint8ClampedArray): ScenePalette {
 }
 
 export async function extractScenePalette(id: string, url: string): Promise<ScenePalette | null> {
-  const known = memory.get(id) ?? readCache()[id];
+  const cached = readCache()[id];
+  // A malformed entry (another build's shape, a partial write) is recomputed, not trusted.
+  const known = memory.get(id) ?? (isScenePalette(cached) ? cached : undefined);
   if (known) {
     memory.set(id, known);
     return known;

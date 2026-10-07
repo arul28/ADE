@@ -15,8 +15,8 @@
 .ade-as-card,
 .ade-as-panel {
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
   min-width: 0;
   scroll-margin-top: 16px;
 }
@@ -194,7 +194,7 @@
   align-items: center;
   padding: 8px 10px;
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  border: 1px solid var(--kit-panel-edge);
   background: transparent;
   color: var(--color-fg);
   font: inherit;

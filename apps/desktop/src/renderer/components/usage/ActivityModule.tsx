@@ -311,7 +311,7 @@ function useMeasuredWidth(ref: React.RefObject<HTMLElement | null>): number {
  * has data on other tabs (so the global warm-empty state does not apply). */
 function TabEmptyHint({ message }: { message: string }) {
   return (
-    <div className="usage-footnote flex min-h-0 flex-1 items-center justify-center text-center">
+    <div className="usage-tab-body usage-footnote flex min-h-0 flex-1 items-center justify-center text-center">
       {message}
     </div>
   );
@@ -473,7 +473,7 @@ function ClientMix({ stats }: { stats: AdeUsageStats }) {
     return <TabEmptyHint message="No client activity in this range." />;
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col justify-center gap-3">
+    <div className="usage-tab-body flex min-h-0 flex-1 flex-col justify-center gap-3">
       <div className="usage-split-bar" role="img" aria-label={clients.map((client) => `${CLIENT_LABELS[client.client]} ${Math.round((client.interactions / total) * 100)}%`).join(", ")}>
         {clients.map((client) => (
           <span
@@ -548,7 +548,7 @@ const EMPTY_TILE_BG = fgTint(8);
  */
 function WarmEmpty({ height, shape }: { height: number; shape: "grid" | "bars" }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center">
+    <div className="usage-tab-body flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center">
       {shape === "grid" ? (
         <div
           className="grid opacity-50"

@@ -45,6 +45,7 @@ import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
 import { SettingsColumn } from "./primitives";
 import "../usage/usageSurfaces.css";
+import { Banner } from "../ui/notice";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
@@ -1037,7 +1038,12 @@ export function AdeUsageSection() {
           </div>
         </header>
 
-        {error ? <div className="usage-note">{error}</div> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{ id: "ade-usage-error", tone: "warning", title: error, ariaLabel: error }}
+          />
+        ) : null}
 
         {isEmpty ? (
           <section className="kit-card usage-empty">

@@ -14,7 +14,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AdeUsageLiveEnvironment,
-  UsageProvider,
 } from "../../../shared/types";
 import { poolLiveQuota } from "../../../shared/usageLiveQuota";
 import { formatCountdown } from "./usageWindowFormat";
@@ -27,16 +26,9 @@ import {
   type LimitSegment,
   type UsageAccountView,
 } from "./usageLimitModel";
+import { humanizeProvider } from "./usageProviderNames";
+import { usageLeftLevel } from "./usageDesign";
 
-const PROVIDER_LABEL: Record<UsageProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  grok: "Grok",
-  opencode: "OpenCode",
-  kimi: "Kimi",
-};
 
 function FilterChip({
   active,
@@ -54,11 +46,6 @@ function FilterChip({
   );
 }
 
-function meterLevel(percentLeft: number): "warn" | "crit" | undefined {
-  if (percentLeft <= 5) return "crit";
-  if (percentLeft <= 20) return "warn";
-  return undefined;
-}
 
 function accountLabel(segment: LimitSegment): string {
   const account = segment.account;
@@ -89,7 +76,7 @@ function PooledCard({
     <div className="usage-pool-card">
       <span className="kit-eyebrow">{card.label}</span>
       <div className="flex items-baseline gap-1.5">
-        <span className="usage-fact-value" style={meterLevel(card.percentLeft) ? { color: `var(--kit-${meterLevel(card.percentLeft)})` } : undefined}>{percent}%</span>
+        <span className="usage-fact-value" style={usageLeftLevel(card.percentLeft) ? { color: `var(--kit-${usageLeftLevel(card.percentLeft)})` } : undefined}>{percent}%</span>
         <span className="usage-card-sub">left</span>
       </div>
       <div
@@ -98,7 +85,7 @@ function PooledCard({
         aria-label={`${label}: ${percent} percent left across ${card.segments.length} account${card.segments.length === 1 ? "" : "s"}`}
       >
         {card.segments.map((segment, index) => (
-          <div key={segment.account?.id ?? index} className="kit-meter flex-1" data-level={meterLevel(segment.percentLeft)}>
+          <div key={segment.account?.id ?? index} className="kit-meter flex-1" data-level={usageLeftLevel(segment.percentLeft)}>
             <span style={{ width: `${segment.percentLeft}%` }} />
           </div>
         ))}
@@ -228,7 +215,7 @@ export function UsagePooledLimits({
         groups.map(({ provider, cards }) => (
           <div key={provider} className="flex flex-col gap-2.5">
             <span className="usage-provider-name">
-              {PROVIDER_LABEL[provider] ?? provider}
+              {humanizeProvider(provider)}
             </span>
             <div className="usage-pool-grid">
               {cards.map((card) => (

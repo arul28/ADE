@@ -77,11 +77,15 @@ function load(id: string): void {
   entries.set(id, { url: null, palette: null, done: false });
   const bundled = findBundledScene(id);
   const urlPromise = bundled ? Promise.resolve(bundled.src) : isUserSceneId(id) ? userSceneUrl(id) : Promise.resolve(null);
+  // A user picture deleted while this load was in flight must not come back.
+  const stillWanted = () => entries.has(id);
   void urlPromise.then(async (url) => {
+    if (!stillWanted()) return;
     entries.set(id, { url, palette: null, done: !url });
     emit();
     if (!url) return;
     const palette = await extractScenePalette(id, url);
+    if (!stillWanted()) return;
     entries.set(id, { url, palette, done: true });
     emit();
   });

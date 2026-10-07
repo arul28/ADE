@@ -14,7 +14,7 @@
  * or a problem (day 1 of 7).
  */
 import React from "react";
-import type { UsageProvider, UsageWindow } from "../../../shared/types";
+import type { UsageWindow } from "../../../shared/types";
 import { ProviderMark } from "./UsageAccountRow";
 import {
   type LimitCard,
@@ -26,16 +26,9 @@ import {
 import { formatCountdown } from "./usageWindowFormat";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import "./usageSurfaces.css";
+import { humanizeProvider } from "./usageProviderNames";
+import { usageLeftLevel } from "./usageDesign";
 
-const PROVIDER_LABEL: Record<UsageProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  grok: "Grok",
-  opencode: "OpenCode",
-  kimi: "Kimi",
-};
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -51,13 +44,6 @@ const GAUGE = 104;
 const STROKE = 7;
 const SWEEP = 270;
 
-type Level = "warn" | "crit" | undefined;
-
-function levelFor(left: number): Level {
-  if (left <= 5) return "crit";
-  if (left <= 20) return "warn";
-  return undefined;
-}
 
 function polar(cx: number, cy: number, r: number, degrees: number): [number, number] {
   const radians = ((degrees - 90) * Math.PI) / 180;
@@ -112,7 +98,7 @@ function cycleProgress(card: LimitCard): { label: string; fraction: number } | n
 
 function Gauge({ card }: { card: LimitCard }) {
   const left = Math.round(card.percentLeft);
-  const level = levelFor(card.percentLeft);
+  const level = usageLeftLevel(card.percentLeft);
   const expected = expectedLeft(card);
   const tag = statusTag(card.percentLeft, expected);
   const cycle = cycleProgress(card);
@@ -127,12 +113,12 @@ function Gauge({ card }: { card: LimitCard }) {
 
   return (
     <div className="usage-gauge" data-level={level}>
-      <span className="usage-gauge-title" title={`${PROVIDER_LABEL[card.provider]} · ${card.label}`}>
+      <span className="usage-gauge-title" title={`${humanizeProvider(card.provider)} · ${card.label}`}>
         <ProviderMark provider={card.provider} size={12} />
-        <span className="usage-gauge-provider">{PROVIDER_LABEL[card.provider]}</span>
+        <span className="usage-gauge-provider">{humanizeProvider(card.provider)}</span>
         <span className="kit-eyebrow">{card.label}</span>
       </span>
-      <div className="usage-gauge-dial" role="img" aria-label={`${PROVIDER_LABEL[card.provider]} ${card.label}: ${left}% left${expected != null ? `, steady pace would leave ${Math.round(expected)}%` : ""}`}>
+      <div className="usage-gauge-dial" role="img" aria-label={`${humanizeProvider(card.provider)} ${card.label}: ${left}% left${expected != null ? `, steady pace would leave ${Math.round(expected)}%` : ""}`}>
         <svg
           width={GAUGE}
           height={GAUGE}

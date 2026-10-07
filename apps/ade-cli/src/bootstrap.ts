@@ -239,7 +239,7 @@ import { createAccountRuntimeLifecycle } from "./services/account/accountRuntime
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
-import { ACCOUNT_SCOPE_ALL, accountDeviceScopeKey } from "../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -1633,13 +1633,13 @@ export async function createAdeRuntime(args: {
      * older desktops wrote. Read lazily, so a value that syncs in later lands.
      */
     const readAppleDeviceSetting = (key: string): unknown => {
-      let deviceScope: string | null = null;
+      let deviceKey: string | null = null;
       try {
-        deviceScope = accountDeviceScopeKey(syncService?.getLocalDeviceId() ?? null);
+        deviceKey = accountDeviceSettingKey(syncService?.getLocalDeviceId() ?? null, key);
       } catch {
-        deviceScope = null;
+        deviceKey = null;
       }
-      const own = deviceScope ? accountSettingsStore?.get(deviceScope, key) : undefined;
+      const own = deviceKey ? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, deviceKey) : undefined;
       return own ?? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
     };
     const iosSimulatorService = chatOnlyRuntime

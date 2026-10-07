@@ -54,8 +54,8 @@
   gap: 14px;
   padding: 16px 14px 12px;
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
 }
 .ade-cs-size-sample {
   min-height: 34px;

@@ -36,7 +36,7 @@
 
 import {
   ACCOUNT_SCOPE_ALL,
-  accountDeviceScopeKey,
+  accountDeviceSettingKey,
   accountRepoScopeKey,
   isAccountScope,
 } from "../../shared/accountSettingsScope";
@@ -85,8 +85,8 @@ export type AccountSyncedSetting<State = AccountSyncedState> = {
   key: string;
   scope: SettingScope;
   /**
-   * Account-scoped, but one value per computer: filed under this device's
-   * scope (`accountDeviceScopeKey`) instead of the account-wide one, and kept
+   * Account-scoped, but one value per computer: stored under this device's
+   * own key (`accountDeviceSettingKey`) in the account-wide scope, and kept
    * local until the device id is known.
    */
   perDevice?: boolean;
@@ -237,6 +237,12 @@ type AccountSettingsSyncOptionsBase<State> = {
   getAccountUserId?: () => string | null;
   /** Fires whenever the signed-in account changes. */
   subscribeSignedIn?: (listener: () => void) => () => void;
+  /**
+   * Fires when `getLocalDeviceId` starts returning an id. Per-device settings
+   * have nowhere to be stored before that, so the engine pulls (and pushes any
+   * held edits) the moment it is known instead of waiting for the next tick.
+   */
+  subscribeLocalDeviceId?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
   getProjectRemote?: () => string | null;
   /** This computer's sync device id, for per-device settings; null until known. */
@@ -420,16 +426,26 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
   };
 
   /**
-   * The account-store scope for one setting, or null when it must stay local.
+   * Where one setting is stored in the account store — its scope and key — or
+   * null when it must stay local.
    *
-   * Null is a real answer for a repo-scoped key in a project with no remote:
-   * such a checkout has no identity that means anything on a second machine,
-   * so its settings wait here until it gets one.
+   * Null is a real answer for a repo-scoped key in a project with no remote
+   * (no identity that means anything on a second machine) and for a
+   * per-device key before this computer's device id is known.
+   *
+   * A per-device setting keeps the account-wide scope and carries the device in
+   * its key (`accountDeviceSettingKey`): the relay accepts only the `all` and
+   * `repo:` scopes, and other machines skip the row because no entry of theirs
+   * has that key.
    */
-  const scopeKeyFor = (entry: AccountSyncedSetting<State>): string | null => {
-    if (entry.perDevice) return accountDeviceScopeKey(options.getLocalDeviceId?.() ?? null);
-    if (entry.scope === "account") return ACCOUNT_SCOPE_ALL;
-    return accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+  const targetFor = (entry: AccountSyncedSetting<State>): { scope: string; key: string } | null => {
+    if (entry.perDevice) {
+      const key = accountDeviceSettingKey(options.getLocalDeviceId?.() ?? null, entry.key);
+      return key ? { scope: ACCOUNT_SCOPE_ALL, key } : null;
+    }
+    if (entry.scope === "account") return { scope: ACCOUNT_SCOPE_ALL, key: entry.key };
+    const scope = accountRepoScopeKey(options.getProjectRemote?.() ?? null);
+    return scope ? { scope, key: entry.key } : null;
   };
 
   const stampKey = (scopeKey: string, key: string): string => `${scopeKey} ${key}`;
@@ -459,11 +475,15 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       && identityGeneration === generationAtStart
       && resolveAccountUserId() === userIdAtStart
       && accountUserId === userIdAtStart;
-    const byKey = new Map(settings.map((entry) => [entry.key, entry]));
+    // Indexed by where each entry is stored, so a row matches only its own
+    // scope and (for per-device settings) this computer's key.
+    const byTarget = new Map<string, AccountSyncedSetting<State>>();
     const scopes = new Set<string>();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (scopeKey) scopes.add(scopeKey);
+      const target = targetFor(entry);
+      if (!target) continue;
+      byTarget.set(stampKey(target.scope, target.key), entry);
+      scopes.add(target.scope);
     }
     const seenRemoteKeys = new Set<string>();
     for (const scope of scopes) {
@@ -471,8 +491,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       if (!isCurrentIdentity() || !result.ok) return;
       const state = options.store.getState();
       for (const row of result.value) {
-        const entry = byKey.get(row.key);
-        if (!entry || scopeKeyFor(entry) !== row.scope) continue;
+        const entry = byTarget.get(stampKey(row.scope, row.key));
+        if (!entry) continue;
         seenRemoteKeys.add(stampKey(row.scope, row.key));
         if (dirtyKeys.has(dirtyKey(userIdAtStart, entry.key)) || dirtyKeys.has(dirtyKey(null, entry.key))) continue;
         const stamp = stamps[stampKey(row.scope, row.key)];
@@ -501,9 +521,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     if (!hydrateOptions.seedMissing) return;
     const localState = options.store.getState();
     for (const entry of settings) {
-      const scopeKey = scopeKeyFor(entry);
-      if (!scopeKey) continue;
-      const key = stampKey(scopeKey, entry.key);
+      const target = targetFor(entry);
+      if (!target) continue;
+      const key = stampKey(target.scope, target.key);
       if (seenRemoteKeys.has(key) || stamps[key]) continue;
       void push(entry, entry.read(localState));
     }
@@ -547,9 +567,9 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     existingDirtyKey = dirtyKey(accountUserId, entry.key),
   ): Promise<AccountSettingsResult<null>> {
     const api = options.getApi();
-    const scopeKey = scopeKeyFor(entry);
+    const target = targetFor(entry);
     const userIdAtQueue = accountUserId;
-    if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
+    if (!target || !api || !options.isSignedIn() || !userIdAtQueue) {
       markDirtyKey(existingDirtyKey);
       return Promise.resolve(unsyncedResult(true));
     }
@@ -563,8 +583,8 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
       const pending = api.set({
-        scope: scopeKey,
-        key: entry.key,
+        scope: target.scope,
+        key: target.key,
         value,
         // Only ever a real id. See `realAccountUserId`.
         ...(owner ? { expectedAccountUserId: owner } : {}),
@@ -573,7 +593,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
         markDirtyKey(existingDirtyKey);
         return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
-      stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
+      stamps[stampKey(target.scope, target.key)] = new Date(now()).toISOString();
       dirtyKeys.delete(existingDirtyKey);
       persistStamps();
       persistDirtyKeys();
@@ -639,6 +659,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
 
   const unsubscribeStore = options.store.subscribe(onStoreChange);
 
+  /** Push held edits, then merge the account's rows: every resync path runs this. */
+  const resync = (): void => {
+    flushDirty();
+    void pullThenHydrate();
+  };
+
   const unsubscribeAccount = options.subscribeSignedIn?.(() => {
     const nextUserId = resolveAccountUserId();
     if (nextUserId === accountUserId) return;
@@ -648,8 +674,12 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     stamps = readStamps(storage, accountUserId);
     lastSeen.clear();
     for (const [key, value] of snapshot()) lastSeen.set(key, value);
-    flushDirty();
-    void pullThenHydrate();
+    resync();
+  });
+
+  const unsubscribeDevice = options.subscribeLocalDeviceId?.(() => {
+    if (!options.getApi() || !options.isSignedIn()) return;
+    resync();
   });
 
   void pullThenHydrate();
@@ -658,14 +688,14 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     if (!options.getApi() || !options.isSignedIn()) return;
     // Same sync-then-hydrate path as first sign-in, including the identity
     // abort. Seed still happens only when that merge succeeded.
-    flushDirty();
-    void pullThenHydrate();
+    resync();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
   const stop = (): void => {
     stopped = true;
     unsubscribeStore();
     unsubscribeAccount?.();
+    unsubscribeDevice?.();
     unschedule(timer);
   };
   // One function, one extra method: a caller that must not read a stale copy

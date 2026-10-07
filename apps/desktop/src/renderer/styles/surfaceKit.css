@@ -26,6 +26,10 @@
   --kit-warn: var(--color-warning, #f59e0b);
   --kit-crit: var(--color-error, #f43f5e);
   --kit-ok: var(--color-success, #22c55e);
+  /* The light panel: grouped rows, option strips and settings tiles — a
+     quieter plane than `.kit-card`, which floats frosted over the window. */
+  --kit-panel-edge: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  --kit-panel-bg: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
 }
 
 [data-theme="light"] {

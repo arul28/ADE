@@ -21,7 +21,7 @@
 .ade-int-hero-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .ade-int-hero-name { font-size: 13.5px; font-weight: 500; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-int-hero-sub { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-muted-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ade-int-hero-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+
 
 /* Facts under the identity row: label over value, divided by hairlines. */
 .ade-int-facts {
@@ -89,8 +89,8 @@
   gap: 10px;
   padding: 14px;
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
 }
 .ade-int-token-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--color-fg); }
 .ade-int-token-head > svg { color: var(--color-muted-fg); }
@@ -110,8 +110,8 @@
 @container modernpage (max-width: 560px) { .ade-int-uses { grid-template-columns: minmax(0, 1fr); } }
 .ade-int-uses > .ade-int-use-row {
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
 }
 
 /* Linear: the ADE agent's rules, recent sessions and remove. */

@@ -12,8 +12,8 @@
  * (Claude's OAuth-apps allowance) wrapped to its own line anyway — so the row
  * was already one-and-a-half rows tall and pretending to be one.
  *
- * Colour: the bar follows its headroom (`usageHeadroomColor` — green, yellow,
- * red as it runs out), the same rule as the header rings, for every provider.
+ * Colour: the meter stays neutral and turns amber at 20% left and red at 5%
+ * (`usageLeftLevel`), the same rule as every kit meter, for every provider.
  * Accounts get no colour of their own — hashing an account id into a palette
  * is what drew a Claude window in Gemini's blue.
  *
@@ -41,7 +41,8 @@ import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_CLASS,
   USAGE_TEXT,
-  usageHeadroomColor,
+  usageLeftLevel,
+  usageLeftLevelColor,
 } from "./usageDesign";
 import "./usageSurfaces.css";
 import {
@@ -270,7 +271,6 @@ export function UsageAccountRow({
             <WindowMeter
               key={cell.card.key}
               cell={cell}
-              provider={row.provider}
               accountLabel={email ?? "this machine"}
               accountUrl={account?.url ?? fallbackAccountUrl}
               nowMs={nowMs}
@@ -301,7 +301,6 @@ export function UsageAccountRow({
 
 function WindowMeter({
   cell,
-  provider,
   accountLabel,
   accountUrl,
   nowMs,
@@ -310,7 +309,6 @@ function WindowMeter({
   onOpenChange,
 }: {
   cell: AccountWindowCell;
-  provider: UsageProvider;
   accountLabel: string;
   accountUrl?: string;
   nowMs: number;
@@ -322,8 +320,9 @@ function WindowMeter({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const { segment, card } = cell;
   const left = Math.round(segment.percentLeft);
-  const fill = usageHeadroomColor(segment.percentLeft);
-  const level = segment.percentLeft <= 5 ? "crit" : segment.percentLeft <= 20 ? "warn" : null;
+  const level = usageLeftLevel(segment.percentLeft);
+  // The popover header and the row meter read the same level.
+  const fill = usageLeftLevelColor(level, "var(--kit-fill)");
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const closeTimerRef = useRef<number | null>(null);

@@ -12,7 +12,7 @@
   flex-direction: column;
   border-radius: var(--radius-xl, 14px);
   border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  background: var(--kit-panel-bg);
   overflow: hidden;
   isolation: isolate;
 }
@@ -84,7 +84,7 @@
   white-space: nowrap;
 }
 .ade-acct-name + .ade-acct-email { font-size: 13px; }
-.ade-acct-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
+
 
 /* Facts strip under the identity: eyebrow label over a value. */
 .ade-acct-facts {
@@ -261,7 +261,7 @@
   min-width: 0;
   overflow: hidden;
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  border: 1px solid var(--kit-panel-edge);
   background: color-mix(in srgb, var(--color-bg) 40%, transparent);
 }
 .ade-acct-provider-head {

@@ -17,9 +17,11 @@ import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_BG_CLASS,
   USAGE_TEXT,
-  usageHeadroomColor,
   usageHeadroomTone,
+  usageLeftLevel,
+  usageLeftLevelColor,
 } from "./usageDesign";
+import { providerColor } from "./providerColors";
 import { formatUpdatedAge } from "./usageWindowFormat";
 import { useAppStore } from "../../state/appStore";
 import { usageProviderLogo } from "../terminals/ToolLogos";
@@ -29,16 +31,8 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import { useUsageHeaderPreferences } from "./usageHeaderPreferences";
+import { humanizeProvider } from "./usageProviderNames";
 
-const PROVIDER_LABEL: Record<UsageProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  grok: "Grok",
-  opencode: "OpenCode",
-  kimi: "Kimi",
-};
 
 function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?: number }) {
   const Logo = usageProviderLogo(provider);
@@ -126,7 +120,7 @@ function usageWarning(snapshot: UsageSnapshot | null): { warn: boolean; detail: 
   if (statuses) {
     for (const [provider, status] of Object.entries(statuses)) {
       if (status && status.state !== "ok") {
-        issues.push(status.message ?? `${PROVIDER_LABEL[provider as UsageProvider] ?? provider} unavailable`);
+        issues.push(status.message ?? `${humanizeProvider(provider)} unavailable`);
       }
     }
   }
@@ -141,9 +135,9 @@ const USAGE_RING_LOGO = 16;
  * One provider mark, drawn tight around the logo.
  *
  * The pale arc is what has been used. It starts at 12 o'clock and grows
- * clockwise as usage goes up. What is left is drawn in the headroom colour
- * (`usageHeadroomColor`: green, then yellow, then red as it runs out), the same
- * for every provider. The pale tint is opaque and much lighter, so a small
+ * clockwise as usage goes up. What is left is drawn in the provider's colour,
+ * turning amber at 20% left and red at 5% (`usageLeftLevel`) — the same rule
+ * as the home screen's rings. The pale tint is opaque and much lighter, so a small
  * change in the week is visible. A provider with no week uses its month.
  */
 function HeaderProviderUsageRing({
@@ -155,7 +149,10 @@ function HeaderProviderUsageRing({
 }) {
   const theme = useAppStore((state) => state.theme);
   const left = headroomPercent(usage.planPercent);
-  const color = left == null ? "var(--color-muted-fg)" : usageHeadroomColor(left);
+  // Same rule as the home rings: the provider's colour, amber at 20% left, red at 5%.
+  const color = left == null
+    ? "var(--color-muted-fg)"
+    : usageLeftLevelColor(usageLeftLevel(left), providerColor(provider, theme));
   const used = left == null ? null : 100 - left;
   const center = USAGE_RING_SIZE / 2;
   const radius = (USAGE_RING_SIZE - USAGE_RING_STROKE) / 2;
@@ -167,7 +164,7 @@ function HeaderProviderUsageRing({
   const unshaded = theme === "light"
     ? `color-mix(in srgb, ${color} 14%, #eceae6)`
     : `color-mix(in srgb, ${color} 8%, white)`;
-  const title = `${PROVIDER_LABEL[provider]} ${formatUsageTitle(provider, usage)}`;
+  const title = `${humanizeProvider(provider)} ${formatUsageTitle(provider, usage)}`;
   return (
     <span
       className="relative inline-flex shrink-0 items-center justify-center"
@@ -335,7 +332,7 @@ export function HeaderUsageControl({
   const updatedAgo = formatUpdatedAgo(snapshot, nowMs);
 
   const titleParts = providersWithUsage.map(
-    ({ provider, usage }) => `${PROVIDER_LABEL[provider]} ${formatUsageTitle(provider, usage)}`,
+    ({ provider, usage }) => `${humanizeProvider(provider)} ${formatUsageTitle(provider, usage)}`,
   );
   let buttonTitle: string;
   if (titleParts.length > 0) {
@@ -375,7 +372,7 @@ export function HeaderUsageControl({
       {providersWithUsage.length > 0 ? (
         <span className={cn("shrink-0 text-muted-fg", USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}>
           {providersWithUsage.map(({ provider, usage }) => (
-            `${PROVIDER_LABEL[provider]} ${percentLabel(usage.planPercent)}`
+            `${humanizeProvider(provider)} ${percentLabel(usage.planPercent)}`
           )).join(" · ")}
         </span>
       ) : null}

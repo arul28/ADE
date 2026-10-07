@@ -77,8 +77,8 @@
   min-width: 0;
   padding: 14px;
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
   color: var(--color-fg);
   font: inherit;
   text-align: left;

@@ -50,6 +50,7 @@ import {
 } from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
 import { setUsageProviderVisible, useUsageHeaderPreferences } from "./usageHeaderPreferences";
+import { humanizeProvider } from "./usageProviderNames";
 
 // Display names only. The limits URL is NOT re-listed here: it comes from
 // `usageProviderAccountUrl`, which is also what the host stamps onto
@@ -64,15 +65,6 @@ function providerConnection(
   return connections[provider] ?? null;
 }
 
-const PROVIDER_META: Record<UsageProvider, { label: string }> = {
-  claude: { label: "Claude" },
-  codex: { label: "Codex" },
-  cursor: { label: "Cursor" },
-  copilot: { label: "Copilot" },
-  grok: { label: "Grok" },
-  opencode: { label: "OpenCode" },
-  kimi: { label: "Kimi" },
-};
 
 function providerSourceLabel(status: UsageProviderStatus | null): string {
   if (status?.source === "oauth") return "OAuth";
@@ -358,7 +350,6 @@ export function UsageLimitsBand({
             <ProviderLimitsRow
               key={provider}
               provider={provider}
-              theme={theme}
               windows={windowsByProvider[provider] ?? []}
               accounts={accounts}
               connection={providerConnection(providerConnections, provider)}
@@ -413,7 +404,6 @@ function SkeletonRows() {
 
 function ProviderLimitsRow({
   provider,
-  theme,
   windows,
   accounts,
   connection,
@@ -426,7 +416,6 @@ function ProviderLimitsRow({
   onRefresh,
 }: {
   provider: UsageProvider;
-  theme: ThemeId;
   windows: UsageWindow[];
   accounts: UsageAccountView[];
   connection: AiProviderConnectionStatus | null;
@@ -438,7 +427,7 @@ function ProviderLimitsRow({
   refreshing: boolean;
   onRefresh: () => Promise<UsageRefreshOutcome>;
 }) {
-  const meta = PROVIDER_META[provider];
+  const providerLabel = humanizeProvider(provider);
   const headerPreferences = useUsageHeaderPreferences();
   const shownInHeader = headerPreferences.providers[provider];
   const isAuthed = connection?.authAvailable !== false;
@@ -501,15 +490,15 @@ function ProviderLimitsRow({
           hairline, then the accounts. */}
       <div className="usage-provider-head">
         <ProviderMark provider={provider} size={16} dim={dim} />
-        <span className="usage-provider-name">{meta.label}</span>
+        <span className="usage-provider-name">{providerLabel}</span>
         <span className="usage-provider-source">{sourceLine}</span>
         <span className="usage-provider-actions">
           <button
             type="button"
             onClick={() => setUsageProviderVisible(provider, !shownInHeader)}
-            aria-label={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
+            aria-label={`${shownInHeader ? "Hide" : "Show"} ${providerLabel} in usage bar`}
             aria-pressed={shownInHeader}
-            title={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
+            title={`${shownInHeader ? "Hide" : "Show"} ${providerLabel} in usage bar`}
           >
             {shownInHeader ? <Eye size={12} weight="regular" /> : <EyeSlash size={12} weight="regular" />}
           </button>
@@ -517,8 +506,8 @@ function ProviderLimitsRow({
             <button
               type="button"
               onClick={() => openExternalUrl(usageUrl)}
-              aria-label={`Open ${meta.label} limits in browser`}
-              title={`Open ${meta.label} limits in browser`}
+              aria-label={`Open ${providerLabel} limits in browser`}
+              title={`Open ${providerLabel} limits in browser`}
             >
               <ArrowSquareOut size={12} weight="regular" />
             </button>
@@ -627,7 +616,7 @@ function ExtraUsageCard({
   if (!extra.isEnabled) return null;
   if (extra.provider === "cursor") return null;
 
-  const meta = PROVIDER_META[extra.provider];
+  const providerLabel = humanizeProvider(extra.provider);
   const tone = providerColor(extra.provider, theme);
   const usedUsd = extra.usedCreditsUsd;
   const limitUsd = extra.monthlyLimitUsd;
@@ -650,7 +639,7 @@ function ExtraUsageCard({
       <div className="flex items-center justify-between gap-3">
         <ProviderHeading
           provider={extra.provider}
-          label={`${meta.label} extra usage`}
+          label={`${providerLabel} extra usage`}
           usageUrl={usageProviderAccountUrl(extra.provider)}
         />
         <span className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "text-fg")}>

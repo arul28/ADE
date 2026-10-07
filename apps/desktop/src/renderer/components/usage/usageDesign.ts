@@ -20,9 +20,8 @@
  * The rule, not a preference: every HTML/JSX node uses `USAGE_TEXT` rather than
  * an inline `style={{ fontSize }}`, so sizing lives in the same system as
  * colour instead of reintroducing the inline-style/utility split this redesign
- * removed. Raw numbers exist only for SVG/canvas measurement — contexts with no
- * class attribute to hang a utility on — which is why `USAGE_TYPE` below
- * carries only the one step those contexts actually use.
+ * removed. Raw numbers appear only inline for SVG/canvas measurement —
+ * contexts with no class attribute to hang a utility on.
  */
 export const USAGE_TEXT = {
   hero: "text-[32px] leading-[1.05] tracking-[-0.02em]",
@@ -32,23 +31,7 @@ export const USAGE_TEXT = {
   micro: "text-[11px] leading-normal",
 } as const;
 
-export type UsageTypeStep = keyof typeof USAGE_TEXT;
 
-/**
- * The steps that also need a raw number, for SVG `<text>` measurement.
- *
- * Only `micro` does: the daily chart's axis ticks and day labels. The other
- * four had numeric twins that nothing read, and a second source of truth for a
- * font size is exactly how the two drift apart.
- */
-export const USAGE_TYPE = {
-  /** Eyebrow labels, axis ticks, footnotes. Uppercase where it is a label. */
-  micro: 11,
-} as const satisfies Partial<Record<UsageTypeStep, number>>;
-
-/** Eyebrow label above a value: micro, uppercase, muted. */
-export const USAGE_EYEBROW_CLASS =
-  "text-[11px] uppercase tracking-[0.08em] text-muted-fg";
 
 /**
  * The hairline every usage surface draws.
@@ -81,14 +64,6 @@ export const USAGE_DIVIDER_COLOR_CLASS =
 export const USAGE_CARD_CLASS =
   `rounded-xl border ${USAGE_HAIRLINE_CLASS} bg-surface-raised shadow-panel`;
 
-/**
- * A panel's title strip.
- *
- * Tinted a step toward the recessed surface so the card reads as a panel with a
- * head and a body, not as a rectangle with a line across it.
- */
-export const USAGE_PANEL_HEADER_CLASS =
-  `border-b ${USAGE_DIVIDER_COLOR_CLASS} bg-[color:color-mix(in_srgb,var(--color-surface-recessed)_65%,transparent)]`;
 
 /**
  * Floating surface: chart readouts, heatmap tooltips, popovers.
@@ -125,33 +100,10 @@ export const USAGE_BAR_TRACK_CLASS =
   "overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--color-fg)_14%,transparent)]"
   + " contrast-more:bg-[color:color-mix(in_srgb,var(--color-fg)_28%,transparent)]";
 
-/**
- * Selection, borrowed rather than invented.
- *
- * `settings/primitives/SettingsControls.tsx` already signals a chosen option
- * with an accent-tinted fill inside an accent-tinted border, on a recessed
- * track. That is the vocabulary the rest of Settings uses, so the usage
- * controls speak it too — the previous `bg-muted` active state was a two-step
- * lightness change on a dark theme and read as nothing at all.
- */
-export const USAGE_SEGMENT_TRACK_CLASS =
-  "inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface-recessed p-0.5";
 
-export const USAGE_SEGMENT_ITEM_CLASS =
-  "rounded-md border border-transparent px-2.5 py-1 transition-[background-color,color,border-color] duration-150 motion-reduce:transition-none";
 
-export const USAGE_SEGMENT_ITEM_ACTIVE_CLASS =
-  "border-[color:color-mix(in_srgb,var(--color-accent)_40%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_16%,transparent)] font-semibold text-fg";
 
-export const USAGE_SEGMENT_ITEM_IDLE_CLASS =
-  "font-medium text-muted-fg hover:bg-muted hover:text-fg";
 
-/**
- * A bordered control that is not a segment: Refresh, Retry, Reconnect.
- * Same resting surface as the segmented track so a toolbar reads as one row.
- */
-export const USAGE_BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-recessed font-medium text-muted-fg transition-[background-color,color,border-color] duration-150 hover:bg-muted hover:text-fg disabled:opacity-50 motion-reduce:transition-none";
 
 /** Hoverable row or cell: a surface that acknowledges the cursor. */
 export const USAGE_HOVER_ROW_CLASS =
@@ -206,6 +158,26 @@ export const USAGE_HEADROOM_COLOR: Record<UsageHeadroomTone, string> = {
 
 export function usageHeadroomColor(percentLeft: number): string {
   return USAGE_HEADROOM_COLOR[usageHeadroomTone(percentLeft)];
+}
+
+/**
+ * The neutral-meter level for a quota, by percent LEFT: the kit meters and
+ * gauges stay neutral until a window is nearly spent, then warn at 20% left
+ * and go critical at 5%. Every `.kit-meter` / gauge / home ring reads this.
+ */
+export type UsageLeftLevel = "warn" | "crit";
+
+export function usageLeftLevel(percentLeft: number): UsageLeftLevel | undefined {
+  if (percentLeft <= 5) return "crit";
+  if (percentLeft <= 20) return "warn";
+  return undefined;
+}
+
+/** The theme colour for a `usageLeftLevel`, or `fallback` while the quota is healthy. */
+export function usageLeftLevelColor(level: UsageLeftLevel | undefined, fallback: string): string {
+  if (level === "crit") return "var(--kit-crit)";
+  if (level === "warn") return "var(--kit-warn)";
+  return fallback;
 }
 
 /**

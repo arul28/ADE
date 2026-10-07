@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { SignInCard } from "../account/AccountPage";
+import { GlassSignInCard } from "./GlassSignInCard";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useAppStore } from "../../state/appStore";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
@@ -39,8 +39,7 @@ function WebLaunchGate({ children }: LaunchGateProps) {
             Checking your ADE account…
           </div>
         ) : (
-          <SignInCard
-            variant="glass"
+          <GlassSignInCard
             configured={status.configured !== false}
             onSignedIn={() => undefined}
             sessionState={accountSessionState(status)}
@@ -156,8 +155,7 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
       />
       {showAccountChoice ? (
         <div className="ade-gate-stack">
-          <SignInCard
-            variant="glass"
+          <GlassSignInCard
             configured={status.configured !== false}
             onSignedIn={enterAde}
             sessionState={accountSessionState(status)}

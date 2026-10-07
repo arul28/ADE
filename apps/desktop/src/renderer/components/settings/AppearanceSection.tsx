@@ -94,9 +94,11 @@ const MONO_SPECIMENS: { value: InterfaceMonoFont; label: string; stack: string }
   { value: "system", label: "System mono", stack: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
 ];
 
-function isTypingTarget(target: EventTarget | null): boolean {
+/** Keys typed into a field, or inside a dialog or menu, belong there, not to the page shortcuts. */
+function isShortcutBlocked(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+  if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return true;
+  return target.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']") != null;
 }
 
 export function AppearanceSection() {
@@ -111,9 +113,14 @@ export function AppearanceSection() {
 
   // A few single-key shortcuts while this page is open, as on a playground:
   // r = a random theme, b = shuffle the background, m = cycle the mode.
+  // Read through a ref so the listener subscribes once, not on every render.
+  const shortcutsRef = useRef({ activeMode, choose, mode, customizerOpen });
+  shortcutsRef.current = { activeMode, choose, mode, customizerOpen };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      const { activeMode, choose, mode, customizerOpen } = shortcutsRef.current;
+      if (customizerOpen) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || isShortcutBlocked(event.target)) return;
       const key = event.key.toLowerCase();
       if (key === "r") {
         const family = ADE_THEME_FAMILIES[Math.floor(Math.random() * ADE_THEME_FAMILIES.length)];
@@ -132,7 +139,7 @@ export function AppearanceSection() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeMode, choose, mode, setScene, setTheme]);
+  }, [setScene, setTheme]);
 
   const resetAll = () => {
     resetThemeAndChatFontDefaults();
@@ -432,7 +439,9 @@ function BackgroundPicker() {
             onPick={() => setScene({ mode: "image", imageId: scene.id })}
             onRemove={() => {
               if (pickedId === scene.id) setScene({ mode: "gradient", imageId: null });
-              void removeUserScene(scene.id);
+              removeUserScene(scene.id).catch((err: unknown) => {
+                setError(err instanceof Error ? err.message : "Could not remove that picture");
+              });
             }}
           />
         ))}

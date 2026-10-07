@@ -33,13 +33,6 @@
 }
 .usage-toolbar-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 
-.usage-note {
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--kit-warn) 9%, transparent);
-  color: var(--kit-text-2);
-  font-size: 12px;
-}
 
 .usage-grid {
   display: grid;
@@ -98,12 +91,15 @@
 .usage-stat-value { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .usage-stat-value .kit-stat { white-space: nowrap; }
 .usage-stat-detail {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  white-space: normal;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.4;
   color: var(--kit-text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -171,7 +167,7 @@
   padding: 0 8px;
   border-radius: var(--radius-md);
   border: 1px solid var(--kit-card-edge);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  background: var(--kit-panel-bg);
   font-size: 11.5px;
   color: var(--kit-text-2);
   cursor: default;
@@ -211,7 +207,7 @@
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 10px;
-  row-gap: 5px;
+  row-gap: 4px;
   padding: 6px 8px;
   border-radius: var(--radius-md);
   transition: background-color 100ms ease, opacity 140ms ease;
@@ -221,9 +217,9 @@
 .usage-rank-mark { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 999px; }
 .usage-rank-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-fg); }
 .usage-rank-value { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-fg); font-variant-numeric: tabular-nums; text-align: right; }
-.usage-rank-bar { grid-column: 2 / 3; height: 3px; border-radius: 999px; background: var(--kit-track); overflow: hidden; }
+.usage-rank-bar { grid-column: 2 / 4; height: 3px; border-radius: 999px; background: var(--kit-track); overflow: hidden; }
 .usage-rank-bar > span { display: block; height: 100%; border-radius: inherit; transition: width 400ms ease; }
-.usage-rank-share { grid-column: 3 / 4; font-family: var(--font-mono); font-size: 10px; color: var(--kit-text-3); text-align: right; font-variant-numeric: tabular-nums; }
+.usage-rank-share { grid-column: 3 / 4; margin-left: 8px; font-family: var(--font-mono); font-size: 10px; color: var(--kit-text-3); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── Thin part-to-whole bars ──────────────────────────────────────────── */
 
@@ -358,19 +354,12 @@
 
 /* ── Stat-strip refinements ───────────────────────────────────────────── */
 .usage-stat-value .kit-tag { white-space: nowrap; }
-.usage-stat-detail { font-family: var(--font-sans); font-size: 11.5px; }
 
 /* Small fact trio (per day / peak / per 1M). */
 .usage-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .usage-fact { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .usage-fact-value { font-size: 18px; line-height: 1.2; font-weight: 500; letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: var(--color-fg); }
 
-/* Rank rows: fixed value column so every share bar starts and ends together. */
-.usage-rank-row { grid-template-columns: 18px minmax(0, 1fr) 76px; row-gap: 4px; padding: 6px 8px; }
-.usage-rank-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
-.usage-rank-bar { grid-column: 2 / 4; }
-.usage-rank-share { margin-left: 8px; }
-.usage-stat-detail { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
 .usage-activity { text-align: left; }
 
 /* ── Limits (top-bar popover, pooled limits) ──────────────────────────── */
@@ -455,7 +444,7 @@
   padding: 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--kit-card-edge);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  background: var(--kit-panel-bg);
 }
 .usage-pool-card button { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 
@@ -541,7 +530,7 @@
   padding: 12px 14px 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--kit-card-edge);
-  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  background: var(--kit-panel-bg);
 }
 .usage-gauge-title { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
 .usage-gauge-title > .kit-eyebrow { min-width: 0; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
@@ -579,4 +568,4 @@
 @media (prefers-reduced-motion: reduce) {
   .usage-week-bars > span, .usage-gauge-value { transition: none; }
 }
-.usage-activity[data-variant="compact"] [role="tabpanel"] > .flex.justify-center { gap: 8px; }
+.usage-activity[data-variant="compact"] [role="tabpanel"] > .usage-tab-body { gap: 8px; }

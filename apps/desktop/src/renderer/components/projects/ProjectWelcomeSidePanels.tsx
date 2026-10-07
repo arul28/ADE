@@ -34,6 +34,7 @@ import { windowLabel } from "../usage/usageWindowFormat";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
 import "../activity/Activity.css";
+import { humanizeProvider } from "../usage/usageProviderNames";
 
 // ---------------------------------------------------------------------------
 // The welcome page's data: chats that are still running, usage limits and
@@ -166,15 +167,6 @@ export function RunningList({ items }: { items: AttentionItem[] }) {
 
 // ── usage ──────────────────────────────────────────────────────────
 
-const PROVIDER_LABEL: Record<UsageProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  grok: "Grok",
-  opencode: "OpenCode",
-  kimi: "Kimi",
-};
 
 export type UsageLine = {
   key: string;
@@ -220,23 +212,6 @@ function accountShortLabel(account: { label?: string; email?: string } | null): 
   if (label && label.toLowerCase() !== "default") return label;
   const local = account?.email?.split("@")[0]?.trim();
   return local || label || null;
-}
-
-/** "3d" / "4h" / "58m" — the reset, as short as a meter row allows. */
-function compactCountdown(ms: number): string {
-  if (ms <= 0) return "now";
-  const days = Math.floor(ms / 86_400_000);
-  if (days > 0) return `${days}d`;
-  const hours = Math.floor(ms / 3_600_000);
-  if (hours > 0) return `${hours}h`;
-  return `${Math.max(1, Math.floor(ms / 60_000))}m`;
-}
-
-/** Same thresholds as the top-bar usage popover: warn at 20% left, crit at 5%. */
-export function usageLevel(percentLeft: number): "warn" | "crit" | undefined {
-  if (percentLeft <= 5) return "crit";
-  if (percentLeft <= 20) return "warn";
-  return undefined;
 }
 
 /**
@@ -309,10 +284,10 @@ export function useUsageGroups(): { groups: UsageGroup[]; bridgeMissing: boolean
         lines.push({
           key: row.key,
           label,
-          providerLabel: PROVIDER_LABEL[provider],
+          providerLabel: humanizeProvider(provider),
           percentLeft: shown.segment.percentLeft,
           resetsInMs: shown.segment.resetsInMs,
-          title: `${PROVIDER_LABEL[provider]}${who ? ` · ${who}` : ""} — ${detail}`,
+          title: `${humanizeProvider(provider)}${who ? ` · ${who}` : ""} — ${detail}`,
         });
       }
       if (lines.length === 0) continue;

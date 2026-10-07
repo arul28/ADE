@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, ChartBar, GitMerge, GitPullRequest, Gauge, Pulse, type Icon } from "@phosphor-icons/react";
+import { ChartBar, GitMerge, GitPullRequest, Gauge, Pulse, type Icon } from "@phosphor-icons/react";
 import type {
   AdeUsageDailyPoint,
   AdeUsageStats,
@@ -13,15 +13,19 @@ import { useAccountStatus } from "../../lib/account";
 import { useAppStore } from "../../state/appStore";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "../usage/providerColors";
+import { usageLeftLevel, usageLeftLevelColor } from "../usage/usageDesign";
 import { fillMissingDays } from "../usage/ActivityHeatmap";
+import { dayMetric } from "../usage/UsageWeekCompare";
+import { formatCountdownShort } from "../usage/usageWindowFormat";
+import { formatCompact } from "../../lib/format";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
 import {
   RunningList,
+  WelcomeCardHead,
   desktopMachineRows,
   openMachines,
   openUsageDetails,
-  usageLevel,
   useRunningChats,
   useUsageGroups,
   webMachineRows,
@@ -47,11 +51,6 @@ function greetingFor(hour: number): string {
   return "Good evening";
 }
 
-const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
-
-export function formatCompact(value: number): string {
-  return COMPACT.format(value);
-}
 
 // ── hero ───────────────────────────────────────────────────────────
 
@@ -130,37 +129,6 @@ export function HomeAction({
   );
 }
 
-// ── shared card head ───────────────────────────────────────────────
-
-function CardHead({
-  icon: IconGlyph,
-  title,
-  count,
-  action,
-  children,
-}: {
-  icon: Icon;
-  title: string;
-  count?: number | null;
-  action?: { label: string; onClick: () => void } | null;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="kit-card-head">
-      <IconGlyph size={14} weight="regular" aria-hidden />
-      <span>{title}</span>
-      {count != null ? <span className="kit-card-head-count">{count}</span> : null}
-      {children}
-      {action ? (
-        <button type="button" className="kit-card-head-action" onClick={action.onClick}>
-          {action.label}
-          <ArrowRight size={11} weight="bold" aria-hidden />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 // ── working now ────────────────────────────────────────────────────
 
 export function RunningCard({ onOpenActivity }: { onOpenActivity: () => void }) {
@@ -168,7 +136,7 @@ export function RunningCard({ onOpenActivity }: { onOpenActivity: () => void }) 
   if (running.length === 0) return null;
   return (
     <section className="kit-card ade-home-card ade-home-running" aria-label="Working now">
-      <CardHead icon={Pulse} title="Working now" count={running.length} action={{ label: "Activity", onClick: onOpenActivity }} />
+      <WelcomeCardHead icon={Pulse} title="Working now" count={running.length} action={{ label: "Activity", onClick: onOpenActivity }} />
       <div className="kit-card-body ade-home-scroll" data-flush="true">
         <RunningList items={running} />
       </div>
@@ -214,14 +182,8 @@ export function useRecentStats(): RecentStats {
   return stats;
 }
 
-type Metric = "tokens" | "cost" | "code";
-type DayBar = { date: string; sessions: number; tokens: number; cost: number; code: number };
-
-function dayCost(day: AdeUsageDailyPoint): number {
-  const providers = (day as { providers?: Record<string, { costUsd?: number }> }).providers;
-  if (!providers) return 0;
-  return Object.values(providers).reduce((sum, entry) => sum + (entry?.costUsd ?? 0), 0);
-}
+type Metric = "tokens" | "cost";
+type DayBar = { date: string; sessions: number; tokens: number; cost: number };
 
 function lastDays(daily: readonly AdeUsageDailyPoint[], count: number): DayBar[] {
   const filled = fillMissingDays(daily);
@@ -231,10 +193,9 @@ function lastDays(daily: readonly AdeUsageDailyPoint[], count: number): DayBar[]
       date: day.date,
       sessions: day.sessions,
       tokens: day.totalTokens,
-      cost: dayCost(day),
-      code: (day.insertions ?? 0) + (day.deletions ?? 0),
+      cost: dayMetric(day, "cost"),
     }));
-  while (bars.length < count) bars.unshift({ date: "", sessions: 0, tokens: 0, cost: 0, code: 0 });
+  while (bars.length < count) bars.unshift({ date: "", sessions: 0, tokens: 0, cost: 0 });
   return bars;
 }
 
@@ -251,11 +212,11 @@ function weekdayInitial(date: string): string {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "narrow" });
 }
 
-function formatMetric(metric: Metric, value: number): string {
+function formatActivityValue(metric: Metric, value: number): string {
   return metric === "cost" ? `$${value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(2)}` : formatCompact(value);
 }
 
-const METRIC_UNIT: Record<Metric, string> = { tokens: "tokens", cost: "spent", code: "lines changed" };
+const METRIC_UNIT: Record<Metric, string> = { tokens: "tokens", cost: "spent" };
 
 export function ActivityUsageCard({ stats }: { stats: RecentStats }) {
   const [metric, setMetric] = useState<Metric>("tokens");
@@ -277,22 +238,22 @@ export function ActivityUsageCard({ stats }: { stats: RecentStats }) {
 
   return (
     <section className="kit-card ade-home-card ade-home-activity" aria-label="Activity and usage">
-      <CardHead icon={ChartBar} title="Activity & usage" action={{ label: "Details", onClick: openUsageDetails }}>
+      <WelcomeCardHead icon={ChartBar} title="Activity & usage" action={{ label: "Details", onClick: openUsageDetails }}>
         <span className="ade-home-card-scope" title="Usage recorded on this computer. Another machine's work shows once it is online and synced.">this machine</span>
         <div className="kit-seg ade-home-metric" role="group" aria-label="Measure">
           {(["tokens", "cost"] as Metric[]).map((option) => (
             <button key={option} type="button" aria-pressed={metric === option} onClick={() => setMetric(option)}>
-              {option === "code" ? "Code" : option === "tokens" ? "Tokens" : "Cost"}
+              {option === "tokens" ? "Tokens" : "Cost"}
             </button>
           ))}
         </div>
-      </CardHead>
+      </WelcomeCardHead>
       <div className="kit-card-body ade-home-activity-body">
         <div className="ade-home-activity-side">
           <div>
             <div className="kit-eyebrow">Last 14 days</div>
             <div className="ade-home-activity-figure">
-              <span className="kit-stat">{stats ? formatMetric(metric, total) : "—"}</span>
+              <span className="kit-stat">{stats ? formatActivityValue(metric, total) : "—"}</span>
             </div>
             <div className="ade-home-activity-unit">
               {METRIC_UNIT[metric]}
@@ -322,12 +283,12 @@ export function ActivityUsageCard({ stats }: { stats: RecentStats }) {
             </div>
           </dl>
         </div>
-        <div className="ade-home-bars" role="img" aria-label={`${formatMetric(metric, total)} ${METRIC_UNIT[metric]} over the last 14 days`}>
+        <div className="ade-home-bars" role="img" aria-label={`${formatActivityValue(metric, total)} ${METRIC_UNIT[metric]} over the last 14 days`}>
           {bars.map((bar, index) => {
             const height = (value(bar) / max) * 100;
             const isToday = index === bars.length - 1;
             return (
-              <div key={`${bar.date}-${index}`} className="ade-home-bar-col" title={bar.date ? `${dayLabel(bar.date)} · ${formatMetric(metric, value(bar))}` : undefined}>
+              <div key={`${bar.date}-${index}`} className="ade-home-bar-col" title={bar.date ? `${dayLabel(bar.date)} · ${formatActivityValue(metric, value(bar))}` : undefined}>
                 <div className="ade-home-bar-track">
                   <div
                     className="ade-home-bar"
@@ -369,15 +330,6 @@ function Ring({ percentLeft, color }: { percentLeft: number; color: string }) {
   );
 }
 
-function compactReset(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "now";
-  const days = Math.floor(ms / 86_400_000);
-  if (days > 0) return `${days}d`;
-  const hours = Math.floor(ms / 3_600_000);
-  if (hours > 0) return `${hours}h`;
-  return `${Math.max(1, Math.floor(ms / 60_000))}m`;
-}
-
 export function useMachineRows(
   webMode: boolean,
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null,
@@ -408,7 +360,7 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
   });
   return (
     <section className="kit-card ade-home-card ade-home-limits" aria-label="Limits and machines">
-      <CardHead icon={Gauge} title="Limits & machines" action={{ label: "Details", onClick: openUsageDetails }} />
+      <WelcomeCardHead icon={Gauge} title="Limits & machines" action={{ label: "Details", onClick: openUsageDetails }} />
       <div className="kit-card-body ade-home-limits-body">
         {usage.bridgeMissing ? null : (
           <div className="ade-home-rings">
@@ -418,8 +370,8 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
               rings.map(({ provider, line, accounts }) => {
                 const Logo = usageProviderLogo(provider);
                 const left = Math.round(Math.max(0, Math.min(100, line.percentLeft)));
-                const level = usageLevel(left);
-                const color = level === "crit" ? "var(--kit-crit)" : level === "warn" ? "var(--kit-warn)" : providerColor(provider, theme);
+                const level = usageLeftLevel(left);
+                const color = usageLeftLevelColor(level, providerColor(provider, theme));
                 return (
                   <button key={provider} type="button" className="ade-home-ring-item" onClick={openUsageDetails} title={line.title}>
                     <span className="ade-home-ring-wrap">
@@ -431,7 +383,7 @@ export function LimitsMachinesCard({ machineRows, webMode }: { machineRows: Mach
                       {line.providerLabel}
                       {accounts > 1 ? ` ×${accounts}` : ""}
                     </span>
-                    <span className="ade-home-ring-reset kit-num">resets {compactReset(line.resetsInMs)}</span>
+                    <span className="ade-home-ring-reset kit-num">resets {formatCountdownShort(line.resetsInMs)}</span>
                   </button>
                 );
               })
@@ -674,9 +626,9 @@ export function PullRequestsCard({
   }, [open]);
   return (
     <section className="kit-card ade-home-card ade-home-prs" aria-label="Pull requests">
-      <CardHead icon={GitPullRequest} title="Pull requests" count={open.length > 0 ? open.length : null} action={onOpenPrs ? { label: "PRs", onClick: onOpenPrs } : null}>
+      <WelcomeCardHead icon={GitPullRequest} title="Pull requests" count={open.length > 0 ? open.length : null} action={onOpenPrs ? { label: "PRs", onClick: onOpenPrs } : null}>
         {projectName ? <span className="ade-home-card-scope">{projectName}</span> : null}
-      </CardHead>
+      </WelcomeCardHead>
       <div className="kit-card-body ade-home-prs-body" data-flush="true">
         {projectRoot == null ? (
           <div className="ade-home-empty">

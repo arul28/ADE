@@ -62,7 +62,6 @@
 }
 
 /* The picture is the hero: the wordmarks step aside while one is on screen. */
-html[data-scene="image"] .ade-welcome-logo,
 html[data-scene="image"] .ade-draft-wordmark {
   display: none;
 }
