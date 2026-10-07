@@ -2040,6 +2040,143 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertFalse(workLaneFoldsIntoWorking([seen]))
   }
 
+  func testLaneFocusFoldRuleHandlesScheduledAndMissedWakesAndSubagents() {
+    struct Case {
+      let name: String
+      let session: TerminalSessionSummary
+      let summary: AgentChatSessionSummary?
+      let roster: [TerminalSessionSummary]
+      let summaries: [String: AgentChatSessionSummary]
+      let seen: Bool
+      let nestedChild: Bool
+      let expectedStatus: WorkLaneFocusStatus?
+      let expectedHoldsOut: Bool
+      let expectedMissedWake: Bool
+      let expectedFold: Bool
+    }
+
+    func parent() -> TerminalSessionSummary {
+      var session = makeSession(status: "completed", runtimeState: "idle", toolType: "codex-chat")
+      session.id = "parent"
+      return session
+    }
+
+    func child(id: String = "child", status: String = "running", runtime: String = "running") -> TerminalSessionSummary {
+      var session = makeSession(status: status, runtimeState: runtime, toolType: "codex-chat")
+      session.id = id
+      session.spawnKind = .subagent
+      session.orchestrationParentSessionId = "parent"
+      return session
+    }
+
+    func chatSummary(nextWakeAt: Date) -> AgentChatSessionSummary {
+      var summary = makeChatSummary(status: "completed", awaitingInput: false)
+      summary.nextWakeAt = iso(nextWakeAt)
+      return summary
+    }
+
+    let pendingParent = parent()
+    let pendingSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-60))
+    let overdueParent = parent()
+    let overdueSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-121))
+    let busyParent = parent()
+    let busyChild = child()
+    let finishedParent = parent()
+    let finishedChild = child(id: "finished-child", status: "ended", runtime: "exited")
+    let nestedWakeChild = child(id: "nested-wake", status: "completed", runtime: "idle")
+    let nestedWakeSummary = chatSummary(nextWakeAt: now.addingTimeInterval(-121))
+
+    let cases = [
+      Case(
+        name: "pending wake alone folds as waiting",
+        session: pendingParent,
+        summary: pendingSummary,
+        roster: [pendingParent],
+        summaries: [pendingParent.id: pendingSummary],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .waiting,
+        expectedHoldsOut: false,
+        expectedMissedWake: false,
+        expectedFold: true
+      ),
+      Case(
+        name: "unseen idle parent with busy subagent folds",
+        session: busyParent,
+        summary: nil,
+        roster: [busyParent, busyChild],
+        summaries: [:],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .waiting,
+        expectedHoldsOut: false,
+        expectedMissedWake: false,
+        expectedFold: true
+      ),
+      Case(
+        name: "finished subagent leaves unseen parent holding the lane out",
+        session: finishedParent,
+        summary: nil,
+        roster: [finishedParent, finishedChild],
+        summaries: [:],
+        seen: false,
+        nestedChild: false,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: false,
+        expectedFold: false
+      ),
+      Case(
+        name: "overdue wake holds lane out even when seen",
+        session: overdueParent,
+        summary: overdueSummary,
+        roster: [overdueParent],
+        summaries: [overdueParent.id: overdueSummary],
+        seen: true,
+        nestedChild: false,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: true,
+        expectedFold: false
+      ),
+      Case(
+        name: "overdue wake on nested child still holds lane out",
+        session: nestedWakeChild,
+        summary: nestedWakeSummary,
+        roster: [parent(), nestedWakeChild],
+        summaries: [nestedWakeChild.id: nestedWakeSummary],
+        seen: true,
+        nestedChild: true,
+        expectedStatus: .done,
+        expectedHoldsOut: true,
+        expectedMissedWake: true,
+        expectedFold: false
+      ),
+    ]
+
+    for testCase in cases {
+      let busyParents = workBusySubagentParentIds(
+        sessions: testCase.roster,
+        chatSummaries: testCase.summaries,
+        now: now
+      )
+      let focus = workCountedRowFocus(
+        session: testCase.session,
+        summary: testCase.summary,
+        archived: false,
+        laneWaiting: false,
+        seen: testCase.seen,
+        busySubagentParent: busyParents.contains(testCase.session.id),
+        nestedChild: testCase.nestedChild,
+        now: now
+      )
+      XCTAssertEqual(focus?.status, testCase.expectedStatus, testCase.name)
+      XCTAssertEqual(focus?.holdsOut, testCase.expectedStatus == nil ? nil : testCase.expectedHoldsOut, testCase.name)
+      XCTAssertEqual(focus?.missedWake, testCase.expectedStatus == nil ? nil : testCase.expectedMissedWake, testCase.name)
+      XCTAssertEqual(workLaneFoldsIntoWorking([focus]), testCase.expectedFold, testCase.name)
+    }
+  }
+
   func testGroupsRefileASnoozedRowOnceItsDeadlineLapses() {
     var calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
     calm.id = "s-calm"
@@ -2089,6 +2226,24 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(nextSessionSnoozeDeadline([awake, lapsed], now: now))
     XCTAssertNil(workSnoozeRegroupDelay(sessions: [], now: now))
     XCTAssertNil(workSnoozeRegroupDelay(sessions: [awake, lapsed], now: now))
+  }
+
+  func testRegroupRefreshTargetsScheduledWakeGraceWithoutPendingSnooze() {
+    var awake = makeSession(status: "completed", runtimeState: "idle", toolType: "codex-chat")
+    awake.id = "scheduled-wake"
+    var summary = makeChatSummary(status: "completed", awaitingInput: false)
+    summary.nextWakeAt = iso(now.addingTimeInterval(30))
+
+    XCTAssertEqual(
+      workSnoozeRegroupDelay(
+        sessions: [awake],
+        chatSummaries: [awake.id: summary],
+        now: now
+      ) ?? -1,
+      150,
+      accuracy: 0.001,
+      "The regroup timer must wake when the scheduled wake exits its two-minute grace"
+    )
   }
 
   func testRefreshIsArmedAtTheSoonestDeadlineOnly() {

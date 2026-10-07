@@ -1378,6 +1378,39 @@ describe("SessionCard status vocabulary", () => {
     expect(status.textContent).not.toContain("8d");
   });
 
+  it("stops reading Waiting once its scheduled wake is overdue, with no new data", () => {
+    // A wake that never starts a turn changes nothing in the session, so the
+    // card's own clock is the only thing that can move the label.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          status: "running",
+          runtimeState: "idle",
+          lastActivityAt: "2026-07-09T11:59:00.000Z",
+          nextWakeAt: "2026-07-09T12:01:00.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = () => container.querySelector("[data-session-status]")!;
+    expect(status().getAttribute("data-session-status")).toBe("Waiting");
+    act(() => {
+      vi.advanceTimersByTime(2 * 60_000); // due, still inside the grace
+    });
+    expect(status().getAttribute("data-session-status")).toBe("Waiting");
+    act(() => {
+      vi.advanceTimersByTime(2 * 60_000); // past the grace: presumed lost
+    });
+    expect(status().getAttribute("data-session-status")).toBe("Done");
+  });
+
   it("puts role=status on the label alone so the ticker is not announced every second", () => {
     render(
       <SessionCard

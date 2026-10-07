@@ -189,7 +189,31 @@ the row's status slot shows **No output** with the time since the last output
 exactly at the next stall deadline (`nextTurnStallDeadlineMs`) instead of
 polling. A resting chat is never stale or stalled: `canonicalSessionState`
 checks idle before silence, because a chat row keeps status `running` between
-turns and the old order filed every reply older than three hours as busy. Turning the option off forgets the return state, so turning it back on
+turns and the old order filed every reply older than three hours as busy.
+
+A resting chat with a **scheduled wake** still to come (a subagent polling CI,
+a `/loop`) is Waiting, not Done. `scheduledWakeState` is the one rule. A wake
+past due by more than `SCHEDULED_WAKE_GRACE_MS` (two minutes) that never started
+a turn is Done again and holds its lane out, even when nested or seen, so a
+paused or dead scheduler cannot leave a lane folded. A finished chat whose
+nested subagent is mid-turn or parked on such a wake is Waiting too, because the
+subagent wakes it when its turn ends: `subagentKeepsParentBusy` and
+`parentsWithBusySubagents` are the one rule. Archived and snoozed subagents do
+not count, and attached shells are never subagents, so a dev server left running
+cannot keep a lane busy.
+
+Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
+`subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the
+board (reason chips "Wake scheduled" and "Subagent working"), the host's
+`deriveWorkBoardColumn` (which reads the chat's wake and applies the same
+nesting rule to the lane's chats and tracked CLI rows, so a drag starts from the
+column the board shows), the Lanes
+overview, the command palette, `ade code`'s work list and iOS. The card, the
+sidebar and the board each re-evaluate at the instant a wake turns overdue
+(`nextScheduledWakeDeadlineMs`) rather than polling; the card owns that clock
+because it computes the label.
+
+Turning the option off forgets the return state, so turning it back on
 takes a fresh baseline instead of floating every lane at once.
 
 Each by-lane header carries one rolled-up status dot

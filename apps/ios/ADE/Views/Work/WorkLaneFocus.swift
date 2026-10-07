@@ -36,6 +36,9 @@ struct WorkRowFocus: Equatable {
   let status: WorkLaneFocusStatus
   /// True when this row alone keeps its lane out of the Working shelf.
   let holdsOut: Bool
+  /// An overdue scheduled wake is a finish that must remain visible even
+  /// after it is seen, including when the row is nested under another chat.
+  let missedWake: Bool
 }
 
 /// Has the user left this row since it last finished?
@@ -84,7 +87,7 @@ func workRowFocus(
   let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
   switch phase {
   case .needsYou:
-    return WorkRowFocus(status: .needsYou, holdsOut: true)
+    return WorkRowFocus(status: .needsYou, holdsOut: true, missedWake: false)
   case .starting, .running:
     // A live turn that went silent with no open work may be stuck. It stays
     // filed as running, but like a stale run it holds its lane out of the
@@ -96,17 +99,58 @@ func workRowFocus(
       turnOpenWorkCount: summary?.turnOpenWorkCount,
       now: now
     ) {
-      return WorkRowFocus(status: .working, holdsOut: true)
+      return WorkRowFocus(status: .working, holdsOut: true, missedWake: false)
     }
-    return WorkRowFocus(status: laneWaiting ? .waiting : .working, holdsOut: false)
+    return WorkRowFocus(status: laneWaiting ? .waiting : .working, holdsOut: false, missedWake: false)
   case .stale:
     // Still filed as running, but it may be stuck: never hide it.
-    return WorkRowFocus(status: .working, holdsOut: true)
+    return WorkRowFocus(status: .working, holdsOut: true, missedWake: false)
   case .settled:
     return nil
-  case .ready, .idle, .failed, .stopped, .ended:
-    return WorkRowFocus(status: .done, holdsOut: !seen)
+  case .ready, .idle:
+    if workScheduledWakeIsPending(summary?.nextWakeAt, now: now) {
+      return WorkRowFocus(status: .waiting, holdsOut: false, missedWake: false)
+    }
+    // Same rule as desktop `scheduledWakeState`: only a wake that parses can be
+    // missed; an unreadable value is no wake at all.
+    if workParsedDate(summary?.nextWakeAt) != nil {
+      return WorkRowFocus(status: .done, holdsOut: true, missedWake: true)
+    }
+    return WorkRowFocus(status: .done, holdsOut: !seen, missedWake: false)
+  case .failed, .stopped, .ended:
+    return WorkRowFocus(status: .done, holdsOut: !seen, missedWake: false)
   }
+}
+
+/// Applies the lane-list overlays after the row's own focus is known. Busy
+/// subagents turn an otherwise seen/unseen Done parent into Waiting; ordinary
+/// Done children are omitted, while missed wakes stay counted even when nested.
+func workCountedRowFocus(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  archived: Bool,
+  laneWaiting: Bool,
+  seen: Bool,
+  busySubagentParent: Bool,
+  nestedChild: Bool,
+  now: Date
+) -> WorkRowFocus? {
+  guard var focus = workRowFocus(
+    session: session,
+    summary: summary,
+    archived: archived,
+    laneWaiting: laneWaiting,
+    seen: seen,
+    now: now
+  ) else { return nil }
+
+  let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
+  if (phase == .ready || phase == .idle), focus.status == .done,
+     !focus.missedWake, busySubagentParent {
+    focus = WorkRowFocus(status: .waiting, holdsOut: false, missedWake: false)
+  }
+  if focus.status == .done, !focus.missedWake, nestedChild { return nil }
+  return focus
 }
 
 func workRollUpLaneFocus(_ rows: [WorkRowFocus?]) -> WorkLaneFocusStatus? {

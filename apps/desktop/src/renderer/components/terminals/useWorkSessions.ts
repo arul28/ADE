@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared/sessionStatusPresentation";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
@@ -224,8 +226,14 @@ function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
  */
 export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>;
 
-/** Why a running row was pulled out of Working. Rendered as the card's reason chip. */
-export type WorkBoardWaitingReason = "snoozed" | "ci" | "review";
+/**
+ * Why a row sits in Waiting. Rendered as the card's reason chip. `scheduled`
+ * is a finished chat parked on a wake that has not come due yet
+ * (`scheduledWakeState`), so it is out of Done until it runs again. `subagent`
+ * is a finished chat whose subagent is still busy (`subagentKeepsParentBusy`):
+ * the subagent wakes it when its turn ends, so its Done is still to come.
+ */
+export type WorkBoardWaitingReason = "snoozed" | "ci" | "review" | "scheduled" | "subagent";
 
 /**
  * Does this lane's PR park a running session in Waiting?
@@ -334,6 +342,11 @@ export function appendForeignMachinesToBoard(args: {
   waitingReasons: ReadonlyMap<string, WorkBoardWaitingReason>;
   machines: readonly {
     sessions: readonly TerminalSessionSummary[];
+    /**
+     * That machine's whole roster, unfiltered. Busy parents are read from it so
+     * a search that hides a subagent cannot file its parent as Done.
+     */
+    rosterSessions: readonly TerminalSessionSummary[];
     filingBuckets: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>;
     laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
   }[];
@@ -364,6 +377,8 @@ export function appendForeignMachinesToBoard(args: {
       settledFiltered: partitioned.settledFiltered,
       snoozedFiltered: partitioned.snoozedFiltered,
       laneWaitingReason: machine.laneWaitingReason,
+      busySubagentParentIds: parentsWithBusySubagents(machine.rosterSessions, args.nowMs),
+      nowMs: args.nowMs,
     });
     for (const column of Object.keys(buckets) as WorkBoardColumn[]) {
       buckets[column].push(...model.buckets[column]);
@@ -395,10 +410,20 @@ export function buildWorkBoardModel(args: {
   snoozedFiltered: readonly TerminalSessionSummary[];
   /** Lane → the PR-derived wait, if any. Injected so the model stays pure. */
   laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
+  /**
+   * Chats whose subagent is still busy (`parentsWithBusySubagents`), from the
+   * unfiltered roster so a search that hides the subagent cannot file its
+   * parent as Done.
+   */
+  busySubagentParentIds?: ReadonlySet<string>;
+  /** The clock for the scheduled-wake rule. */
+  nowMs?: number;
 }): WorkBoardModel {
+  const nowMs = args.nowMs ?? Date.now();
   const waitingReasonBySessionId = new Map<string, WorkBoardWaitingReason>();
   const waiting: TerminalSessionSummary[] = [];
   const working: TerminalSessionSummary[] = [];
+  const resting: TerminalSessionSummary[] = [];
 
   for (const session of args.snoozedFiltered) {
     waitingReasonBySessionId.set(session.id, "snoozed");
@@ -413,6 +438,18 @@ export function buildWorkBoardModel(args: {
     waitingReasonBySessionId.set(session.id, reason);
     waiting.push(session);
   }
+  // A finished chat that will start again on its own is not Done yet.
+  for (const session of args.restingFiltered) {
+    const reason: WorkBoardWaitingReason | null = scheduledWakeState(session.nextWakeAt, nowMs) === "pending"
+      ? "scheduled"
+      : args.busySubagentParentIds?.has(session.id) ? "subagent" : null;
+    if (!reason) {
+      resting.push(session);
+      continue;
+    }
+    waitingReasonBySessionId.set(session.id, reason);
+    waiting.push(session);
+  }
 
   return {
     buckets: {
@@ -422,7 +459,7 @@ export function buildWorkBoardModel(args: {
       // Loudest tier first. Resting rows are live sessions that just finished a
       // turn, so they are the ones worth looking at; ended is a dead process;
       // settled is the quietest, because the user already filed it.
-      done: [...args.restingFiltered, ...args.endedFiltered, ...args.settledFiltered],
+      done: [...resting, ...args.endedFiltered, ...args.settledFiltered],
     },
     waitingReasonBySessionId,
   };
@@ -1001,11 +1038,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // snooze expires even if the roster array retains its identity. Reading the
     // route also refreshes it when Work is re-entered after a deadline elapsed
     // while the page was parked on another tab (the timer is intentionally
-    // disabled off-route).
+    // disabled off-route). Reading the roster refreshes it when a row arrives
+    // after its wake turned overdue, because the timer never fires for a
+    // deadline that has already passed.
     void snoozeEpoch;
     void isWorkRoute;
+    void allKnownSessions;
     return Date.now();
-  }, [isWorkRoute, snoozeEpoch]);
+  }, [allKnownSessions, isWorkRoute, snoozeEpoch]);
   const effectiveFilingBuckets = useMemo(
     () => effectiveSessionFilingBuckets(allKnownSessions, filingNowMs),
     [allKnownSessions, filingNowMs],
@@ -2172,8 +2212,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       settledFiltered,
       snoozedFiltered,
       laneWaitingReason: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)),
+      busySubagentParentIds: parentsWithBusySubagents(allKnownSessions, filingNowMs),
+      nowMs: filingNowMs,
     }),
     [
+      allKnownSessions,
+      filingNowMs,
       endedFiltered,
       needsYouFiltered,
       prsByLaneId,
@@ -2184,17 +2228,21 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     ],
   );
 
-  // Exactly one timer, armed only while something is actually snoozed, firing at
-  // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
-  // overflow setTimeout). No polling and no document-level listener.
+  // Exactly one timer, armed only while something is snoozed or parked on a
+  // scheduled wake, firing at the soonest deadline (clamped so a 100-year
+  // "until I'm asked" snooze can't overflow setTimeout). A wake's deadline is
+  // when it turns overdue, which moves its card out of Waiting. No polling and
+  // no document-level listener.
   //
   // Reads the complete Work roster, NOT a filtered view, on purpose: a snoozed
   // row hidden by search, lane, status chips, or a foreign-machine slice must
   // still schedule its own wake so its filing bucket is fresh when visible.
   useEffect(() => {
     if (!isWorkRoute) return undefined;
-    const deadlineMs = nextSnoozeDeadlineMs(allKnownSessions);
-    if (deadlineMs == null) return undefined;
+    const deadlines = [nextSnoozeDeadlineMs(allKnownSessions), nextScheduledWakeDeadlineMs(allKnownSessions)]
+      .filter((value): value is number => value != null);
+    if (deadlines.length === 0) return undefined;
+    const deadlineMs = Math.min(...deadlines);
     const delay = Math.min(Math.max(deadlineMs - Date.now(), 250), SNOOZE_TICK_MAX_DELAY_MS);
     const timer = window.setTimeout(() => setSnoozeEpoch((value) => value + 1), delay);
     return () => window.clearTimeout(timer);

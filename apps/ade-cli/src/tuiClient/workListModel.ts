@@ -55,6 +55,7 @@ import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from ".
 import {
   indexNestedSubagents,
   nestedDrawerStatus,
+  parentsWithBusySubagents,
   type NestedDrawerStatus,
 } from "../../../desktop/src/shared/sessionSpawnNesting";
 
@@ -317,6 +318,8 @@ function buildSessionRow(args: {
   laneName: string | null;
   activeSessionId: string | null;
   draftSessionIds: ReadonlySet<string>;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy: boolean;
   nowMs: number;
 }): WorkListSessionRow {
   const summary = args.summary;
@@ -333,6 +336,7 @@ function buildSessionRow(args: {
       woke,
       snoozeWakeLabel: snoozed ? snoozeWakeLabel(summary.snoozedUntil, args.nowMs) : null,
     },
+    { subagentBusy: args.subagentBusy },
   );
   const steeringInput = Boolean(
     status && status.glyph === "working"
@@ -527,12 +531,15 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     summary: toWorkSessionSummary(session, laneById.get(session.laneId)?.name ?? null),
   }));
   const sessionSummaries = prepared.map((entry) => entry.summary);
+  // Same rule as the desktop Work list: a chat its subagent keeps busy reads Waiting.
+  const busySubagentParents = parentsWithBusySubagents(sessionSummaries, nowMs);
   const rowsBySession = prepared.map((entry) => buildSessionRow({
     session: entry.session,
     summary: entry.summary,
     laneName: laneById.get(entry.session.laneId)?.name ?? null,
     activeSessionId: input.activeSessionId,
     draftSessionIds,
+    subagentBusy: busySubagentParents.has(entry.session.sessionId),
     nowMs,
   }));
 

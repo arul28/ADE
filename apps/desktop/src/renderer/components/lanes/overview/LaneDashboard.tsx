@@ -37,6 +37,7 @@ import {
 import { Banner } from "../../ui/notice";
 import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
 import { historyCommitsPath } from "../../history/historyUrlHydration";
+import { useTurnStallClock } from "../../../lib/useTurnStallClock";
 import {
   laneHistorySessionsFrom,
   useLaneCommits,
@@ -261,9 +262,12 @@ export function LaneDashboard({
     () => laneHistorySessionsFrom(laneId, laneSessions.chats, laneSessions.terminals),
     [laneId, laneSessions.chats, laneSessions.terminals],
   );
+  // A subagent's wake can turn overdue with no new rows, so the row labels
+  // follow a clock that ticks at stall and wake deadlines.
+  const chatClockMs = useTurnStallClock(laneSessions.terminals);
   const chatRows = useMemo(
-    () => buildLaneChatRows({ laneId, chats: laneSessions.chats, terminals: laneSessions.terminals }),
-    [laneId, laneSessions.chats, laneSessions.terminals],
+    () => buildLaneChatRows({ laneId, chats: laneSessions.chats, terminals: laneSessions.terminals, nowMs: chatClockMs }),
+    [chatClockMs, laneId, laneSessions.chats, laneSessions.terminals],
   );
   const operationsKey = [
     lane?.status?.ahead ?? "",

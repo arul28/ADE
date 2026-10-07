@@ -14,6 +14,7 @@ import {
   sessionElapsedAnchor,
   type SessionStatusPresentation,
 } from "../../../../shared/sessionStatusPresentation";
+import { parentsWithBusySubagents } from "../../../../shared/sessionSpawnNesting";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../../lib/sessionSnooze";
 import {
   chatToolTypeForProvider,
@@ -86,7 +87,7 @@ function stripLeadingGlyph(title: string): string {
   return title.replace(/^[^\p{L}\p{N}"'#([]+/u, "").trim() || title;
 }
 
-function rowFromTerminal(row: TerminalSessionSummary, nowMs: number): LaneChatRow {
+function rowFromTerminal(row: TerminalSessionSummary, nowMs: number, subagentBusy: boolean): LaneChatRow {
   const input = canonicalInputFromSummary(row);
   const state = sessionCanonicalUiState({ ...input, nowMs });
   const snoozed = isSessionSnoozed(row, nowMs);
@@ -100,7 +101,7 @@ function rowFromTerminal(row: TerminalSessionSummary, nowMs: number): LaneChatRo
       snoozed,
       woke: !snoozed && Boolean(sessionWokeMarker(row)),
       snoozeWakeLabel: snoozed ? snoozeWakeLabel(row.snoozedUntil, nowMs) : null,
-    }),
+    }, { subagentBusy }),
     elapsedSince: sessionElapsedAnchor(row, state.phase, state.liveness),
     activityAt: sessionActivityInstant(row),
     rank: phaseRank(state.phase),
@@ -150,11 +151,16 @@ export function buildLaneChatRows(args: {
   const nowMs = args.nowMs ?? Date.now();
   const rows: LaneChatRow[] = [];
   const seen = new Set<string>();
+  // Same rule as the Work tab, so a chat waiting on its subagent reads Waiting here too.
+  const busyParents = parentsWithBusySubagents(
+    args.terminals.filter((row) => row.laneId === args.laneId && !row.archivedAt),
+    nowMs,
+  );
   for (const row of args.terminals) {
     if (row.laneId !== args.laneId || row.archivedAt || seen.has(row.id)) continue;
     if (!row.toolType || row.toolType === "shell" || row.chatSessionId) continue;
     seen.add(row.id);
-    rows.push(rowFromTerminal(row, nowMs));
+    rows.push(rowFromTerminal(row, nowMs, busyParents.has(row.id)));
   }
   for (const chat of args.chats) {
     if (chat.laneId !== args.laneId || chat.archivedAt || seen.has(chat.sessionId)) continue;

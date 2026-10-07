@@ -31,6 +31,8 @@ import type { SearchResultItem } from "../../../shared/types/search";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
+import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { LaneMachineMarker } from "../terminals/LaneMachineMarker";
 import {
   SESSION_TONE_DOT_CLASS,
@@ -105,6 +107,8 @@ export type ThreadIndexEntry = {
   providerLower: string;
   /** Recency rank (ms). Ties in relevance fall back to "most recently touched". */
   recencyMs: number;
+  /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
+  subagentBusy: boolean;
 };
 
 function timestampMs(value: string | null | undefined): number {
@@ -134,6 +138,7 @@ function makeEntry(args: {
   machineName: string;
   machineOnline: boolean;
   binding: OpenProjectBinding | null;
+  subagentBusy: boolean;
 }): ThreadIndexEntry {
   const laneName = args.lane?.name ?? args.session.laneName ?? "";
   const branch = args.lane?.branchRef?.trim() || null;
@@ -159,6 +164,7 @@ function makeEntry(args: {
     provider,
     providerLower: provider.toLowerCase(),
     recencyMs: recencyRank(args.session),
+    subagentBusy: args.subagentBusy,
   };
 }
 
@@ -196,6 +202,8 @@ export function buildThreadIndex(
     /** Binding for the active remote tab, so actions route to its owner. */
     binding?: OpenProjectBinding | null;
   } | null = null,
+  /** The clock for the busy-subagent rule (a subagent's wake can turn overdue). */
+  nowMs: number = Date.now(),
 ): ThreadIndexEntry[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   // A remote-bound tab can render before the Work union retains that machine's
@@ -206,6 +214,7 @@ export function buildThreadIndex(
     : true;
   const seen = new Set<string>();
   const entries: ThreadIndexEntry[] = [];
+  const localBusyParents = parentsWithBusySubagents(sessions, nowMs);
 
   for (const session of sessions) {
     seen.add(session.id);
@@ -217,6 +226,7 @@ export function buildThreadIndex(
         machineName: activeMachine?.machineName ?? THIS_MACHINE_NAME,
         machineOnline: activeMachineOnline,
         binding: activeMachine?.binding ?? null,
+        subagentBusy: localBusyParents.has(session.id),
       }),
     );
   }
@@ -225,6 +235,7 @@ export function buildThreadIndex(
     const foreignLaneById = new Map(
       (machine.lanes ?? []).map((lane) => [lane.id, lane] as const),
     );
+    const foreignBusyParents = parentsWithBusySubagents(machine.sessions ?? [], nowMs);
     for (const session of machine.sessions ?? []) {
       // Id dedupe rather than a binding comparison: when the tab is bound to a
       // remote, that machine's slice and the local list are the same sessions,
@@ -239,6 +250,7 @@ export function buildThreadIndex(
           machineName: machine.machineName,
           machineOnline: machine.online,
           binding: machine.binding ?? null,
+          subagentBusy: foreignBusyParents.has(session.id),
         }),
       );
     }
@@ -422,9 +434,19 @@ export function useThreadIndex(
     binding?: OpenProjectBinding | null;
   } | null = null,
 ): ThreadIndexEntry[] {
+  // Each entry carries a time-dependent busy-subagent flag, so the index is
+  // rebuilt when a stall or wake deadline passes, not only when rows change.
+  const clockSessions = useMemo(
+    () => [
+      ...sessions,
+      ...Object.values(foreignMachines).flatMap((machine) => machine.sessions ?? []),
+    ],
+    [sessions, foreignMachines],
+  );
+  const clockMs = useTurnStallClock(clockSessions);
   return useMemo(
-    () => buildThreadIndex(sessions, lanes, foreignMachines, activeMachine),
-    [sessions, lanes, foreignMachines, activeMachine],
+    () => buildThreadIndex(sessions, lanes, foreignMachines, activeMachine, clockMs),
+    [sessions, lanes, foreignMachines, activeMachine, clockMs],
   );
 }
 
@@ -436,6 +458,7 @@ export function useThreadIndex(
 export function threadStatusPresentation(
   session: TerminalSessionSummary,
   nowMs: number = Date.now(),
+  subagentBusy = false,
 ): SessionStatusPresentation | null {
   const snoozed = isSessionSnoozed(session, nowMs);
   const woke = !snoozed && sessionWokeMarker(session, nowMs) != null;
@@ -443,7 +466,7 @@ export function threadStatusPresentation(
     snoozed,
     woke,
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil, nowMs) : null,
-  });
+  }, { subagentBusy });
 }
 
 function ThreadGlyph({ session }: { session: TerminalSessionSummary }) {
@@ -479,7 +502,7 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
   onAction?: (entry: ThreadIndexEntry, action: ThreadRowAction) => void;
 }) {
   const { session } = entry;
-  const status = threadStatusPresentation(session);
+  const status = threadStatusPresentation(session, Date.now(), entry.subagentBusy);
   const canonical = canonicalInputFromSummary(session);
   const canonicalState = sessionCanonicalUiState(canonical);
   const isSettled = canonicalState.phase === "settled";

@@ -724,6 +724,7 @@ struct WorkSessionListRow: View {
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
+  var waitingOnSubagent: Bool = false
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -930,7 +931,8 @@ struct WorkSessionListRow: View {
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
           nestedSubagent: nestedSubagent,
-          showsLaneIdentity: showsLaneIdentity
+          showsLaneIdentity: showsLaneIdentity,
+          waitingOnSubagent: waitingOnSubagent
         )
         .equatable()
       }

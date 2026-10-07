@@ -12,6 +12,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import { buildThreadIndex, threadStatusPresentation } from "./commandPaletteThreads";
 import {
   buildWorkToolCommands,
   commandsLeadPaletteResults,
@@ -1822,5 +1823,31 @@ describe("CommandPalette", () => {
       expect(await rowIsThread("browser", 0)).toBe(true);
       await expectKeyboardOrderMatchesRenderOrder("browser");
     });
+  });
+});
+
+describe("thread index: a chat waiting on its subagent", () => {
+  it("reads Waiting while the subagent's wake is ahead, and Done once it is overdue", () => {
+    const wakeAt = Date.parse("2026-04-01T12:10:00.000Z");
+    const parent = makeSession({ id: "parent", toolType: "codex-chat", runtimeState: "idle" });
+    const helper = makeSession({
+      id: "helper",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      spawnKind: "subagent",
+      orchestrationParentSessionId: "parent",
+      nextWakeAt: new Date(wakeAt).toISOString(),
+    });
+    const parentLabel = (nowMs: number) => {
+      const entry = buildThreadIndex([parent, helper] as never, [], {}, null, nowMs)
+        .find((candidate) => candidate.session.id === "parent");
+      expect(entry, "parent is indexed").toBeTruthy();
+      return threadStatusPresentation(entry!.session, nowMs, entry!.subagentBusy)?.label;
+    };
+
+    expect(parentLabel(wakeAt - 60_000)).toBe("Waiting");
+    // The index is rebuilt at the overdue deadline with no new rows; the flag
+    // must follow the clock it was built with, not the moment of first build.
+    expect(parentLabel(wakeAt + 5 * 60_000)).toBe("Done");
   });
 });
