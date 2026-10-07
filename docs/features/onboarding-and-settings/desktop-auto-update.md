@@ -247,7 +247,12 @@ same way for all of them while the status is `ready`:
 | --- | --- |
 | Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
 | Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | Nothing changes. Both the `error` event and a rejected `checkForUpdates()` return early while the status is still `ready`, logging `autoUpdate.ready_check_failed`. |
+| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+
+Every answered feed check records `lastCheckedAt` and clears any prior
+`checkFailure`. Settings → About shows the last check time, or the failure kind
+and time when the latest check did not get an answer. `ade update status` exposes
+the same timestamps and failure kind to CLI users.
 
 Every entry point first logs `autoUpdate.check_requested` with the current
 status and a `userInitiated` label, so an operator can tell whether a check was

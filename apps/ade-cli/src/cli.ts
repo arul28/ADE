@@ -26543,6 +26543,11 @@ function formatUpdateStatus(value: unknown): string {
       asString(errorDetails.phase) ?? "unknown phase"
     }${errorDetails.preservesDownload === true ? " · download preserved" : ""}`
     : null;
+  const checkFailure = isRecord(value.checkFailure) ? value.checkFailure : null;
+  const checkFailureAt = formatEpochTimestamp(checkFailure?.at);
+  const checkFailureLine = checkFailure
+    ? `${asString(checkFailure.kind) ?? "unknown"}${checkFailureAt ? ` at ${checkFailureAt}` : ""}`
+    : null;
 
   return renderKeyValues("ADE update", [
     ["status", value.status],
@@ -26556,6 +26561,8 @@ function formatUpdateStatus(value: unknown): string {
     ["recently installed", recentlyInstalledLine],
     ["auto-apply at", formatEpochTimestamp(autoApplyPending?.deadlineAt)],
     ["auto-apply suppressed until", formatEpochTimestamp(value.autoApplySuppressedUntil)],
+    ["last checked", formatEpochTimestamp(value.lastCheckedAt)],
+    ["check failed", checkFailureLine],
     ["error", errorLine],
     ["error detail", errorDetailLine],
   ]);

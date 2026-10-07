@@ -2569,6 +2569,8 @@ describe("ADE CLI", () => {
         lastInstallFailed: { targetVersion: "1.2.38", attempt: 2 },
         autoApplyPending: null,
         autoApplySuppressedUntil: null,
+        lastCheckedAt: Date.UTC(2026, 8, 30, 12),
+        checkFailure: { kind: "network", at: Date.UTC(2026, 8, 30, 11) },
       },
       { text: true } as any,
       inferFormatter(plan),
@@ -2578,6 +2580,10 @@ describe("ADE CLI", () => {
     expect(output).toContain("1.2.38 did not land");
     expect(output).toContain("attempt 2");
     expect(output).toContain("ade update install");
+    expect(output).toContain("last checked");
+    expect(output).toContain("2026-09-30T12:00:00.000Z");
+    expect(output).toContain("check failed");
+    expect(output).toContain("network at 2026-09-30T11:00:00.000Z");
   });
 
   it("renders progress and omits the install-failure row for a clean update snapshot", () => {
