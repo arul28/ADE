@@ -790,7 +790,7 @@ function getSharedTranscriptionService(logger: Logger): ReturnType<typeof create
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
       // The ~464 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
+      // so it never bloats the auto-update zip. See speechModelStore.
       modelDir: path.join(app.getPath("userData"), "whisper"),
     });
   }

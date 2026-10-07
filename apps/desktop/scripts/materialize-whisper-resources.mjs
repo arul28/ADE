@@ -14,12 +14,12 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const whisperRoot = path.join(desktopRoot, "resources", "whisper");
 const maxDownloadRedirects = 10;
-const configuredDownloadTimeoutMs = Number.parseInt(process.env.ADE_WHISPER_DOWNLOAD_TIMEOUT_MS ?? "", 10);
+const configuredDownloadTimeoutMs = Number.parseInt(process.env.ADE_SPEECH_DOWNLOAD_TIMEOUT_MS ?? "", 10);
 const downloadTimeoutMs =
   Number.isFinite(configuredDownloadTimeoutMs) && configuredDownloadTimeoutMs > 0
     ? configuredDownloadTimeoutMs
     : 120_000;
-const configuredDownloadAttempts = Number.parseInt(process.env.ADE_WHISPER_DOWNLOAD_RETRIES ?? "", 10);
+const configuredDownloadAttempts = Number.parseInt(process.env.ADE_SPEECH_DOWNLOAD_RETRIES ?? "", 10);
 // Large model + binary fetches over CDNs (HuggingFace xet-bridge, GitHub) hit
 // transient stalls; a single ETIMEDOUT must NOT sink a 20-minute release run.
 const maxDownloadAttempts =
@@ -32,8 +32,9 @@ const universalDarwinArchs = ["arm64", "x86_64"];
 // Speech-to-text resources we materialize into resources/whisper/ for packaging:
 //   - transcribe-cli (per-platform transcribe.cpp binary, built from a pinned
 //     commit unless a prebuilt URL is configured)
-//   - parakeet-ultra-Q4_K_M.gguf (~464 MB) ONLY when ADE_SPEECH_BUNDLE_MODEL=1;
-//     normally the app downloads it at runtime (see whisperModelStore.ts)
+//   - parakeet-ultra-Q4_K_M.gguf (~464 MB) ONLY when ADE_SPEECH_BUNDLE_MODEL=1,
+//     for local dev runs (packaging excludes *.gguf); the app downloads it at
+//     runtime (see speechModelStore.ts)
 //
 // These MUST NOT be committed. They land under the packaged app's
 // resources/whisper/ via extraResources. The directory keeps its historical
@@ -42,7 +43,7 @@ const universalDarwinArchs = ["arm64", "x86_64"];
 
 const MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
 // Commit-pinned Hugging Face URL, so the bytes can never change under the
-// pinned digest. Keep in sync with whisperModelStore.ts.
+// pinned digest. Keep in sync with speechModelStore.ts.
 const DEFAULT_MODEL_URL =
   "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/39eeb55181f0d354fd934f06e92fd8d5037fed8e/parakeet-ultra-Q4_K_M.gguf";
 // Matches the Git LFS oid Hugging Face reports for that file.
@@ -345,6 +346,16 @@ async function cloneTranscribeSource(srcDir) {
   }
 }
 
+const WINDOWS_UTF8_MANIFEST = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>
+`;
+
 // Configure + build transcribe-cli for one architecture; returns the binary path.
 async function buildTranscribeCli(srcDir, buildDir, arch) {
   const configureArgs = [
@@ -365,6 +376,17 @@ async function buildTranscribeCli(srcDir, buildDir, arch) {
     // binary so there is no separate .metallib to ship.
     const metal = arch === "arm64" ? "ON" : "OFF";
     configureArgs.push(`-DTRANSCRIBE_METAL=${metal}`, `-DGGML_METAL_EMBED_LIBRARY=${metal}`);
+  }
+  if (process.platform === "win32") {
+    // Static CRT: ADE does not ship the Visual C++ runtime, so a /MD build
+    // fails to start on a clean machine (STATUS_DLL_NOT_FOUND).
+    configureArgs.push("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded");
+    // UTF-8 code page: without it Windows hands argv over in the ANSI code
+    // page, and transcribe.cpp decodes the model path as UTF-8, so every
+    // profile path with a non-ASCII character fails to load the model.
+    const manifestPath = path.join(path.dirname(buildDir), "utf8.manifest");
+    await fs.writeFile(manifestPath, WINDOWS_UTF8_MANIFEST);
+    configureArgs.push(`-DCMAKE_EXE_LINKER_FLAGS=/MANIFEST:EMBED "/MANIFESTINPUT:${manifestPath}"`);
   }
   await spawnStep("cmake", configureArgs);
   await spawnStep("cmake", [
@@ -490,15 +512,16 @@ async function main() {
   await fs.mkdir(whisperRoot, { recursive: true });
   await removeLegacyFiles();
   // The speech model is NOT bundled: the app downloads it at runtime
-  // (whisperModelStore) so it never bloats the auto-update zip. Only the small
+  // (speechModelStore) so it never bloats the auto-update zip. Only the small
   // transcribe-cli binary is materialized for packaging. Set
-  // ADE_SPEECH_BUNDLE_MODEL=1 to also fetch the model (e.g. an offline build).
+  // ADE_SPEECH_BUNDLE_MODEL=1 to also fetch the model for local dev runs; the
+  // package filter excludes *.gguf, so it never ships.
   if (process.env.ADE_SPEECH_BUNDLE_MODEL === "1") {
     await materializeModel();
   } else {
     console.log(
       "[whisper-resources] Skipping model bundling (runtime-downloaded). " +
-        `Set ADE_SPEECH_BUNDLE_MODEL=1 to bundle ${MODEL_BASENAME}.`,
+        `Set ADE_SPEECH_BUNDLE_MODEL=1 to fetch ${MODEL_BASENAME} for local dev runs.`,
     );
   }
   await materializeBinary();

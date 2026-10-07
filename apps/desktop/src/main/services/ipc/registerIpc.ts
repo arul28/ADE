@@ -8617,7 +8617,7 @@ export function registerIpc({
 
   // ── Voice-to-text dictation ──────────────────────────────────────────────
   // The transcription service is project-independent (no DB / lane deps): it
-  // only needs the bundled whisper binary + model + the shared glossary. It is
+  // only needs the bundled transcribe-cli binary + model + the shared glossary. It is
   // resolved from the active context, where it is threaded as a shared
   // singleton (see main.ts).
   type TranscriptionPcmFormat = "int16" | "float32";
@@ -8722,7 +8722,7 @@ export function registerIpc({
     return service.getStatus();
   });
 
-  // Download the ~141 MB speech model on demand (first dictation). Streams to
+  // Download the ~464 MB speech model on demand (first dictation). Streams to
   // disk in the main process; progress is pushed to the requesting renderer.
   ipcMain.handle(
     IPC.transcriptionDownloadModel,

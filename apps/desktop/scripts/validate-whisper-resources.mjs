@@ -93,9 +93,9 @@ async function main() {
   await statFile(glossaryPath, "voice glossary");
   await validateVoiceGlossary(glossaryPath);
 
-  // Model is downloaded at runtime (whisperModelStore), NOT bundled — so it is
+  // Model is downloaded at runtime (speechModelStore), NOT bundled — so it is
   // optional at build/package time. Validate it only if a copy is present
-  // (e.g. an offline build with ADE_SPEECH_BUNDLE_MODEL=1).
+  // (fetched for local dev runs with ADE_SPEECH_BUNDLE_MODEL=1).
   const modelPath = path.join(whisperRoot, MODEL_BASENAME);
   let modelStat = null;
   try {

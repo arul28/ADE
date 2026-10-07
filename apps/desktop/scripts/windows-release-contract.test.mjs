@@ -129,7 +129,7 @@ test("local Windows test builds omit only cross-platform runtime sidecars", () =
   assert.match(windowsTestBuild, /npm\.cmd.*"run", "dist:win"/s);
   assert.match(runtimeValidator, /const runtimeTargetSet = resolveRuntimeTargets\(\);/);
   assert.match(winArtifactValidator, /Local test build: skipping the remote runtime sidecar assertion/);
-  assert.match(whisperValidator, /Local Windows test build: Whisper CLI is not bundled/);
+  assert.match(whisperValidator, /Local Windows test build: transcribe-cli is not bundled/);
   assert.match(electronBuilderWrapper, /windowsHide: process\.platform === "win32"/);
   // `@opencode/cli`'s postinstall copies the native binary into its own bin/ on
   // every platform. OpenCode is fetched into the machine tools cache now, so that

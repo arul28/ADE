@@ -26,7 +26,7 @@ import path from "node:path";
  * Licensing: the model is CC-BY-4.0 (attribution in NOTICE).
  */
 
-export const WHISPER_MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
+export const SPEECH_MODEL_BASENAME = "parakeet-ultra-Q4_K_M.gguf";
 
 /**
  * Files earlier ADE versions downloaded into the same directory (plus their
@@ -39,39 +39,39 @@ const LEGACY_MODEL_BASENAMES = ["ggml-base.en.bin", "ggml-base.en.bin.part"];
  * bytes behind the URL can never change under the pinned digest. Overridable via
  * env for tests / mirrors (an override must bring its own sha256).
  */
-export const DEFAULT_WHISPER_MODEL_URL =
+export const DEFAULT_SPEECH_MODEL_URL =
   "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/39eeb55181f0d354fd934f06e92fd8d5037fed8e/parakeet-ultra-Q4_K_M.gguf";
-export const DEFAULT_WHISPER_MODEL_SHA256 =
+export const DEFAULT_SPEECH_MODEL_SHA256 =
   "c69b7a5f9071a7afd8a1818ef7ae542c386c4b01ed0cac380c19a99947646bf9";
-export const DEFAULT_WHISPER_MODEL_BYTES = 486_280_096;
+export const DEFAULT_SPEECH_MODEL_BYTES = 486_280_096;
 const MIN_PLAUSIBLE_MODEL_BYTES = 400 * 1024 * 1024; // ~464 MB; guard truncation.
 
 const maxDownloadRedirects = 10;
 const downloadTimeoutMs = 120_000;
 
-export type WhisperModelSource = {
+export type SpeechModelSource = {
   url: string;
   sha256: string;
   /** Expected byte size, used only for progress reporting (best effort). */
   expectedBytes?: number;
 };
 
-export function defaultWhisperModelSource(): WhisperModelSource {
+export function defaultSpeechModelSource(): SpeechModelSource {
   return {
-    url: process.env.ADE_SPEECH_MODEL_URL?.trim() || DEFAULT_WHISPER_MODEL_URL,
-    sha256: process.env.ADE_SPEECH_MODEL_SHA256?.trim() || DEFAULT_WHISPER_MODEL_SHA256,
-    expectedBytes: DEFAULT_WHISPER_MODEL_BYTES,
+    url: process.env.ADE_SPEECH_MODEL_URL?.trim() || DEFAULT_SPEECH_MODEL_URL,
+    sha256: process.env.ADE_SPEECH_MODEL_SHA256?.trim() || DEFAULT_SPEECH_MODEL_SHA256,
+    expectedBytes: DEFAULT_SPEECH_MODEL_BYTES,
   };
 }
 
-export function whisperModelPath(modelDir: string): string {
-  return path.join(modelDir, WHISPER_MODEL_BASENAME);
+export function speechModelPath(modelDir: string): string {
+  return path.join(modelDir, SPEECH_MODEL_BASENAME);
 }
 
 /** Present + non-truncated on disk (cheap stat check, no hashing). */
-export function isWhisperModelInstalled(modelDir: string, minBytes = MIN_PLAUSIBLE_MODEL_BYTES): boolean {
+export function isSpeechModelInstalled(modelDir: string, minBytes = MIN_PLAUSIBLE_MODEL_BYTES): boolean {
   try {
-    const stat = fs.statSync(whisperModelPath(modelDir));
+    const stat = fs.statSync(speechModelPath(modelDir));
     return stat.isFile() && stat.size >= minBytes;
   } catch {
     return false;
@@ -167,34 +167,34 @@ function sleep(ms: number): Promise<void> {
  * the check is whether the files exist, not which ADE version wrote them.
  */
 export async function removeStaleModelFiles(modelDir: string): Promise<void> {
-  const stale = [...LEGACY_MODEL_BASENAMES, `${WHISPER_MODEL_BASENAME}.part`];
+  const stale = [...LEGACY_MODEL_BASENAMES, `${SPEECH_MODEL_BASENAME}.part`];
   for (const basename of stale) {
     await fsp.rm(path.join(modelDir, basename), { force: true });
   }
 }
 
-export type DownloadWhisperModelResult = { modelPath: string };
+export type DownloadSpeechModelResult = { modelPath: string };
 
 /**
- * Ensure the model is installed at `<modelDir>/<WHISPER_MODEL_BASENAME>`. If already
+ * Ensure the model is installed at `<modelDir>/<SPEECH_MODEL_BASENAME>`. If already
  * present (and non-truncated) this is a no-op. Otherwise download with bounded
  * retry, verify sha256, and install atomically. Concurrent callers are NOT
  * deduped here — the caller (transcription service) serializes via a single
  * in-flight promise.
  */
-export async function downloadWhisperModel(args: {
+export async function downloadSpeechModel(args: {
   modelDir: string;
-  source?: WhisperModelSource;
+  source?: SpeechModelSource;
   onProgress?: (p: DownloadProgress) => void;
   signal?: AbortSignal;
   maxAttempts?: number;
   /** Minimum plausible model size (truncation guard); overridable for tests. */
   minBytes?: number;
-}): Promise<DownloadWhisperModelResult> {
-  const source = args.source ?? defaultWhisperModelSource();
+}): Promise<DownloadSpeechModelResult> {
+  const source = args.source ?? defaultSpeechModelSource();
   const minBytes = args.minBytes ?? MIN_PLAUSIBLE_MODEL_BYTES;
-  const modelPath = whisperModelPath(args.modelDir);
-  if (isWhisperModelInstalled(args.modelDir, minBytes)) {
+  const modelPath = speechModelPath(args.modelDir);
+  if (isSpeechModelInstalled(args.modelDir, minBytes)) {
     return { modelPath };
   }
 

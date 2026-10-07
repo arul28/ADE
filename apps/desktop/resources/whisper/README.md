@@ -15,7 +15,7 @@ materialized at build/release time. The directory keeps its historical
 The speech model is **not** bundled. The app downloads
 `parakeet-ultra-Q4_K_M.gguf` (~464 MB, CC-BY-4.0) on demand into
 `<userData>/whisper/` from a commit-pinned Hugging Face URL and verifies its
-SHA-256 (see `src/main/services/transcription/whisperModelStore.ts`).
+SHA-256 (see `src/main/services/transcription/speechModelStore.ts`).
 
 ## How they get here
 
@@ -32,8 +32,11 @@ macOS, Visual Studio Build Tools on Windows). Overrides:
 - `ADE_TRANSCRIBE_SRC_REPO` / `ADE_TRANSCRIBE_SRC_REF` — source repo and commit.
 - `ADE_TRANSCRIBE_CLI_URL` (or `ADE_TRANSCRIBE_CLI_URL_<TARGET>`) plus the
   matching `ADE_TRANSCRIBE_CLI_SHA256` — use a prebuilt binary instead.
-- `ADE_SPEECH_BUNDLE_MODEL=1` — also download the model here (with
-  `ADE_SPEECH_MODEL_URL` / `ADE_SPEECH_MODEL_SHA256` for a mirror).
+- `ADE_SPEECH_BUNDLE_MODEL=1` — also download the model here for local dev
+  runs (with `ADE_SPEECH_MODEL_URL` / `ADE_SPEECH_MODEL_SHA256` for a mirror).
+  Packaging excludes `*.gguf`, so it never ships in the app.
+- `ADE_SPEECH_REQUIRE_UNIVERSAL=1` — build a universal (arm64 + x86_64) macOS
+  binary; the `dist:mac:universal:*` scripts set it.
 
 Builds never use `-march=native`: x86-64 targets AVX2 (x86-64-v3), and arm64
 uses ggml's portable defaults, so a binary built on CI runs on users' CPUs.

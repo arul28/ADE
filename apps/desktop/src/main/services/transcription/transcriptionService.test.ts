@@ -1,7 +1,9 @@
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   __resetGlossaryCacheForTests,
@@ -10,7 +12,9 @@ import {
   prepareGlossary,
   type VoiceGlossary,
 } from "./dictationCleanup";
-import { buildWhisperArgs } from "./transcriptionService";
+import { createTranscriptionService, TranscriptionError } from "./transcriptionService";
+
+vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 // Load the real shipped glossary so the table cases assert against the actual
 // corrections/fillers users get, not a fixture that can drift.
@@ -108,6 +112,16 @@ describe("desktop voice transcription", () => {
       expect(clean("   \n  ")).toBe("");
     });
 
+    // Parakeet punctuates fillers itself; removing one must not strand its comma.
+    it.each([
+      ["Um, rebase the work tree.", "Rebase the worktree."],
+      ["So, uh, we should ship it.", "So, we should ship it."],
+      ["Um. Ship it.", "Ship it."],
+      ["We ship it. Um, then merge.", "We ship it. Then merge."],
+    ])("removes a punctuated filler cleanly: %s", (raw, expected) => {
+      expect(clean(raw)).toBe(expected);
+    });
+
     it("handles a full jargon-heavy prompt end to end", () => {
       expect(
         clean("um rebase the work tree onto main and squash then run vitest"),
@@ -137,24 +151,93 @@ describe("desktop voice transcription", () => {
     });
   });
 
-  describe("buildWhisperArgs", () => {
-    const args = buildWhisperArgs("/models/ggml-base.en.bin", "/tmp/clip.wav");
+  describe("transcription service", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
+    const exe = process.platform === "win32" ? ".exe" : "";
+    let root: string;
+    let resourcesPath: string;
+    let modelDir: string;
 
-    it("uses -oj for the JSON sidecar", () => {
-      expect(args).toContain("-oj");
-      expect(args).not.toContain("-otj");
+    // A model file large enough to count as complete (sparse; no real bytes written).
+    const writeCompleteModel = (filePath: string) => {
+      const fd = fs.openSync(filePath, "w");
+      try {
+        fs.ftruncateSync(fd, 401 * 1024 * 1024);
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
+    const createService = () =>
+      createTranscriptionService({ logger, isPackaged: true, resourcesPath, modelDir, glossary });
+    const waitFor = async (check: () => boolean) => {
+      for (let i = 0; i < 100 && !check(); i += 1) await new Promise((r) => setImmediate(r));
+    };
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-transcription-"));
+      resourcesPath = path.join(root, "resources");
+      modelDir = path.join(root, "userData", "whisper");
+      fs.mkdirSync(path.join(resourcesPath, "whisper"), { recursive: true });
+      fs.mkdirSync(modelDir, { recursive: true });
+      fs.writeFileSync(path.join(resourcesPath, "whisper", `transcribe-cli${exe}`), "");
     });
 
-    it("passes the model and audio file paths", () => {
-      expect(args).toEqual(
-        expect.arrayContaining(["-m", "/models/ggml-base.en.bin", "-f", "/tmp/clip.wav"]),
-      );
+    afterEach(() => {
+      vi.mocked(spawn).mockReset();
+      fs.rmSync(root, { recursive: true, force: true });
     });
 
-    it("forces English and suppresses prints", () => {
-      expect(args).toContain("-l");
-      expect(args).toContain("en");
-      expect(args).toContain("-np");
+    it("clears stale model files at startup and enables dictation only for a complete new model", async () => {
+      const stale = ["ggml-base.en.bin", "ggml-base.en.bin.part", "parakeet-ultra-Q4_K_M.gguf.part"];
+      for (const name of stale) fs.writeFileSync(path.join(modelDir, name), "old");
+      const modelPath = path.join(modelDir, "parakeet-ultra-Q4_K_M.gguf");
+      fs.writeFileSync(modelPath, "truncated");
+
+      const service = createService();
+      await waitFor(() => stale.every((name) => !fs.existsSync(path.join(modelDir, name))));
+
+      expect(fs.readdirSync(modelDir)).toEqual(["parakeet-ultra-Q4_K_M.gguf"]);
+      expect(service.getStatus()).toMatchObject({ installed: false, modelInstalled: false });
+      await expect(service.transcribe(new Int16Array(1600))).rejects.toMatchObject({
+        code: "model_not_installed",
+      });
+
+      writeCompleteModel(modelPath);
+      expect(service.getStatus()).toMatchObject({ installed: true, modelPath });
+      service.dispose();
+    });
+
+    it("returns the cleaned transcript transcribe-cli writes, and fails on a non-zero exit", async () => {
+      writeCompleteModel(path.join(modelDir, "parakeet-ultra-Q4_K_M.gguf"));
+      const fakeRun = (exitCode: number) => (_binary: string, args: readonly string[]) => {
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new EventEmitter(),
+          stderr: new EventEmitter(),
+          kill: vi.fn(),
+        });
+        setImmediate(() => {
+          if (exitCode === 0) {
+            fs.writeFileSync(args[args.indexOf("-o") + 1]!, "  um, rebase the work tree onto main.\n");
+          } else {
+            child.stderr.emit("data", Buffer.from("illegal instruction"));
+          }
+          child.emit("close", exitCode);
+        });
+        return child as never;
+      };
+      const service = createService();
+
+      vi.mocked(spawn).mockImplementation(fakeRun(0) as never);
+      await expect(service.transcribe(new Int16Array(1600))).resolves.toEqual({
+        raw: "um, rebase the work tree onto main.",
+        cleaned: "Rebase the worktree onto main.",
+      });
+
+      vi.mocked(spawn).mockImplementation(fakeRun(132) as never);
+      const failure = await service.transcribe(new Int16Array(1600)).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(TranscriptionError);
+      expect(failure).toMatchObject({ code: "transcribe_failed" });
+      service.dispose();
     });
   });
 });

@@ -57,6 +57,12 @@ function wholePhraseRegExp(phrase: string): RegExp {
   return new RegExp(`(^|[^\\p{L}\\p{N}])(${escaped})(?=[^\\p{L}\\p{N}]|$)`, "giu");
 }
 
+/** Like {@link wholePhraseRegExp}, but also consumes a comma right after the filler. */
+function fillerRegExp(phrase: string): RegExp {
+  const escaped = escapeRegExp(phrase.trim());
+  return new RegExp(`(^|[^\\p{L}\\p{N}])(${escaped})(?:\\s*,)?(?=[^\\p{L}\\p{N}]|$)`, "giu");
+}
+
 /**
  * Prepare a raw glossary for repeated use: corrections sorted longest-first so
  * the longest matching phrase always wins.
@@ -92,15 +98,17 @@ export function cleanTranscript(raw: string, glossary: PreparedGlossary): string
   let text = (raw ?? "").trim();
   if (!text) return "";
 
-  // (b) Remove fillers as standalone tokens/phrases.
+  // (b) Remove fillers as standalone tokens/phrases, together with the comma a
+  // punctuating model puts after them ("Um, rebase" -> "rebase").
   for (const filler of glossary.fillers) {
-    const matcher = wholePhraseRegExp(filler);
+    const matcher = fillerRegExp(filler);
     // Replace the matched phrase but keep the leading boundary char so adjacent
     // words don't fuse (e.g. "um so" -> " so", later collapsed).
     text = text.replace(matcher, (_full, lead: string) => lead);
   }
-  // Collapse double spaces introduced by filler removal.
-  text = text.replace(/[ \t]{2,}/g, " ").trim();
+  // Collapse double spaces introduced by filler removal, and drop punctuation
+  // a removed opening filler left at the very start ("Um. Rebase" -> "Rebase").
+  text = text.replace(/[ \t]{2,}/g, " ").trim().replace(/^[,.;:]+\s*/, "");
 
   // (c) Apply corrections, longest-first.
   for (const { from, to } of glossary.corrections) {
