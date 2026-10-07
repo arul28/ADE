@@ -36,7 +36,6 @@ const DISPOSE_DRAIN_MS = 2_000;
 
 export function createAppControlRecorderBridgeClient(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
   logger: Logger;
 }): AppControlScreencastRecorderBackend & { dispose(): void } {
   const { logger } = args;
@@ -44,7 +43,6 @@ export function createAppControlRecorderBridgeClient(args: {
   const DISPOSED = "The App Control recorder bridge was disposed.";
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,
-    getAuthToken: args.getAuthToken,
     unavailableMessage: NO_DESKTOP,
     closedMessage: DISPOSED,
   });

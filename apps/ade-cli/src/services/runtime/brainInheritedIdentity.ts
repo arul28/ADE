@@ -2,7 +2,7 @@
  * A brain has no caller identity of its own.
  *
  * ADE stamps every agent shell with who is calling: the chat session, the
- * orchestration run, the browser capability minted for that chat. A CLI run
+ * orchestration run. A CLI run
  * from that shell reads them to say "this call is that agent's". A brain must
  * not: it serves every client on the machine, and the env caller context in
  * `adeRpcServer` falls back to the process env for EVERY connection that did
@@ -28,7 +28,6 @@ export const BRAIN_INHERITED_CALLER_ENV_KEYS = [
   "ADE_CHAT_SESSION_ID",
   "ADE_PARENT_CHAT_SESSION_ID",
   "ADE_SPAWN_KIND",
-  "ADE_BROWSER_ACTOR_TOKEN",
   "ADE_RUN_ID",
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",

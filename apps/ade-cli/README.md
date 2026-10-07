@@ -972,16 +972,14 @@ same module behind an IPC snapshot feed for onboarding; there is nothing for
 `ade actions run` to reach that `ade tools status|ensure|gc` does not already
 cover.
 
-`ade browser` is capability-gated: the runtime accepts a `built_in_browser`
-action only from a chat or terminal ADE launched — one that carries the
-`ADE_BROWSER_ACTOR_TOKEN` the desktop minted for it — and the desktop, not the
-daemon, resolves that token, so a call always runs against the lane and tab
-collection it was minted for. A caller-supplied `--lane` on a
-`built_in_browser` action is dropped for that reason; `--lane` still selects
-which lane a *claim* attributes a tab to. `--force` is a reserved takeover
-flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
-on a machine with no ADE window: those three are forwarded to a desktop that
-has this lane pinned, which resolves its own capability there.
+`ade browser` needs no token: any process on this machine may use it, like
+`ade mac-desktop`. From a chat, the runtime tags each call with that chat and
+its lane (or the personal tab collection), so the chat owns the tabs it opens;
+a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
+`--lane` is kept and the call owns no tab. `--force` is a reserved takeover
+flag and the runtime rejects it, and calls from another machine's brain are
+refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
+forwarded to a desktop that has this lane pinned.
 
 `ade app-control` is not gated by a capability of its own — there is no
 app_control actor token, and the daemon has no app_control-specific scoping

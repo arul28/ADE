@@ -9743,10 +9743,9 @@ const adeBridge = {
    * to drive. The pin only localizes URLs: on a remote pin a loopback URL is
    * rewritten onto a port forward (`withLocalizedBrowserUrl`), and
    * `acknowledgeRemoteRequest` deliberately answers the pinned daemon. A local pin
-   * must not go through that checkout's runtime: the runtime's browser gate admits
-   * only an agent's own chat (with its actor capability), so this window — a
-   * person's client with no chat identity — was refused every call whenever its
-   * session sat on another binding than the tab. Methods keep their `pin`
+   * must not go through that checkout's runtime: the runtime tags calls with the
+   * caller's chat and lane, and this window — a person's client with no chat
+   * identity — must act on the tab it shows, not on another binding's. Methods keep their `pin`
    * parameter so every call site stays uniform.
    */
   builtInBrowser: {

@@ -10,6 +10,7 @@ import {
   ArrowSquareOut,
   Bug,
   Camera,
+  ChatCircleText,
   Check,
   CursorClick,
   DeviceMobile,
@@ -71,6 +72,8 @@ export type BrowserOverflowMenuProps = {
   onNewTab: () => void;
   /** …and so does closing one. Null when there is no tab to close. */
   onCloseTab: (() => void) | null;
+  /** …and so does "Attach to chat". Null when there is no tab or no chat. */
+  onAttachTab: (() => void) | null;
   devToolsOpen: boolean;
   onToggleDevTools: () => void;
   networkLogging: boolean;
@@ -101,6 +104,7 @@ export function BrowserOverflowMenu({
   onOpenFind,
   onNewTab,
   onCloseTab,
+  onAttachTab,
   devToolsOpen,
   onToggleDevTools,
   networkLogging,
@@ -216,6 +220,13 @@ export function BrowserOverflowMenu({
               <X size={12} className="shrink-0 opacity-70" />
               <span className="min-w-0 flex-1 truncate">Close tab</span>
               <span className="shrink-0 font-mono text-[9.5px] text-muted-fg/70">{modifierChordLabel("W")}</span>
+            </DropdownMenu.Item>
+          ) : null}
+          {/* The composer takes focus after the chip, so the menu waives the restore. */}
+          {onAttachTab ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={handOffFocus(onAttachTab)}>
+              <ChatCircleText size={12} className="shrink-0 opacity-70" />
+              <span className="min-w-0 flex-1 truncate">Attach tab to chat</span>
             </DropdownMenu.Item>
           ) : null}
 

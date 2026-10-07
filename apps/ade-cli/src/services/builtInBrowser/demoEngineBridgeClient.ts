@@ -35,14 +35,12 @@ const CANCEL_TIMEOUT_MS = 5_000;
 
 export function createDemoEngineBridgeClient(args: {
   socketPath: string;
-  getAuthToken: () => string | null;
   logger: Logger;
 }): DemoEngine & { dispose(): void } {
   const { logger } = args;
   const NO_DESKTOP = "Rendering this demo needs the ADE desktop app on this machine, and none is attached.";
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,
-    getAuthToken: args.getAuthToken,
     unavailableMessage: NO_DESKTOP,
     closedMessage: "The demo engine bridge was disposed.",
   });

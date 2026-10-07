@@ -2858,10 +2858,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   waits up to 2 minutes, printing "waiting for the user to allow this chat to
   use the ADE browser" once, and a Block fails with "approval_blocked: the user
   blocked this chat from using the ADE browser". One answer covers every site.
-  The runtime
-  accepts browser commands only from ADE-launched chat/terminal sessions with
-  a browser capability, validates lane/chat identity, and rejects agent force
-  takeovers. Profile diagnostics and remembered-permission administration stay
+  Any process
+  on this machine may drive the browser; a chat's calls are tagged with that
+  chat and its lane so it owns its tabs, and agent force takeovers are
+  refused. Profile diagnostics and remembered-permission administration stay
   in the trusted ADE renderer.
 
   Every tab shares the user's sign-ins unless it is opened --isolated. An
@@ -20720,7 +20720,6 @@ function buildInitializeParams(
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
-  const browserActorToken = asString(process.env.ADE_BROWSER_ACTOR_TOKEN);
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
@@ -20733,7 +20732,6 @@ function buildInitializeParams(
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
       ...(envOwnerId ? { ownerId: envOwnerId } : {}),
-      ...(browserActorToken ? { browserActorToken } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",
@@ -23417,15 +23415,13 @@ async function runServe(
     });
   };
 
-  // The bridge token this machine's desktop app announced when it connected.
-  // "Update & restart" uses it to ask that app to install its own update: an
-  // app that owns the brain puts its own runtime back over a standalone one.
-  let machineDesktopBridgeAuthToken: string | null = null;
+  // "Update & restart" asks this machine's desktop app, when one is running, to
+  // install its own update: an app that owns the brain puts its own runtime
+  // back over a standalone one.
   const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
     const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
     const routing = await requestDesktopAppUpdate({
       socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
-      authToken: machineDesktopBridgeAuthToken,
       targetVersion,
     });
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
@@ -23524,9 +23520,6 @@ async function runServe(
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
           }),
-          onDesktopBridgeAuthToken: (authToken: string) => {
-            machineDesktopBridgeAuthToken = authToken;
-          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }),
       getRuntimeStatus: () => {

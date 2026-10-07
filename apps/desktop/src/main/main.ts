@@ -2094,7 +2094,6 @@ app.whenReady().then(async () => {
     // died with it. Set ADE_DEV_RUNTIME_SYNC=1 to opt a dev brain in on purpose.
     disableSync: !app.isPackaged && process.env.ADE_DEV_RUNTIME_SYNC !== "1",
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
-    desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
       // A service manager that refused the brain is the fleet failure nobody

@@ -406,7 +406,7 @@ How each surface decides the effect:
   than `about:blank` and other unsupported protocols stay blocked; site
   permission requests (camera, notifications, …) still use their own
   per-site prompt; a login handoff still hands control to the person;
-  the actor capability still binds each command to its chat and lane; tab
+  the runtime still tags each command with its chat and lane; tab
   leases still stop one chat from driving another chat's tab; and reaching a
   remote machine's port through a tunnel still needs its own yes.
 - **Mac Desktop.** The "before" is the observation the target was resolved

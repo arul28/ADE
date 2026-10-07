@@ -249,11 +249,6 @@ import {
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
-import {
-  localBrowserActorCapabilityIssuer,
-  type BrowserActorCapabilityIssuer,
-  type BuiltInBrowserActorCapability,
-} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
@@ -9893,12 +9888,6 @@ export function createAgentChatService(args: {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
-   * Who mints this chat's `ADE_BROWSER_ACTOR_TOKEN`. Electron main owns the
-   * capability registry and validates against it, so only Electron can issue
-   * locally; the runtime daemon passes an issuer backed by the desktop bridge.
-   */
-  browserActorCapabilityIssuer?: BrowserActorCapabilityIssuer | null;
-  /**
    * How long ADE waits for a native provider title before naming the chat
    * itself. Tests pass 0 so auto-title assertions do not sleep 8s.
    */
@@ -10075,8 +10064,6 @@ export function createAgentChatService(args: {
     : null;
   const sessionActivityReportingEnabled = args.sessionActivityReportingEnabled !== false;
   const claudeResumeDialogPreference = args.claudeResumeDialogPreference ?? null;
-  const browserActorCapabilityIssuer =
-    args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
   // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
   const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
@@ -10258,91 +10245,6 @@ export function createAgentChatService(args: {
       return null;
     }
     return buildLinearSessionDirective(links);
-  };
-
-  /**
-   * Tokens fetched from the desktop for a daemon-hosted chat. Electron main
-   * needs no cache — it mints straight out of the registry it owns.
-   */
-  const browserActorTokens = new Map<string, string>();
-  const browserActorTokenFlights = new Map<string, Promise<void>>();
-
-  const browserActorCapabilityFor = (
-    managed: ManagedChatSession,
-  ): BuiltInBrowserActorCapability => {
-    const personalSession = isPersonalSession(managed.session);
-    return {
-      chatSessionId: managed.session.id,
-      laneId: personalSession ? null : managed.session.laneId,
-      projectRoot: personalSession ? null : projectRoot,
-      tabCollection: personalSession ? "personal" : null,
-    };
-  };
-
-  /**
-   * Make this chat's browser capability available to `buildAgentRuntimeEnv`.
-   *
-   * Returns `null` in Electron main, which owns the capability registry and can
-   * mint inline — adding a suspension point there would reorder every agent
-   * launch. The runtime daemon has to ask the desktop over the bridge, so it
-   * gets a promise callers must await before building the env. Re-issuing on
-   * every launch is deliberate: it heals a chat whose token died with a
-   * previous desktop process. A failure (no desktop, headless machine) leaves
-   * the token absent rather than blocking the launch, and `ade browser` then
-   * reports that the bridge is not running.
-   *
-   * CONSTRAINT — why the `issueSync` fork stays: the obvious cleanup (drop
-   * `issueSync`, make `buildAgentRuntimeEnv` async, await `issue` inline) adds
-   * an `await` inside the synchronous stretch of agent launch that this
-   * service's dispatch ordering depends on. That ordering is load-bearing and
-   * asserted by the launch tests around it, so the sync path is kept and paid
-   * for with the preamble below.
-   *
-   * ORDERING — every `buildAgentRuntimeEnv(managed)` call site must be preceded
-   * by `const ready = prepareBrowserActorCapability(managed); if (ready) await
-   * ready;` in the same launch. Forget it and the env silently ships without
-   * `ADE_BROWSER_ACTOR_TOKEN` on daemon-hosted chats — an omission that
-   * compiles and reviews clean. The "browser actor capability on a
-   * daemon-hosted chat" tests in `agentChatServiceProviderLaunch.test.ts` cover each launch.
-   */
-  const prepareBrowserActorCapability = (
-    managed: ManagedChatSession,
-  ): Promise<void> | null => {
-    if (browserActorCapabilityIssuer.issueSync) return null;
-    const sessionId = managed.session.id;
-    const inFlight = browserActorTokenFlights.get(sessionId);
-    if (inFlight) return inFlight;
-    const flight = browserActorCapabilityIssuer
-      .issue(browserActorCapabilityFor(managed))
-      .then((token) => {
-        const normalized = token?.trim();
-        if (normalized) browserActorTokens.set(sessionId, normalized);
-        else browserActorTokens.delete(sessionId);
-      })
-      .catch((error: unknown) => {
-        browserActorTokens.delete(sessionId);
-        logger.warn("agent_chat.browser_actor_capability_issue_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        if (browserActorTokenFlights.get(sessionId) === flight) {
-          browserActorTokenFlights.delete(sessionId);
-        }
-      });
-    browserActorTokenFlights.set(sessionId, flight);
-    return flight;
-  };
-
-  const revokeBrowserActorToken = (chatSessionId: string): void => {
-    browserActorTokens.delete(chatSessionId);
-    void browserActorCapabilityIssuer.revoke(chatSessionId).catch((error: unknown) => {
-      logger.warn("agent_chat.browser_actor_capability_revoke_failed", {
-        sessionId: chatSessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
   };
 
   /** The account a new Claude or Codex chat starts on when nothing picked one. */
@@ -10605,8 +10507,8 @@ export function createAgentChatService(args: {
    *
    * For the helper lookups (rollout discovery, prompt-file discovery) that need
    * to read the same config home the runtime will launch against, but must not
-   * pay for `buildAgentRuntimeEnv` — which issues a browser capability token and
-   * writes a Linear context file as side effects.
+   * pay for `buildAgentRuntimeEnv` — which writes a Linear context file as a
+   * side effect.
    */
   const sessionProviderLookupEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const patch = providerInstanceEnvPatch(resolveSessionInstance(managed));
@@ -10666,12 +10568,9 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The skill-root slice of the agent environment, with no browser capability.
-   *
-   * `buildAgentRuntimeEnv` issues a browser actor token as a side effect and
-   * carries an ordering rule (`prepareBrowserActorCapability` must be awaited
-   * first). Reading skill roots needs none of that, so it reads the two
-   * variables `adeCliService.agentEnv()` sets and nothing else.
+   * The skill-root slice of the agent environment: the two variables
+   * `adeCliService.agentEnv()` sets and nothing else, without building the
+   * whole per-chat env.
    */
   const agentSkillRootEnv = (): NodeJS.ProcessEnv => getAdeCliAgentEnv?.(process.env) ?? process.env;
 
@@ -10751,25 +10650,10 @@ export function createAgentChatService(args: {
 
   const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const personalSession = isPersonalSession(managed.session);
-    const issueSync = browserActorCapabilityIssuer.issueSync;
-    let browserActorToken: string | null = null;
-    if (issueSync) {
-      try {
-        browserActorToken = issueSync(browserActorCapabilityFor(managed))?.trim() || null;
-      } catch (error) {
-        logger.warn("agent_chat.browser_actor_capability_issue_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    } else {
-      browserActorToken = browserActorTokens.get(managed.session.id) ?? null;
-    }
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
       ADE_DEFAULT_ROLE: "agent",
       ADE_CHAT_SESSION_ID: managed.session.id,
-      ...(browserActorToken ? { ADE_BROWSER_ACTOR_TOKEN: browserActorToken } : {}),
       ...(personalSession
         ? { ADE_CHAT_SCOPE: "personal" }
         : {
@@ -10794,9 +10678,6 @@ export function createAgentChatService(args: {
         };
       })(),
     };
-    // The daemon may itself run inside an agent shell that exported a token for
-    // a different chat. Never let an inherited one stand in for this chat's.
-    if (!browserActorToken) delete env.ADE_BROWSER_ACTOR_TOKEN;
     if (personalSession) {
       delete env.ADE_LANE_ID;
       delete env.ADE_PROJECT_ROOT;
@@ -15652,10 +15533,6 @@ export function createAgentChatService(args: {
       piRuntimeSetupInterruptRequested.delete(managed);
       throw new Error("Pi session interrupted during setup.");
     }
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
     if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
       throw new Error(installation.blocker ?? "Pi SDK is not available. Install Pi or configure ADE_PI_PACKAGE_ROOT.");
@@ -16129,11 +16006,6 @@ export function createAgentChatService(args: {
     const agent = openCodeAgentFor(permMode);
     const model = openCodeModelRefFor(managed, descriptor);
     const instructions = buildOpenCodeSessionInstructions(managed, runtimeShell.permissionMode);
-    // The session environment below is built once, here. Without this, a
-    // daemon-hosted OpenCode chat got no `ADE_BROWSER_ACTOR_TOKEN` and every
-    // `ade browser` call it made was refused.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     let handle: OpenCodeSessionHandle;
     try {
       handle = await startOpenCodeChatSession({
@@ -24192,7 +24064,6 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
-    revokeBrowserActorToken(managed.session.id);
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
@@ -29702,10 +29573,6 @@ export function createAgentChatService(args: {
     cliArgs: string[],
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const env = buildAgentRuntimeEnv(managed);
     const resolved = resolveClaudeCodeExecutable({ env });
     const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
@@ -30509,10 +30376,6 @@ export function createAgentChatService(args: {
     // dialect. Everything below is shared.
     const devinCloud = isDevinCloudAcpSession(managed.session) ? managed.session.devinCloud ?? null : null;
     const dialect = acpDialectFor(provider, { cloud: devinCloud !== null });
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const runtimeEnv = buildAgentRuntimeEnv(managed);
 
     if (provider === "kimi") {
@@ -37636,10 +37499,6 @@ export function createAgentChatService(args: {
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
     });
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
     try {
@@ -39428,10 +39287,6 @@ export function createAgentChatService(args: {
       claudeSubprocessReaper.reapForSession(managed.session.id, "claude_stale_start");
       throw new Error("Claude query start superseded by reset/interrupt");
     };
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const options = buildClaudeQueryOptions(managed, runtime);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
@@ -39826,10 +39681,6 @@ export function createAgentChatService(args: {
         }
       };
       try {
-        // Daemon-hosted chats fetch the browser capability from the desktop; in
-        // Electron main this is a no-op and the launch stays synchronous.
-        const browserCapabilityReady = prepareBrowserActorCapability(managed);
-        if (browserCapabilityReady) await browserCapabilityReady;
         const options = buildClaudeQueryOptions(managed, runtime);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
@@ -47383,10 +47234,6 @@ export function createAgentChatService(args: {
     let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
     let released = false;
     let recoveredMissingCursorSdkAgentId: string | null = null;
-    // Daemon-hosted chats fetch the browser capability from the desktop; in
-    // Electron main this is a no-op and the launch stays synchronous.
-    const browserCapabilityReady = prepareBrowserActorCapability(managed);
-    if (browserCapabilityReady) await browserCapabilityReady;
     const cursorRuntimeEnv = buildAgentRuntimeEnv(managed);
     const cursorActivityRuntime = resolveSessionActivityRuntime(
       managed.session,
@@ -50393,10 +50240,6 @@ export function createAgentChatService(args: {
         ]
         : undefined;
       const persisted = readPersistedState(managed.session.id);
-      // Daemon-hosted chats fetch the browser capability from the desktop; in
-      // Electron main this is a no-op and the launch stays synchronous.
-      const browserCapabilityReady = prepareBrowserActorCapability(managed);
-      if (browserCapabilityReady) await browserCapabilityReady;
       const acquired = await acquireDroidSdkConnection({
         poolKey,
         droidPath: resolveDroidExecutable({ auth }).path,
@@ -56483,7 +56326,6 @@ export function createAgentChatService(args: {
     managedSessions.delete(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
-    revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
@@ -59001,7 +58843,6 @@ export function createAgentChatService(args: {
       } catch {
         // ignore emergency shutdown failures
       }
-      revokeBrowserActorToken(sessionId);
     }
     managedSessions.clear();
     void flushAllQueuedTranscriptWrites();

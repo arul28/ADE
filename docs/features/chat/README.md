@@ -155,7 +155,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/ScenePreviewThumb.tsx` | The agent's latest `ade scene preview` picture under the live working indicator: `readScenePreviewPath` (either separator, spaces, JSON-encoded results decoded first) and `latestScenePreviewOutput` (only entries that ran `scene preview`, cached per entry). |
 | `apps/desktop/src/shared/scenePreview.ts` | `ade scene preview` contract: request/result types, the light preview palette, `sceneSourceFromInput` (bare body or whole fence) and `lintSceneSource` (the source mistakes the policy turns into blanks). |
 | `apps/desktop/src/main/services/scenes/scenePreviewRenderer.ts` | `renderScenePreview`: one scene in a hidden offscreen window on an in-memory partition that refuses network, navigation, popups and permissions; the chat's own document in a sandboxed srcdoc frame; ready/settle/errors/console collected, a PNG captured at the content height; serialized, 20 s deadline, window destroyed after each render. Fonts from the packaged renderer assets or the dev packages. Served to the brain as `scene_preview.render` by `desktopBridgeServer.ts`. |
-| `apps/ade-cli/src/services/builtInBrowser/desktopBridgeConnection.ts` | The daemon's one lazily opened connection to the desktop bridge, shared by the App Control recorder, demo engine and scene preview clients: bridge token on every call, connect deadline, reconnect after close, and the socket dropped only on a transport failure (an error answer keeps it, since the desktop ties work to the connection that started it). |
+| `apps/ade-cli/src/services/builtInBrowser/desktopBridgeConnection.ts` | The daemon's one lazily opened connection to the desktop bridge, shared by the App Control recorder, demo engine and scene preview clients: connect deadline, reconnect after close, and the socket dropped only on a transport failure (an error answer keeps it, since the desktop ties work to the connection that started it). |
 | `apps/ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient.ts` | The brain's side of `scene_preview.render` over the shared desktop bridge connection, one render in flight at a time so each request's timeout starts when it is sent; `runtime.getScenePreviewer()` is null while no desktop is attached. The `preview_scene` tool in `adeRpcServer.ts` writes the PNG under `.ade/cache/scene-previews/` (newest 20 kept); `ade scene preview` in `cli.ts` reads the file or stdin and formats the result (`scene-preview`). |
 | `apps/desktop/src/renderer/components/chat/useSceneStillLatch.ts` | The one decision "show the picture this scene already left behind, or run its code?", split out of `SceneFrame` so it can be reasoned about on its own. Latched on the FIRST render that can answer rather than derived, so `live` going false at the end of a turn never yanks a frame the user is watching. A picture decides immediately; a broker RECORD with its bytes still in flight also rehydrates and holds a placeholder, because a record is proof the code already ran and a scene must never be re-run merely because a cross-machine read is slow; neither, with the index settled or `SCENE_STILL_INDEX_WAIT_MS` (1.5 s) run out, runs the scene. That deadline bounds the per-chat index listing only. A preview read that comes back EMPTY — rejected, no route, non-string — is an answer and releases the latch back to running the scene, since a record whose bytes never arrive otherwise left a permanently blank row that never drew and never retried. A live mount and a mount with no scope key never wait at all. |
 | `apps/desktop/src/main/services/scenes/sceneDocumentStore.ts` | Backing store for the `ade-scene:` scheme, deliberately free of Electron so the interesting logic is unit-testable without a browser process. `put()` keys a document under a random id and returns `ade-scene://view/<id>`; `respond()` answers with the document plus the `Content-Security-Policy` and `Referrer-Policy` headers, or 404. `parseSceneRequestId` accepts both the authority and `///view/<id>` forms and rejects anything else rather than guessing. Bounded at `SCENE_STORE_CAPACITY` (64, insertion-ordered eviction). |
@@ -494,14 +494,13 @@ Presence is **derived, never announced**. An instruction to tell the user when
 it opens the browser is a fact an agent can forget, embellish, or leave set
 after it has moved on, so nothing an agent says feeds this. The evidence is the
 browser being driven: `desktopBridgeServer` records presence for every
-capability-validated `built_in_browser.*` command, keyed by the chat session the
-actor capability was minted for. Reads count too — `status` and `observe` are
+`built_in_browser.*` command that carries a chat, keyed by the chat session the
+runtime tagged it with. Reads count too — `status` and `observe` are
 how an agent looks at a page, and a badge that lit only for clicks would go dark
 while it read.
 
 `apps/desktop/src/main/services/builtInBrowser/builtInBrowserPresence.ts` owns
-the lifecycle, in memory and process-local like the actor capabilities it is
-keyed by:
+the lifecycle, in memory and process-local:
 
 - It **expires** twenty seconds after the last command, on a timer rather than a
   poll. An agent that walks away sends nothing to say so.
@@ -1761,7 +1760,7 @@ still-live button invites a second spend.
   emulation, zoom, find-in-page, DevTools, an opt-in full network log and
   a screen recording, all reachable from both the trusted renderer
   (`window.ade.builtInBrowser.*`) and `ade browser ...` through the same
-  actor-capability scoping. `setEmulation` applies a shared preset table
+  per-chat scoping. `setEmulation` applies a shared preset table
   (`shared/builtInBrowserEmulation.ts`: desktop, iPhone 17 / 17 Pro /
   17 Pro Max, iPad, Pixel, responsive) over CDP
   `Emulation.setDeviceMetricsOverride`; `setZoom` clamps
@@ -3189,8 +3188,7 @@ declares no kinds.
   path that builds its env from `process.env` instead silently runs that chat as
   the machine's default account — the failure is a turn that works and writes to
   the wrong account, not an error. The lookups that must not pay for
-  `buildAgentRuntimeEnv` (it issues a browser capability token and writes a
-  Linear context file as side effects) use `sessionProviderLookupEnv` instead;
+  `buildAgentRuntimeEnv` (it writes a Linear context file as a side effect) use `sessionProviderLookupEnv` instead;
   that is the only reason for the second helper.
 - **Claude slash-command and skill discovery is NOT per-account.**
   `claudeSlashCommandDiscovery.ts` walks ancestor `.claude` directories and

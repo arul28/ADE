@@ -1,5 +1,4 @@
 import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
-import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "../builtInBrowser/desktopBridgeMethods";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -97,13 +96,10 @@ function readResult(value: unknown): DesktopAppUpdateInstallResult | null {
  */
 export async function requestDesktopAppUpdate(args: {
   socketPath: string;
-  authToken: string | null;
   targetVersion: string | null;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
-  const authToken = args.authToken?.trim();
-  if (!authToken) return { attached: false, detail: "No ADE desktop app is attached to this machine's brain." };
   let client: JsonRpcClient | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -129,12 +125,11 @@ export async function requestDesktopAppUpdate(args: {
     try {
       raw = await client.request(
         DESKTOP_APP_UPDATE_INSTALL_METHOD,
-        { targetVersion: args.targetVersion, [BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM]: authToken },
+        { targetVersion: args.targetVersion },
         { timeoutMs: args.requestTimeoutMs ?? INSTALL_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
-      // A protocol-level refusal: an app from before this method, or a token
-      // from an app that has since restarted. The app's own failures come back
+      // A protocol-level refusal: an app from before this method. The app's own failures come back
       // as a `failed` outcome, never as an RPC error.
       if (error instanceof JsonRpcResponseError) {
         return { attached: false, detail: `The ADE desktop app declined the request: ${error.message}` };

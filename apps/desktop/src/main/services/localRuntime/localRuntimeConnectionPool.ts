@@ -120,7 +120,6 @@ type ServiceManagerCommandResult =
 type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
-  desktopBridgeAuthToken?: string | null;
   /**
    * Off-main-thread service-status probe. Defaults to
    * {@link defaultQueryServiceStatusAsync}. This is the only probe seam: the
@@ -3253,7 +3252,6 @@ export class LocalRuntimeConnectionPool {
     let initializeResult: unknown;
     try {
       initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.local, this.appVersion, {
-        desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
         timeoutMs: options.initializeTimeoutMs,
       });
     } catch (error) {

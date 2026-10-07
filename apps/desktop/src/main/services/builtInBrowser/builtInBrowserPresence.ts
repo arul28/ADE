@@ -43,8 +43,7 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  *   state is that the agent has stepped back, and a globe still pulsing beside
  *   the chat would contradict the one banner asking the person to act.
  *
- * Deliberately in-memory and process-local, like the actor capabilities it is
- * keyed by. Presence is a statement about a live process; a replicated row
+ * Deliberately in-memory and process-local. Presence is a statement about a live process; a replicated row
  * would outlive the Electron main that meant it and leave a phone claiming an
  * agent is browsing on a Mac that has quit.
  *
@@ -378,9 +377,8 @@ export function createBuiltInBrowserAgentPresenceTracker(args?: {
 /**
  * The process-wide tracker.
  *
- * Module-scoped for the same reason the actor capability registry is: the two
- * writers are the desktop bridge (which validates the capability) and the
- * browser service (which sees tabs close and recordings end), and they must not
+ * Module-scoped because the two writers are the desktop bridge and the browser
+ * service (which sees tabs close and recordings end), and they must not
  * be able to disagree about who is browsing. Tests build their own with
  * {@link createBuiltInBrowserAgentPresenceTracker}.
  */
