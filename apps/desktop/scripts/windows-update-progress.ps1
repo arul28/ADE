@@ -58,8 +58,9 @@ $TimeoutSeconds = 600
 $AppOpenGraceSeconds = 20
 $InstallerStartGraceSeconds = 60
 # Without the installer's path there is no "installer exited" signal, so the
-# outcome is judged this long after ADE quit (an update measures well under a
-# minute) rather than at the overall timeout.
+# outcome is judged once this long passes with no sign of progress (ADE quitting
+# or a new install step) instead of at the overall timeout. An update measures
+# well under a minute.
 $UnknownInstallerOutcomeSeconds = 180
 if ([string]::IsNullOrWhiteSpace($TargetVersion) -or [string]::IsNullOrWhiteSpace($AppExe) -or [string]::IsNullOrWhiteSpace($HeartbeatPath)) {
   throw "progress-args.json needs targetVersion, appExe and heartbeatPath."
@@ -134,6 +135,7 @@ function Update-LastFinishedStep {
       $parts = $line.Trim() -split '\s+'
       if ($parts.Count -ge 3 -and $stepAfter.ContainsKey($parts[2])) {
         $state.lastFinishedStep = $parts[2]
+        $state.lastStepAt = Get-Date
         Write-ProgressLog "step_finished" $line.Trim()
       }
     }
@@ -261,6 +263,7 @@ $state = @{
   installerGoneAt = $null
   parentGoneAt = $null
   lastFinishedStep = ""
+  lastStepAt = $null
   openingLogged = $false
   done = $false
 }
@@ -394,11 +397,10 @@ $timer.Add_Tick({
       ($now - $state.installerGoneAt).TotalSeconds -ge $AppOpenGraceSeconds
     $installerNeverRan = $installerKnown -and -not $state.installerSeen -and $state.parentGoneAt -and
       ($now - $state.parentGoneAt).TotalSeconds -ge $InstallerStartGraceSeconds
-    if (-not $installerKnown -and -not $opening -and $state.parentGoneAt -and
-      ($now - $state.parentGoneAt).TotalSeconds -ge $UnknownInstallerOutcomeSeconds) {
-      $installerFinished = $true
-    }
-    if ($installerFinished -or $installerNeverRan) {
+    $lastProgressAt = if ($state.lastStepAt -and $state.lastStepAt -gt $state.parentGoneAt) { $state.lastStepAt } else { $state.parentGoneAt }
+    $unknownInstallerStalled = -not $installerKnown -and -not $opening -and $lastProgressAt -and
+      ($now - $lastProgressAt).TotalSeconds -ge $UnknownInstallerOutcomeSeconds
+    if ($installerFinished -or $installerNeverRan -or $unknownInstallerStalled) {
       $installed = Get-InstalledVersion
       if ($installed -eq $TargetVersion) {
         Show-Failure "$ProductName $TargetVersion is installed" "It did not open on its own. Open it to finish."
