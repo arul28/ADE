@@ -65,6 +65,17 @@ function publish(state: MachineAuthState, status: GitHubAppUserAuthStatus | null
   for (const listener of state.listeners) listener(status);
 }
 
+/**
+ * A failed read is not kept. A machine that has never answered stays unread, so
+ * the pages on screen stop waiting but the next page that mounts asks again
+ * instead of showing a briefly unreachable machine as signed out. A machine
+ * that has answered keeps its last status.
+ */
+function publishFailedRead(state: MachineAuthState): void {
+  if (state.publishedSeq > 0) return;
+  for (const listener of state.listeners) listener(null);
+}
+
 export type RefreshGithubAppUserAuthOptions = {
   /**
    * Starts a new read even when one is already running.
@@ -94,12 +105,16 @@ export function refreshGithubAppUserAuth(
     return Promise.resolve(null);
   }
   const pending: Promise<GitHubAppUserAuthStatus | null> = read(pin)
-    .then((status) => status ?? null)
-    .catch(() => null)
-    .then((status) => {
-      publish(state, status, seq);
-      return status;
-    })
+    .then(
+      (status) => {
+        publish(state, status ?? null, seq);
+        return status ?? null;
+      },
+      () => {
+        publishFailedRead(state);
+        return null;
+      },
+    )
     .finally(() => {
       // Only this read may clear the slot: a forced read runs beside an earlier
       // one, and whichever finishes first must not orphan the other.

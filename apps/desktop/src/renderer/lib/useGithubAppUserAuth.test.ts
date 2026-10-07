@@ -152,3 +152,31 @@ describe("useGithubAppUserAuth per machine", () => {
     expect(local.result.current.appAuth?.userLogin).toBe("on-this-computer");
   });
 });
+
+describe("useGithubAppUserAuth after a failed read", () => {
+  it("asks the machine again on the next mount instead of keeping the failure", async () => {
+    const getAppUserAuthStatus = vi.fn()
+      .mockRejectedValueOnce(new Error("machine unreachable"))
+      .mockResolvedValueOnce(makeAppAuth({ userLogin: "back-online" }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { github: { getAppUserAuthStatus } },
+    });
+
+    const first = renderHook(() => useGithubAppUserAuth());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The page stops waiting, with nothing to show.
+    expect(first.result.current.loaded).toBe(true);
+    expect(first.result.current.appAuth).toBeNull();
+    first.unmount();
+
+    const second = renderHook(() => useGithubAppUserAuth());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getAppUserAuthStatus).toHaveBeenCalledTimes(2);
+    expect(second.result.current.appAuth?.userLogin).toBe("back-online");
+  });
+});
