@@ -31,7 +31,7 @@ import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { ChatTargetField } from "./ChatTargetField";
 import { StepStack } from "./StepStack";
-import { applyStepsToDraft, draftToSteps, isRequireLaneMode, readLaneMode, type WorkflowStep } from "./draftBridge";
+import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
 
 function Section({
   icon: Icon,
@@ -194,9 +194,8 @@ export function RuleBuilder({
       else next.targetLaneId = patch.targetLaneId;
     }
     let nextDraft: AutomationRuleDraft = { ...draft, execution: next };
-    if (isRequireLaneMode((next as { laneMode?: string }).laneMode)) {
-      // Require-on-trigger resolves the lane from the event; per-step lane
-      // overrides would conflict, so strip them.
+    if (laneComesFromEvent((next as { laneMode?: string }).laneMode)) {
+      // The lane comes from the event; strip per-step lane overrides.
       nextDraft = applyStepsToDraft(nextDraft, draftToSteps(nextDraft));
     }
     setDraft(nextDraft);

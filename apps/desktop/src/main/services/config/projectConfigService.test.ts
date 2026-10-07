@@ -1347,6 +1347,27 @@ describe("projectConfigService - automation execution", () => {
             verification: { verifyBeforePublish: false, mode: "intervention" },
             billingCode: "auto:test",
           })),
+          {
+            id: "pr-branch-step-lane",
+            name: "PR branch with a step lane",
+            enabled: true,
+            mode: "review",
+            trigger: { type: "github.pr_opened" },
+            triggers: [{ type: "github.pr_opened" }],
+            execution: {
+              kind: "built-in",
+              laneMode: "pr-branch",
+              builtIn: { actions: [{ type: "run-command", command: "git push", targetLaneId: "lane-old" }] },
+            },
+            executor: { mode: "automation-bot" },
+            reviewProfile: "quick",
+            toolPalette: ["repo"],
+            contextSources: [],
+            guardrails: {},
+            outputs: { disposition: "comment-only", createArtifact: true },
+            verification: { verifyBeforePublish: false, mode: "intervention" },
+            billingCode: "auto:test",
+          },
         ],
       },
     } as any);
@@ -1362,6 +1383,10 @@ describe("projectConfigService - automation execution", () => {
         }),
         expect.objectContaining({
           path: "effective.automations[2].triggers[0].type",
+        }),
+        // A step lane would push the PR's work to another branch.
+        expect.objectContaining({
+          path: "effective.automations[4].execution.builtIn.actions[0].targetLaneId",
         }),
       ]),
     );

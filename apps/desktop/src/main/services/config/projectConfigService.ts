@@ -2893,12 +2893,14 @@ function validateEffectiveConfig(
         });
       }
     }
-    if (rule.execution?.laneMode === "require-on-trigger" && rule.execution.kind === "built-in") {
+    if ((rule.execution?.laneMode === "require-on-trigger" || rule.execution?.laneMode === "pr-branch") && rule.execution.kind === "built-in") {
       rule.execution.builtIn?.actions.forEach((action, actionIndex) => {
         if (!(action.targetLaneId ?? "").trim()) return;
         issues.push({
           path: `${p}.execution.builtIn.actions[${actionIndex}].targetLaneId`,
-          message: "Step lane overrides are not allowed when lane must be supplied at trigger time.",
+          message: rule.execution?.laneMode === "pr-branch"
+            ? "Step lane overrides are not allowed when the lane comes from the PR's branch."
+            : "Step lane overrides are not allowed when lane must be supplied at trigger time.",
         });
       });
     }

@@ -367,8 +367,12 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
     const rawIssue = readNested(payload, "issue");
     const comment = readNested(payload, "comment");
     const issueIsPr = Boolean(readNested(rawIssue, "pull_request"));
-    const issue = buildIssueContext(rawIssue, repo);
-    if (!issue) return null;
+    const opened = buildIssueContext(rawIssue, repo);
+    if (!opened) return null;
+    // `bodyRegex` on a comment trigger reads the new comment, not the issue or
+    // PR description, the same as the GitHub poller's comment events.
+    const commentBody = readString(comment, "body");
+    const issue = { ...opened, body: commentBody ?? undefined };
     return {
       triggerType: issueIsPr ? "github.pr_commented" : "github.issue_commented",
       summary: `GitHub ${issueIsPr ? "PR" : "issue"} #${issue.number} commented: ${issue.title}`,
