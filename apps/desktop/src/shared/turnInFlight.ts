@@ -97,6 +97,7 @@ export function isTurnProgressEvent(event: AgentChatEvent): boolean {
     case "queue_recovery":
     case "turn_health":
     case "turn_recovery":
+    case "codex_turn_recovery":
     case "turn_diagnostics":
     case "codex_turn_stalled":
     case "interrupt_receipt":
