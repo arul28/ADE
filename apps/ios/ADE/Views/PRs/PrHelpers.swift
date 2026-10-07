@@ -1085,32 +1085,6 @@ private final class PrMarkdownAttributedStringBox: NSObject {
   }
 }
 
-// MARK: - PrGlassPalette extension (foundation tokens for the PRs overhaul).
-//
-// The base palette lives in `PrGlassPalette.swift`. These additions are
-// purely additive — they introduce the extra tokens the upcoming PRs tab
-// overhaul needs (surface fills, text hierarchy, info accent, eyebrow tint,
-// and a couple of alias names so future callers can use the spec vocabulary
-// without renaming existing callsites). Do NOT rename existing tokens.
-
-extension PrGlassPalette {
-  // Surface fills — route to the adaptive card tokens defined alongside the
-  // base palette (PrGlassPalette.swift) so light mode renders correctly.
-  static var cardFill: Color { threadCard }
-  static var cardElevated: Color { panelCard }
-
-  // Text hierarchy — alias the app-wide adaptive tokens.
-  static var textPrimary: Color { ADEColor.textPrimary }
-  static var textSecondary: Color { ADEColor.textSecondary }
-  static var textMuted: Color { ADEColor.textMuted }
-
-  // Eyebrow tint for section labels.
-  static var eyebrow: Color { ADEColor.textSecondary }
-
-  // Info accent (soft blue, used for non-critical callouts).
-  static var info: Color { ADEColor.info }
-}
-
 // MARK: - Shared PRs tab view helpers
 
 struct PrSectionHdr<Trailing: View>: View {
@@ -1124,18 +1098,17 @@ struct PrSectionHdr<Trailing: View>: View {
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(title.uppercased())
-        .font(.system(size: 10, weight: .bold))
-        .tracking(1.1)
-        .foregroundColor(ADEColor.textSecondary)
+      Text(title)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundColor(ADEColor.textPrimary)
       Spacer(minLength: 12)
       trailing()
-        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-        .foregroundColor(ADEColor.tintPRs)
+        .font(.adeMono(11))
+        .foregroundColor(ADEColor.textMuted)
     }
-    .padding(.horizontal, 16)
-    .padding(.top, 12)
-    .padding(.bottom, 8)
+    .padding(.horizontal, 20)
+    .padding(.top, 18)
+    .padding(.bottom, 10)
   }
 }
 

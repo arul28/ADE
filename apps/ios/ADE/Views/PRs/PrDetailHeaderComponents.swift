@@ -41,7 +41,7 @@ struct PrFlatDetailHeader: View {
       HStack(alignment: .center, spacing: 6) {
         Text(verbatim: "#\(number)")
           .font(.adeMono(13, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textMuted)
         if let author, !author.isEmpty {
           Text("·").foregroundStyle(ADEColor.textMuted)
           PrAvatar(login: author, isBot: authorIsBot, size: 16)
@@ -57,7 +57,7 @@ struct PrFlatDetailHeader: View {
             .lineLimit(1)
         }
         Spacer(minLength: 6)
-        ADEFlatBadge(text: state.isEmpty ? "unknown" : state, tint: prStateColor(state))
+        PrStatePill(state: state)
       }
       Text(title)
         .font(.title3.weight(.semibold))
@@ -202,7 +202,7 @@ func prNextStepColor(_ tone: PrNextStepTone) -> Color {
   case .danger: return ADEColor.danger
   case .warning: return ADEColor.warning
   case .info: return ADEColor.info
-  case .merged: return ADEColor.accent
+  case .merged: return prStateColor("merged")
   case .neutral: return ADEColor.textMuted
   }
 }

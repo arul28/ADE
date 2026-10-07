@@ -11,7 +11,6 @@ struct PrStackNode: Identifiable, Equatable {
   /// One of: `"open"`, `"draft"`, `"blocked"`, `"base"`.
   let state: String
   let adeKind: String?
-  let kindColor: Color
   let subMetric: String?
   let indent: Int
   let isRoot: Bool
@@ -23,7 +22,6 @@ struct PrStackNode: Identifiable, Equatable {
     branch: String,
     state: String,
     adeKind: String? = nil,
-    kindColor: Color = PrGlassPalette.purple,
     subMetric: String? = nil,
     indent: Int = 0,
     isRoot: Bool = false,
@@ -34,7 +32,6 @@ struct PrStackNode: Identifiable, Equatable {
     self.branch = branch
     self.state = state
     self.adeKind = adeKind
-    self.kindColor = kindColor
     self.subMetric = subMetric
     self.indent = indent
     self.isRoot = isRoot
@@ -42,19 +39,19 @@ struct PrStackNode: Identifiable, Equatable {
   }
 }
 
-/// Vertical-rail PR stack. Each row carries a 4pt accent rail tinted by
-/// state (green=open, amber=draft, danger=blocked, purple=base) with a soft
-/// glow. Branch is mono, state is a tinted pill.
+/// Vertical-rail PR stack. Each row carries a thin rail in the PR's GitHub
+/// state colour (open green, draft neutral, blocked red, base neutral). Branch
+/// is mono, state is a tinted tag.
 struct PrStackDiagramView: View {
   let nodes: [PrStackNode]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 0) {
       ForEach(nodes) { node in
         PrStackDiagramRow(node: node)
       }
     }
-    .padding(.vertical, 6)
+    .padding(.vertical, 4)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
@@ -64,98 +61,63 @@ private struct PrStackDiagramRow: View {
 
   private var stateColor: Color {
     switch node.state {
-    case "open": return PrGlassPalette.success
-    case "draft": return PrGlassPalette.warning
-    case "blocked": return PrGlassPalette.danger
-    case "base": return PrGlassPalette.purple
-    default: return PrGlassPalette.blue
-    }
-  }
-
-  private var stateLabel: String {
-    switch node.state {
-    case "open": return "open"
-    case "draft": return "draft"
-    case "blocked": return "blocked"
-    case "base": return "base"
-    default: return node.state
+    case "open": return prStateColor("open")
+    case "blocked": return prStateColor("closed")
+    default: return ADEColor.textMuted
     }
   }
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      // 4pt accent rail tinted by state.
-      RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [stateColor, stateColor.opacity(0.55)],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-        )
-        .frame(width: 4)
-        .shadow(color: stateColor.opacity(0.55), radius: 7, x: 0, y: 0)
+      RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+        .fill(stateColor)
+        .frame(width: 3)
 
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 6) {
           Text(node.label)
-            .font(.system(size: node.isRoot ? 14 : 13, weight: node.isRoot ? .bold : .semibold))
+            .font(.system(size: 13, weight: node.isRoot ? .semibold : .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
           if let adeKind = node.adeKind, !adeKind.isEmpty {
-            PrTagChip(label: adeKind, color: node.kindColor)
+            ADEKitTag(text: adeKind)
           }
           Spacer(minLength: 0)
-          PrStackStatePill(state: stateLabel, color: stateColor)
+          Text(node.state.uppercased())
+            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+            .tracking(0.5)
+            .foregroundStyle(stateColor)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(stateColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         Text(node.branch)
-          .font(.system(size: 11, weight: .medium, design: .monospaced))
+          .font(.adeMono(11))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
         if let sub = node.subMetric {
           Text(sub)
-            .font(.system(size: 10.5, design: .monospaced))
-            .foregroundStyle(stateColor.opacity(0.95))
+            .font(.adeMono(10.5))
+            .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
       }
       .padding(.leading, CGFloat(node.indent) * 14)
     }
-    .padding(.horizontal, 2)
+    .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 8)
-  }
-}
-
-private struct PrStackStatePill: View {
-  let state: String
-  let color: Color
-
-  var body: some View {
-    Text(state.uppercased())
-      .font(.system(size: 9, weight: .bold))
-      .tracking(0.8)
-      .foregroundStyle(color)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 3)
-      .background(
-        Capsule(style: .continuous)
-          .fill(color.opacity(0.16))
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .strokeBorder(color.opacity(0.45), lineWidth: 0.5)
-      )
   }
 }
 
 #Preview("PrStackDiagramView") {
   PrStackDiagramView(nodes: [
     PrStackNode(id: "1", label: "main", branch: "origin/main", state: "base", subMetric: "HEAD", isRoot: true),
-    PrStackNode(id: "2", label: "#309 · Schema migration v3", branch: "integration/schema-v3", state: "open", adeKind: "integration", kindColor: PrGlassPalette.warning, subMetric: "base · awaiting 1 child", indent: 0, isRoot: true),
-    PrStackNode(id: "3", label: "#316 · Fix auth middleware ordering", branch: "lane/auth-fix", state: "open", adeKind: "worker", kindColor: PrGlassPalette.purple, subMetric: "12 ✓ · 1 approval · ready", indent: 1),
-    PrStackNode(id: "4", label: "#315 · Add payments idempotency", branch: "lane/payments", state: "draft", adeKind: "lane", kindColor: PrGlassPalette.success, subMetric: "8 ✓ · draft", indent: 1),
-    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "lane", kindColor: PrGlassPalette.purpleBright, subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
+    PrStackNode(id: "2", label: "#309 · Schema migration v3", branch: "integration/schema-v3", state: "open", adeKind: "integration", subMetric: "base · awaiting 1 child", indent: 0, isRoot: true),
+    PrStackNode(id: "3", label: "#316 · Fix auth middleware ordering", branch: "lane/auth-fix", state: "open", adeKind: "worker", subMetric: "12 ✓ · 1 approval · ready", indent: 1),
+    PrStackNode(id: "4", label: "#315 · Add payments idempotency", branch: "lane/payments", state: "draft", adeKind: "lane", subMetric: "8 ✓ · draft", indent: 1),
+    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "lane", subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
   ])
+  .adeKitCard(padding: nil)
   .padding()
-  .background(PrGlassPalette.ink)
+  .background(ADEColor.pageBackground)
 }

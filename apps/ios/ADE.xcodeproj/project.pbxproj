@@ -320,7 +320,6 @@
 		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
 		G10000000000000000000034 /* PrDetailRedesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000034 /* PrDetailRedesign.swift */; };
 		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
-		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
@@ -332,7 +331,6 @@
 		G1000000000000000000000D /* PrStackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000D /* PrStackSheet.swift */; };
 		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
 		G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */; };
-		G1000000000000000000000F /* PrGlassPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrGlassPalette.swift */; };
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F20 /* PrRemoteMachines.swift */; };
@@ -769,7 +767,6 @@
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
 		G20000000000000000000034 /* PrDetailRedesign.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailRedesign.swift; path = ADE/Views/PRs/PrDetailRedesign.swift; sourceTree = "<group>"; };
 		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
-		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
@@ -781,7 +778,6 @@
 		G2000000000000000000000D /* PrStackSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackSheet.swift; path = ADE/Views/PRs/PrStackSheet.swift; sourceTree = "<group>"; };
 		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
 		G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrTargetBranchPickerDropdown.swift; path = ADE/Views/PRs/PrTargetBranchPickerDropdown.swift; sourceTree = "<group>"; };
-		G2000000000000000000000F /* PrGlassPalette.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGlassPalette.swift; path = ADE/Views/PRs/PrGlassPalette.swift; sourceTree = "<group>"; };
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000F20 /* PrRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRemoteMachines.swift; path = ADE/Views/PRs/PrRemoteMachines.swift; sourceTree = "<group>"; };
@@ -1044,7 +1040,6 @@
 				G20000000000000000000002 /* PrHelpers.swift */,
 				G20000000000000000000034 /* PrDetailRedesign.swift */,
 				G20000000000000000000032 /* PrGitHubDescriptionParser.swift */,
-				G20000000000000000000003 /* PrListRowModifier.swift */,
 				G20000000000000000000005 /* PrRowCard.swift */,
 				D20000000000000000000F41 /* PrFlatPreviews.swift */,
 				D20000000000000000000F40 /* PrConversationDigest.swift */,
@@ -1059,7 +1054,6 @@
 				G2000000000000000000000D /* PrStackSheet.swift */,
 				G2000000000000000000000E /* CreatePrWizardView.swift */,
 				G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */,
-				G2000000000000000000000F /* PrGlassPalette.swift */,
 				D20000000000000000000F20 /* PrRemoteMachines.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
 				G20000000000000000000024 /* PrRebaseScreen.swift */,
@@ -1976,7 +1970,6 @@
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,
 				G10000000000000000000034 /* PrDetailRedesign.swift in Sources */,
 				G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */,
-				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,
 				G10000000000000000000005 /* PrRowCard.swift in Sources */,
 				E20000000000000000000F41 /* PrFlatPreviews.swift in Sources */,
 				E20000000000000000000F40 /* PrConversationDigest.swift in Sources */,
@@ -1991,7 +1984,6 @@
 				G1000000000000000000000D /* PrStackSheet.swift in Sources */,
 				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
 				G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */,
-				G1000000000000000000000F /* PrGlassPalette.swift in Sources */,
 				E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,

@@ -63,48 +63,32 @@ struct PrRebaseScreen: View {
   }
 
   var body: some View {
-    ZStack {
-      prLiquidGlassBackdrop()
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        header
 
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          header
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-
-          if isManualRebaseMode {
-            manualBaseNotice
-              .padding(.horizontal, 16)
-          }
-
-          driftAnalysisCard
-            .padding(.horizontal, 16)
-
-          if behindCount > 0 {
-            newCommitsCard
-              .padding(.horizontal, 16)
-          }
-
-          rebaseActionsCard
-            .padding(.horizontal, 16)
-
-          if let errorMessage {
-            ADENoticeCard(
-              title: "Rebase failed",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: nil,
-              action: nil
-            )
-            .padding(.horizontal, 16)
-          }
-
-          Color.clear.frame(height: 24)
+        if isManualRebaseMode {
+          ADESettingsNotice(message: "Opened with the lane_base strategy: auto-rebase is off.", tone: .accent)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+
+        driftAnalysisCard
+
+        if behindCount > 0 {
+          newCommitsCard
+        }
+
+        rebaseActionsCard
+
+        if let errorMessage {
+          ADESettingsNotice(message: "Rebase failed: \(errorMessage)", tone: .crit)
+        }
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 24)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .adeScreenBackground()
     .navigationTitle(prNumber.map { "#\($0) · Rebase" } ?? "Rebase")
     .navigationBarTitleDisplayMode(.inline)
   }
@@ -113,136 +97,75 @@ struct PrRebaseScreen: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Text(laneName ?? "Rebase lane")
-          .font(.system(size: 22, weight: .bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-        Spacer(minLength: 0)
-        PrsLivePulse(isLive: true, syncedLabel: nil)
-      }
+      Text(laneName ?? "Rebase lane")
+        .font(.system(size: 22, weight: .bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
       HStack(spacing: 8) {
         Text("base:")
-          .font(.system(size: 11, design: .monospaced))
+          .font(.adeMono(11))
           .foregroundStyle(ADEColor.textMuted)
         Text(effectiveBaseBranch)
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .font(.adeMono(11, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
         if prNumber != nil {
-          PrTagChip(label: "PR linked", color: PrGlassPalette.info)
+          ADEKitTag(text: "PR linked")
         }
         if isManualRebaseMode {
-          PrTagChip(label: "manual", color: PrGlassPalette.purple)
+          ADEKitTag(text: "manual")
         }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private var manualBaseNotice: some View {
-    Text("This PR was opened with the lane_base strategy — auto-rebase is off. Rebase now if you want to move the PR forward.")
-      .font(.system(size: 12))
-      .foregroundStyle(ADEColor.textSecondary)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .fill(PrGlassPalette.purple.opacity(0.10))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .strokeBorder(PrGlassPalette.purple.opacity(0.25), lineWidth: 0.5)
-      )
   }
 
   // MARK: - Drift analysis
 
   private var driftAnalysisCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      PrsEyebrowLabel(text: "DRIFT ANALYSIS")
-
-      let behindTint: Color = behindCount > 5
-        ? PrGlassPalette.warning
-        : behindCount > 0 ? PrGlassPalette.info : PrGlassPalette.success
-
-      HStack(spacing: 10) {
-        driftStat(
-          label: "BEHIND BY",
-          valueText: "\(behindCount)",
-          suffix: behindCount == 1 ? "commit" : "commits",
-          tint: behindTint
-        )
-        driftStat(
-          label: "CONFLICTS",
-          valueText: conflictPredicted ? "PREDICTED" : "NONE",
-          suffix: nil,
-          tint: conflictPredicted ? ADEColor.danger : PrGlassPalette.success
-        )
-      }
-
-      HStack(spacing: 10) {
-        driftStat(
-          label: "RISK",
-          valueText: riskLabel,
-          suffix: nil,
-          tint: riskTint
-        )
-        driftStat(
-          label: "REBASE MODE",
-          valueText: isManualRebaseMode ? "MANUAL" : "AUTO",
-          suffix: nil,
-          tint: isManualRebaseMode ? PrGlassPalette.purple : PrGlassPalette.info
-        )
+    ADEKitCard(title: "Drift", symbol: "chart.bar.xaxis") {
+      let behindTone: ADEKitTone = behindCount > 5 ? .warn : behindCount > 0 ? .neutral : .ok
+      Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 12) {
+        GridRow {
+          driftStat(label: "Behind by", valueText: "\(behindCount)", suffix: behindCount == 1 ? "commit" : "commits", tone: behindTone)
+          driftStat(label: "Conflicts", valueText: conflictPredicted ? "Predicted" : "None", suffix: nil, tone: conflictPredicted ? .crit : .ok)
+        }
+        GridRow {
+          driftStat(label: "Risk", valueText: riskLabel, suffix: nil, tone: riskTone)
+          driftStat(label: "Rebase mode", valueText: isManualRebaseMode ? "Manual" : "Auto", suffix: nil, tone: .neutral)
+        }
       }
     }
-    .padding(16)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 16)
   }
 
   private var riskLabel: String {
-    if conflictPredicted { return "HIGH" }
-    if behindCount > 5 { return "MEDIUM" }
-    if behindCount == 0 { return "NONE" }
-    return "LOW"
+    if conflictPredicted { return "High" }
+    if behindCount > 5 { return "Medium" }
+    if behindCount == 0 { return "None" }
+    return "Low"
   }
 
-  private var riskTint: Color {
-    if conflictPredicted { return ADEColor.danger }
-    if behindCount > 5 { return PrGlassPalette.warning }
-    if behindCount == 0 { return PrGlassPalette.success }
-    return PrGlassPalette.info
+  private var riskTone: ADEKitTone {
+    if conflictPredicted { return .crit }
+    if behindCount > 5 { return .warn }
+    if behindCount == 0 { return .ok }
+    return .neutral
   }
 
-  private func driftStat(label: String, valueText: String, suffix: String?, tint: Color) -> some View {
+  private func driftStat(label: String, valueText: String, suffix: String?, tone: ADEKitTone) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text(label)
-        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-        .tracking(1.0)
-        .foregroundStyle(ADEColor.textMuted)
+      ADEEyebrow(label)
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(valueText)
-          .font(.system(size: 18, weight: .bold, design: .monospaced))
-          .foregroundStyle(tint)
+          .font(.adeMono(17, weight: .medium))
+          .foregroundStyle(tone == .neutral ? ADEColor.textPrimary : tone.color)
         if let suffix {
           Text(suffix)
-            .font(.system(size: 10, design: .monospaced))
+            .font(.system(size: 11))
             .foregroundStyle(ADEColor.textMuted)
         }
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(Color.white.opacity(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
-    )
   }
 
   // MARK: - New commits (collapsible)
@@ -254,60 +177,41 @@ struct PrRebaseScreen: View {
           commitsExpanded.toggle()
         }
       } label: {
-        HStack(spacing: 8) {
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(PrGlassPalette.info)
-          Text("NEW COMMITS ON \(effectiveBaseBranch.uppercased())")
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .tracking(1.0)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-          Text("\(behindCount)")
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .foregroundStyle(PrGlassPalette.info)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(
-              RoundedRectangle(cornerRadius: 4)
-                .fill(PrGlassPalette.info.opacity(0.12))
-            )
-          Spacer(minLength: 0)
+        ADEKitCardHead(title: "New on \(effectiveBaseBranch)", symbol: "arrow.triangle.branch", count: "\(behindCount)") {
           Image(systemName: commitsExpanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .bold))
             .foregroundStyle(ADEColor.textMuted)
         }
-        .padding(14)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
 
       if commitsExpanded {
-        Divider().overlay(Color.white.opacity(0.06))
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
         if let commits = targetCommits, !commits.isEmpty {
           ForEach(Array(commits.enumerated()), id: \.element.id) { index, commit in
             commitRow(commit: commit)
             if index < commits.count - 1 {
-              Divider().overlay(Color.white.opacity(0.04))
-                .padding(.leading, 14)
+              Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
             }
           }
         } else {
           Text("Commit details unavailable on this machine.")
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
-            .padding(14)
+            .padding(ADEKit.inset)
         }
       }
     }
-    .prGlassCard(cornerRadius: 16)
+    .adeKitCard(padding: nil)
   }
 
   private func commitRow(commit: RebaseTargetCommit) -> some View {
     let sha = commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
     return HStack(alignment: .top, spacing: 10) {
       Text(sha)
-        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-        .foregroundStyle(PrGlassPalette.purpleBright)
+        .font(.adeMono(10.5, weight: .medium))
+        .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 56, alignment: .leading)
 
       VStack(alignment: .leading, spacing: 2) {
@@ -316,115 +220,59 @@ struct PrRebaseScreen: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
         Text(commit.author.isEmpty ? "—" : commit.author)
-          .font(.system(size: 10.5, design: .monospaced))
+          .font(.adeMono(10.5))
           .foregroundStyle(ADEColor.textMuted)
       }
 
       Spacer(minLength: 6)
 
       Text(prCompactRelativeTime(commit.committedAt))
-        .font(.system(size: 10.5, design: .monospaced))
+        .font(.adeMono(10.5))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .padding(.horizontal, 14)
+    .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 10)
   }
 
   // MARK: - Rebase actions
 
   private var rebaseActionsCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      PrsEyebrowLabel(text: "REBASE ACTIONS")
+    ADEKitCard(title: "Rebase", symbol: "arrow.triangle.2.circlepath", count: "current lane") {
+      VStack(alignment: .leading, spacing: 10) {
+        // Rebase with AI is off with nothing to rebase (desktop parity: AI
+        // only runs against the lane base).
+        actionButton(action: .rebaseAi, label: "Rebase with AI", icon: "sparkles", prominent: true, disabled: behindCount == 0)
 
-      HStack(spacing: 6) {
-        Text("Scope:")
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-        Text("CURRENT LANE")
-          .font(.system(size: 10, weight: .bold, design: .monospaced))
-          .tracking(0.8)
-          .foregroundStyle(PrGlassPalette.purpleBright)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 3)
-          .background(
-            RoundedRectangle(cornerRadius: 6)
-              .fill(PrGlassPalette.purple.opacity(0.15))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 6)
-              .strokeBorder(PrGlassPalette.purple.opacity(0.30), lineWidth: 0.5)
-          )
-        Spacer(minLength: 0)
-      }
-
-      // Primary row: Rebase with AI (disabled for manual-mode / PR-target paths
-      // per desktop parity — AI only runs against lane base).
-      actionButton(
-        action: .rebaseAi,
-        label: "Rebase with AI",
-        icon: "sparkles",
-        style: .primary,
-        disabled: behindCount == 0
-      )
-
-      HStack(spacing: 10) {
-        actionButton(
-          action: .rebaseLocal,
-          label: "Rebase now",
-          icon: nil,
-          style: .secondary,
-          disabled: behindCount == 0
-        )
-        actionButton(
-          action: .rebasePush,
-          label: "Rebase + push",
-          icon: "arrow.up.circle",
-          style: .secondary,
-          disabled: behindCount == 0
-        )
-      }
-
-      HStack(spacing: 10) {
-        actionButton(
-          action: .defer4h,
-          label: "Defer 4h",
-          icon: "clock",
-          style: .ghost,
-          disabled: false
-        )
-        actionButton(
-          action: .dismissLane,
-          label: "Dismiss",
-          icon: "xmark.circle",
-          style: .ghost,
-          disabled: false
-        )
-      }
-
-      if behindCount == 0 {
         HStack(spacing: 8) {
-          Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(PrGlassPalette.success)
-            .font(.system(size: 12))
-          Text("Branch is up to date with \(effectiveBaseBranch).")
-            .font(.system(size: 11))
-            .foregroundStyle(ADEColor.textSecondary)
+          actionButton(action: .rebaseLocal, label: "Rebase now", icon: nil, prominent: false, disabled: behindCount == 0)
+          actionButton(action: .rebasePush, label: "Rebase + push", icon: "arrow.up.circle", prominent: false, disabled: behindCount == 0)
+        }
+
+        HStack(spacing: 8) {
+          actionButton(action: .defer4h, label: "Defer 4h", icon: "clock", prominent: false, disabled: false)
+          actionButton(action: .dismissLane, label: "Dismiss", icon: "xmark.circle", prominent: false, disabled: false)
+        }
+
+        if behindCount == 0 {
+          HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+              .foregroundStyle(ADEColor.success)
+              .font(.system(size: 12))
+            Text("Up to date with \(effectiveBaseBranch).")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
         }
       }
     }
-    .padding(16)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 16)
   }
-
-  private enum ActionStyle { case primary, secondary, ghost }
 
   @ViewBuilder
   private func actionButton(
     action: PendingAction,
     label: String,
     icon: String?,
-    style: ActionStyle,
+    prominent: Bool,
     disabled: Bool
   ) -> some View {
     let isRunning = pendingAction == action && isDispatching
@@ -437,71 +285,17 @@ struct PrRebaseScreen: View {
         if isRunning {
           ProgressView()
             .controlSize(.small)
-            .tint(style == .primary ? .white : ADEColor.textPrimary)
+            .tint(prominent ? .white : ADEColor.textPrimary)
         } else if let icon {
           Image(systemName: icon)
             .font(.system(size: 12, weight: .semibold))
         }
         Text(label)
-          .font(.system(size: 13, weight: style == .primary ? .bold : .semibold))
       }
-      .foregroundStyle(buttonForeground(style: style, disabled: isDisabled))
-      .frame(maxWidth: .infinity)
-      .frame(height: 42)
-      .background(buttonBackground(style: style))
-      .overlay(buttonBorder(style: style))
-      .shadow(
-        color: style == .primary ? PrGlassPalette.purple.opacity(0.35) : .clear,
-        radius: 10, x: 0, y: 3
-      )
     }
-    .buttonStyle(.plain)
+    .buttonStyle(ADEKitButtonStyle(prominent: prominent, wide: true))
     .disabled(isDisabled || isRunning)
-    .opacity(isDisabled ? 0.5 : 1)
-  }
-
-  private func buttonForeground(style: ActionStyle, disabled: Bool) -> Color {
-    switch style {
-    case .primary: return .white
-    case .secondary: return ADEColor.textPrimary
-    case .ghost: return ADEColor.textSecondary
-    }
-  }
-
-  @ViewBuilder
-  private func buttonBackground(style: ActionStyle) -> some View {
-    switch style {
-    case .primary:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [PrGlassPalette.purpleBright, PrGlassPalette.purple],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-          )
-        )
-    case .secondary:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(.ultraThinMaterial)
-    case .ghost:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(Color.white.opacity(0.02))
-    }
-  }
-
-  @ViewBuilder
-  private func buttonBorder(style: ActionStyle) -> some View {
-    switch style {
-    case .primary:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.40), lineWidth: 0.5)
-    case .secondary:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-    case .ghost:
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-    }
+    .opacity(isDisabled ? 0.45 : 1)
   }
 
   // MARK: - Dispatch

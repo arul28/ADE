@@ -344,7 +344,7 @@ struct PrStoryRow: View {
     HStack(spacing: 8) {
       Image(systemName: symbol)
         .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(event.title.hasPrefix("Merged") ? ADEColor.accent : ADEColor.textMuted)
+        .foregroundStyle(event.title.hasPrefix("Merged") ? prStateColor("merged") : event.title.hasPrefix("Closed") ? prStateColor("closed") : ADEColor.textMuted)
         .frame(width: 20)
       Text(event.title).font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(2)
       Spacer(minLength: 6)
