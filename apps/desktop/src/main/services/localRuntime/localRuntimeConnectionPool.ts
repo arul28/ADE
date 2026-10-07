@@ -1664,6 +1664,9 @@ export class LocalRuntimeConnectionPool {
       const reason = this.appFallback.reason;
       if (child && !await this.stopAppFallbackForServiceInstall(child)) return;
       this.appFallbackStoppedForInstall = reason;
+      // The child's exit usually clears this; a fallback whose child the pool
+      // no longer owns must not stay reported as running.
+      this.clearAppFallback("stopped");
     }
     // The streak start, not this attempt's start: installs recur (connect
     // failures re-run them, isolated recovery re-runs them every 60s), and a

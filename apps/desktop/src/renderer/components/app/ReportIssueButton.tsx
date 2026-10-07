@@ -202,7 +202,9 @@ export function ReportIssueButton({
                 {issue.copied
                   ? "Report copied — paste it into the GitHub issue that just opened."
                   : "Report saved — copy it and paste it into the GitHub issue."}
-                {sent ? null : (
+                {/* After a send, "Copy report" already copies; this one is for
+                    the GitHub path, or a send that returned no report. */}
+                {sent && sentReport ? null : (
                   <>
                     {" "}
                     <button

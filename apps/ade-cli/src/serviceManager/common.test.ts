@@ -1773,7 +1773,8 @@ describe("installLaunchdWatchdogAgent", () => {
     const result = installLaunchdWatchdogAgent({ command: watchdogServiceCommand, homeDir, spawnSync });
 
     expect(result.installed).toBe(true);
-    expect(registered.get(resolveWatchdogServiceName())?.domain).toMatch(/^user\/\d+$/);
+    // Windows reports uid -1; the domain is the user domain either way.
+    expect(registered.get(resolveWatchdogServiceName())?.domain).toMatch(/^user\/-?\d+$/);
   });
 
   it("rewrites an agent that predates the materialization policy", () => {

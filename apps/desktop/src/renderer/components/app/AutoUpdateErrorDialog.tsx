@@ -3,6 +3,7 @@ import { ArrowClockwise, ArrowSquareOut, ArrowsClockwise, WarningCircle } from "
 import type { AutoUpdatePhase, AutoUpdateSnapshot } from "../../../shared/types";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { TechnicalDetailsFold } from "./errorSurfaceKit";
+import { canRestartAde, restartAde } from "./restartAde";
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "Not available";
@@ -172,7 +173,7 @@ export function AutoUpdateErrorDialog({
     busy: retrying,
     onClick: onRetry,
   };
-  const actions: DialogAction[] = stuck
+  const actions: DialogAction[] = stuck && canRestartAde()
     ? [
         { ...checkAgain, variant: "secondary" },
         {
@@ -180,7 +181,9 @@ export function AutoUpdateErrorDialog({
           icon: <ArrowClockwise size={12} weight="bold" />,
           variant: "solid",
           autoFocus: true,
-          onClick: () => void window.ade.updateRelaunchApp?.().catch(() => false),
+          // The same rung as every recovery surface: records the restart and
+          // knows when this window cannot relaunch.
+          onClick: () => void restartAde(),
         },
       ]
     : [
