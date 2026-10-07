@@ -12,6 +12,7 @@
 import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
+  LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
   MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
@@ -387,7 +388,11 @@ export function formatMacDesktopStatus(value: unknown): string {
     ["host is local", status.hostIsLocal],
     ["next", seat.nextStep ?? null],
   ], ["seat", "real input", "next", "private seat", "held by"]);
-  const sections = [header];
+  // Linux has no lane screen at all. Say that first, in words, before a table
+  // of empty rows an agent might read as "not started yet".
+  const sections = platform === "linux" && status.supported !== true
+    ? [asString(status.unsupportedReason) ?? LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE, "", header]
+    : [header];
   // The Windows shared seat reports `offscreen-region` too; its seat line
   // already says what that means there.
   if (!windowsHost && macDesktopIsOffscreenRegion(display, status)) {

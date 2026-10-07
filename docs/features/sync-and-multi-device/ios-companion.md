@@ -4296,7 +4296,12 @@ the stats and shows update guidance.
   task-update ribbons are omitted from the thread, while scheduled-work state
   remains available in Chat Info. Claude-only prompt-suggestion ribbons are
   also omitted from the visible Claude transcript while their underlying events
-  remain available to the raw timeline.
+  remain available to the raw timeline. A tool group holding ADE computer-use
+  shell commands carries `computerUseActions` and draws them as action rows
+  (`WorkComputerUseActions.swift`; parser and words ported from desktop in
+  `WorkComputerUseSummary.swift` and `WorkComputerUsePresentation.swift`), and
+  a turn fold keeps it visible. See
+  [chat/transcript-and-turns.md](../chat/transcript-and-turns.md).
   The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still open
   the whole turn's activity in `WorkTurnActivitySheet`. The association is
   data-driven and never invents file changes for providers that did not emit

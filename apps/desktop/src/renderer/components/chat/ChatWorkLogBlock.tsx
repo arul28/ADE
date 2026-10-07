@@ -23,6 +23,9 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinKey } from "../../state/projectMachines";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
+import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
+import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
+import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -512,8 +515,13 @@ function ToolCallRow({
     if (navigationSuggestions.length > 0) setOpen(true);
   }, [navigationSuggestions.length]);
 
+  // An ADE computer-use command reads as its action ("Clicked “Run” in
+  // Xcode"); opening the row still shows the raw command output.
+  const computerUse = computerUseSummaryForEntry(entry);
   const kindSlug = workLogEntryKindSlug(entry);
-  const argText = replaceInternalToolNames(entryArgText(entry));
+  const argText = computerUse
+    ? computerUseActionText(computerUse)
+    : replaceInternalToolNames(entryArgText(entry));
   const kindTone = workLogEntryKindToneClass(entry);
   const searchResults = webSearchResults(entry);
   const resultCount = webResultCount(entry);
@@ -539,9 +547,13 @@ function ToolCallRow({
         className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.025]"
       >
         {workLogStatusGlyph(entry)}
-        <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
-          {kindSlug}
-        </span>
+        {computerUse ? (
+          <ComputerUseInlineIcon summary={computerUse} />
+        ) : (
+          <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
+            {kindSlug}
+          </span>
+        )}
         {argText ? (
           <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{argText}</span>
         ) : null}
@@ -626,7 +638,10 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   if (entry.entryKind === "command") {
     const out = entry.output?.trim();
     if (!out) return null;
-    return out;
+    // A computer-use row reads as its action, so the command it ran leads
+    // the detail.
+    const command = computerUseEntryCommand(entry);
+    return command ? `$ ${command}\n${out}` : out;
   }
   if (entry.entryKind === "hook") {
     const out = entry.output?.trim();
@@ -638,6 +653,11 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     return action && action.length ? action : null;
   }
   if (entry.entryKind === "tool") {
+    const command = computerUseEntryCommand(entry);
+    if (command?.trim()) {
+      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(entry.result));
+      return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
+    }
     if (entry.result !== undefined) {
       return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
     }

@@ -1420,9 +1420,15 @@ dismissal undone by the event it caused would never stick.
   before it has painted and outranks every non-floated activity, because the
   “Show preview when minimized” toggle is an explicit ask and a blank card
   with the tool's name is better feedback than a lit control that does
-  nothing.   The corner card's candidates are `browser` and `app-control`. The Apple
-  device and the Mac Desktop float in their own players (see below). Git and
+  nothing. The corner card's only candidate is `browser`. App Control, the
+  Apple device and the Mac Desktop float in their own players (see below). Git and
   Files have nothing to look at.
+- **It steps aside for a floating player.** While any floating player is on
+  screen (the Mac Desktop, App Control or an Apple device, read through
+  `useAnyFloatingPlayerShown` in `floatingPlayerSlots.ts`), the card is not
+  shown and its feed is torn down. The card does not take part in the players'
+  placement, so stepping aside is what keeps it off a player. A tool the user
+  floated by hand still shows.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.

@@ -4500,6 +4500,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
     openInBrowser: async (args: { url: string; browserId: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenInBrowser, args),
+    getAppIcon: async (args: { name: string }): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.appGetAppIcon, args),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

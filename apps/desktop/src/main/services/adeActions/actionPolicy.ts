@@ -1,6 +1,7 @@
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
+  USER_BROWSER_RUNTIME_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
@@ -1103,6 +1104,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   built_in_browser: [
     ...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
     BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
+    // `ade browser attach` / `detach`: also runtime-served, so a desktop's own
+    // service object lacks them too.
+    ...USER_BROWSER_RUNTIME_METHODS,
   ],
   automations: [
     "list",

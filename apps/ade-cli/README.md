@@ -789,6 +789,8 @@ ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
 ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
 ade --socket browser screenshot --tab tab-id --text
 ade --socket browser actions --text                               # full built_in_browser action inventory
+ade --socket browser attach --tab "Stripe" --text                # only when the user asks: drive a tab of their own Chromium browser (needs remote debugging on)
+ade --socket browser detach --text                               # back to ADE's browser
 ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
 ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
 ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
@@ -982,6 +984,14 @@ which lane a *claim* attributes a tab to. `--force` is a reserved takeover
 flag and the runtime rejects it. The one relaxation is `open`/`new-tab`/`panel`
 on a machine with no ADE window: those three are forwarded to a desktop that
 has this lane pinned, which resolves its own capability there.
+
+`ade browser attach` / `detach`, and the page commands of a chat attached to
+the user's own browser, never reach ADE's browser or the desktop, so the
+runtime checks them itself: the caller must be a live chat of this project,
+may name only its own chat, and must present the browser capability ADE
+issued that chat when one was issued. A chat launched with no desktop
+attached has no capability, so for it the check is the chat id alone. See
+`docs/features/computer-use/README.md` ("Attach to the user's own browser").
 
 `ade app-control` is not gated by a capability of its own — there is no
 app_control actor token, and the daemon has no app_control-specific scoping
