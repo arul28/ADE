@@ -11,6 +11,7 @@ import {
   verifyAttentionBearerToken,
 } from "./attentionAuth";
 import {
+  accountChangeMarks,
   apnsConfig,
   boundedText,
   isRecord,
@@ -2284,24 +2285,6 @@ async function activityPublishAcknowledgments(
 export type VerifiedMachineIdentity = {
   machineKey: string;
 };
-
-/**
- * The newest settings and vault change for an account, piggybacked on the
- * machine's publish response. A brain pulls settings or vault only when one of
- * these moved, instead of polling both every 30 s. Each is an index seek on
- * (user_id, updated_at); deletes stamp updated_at, so tombstones move it too.
- */
-async function accountChangeMarks(
-  env: AttentionRelayEnv,
-  userId: string,
-): Promise<{ accountUserId: string; settings: string | null; vault: string | null }> {
-  const row = await env.DB.prepare(`
-    select
-      (select max(updated_at) from account_settings where user_id = ?) as settings,
-      (select max(updated_at) from account_vault_items where user_id = ?) as vault
-  `).bind(userId, userId).first<{ settings: string | null; vault: string | null }>();
-  return { accountUserId: userId, settings: row?.settings ?? null, vault: row?.vault ?? null };
-}
 
 export async function handleAttentionMachinePublish(
   request: Request,

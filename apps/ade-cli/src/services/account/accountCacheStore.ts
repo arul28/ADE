@@ -194,10 +194,24 @@ export function createAccountCacheStore<
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   const syncListeners = new Set<AccountCacheSyncListener>();
-  /** The change mark the last successful sync covered, and when it ran. */
+  /**
+   * What the last sync covered: its status, the change mark it pulled up to,
+   * when it finished, and for which account. A tick may skip the network only
+   * when all of these still describe the signed-in account.
+   */
   let lastSyncedMark: string | null | undefined;
   let lastReadySyncAtMs = 0;
   let lastSyncStatus: AccountCacheSyncStatus | null = null;
+  let lastSyncedAccountUserId: string | null = null;
+  const forgetLastSync = (): void => {
+    lastSyncedMark = undefined;
+    lastReadySyncAtMs = 0;
+    lastSyncStatus = null;
+    lastSyncedAccountUserId = null;
+  };
+  /** True when the last sync was a successful pull for this account. */
+  const lastSyncWasReadyFor = (accountUserId: string): boolean =>
+    lastSyncStatus === "ready" && lastSyncedAccountUserId === accountUserId;
   let unsubscribeChangeMarks: (() => void) | null = null;
   /**
    * How many callers asked for the background sync.
@@ -437,7 +451,7 @@ export function createAccountCacheStore<
     if (!kind) return true;
     const accountUserId = config.getAccountUserId();
     if (!accountUserId) return true;
-    if (lastSyncStatus !== "ready") return true;
+    if (!lastSyncWasReadyFor(accountUserId)) return true;
     if (readCache().pending.length > 0) return true;
     if (nowMs - lastReadySyncAtMs >= CHANGE_MARK_SAFETY_SYNC_MS) return true;
     const entry = readAccountChangeMarks(accountUserId);
@@ -584,6 +598,7 @@ export function createAccountCacheStore<
       syncInFlight = runSync()
         .then((status) => {
           lastSyncStatus = status;
+          lastSyncedAccountUserId = accountUserId;
           if (status === "ready") {
             lastSyncedMark = markAtStart;
             lastReadySyncAtMs = Date.now();
@@ -648,7 +663,7 @@ export function createAccountCacheStore<
         const kind = config.changeMarkKind;
         unsubscribeChangeMarks = subscribeAccountChangeMarks((accountUserId, marks) => {
           if (accountUserId !== config.getAccountUserId()) return;
-          if (lastSyncStatus === "ready" && marks[kind] === lastSyncedMark) return;
+          if (lastSyncWasReadyFor(accountUserId) && marks[kind] === lastSyncedMark) return;
           syncAndNotify();
         });
       }
@@ -659,12 +674,14 @@ export function createAccountCacheStore<
 
     reset(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       persist();
     },
 
     resetAndDelete(): void {
       epoch += 1;
+      forgetLastSync();
       cache = emptyCache(config.getAccountUserId());
       try {
         fs.rmSync(cachePath, { force: true });
