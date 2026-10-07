@@ -1,0 +1,429 @@
+/*
+ * Launch gate: a frosted glass card floating over ADE's violet mesh.
+ *
+ * Every colour is the active theme's fg/bg mixed at fixed steps, so dark,
+ * light and custom themes all get a card that reads as glass over their own
+ * mesh. The mesh itself is `WorkToolPickerBackdrop` (it already follows the
+ * theme and image scenes). Motion is decoration and yields to both the OS
+ * reduce-motion preference and ADE's own (`html[data-motion="reduced"]`).
+ */
+
+.ade-gate {
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 24%, transparent);
+  --gate-glass-tint-top: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  --gate-glass-tint-bottom: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  --gate-glass-edge: color-mix(in srgb, var(--color-fg) 12%, transparent);
+  --gate-glass-highlight: color-mix(in srgb, white 22%, transparent);
+  --gate-glass-rim-top: color-mix(in srgb, white 42%, transparent);
+  --gate-glass-rim-bottom: color-mix(in srgb, white 4%, transparent);
+  --gate-glass-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.7), 0 12px 32px -18px rgba(0, 0, 0, 0.5);
+  --gate-text-2: color-mix(in srgb, var(--color-fg) 66%, transparent);
+  --gate-text-3: color-mix(in srgb, var(--color-fg) 46%, transparent);
+  --gate-rule: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  --gate-chip-fill: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  --gate-chip-hover: color-mix(in srgb, var(--color-fg) 12%, transparent);
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  isolation: isolate;
+}
+
+[data-theme="light"] .ade-gate {
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 34%, transparent);
+  --gate-glass-tint-top: color-mix(in srgb, white 44%, transparent);
+  --gate-glass-tint-bottom: color-mix(in srgb, white 14%, transparent);
+  --gate-glass-edge: color-mix(in srgb, white 70%, transparent);
+  --gate-glass-highlight: color-mix(in srgb, white 90%, transparent);
+  --gate-glass-rim-top: color-mix(in srgb, white 95%, transparent);
+  --gate-glass-rim-bottom: color-mix(in srgb, white 30%, transparent);
+  --gate-glass-shadow: 0 40px 90px -34px rgba(40, 24, 90, 0.35), 0 12px 32px -20px rgba(40, 24, 90, 0.25);
+  --gate-text-2: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  --gate-text-3: color-mix(in srgb, var(--color-fg) 52%, transparent);
+  --gate-rule: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  --gate-chip-fill: color-mix(in srgb, white 40%, transparent);
+  --gate-chip-hover: color-mix(in srgb, white 62%, transparent);
+}
+
+/* A soft vignette over the mesh, so the card's edges stay legible where the
+   mesh is brightest and the corners settle into the theme's background. */
+.ade-gate-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 46% at 50% 50%, color-mix(in srgb, var(--color-bg) 22%, transparent), transparent 72%),
+    radial-gradient(120% 90% at 50% 120%, color-mix(in srgb, var(--color-bg) 55%, transparent), transparent 60%);
+}
+
+.ade-gate-stack {
+  position: relative;
+  z-index: 1;
+  width: min(408px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  animation: ade-gate-rise 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── The glass card ─────────────────────────────────────────── */
+
+.ade-glass-card {
+  position: relative;
+  width: 100%;
+  padding: 34px 32px 26px;
+  border-radius: 24px;
+  border: 1px solid var(--gate-glass-edge);
+  background:
+    linear-gradient(180deg, var(--gate-glass-tint-top), var(--gate-glass-tint-bottom)),
+    var(--gate-glass-fill);
+  backdrop-filter: blur(32px) saturate(1.3);
+  -webkit-backdrop-filter: blur(32px) saturate(1.3);
+  box-shadow:
+    inset 0 1px 0 var(--gate-glass-highlight),
+    inset 0 -1px 0 color-mix(in srgb, var(--color-bg) 30%, transparent),
+    var(--gate-glass-shadow);
+  overflow: hidden;
+  text-align: center;
+}
+
+/* A lit rim — bright where light catches the top edge, fading down the sides —
+   and a faint accent wash: the two cues that make a translucent panel read as
+   a sheet of glass rather than a grey box. */
+.ade-glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(170deg, var(--gate-glass-rim-top), var(--gate-glass-rim-bottom) 38%, transparent 62%, var(--gate-glass-rim-bottom));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+.ade-glass-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 60% at 50% -10%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 62%);
+  pointer-events: none;
+}
+
+.ade-glass-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.ade-glass-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.35));
+}
+
+.ade-glass-mark img {
+  height: 30px;
+  width: auto;
+  user-select: none;
+}
+
+.ade-glass-title {
+  margin: 22px 0 0;
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--color-fg);
+}
+
+.ade-glass-sub {
+  margin: 10px auto 0;
+  max-width: 320px;
+  text-wrap: balance;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--gate-text-2);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+
+.ade-glass-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  height: 46px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--color-fg);
+  color: var(--color-bg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 35%, transparent),
+    0 1px 0 color-mix(in srgb, var(--color-bg) 30%, transparent),
+    0 14px 30px -14px color-mix(in srgb, var(--color-accent) 70%, transparent);
+  transition: transform 160ms ease, box-shadow 200ms ease, opacity 160ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 35%, transparent),
+    0 1px 0 color-mix(in srgb, var(--color-bg) 30%, transparent),
+    0 18px 36px -14px color-mix(in srgb, var(--color-accent) 85%, transparent);
+}
+
+.ade-glass-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.ade-glass-primary .ade-glass-primary-arrow {
+  transition: transform 180ms ease;
+}
+
+.ade-glass-primary:hover:not(:disabled) .ade-glass-primary-arrow {
+  transform: translateX(2px);
+}
+
+.ade-glass-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ade-glass-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 13px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+  transition: background-color 160ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-secondary:hover:not(:disabled) {
+  background: var(--gate-chip-hover);
+}
+
+.ade-glass-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gate-text-2);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-link:hover:not(:disabled) {
+  color: var(--color-fg);
+  background: var(--gate-chip-fill);
+}
+
+.ade-glass-link:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ade-glass-primary:focus-visible,
+.ade-glass-secondary:focus-visible,
+.ade-glass-link:focus-visible,
+.ade-glass-help:focus-visible,
+.ade-gate-continue:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: 2px;
+}
+
+.ade-glass-foot {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--gate-text-2);
+}
+
+.ade-glass-help {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--gate-glass-edge);
+  border-radius: 50%;
+  background: var(--gate-chip-fill);
+  color: var(--gate-text-2);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-help:hover {
+  color: var(--color-fg);
+  background: var(--gate-chip-hover);
+}
+
+.ade-glass-notice {
+  margin-top: 18px;
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 12px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gate-text-2);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
+}
+
+.ade-glass-awaiting {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  text-align: left;
+}
+
+.ade-glass-awaiting > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--gate-text-2);
+}
+
+.ade-glass-awaiting button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--gate-glass-edge);
+  background: transparent;
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-awaiting button:hover {
+  background: var(--gate-chip-hover);
+}
+
+.ade-glass-error {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-danger, var(--color-error, #f43f5e));
+}
+
+/* "Continue to your work" sits under the card as a small frosted pill. */
+.ade-gate-continue {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-glass-fill);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  color: var(--gate-text-2);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-gate-continue:hover {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+}
+
+/* ── Loading ─────────────────────────────────────────────────── */
+
+.ade-gate-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  font-size: 12.5px;
+  color: var(--gate-text-2);
+}
+
+.ade-gate-loading .ade-glass-mark {
+  animation: ade-gate-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ade-gate-rise {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-gate-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(0.96); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-gate *,
+  .ade-gate *::before,
+  .ade-gate *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+html[data-motion="reduced"] .ade-gate *,
+html[data-motion="reduced"] .ade-gate *::before,
+html[data-motion="reduced"] .ade-gate *::after {
+  animation: none !important;
+  transition: none !important;
+}

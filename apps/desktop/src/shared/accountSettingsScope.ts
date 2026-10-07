@@ -22,6 +22,22 @@ export const ACCOUNT_SCOPE_ALL = "all";
 
 const REPO_SCOPE_PREFIX = "repo:";
 
+const DEVICE_SCOPE_PREFIX = "device:";
+
+/**
+ * The account-store key for one computer's own copy of a setting.
+ *
+ * For preferences that differ per computer but that a separate process on that
+ * computer must read (the brain reads the Apple remote-streaming cap), so they
+ * cannot live only in the renderer's local storage. Filed under the account so
+ * the brain's account-settings store sees it; keyed by the sync device id so
+ * no other computer applies it.
+ */
+export function accountDeviceScopeKey(deviceId: string | null | undefined): string | null {
+  const id = deviceId?.trim();
+  return id ? `${DEVICE_SCOPE_PREFIX}${id}` : null;
+}
+
 /**
  * Strips anything credential-shaped before a host.
  *

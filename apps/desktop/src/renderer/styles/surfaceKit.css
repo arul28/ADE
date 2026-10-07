@@ -1,0 +1,248 @@
+/*
+ * Surface kit — the shared vocabulary for dashboard-style surfaces: the
+ * welcome screen, the new chat page, the usage panel and Settings.
+ *
+ * One card, one header, one eyebrow, one meter. Every surface that shows a
+ * box of facts uses these instead of a bespoke panel, so boxes line up and
+ * read as one system. Colour is reserved for status; everything else is the
+ * theme's fg/bg mixed at fixed steps.
+ *
+ * On an image scene (`html[data-scene="image"]`) a card becomes a frosted
+ * plane over the picture: more opaque, blurred, with a lighter edge, so the
+ * image stays the hero and the text keeps its contrast.
+ */
+
+:root {
+  --kit-card-bg: color-mix(in srgb, var(--color-bg) 58%, transparent);
+  --kit-card-edge: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  --kit-card-blur: none;
+  --kit-hover: color-mix(in srgb, var(--color-fg) 5.5%, transparent);
+  --kit-active: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  --kit-rule: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  --kit-text-2: color-mix(in srgb, var(--color-fg) 70%, var(--color-muted-fg));
+  --kit-text-3: var(--color-muted-fg);
+  --kit-track: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  --kit-fill: color-mix(in srgb, var(--color-fg) 62%, transparent);
+  --kit-warn: var(--color-warning, #f59e0b);
+  --kit-crit: var(--color-error, #f43f5e);
+  --kit-ok: var(--color-success, #22c55e);
+}
+
+[data-theme="light"] {
+  --kit-card-bg: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  --kit-card-edge: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  --kit-text-2: color-mix(in srgb, var(--color-fg) 76%, var(--color-muted-fg));
+}
+
+html[data-scene="image"] {
+  --kit-card-bg: color-mix(in srgb, var(--color-bg) 74%, transparent);
+  --kit-card-edge: color-mix(in srgb, white 9%, transparent);
+  --kit-card-blur: blur(20px) saturate(1.25);
+}
+
+html[data-scene="image"][data-theme="light"] {
+  --kit-card-bg: color-mix(in srgb, var(--color-bg) 80%, transparent);
+  --kit-card-edge: color-mix(in srgb, white 45%, transparent);
+}
+
+/* Mono, uppercase, wide-tracked: section labels and metadata. */
+.kit-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
+}
+
+.kit-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.kit-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-card-edge);
+  background: var(--kit-card-bg);
+  backdrop-filter: var(--kit-card-blur);
+  -webkit-backdrop-filter: var(--kit-card-blur);
+  overflow: hidden;
+}
+
+/* Card header: icon · label · count ………… action. Always 40px. */
+.kit-card-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+
+.kit-card-head > svg { flex: none; color: var(--kit-text-3); }
+.kit-card-head-count { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
+.kit-card-head-action {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  margin-right: -6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 450;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.kit-card-head-action:hover { background: var(--kit-hover); color: var(--color-fg); }
+
+.kit-card-body { padding: 2px 14px 14px; min-height: 0; }
+.kit-card-body[data-flush="true"] { padding: 0 6px 6px; }
+
+.kit-rule { height: 1px; background: var(--kit-rule); border: 0; margin: 0; }
+
+/* A list row inside a card. */
+.kit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  color: var(--color-fg);
+  transition: background-color 100ms ease;
+}
+button.kit-row, a.kit-row { width: 100%; border: 0; background: transparent; text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; }
+button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
+
+/* A thin meter. Neutral until it means something. */
+.kit-meter {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--kit-track);
+  overflow: hidden;
+}
+.kit-meter > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--kit-fill);
+  transition: width 240ms ease;
+}
+.kit-meter[data-level="warn"] > span { background: var(--kit-warn); }
+.kit-meter[data-level="crit"] > span { background: var(--kit-crit); }
+
+/* Small status dot. */
+.kit-dot { flex: none; width: 6px; height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--color-muted-fg) 60%, transparent); }
+.kit-dot[data-state="ok"] { background: var(--kit-ok); }
+.kit-dot[data-state="warn"] { background: var(--kit-warn); }
+.kit-dot[data-state="crit"] { background: var(--kit-crit); }
+.kit-dot[data-state="accent"] { background: var(--color-accent); }
+
+/* Segmented control (range toggles, tabs inside a card). */
+.kit-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.kit-seg > button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--kit-text-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.kit-seg > button:hover { color: var(--color-fg); }
+.kit-seg > button[aria-pressed="true"], .kit-seg > button[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  color: var(--color-fg);
+}
+
+/* Legend chip: swatch · name · value. */
+.kit-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--kit-text-2);
+}
+.kit-legend > i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.kit-legend > b { font-family: var(--font-mono); font-weight: 400; font-size: 11px; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
+
+/* Small mono tag for status words ("on track", "watch", "low"). */
+.kit-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--kit-text-2);
+}
+.kit-tag[data-tone="ok"] { background: color-mix(in srgb, var(--kit-ok) 14%, transparent); color: var(--kit-ok); }
+.kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }
+.kit-tag[data-tone="crit"] { background: color-mix(in srgb, var(--kit-crit) 14%, transparent); color: var(--kit-crit); }
+
+/* Big stat number. */
+.kit-stat {
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg);
+}
+
+/* A segmented control can also be a radio group (role="radio" buttons):
+   same look, the checked one lifted. */
+.kit-seg > button[aria-checked="true"] {
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  color: var(--color-fg);
+}
+.kit-seg > button:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 1px; }
+.kit-seg[data-case="sentence"] > button { font-family: var(--font-sans); font-size: 11.5px; letter-spacing: 0; text-transform: none; }
+
+/* Square icon button that sits beside a .kit-seg (refresh, export). */
+.kit-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--kit-text-3);
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.kit-icon-btn:hover:not(:disabled) { background: var(--kit-active); color: var(--color-fg); }
+.kit-icon-btn:disabled { opacity: 0.45; cursor: default; }

@@ -1,21 +1,16 @@
 import React, { useCallback } from "react";
-import { Microphone, CheckCircle, DownloadSimple } from "@phosphor-icons/react";
-import {
-  COLORS,
-  MONO_FONT,
-  SANS_FONT,
-  inlineBadge,
-  primaryButton,
-} from "../lanes/laneDesignTokens";
+import { CheckCircle, DownloadSimple } from "@phosphor-icons/react";
+import { primaryButton } from "../lanes/laneDesignTokens";
 import { useAppStore } from "../../state/appStore";
 import { useVoiceModelInstall } from "../../hooks/useVoiceModelInstall";
 import { VOICE_MODEL_SIZE_LABEL } from "../../services/globalVoiceModelInstaller";
-import { SettingsPanel, SettingsRow, SettingsSection, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 const detailPanelStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 12,
+  gap: 10,
+  paddingTop: 2,
 };
 
 function formatMb(bytes: number): string {
@@ -47,22 +42,27 @@ export function DictationSection() {
   const needsDownload = !isDownloading && !alreadyInstalled;
 
   return (
-    <SettingsSection title="Voice input">
-      <SettingsPanel>
-        <SettingsRow
+    <ModernSection
+      group="Voice input"
+      title="Voice input"
+      hint="Dictate into any composer. Speech is transcribed on this machine and never uploaded."
+    >
+      <ModernRows>
+        <ModernRow
           anchor="voice-input"
-          icon={<Microphone size={15} weight="duotone" />}
-          tone="red"
           title="Dictation"
-          description={
+          hint={
             alreadyInstalled && voiceInputEnabled
-              ? "Ready. Tap the mic in any composer. Speech never leaves this machine."
-              : "A mic in chat composers, transcribed on this machine. Nothing is uploaded."
+              ? "Ready. Tap the mic in any composer."
+              : "A mic in chat composers, transcribed on this machine."
           }
           control={(
             <>
               {alreadyInstalled && voiceInputEnabled ? (
-                <CheckCircle size={16} weight="fill" aria-label="Speech model installed" style={{ color: COLORS.success }} />
+                <span className="kit-tag" data-tone="ok" aria-label="Speech model installed">
+                  <CheckCircle size={11} weight="fill" style={{ marginRight: 4 }} />
+                  Installed
+                </span>
               ) : null}
               <SettingsToggle
                 label="Enable voice input in chat"
@@ -75,58 +75,41 @@ export function DictationSection() {
           {voiceInputEnabled && isDownloading ? (
             <div style={detailPanelStyle}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  Downloading speech model
+                <span className="kit-eyebrow">Downloading speech model</span>
+                <span className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
+                  {percent != null ? `${percent}%` : "Starting"}
                 </span>
-                <span style={inlineBadge(COLORS.accent)}>{percent != null ? `${percent}%` : "Starting"}</span>
               </div>
-              <div
-                style={{
-                  height: 6,
-                  borderRadius: 999,
-                  background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: percent != null ? `${percent}%` : "35%",
-                    background: COLORS.accent,
-                    borderRadius: 999,
-                    transition: "width 120ms linear",
-                  }}
-                />
+              <div className="kit-meter" role="progressbar" aria-label="Speech model download" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+                <span style={{ width: percent != null ? `${percent}%` : "35%" }} />
               </div>
-              <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+              <div className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
                 {percent != null
                   ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
                   : `Downloaded ${formatMb(install.receivedBytes)} so far`}
-                {" · keeps going if you leave Settings"}
+                <span style={{ fontFamily: "var(--font-sans)" }}>{" · keeps going if you leave Settings"}</span>
               </div>
             </div>
           ) : voiceInputEnabled && needsDownload ? (
-            <div style={detailPanelStyle}>
-              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            <div style={{ ...detailPanelStyle, flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+              <span className="ade-ap-rowhint" style={{ marginTop: 0 }}>
                 One ~{VOICE_MODEL_SIZE_LABEL} download, then fully offline. The mic turns on when it finishes.
               </span>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <button type="button" style={primaryButton()} onClick={handleDownload}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                    <DownloadSimple size={14} weight="bold" />
-                    {install.phase === "error" ? "Retry download" : "Download speech model"}
-                  </span>
-                </button>
-              </div>
+              <button type="button" style={primaryButton()} onClick={handleDownload}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <DownloadSimple size={14} weight="bold" />
+                  {install.phase === "error" ? "Retry download" : "Download speech model"}
+                </span>
+              </button>
               {install.phase === "error" && install.error ? (
-                <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: 1.5 }}>
+                <div style={{ flexBasis: "100%", fontSize: 12, color: "var(--color-error)", lineHeight: 1.5 }}>
                   {install.error}
                 </div>
               ) : null}
             </div>
           ) : null}
-        </SettingsRow>
-      </SettingsPanel>
-    </SettingsSection>
+        </ModernRow>
+      </ModernRows>
+    </ModernSection>
   );
 }

@@ -43,6 +43,7 @@ import {
   USAGE_TEXT,
   usageHeadroomColor,
 } from "./usageDesign";
+import "./usageSurfaces.css";
 import {
   formatCountdown,
   formatResetClock,
@@ -220,11 +221,11 @@ export function UsageAccountRow({
   const pace = paceVisual(tightest?.segment.window.pacing);
 
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
+    <div className="flex min-w-0 flex-col gap-1">
       {/* Only the email. See the note at the top of this file. */}
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="usage-account-head">
         <span
-          className={cn(USAGE_TEXT.detail, "min-w-0 flex-1 truncate font-medium text-fg", dim && "opacity-70")}
+          className={cn("usage-account-email", dim && "opacity-70")}
           title={providerTitle ? `${identity} · ${providerTitle}` : identity}
         >
           {identity}
@@ -235,10 +236,8 @@ export function UsageAccountRow({
           // The bars below are the last reading before the login broke. They
           // still reset on time, but this login cannot use them.
           <span
-            className={cn(
-              USAGE_TEXT.micro,
-              "shrink-0 rounded border border-amber-300/45 bg-amber-400/10 px-1.5 py-[1px] font-medium text-amber-200",
-            )}
+            className="kit-tag"
+            data-tone="warn"
             title="The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading."
           >
             Signed out
@@ -254,11 +253,8 @@ export function UsageAccountRow({
                 ? `Clears this account's windows now. Next credit expires ${formatResetClock(account.resetCredits.nextExpiresAt) ?? "later"}.`
                 : "Clears this account's windows now."
             }
-            className={cn(
-              USAGE_TEXT.micro,
-              "inline-flex shrink-0 items-center gap-1 rounded border border-separator px-1.5 py-[1px]",
-              "font-medium text-muted-fg hover:bg-muted hover:text-fg disabled:opacity-50",
-            )}
+            className="kit-card-head-action"
+            style={{ marginLeft: 0, marginRight: 0, height: 20, fontSize: 11 }}
           >
             <ArrowClockwise size={10} aria-hidden className={spending ? "animate-spin motion-reduce:animate-none" : undefined} />
             Use reset
@@ -269,7 +265,7 @@ export function UsageAccountRow({
       {/* Stacked, full width. Each bar carries its own name, its headroom and
           its reset clock, so none of them has to be read against a header. */}
       {row.cells.length > 0 ? (
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 flex-col">
           {row.cells.map((cell) => (
             <WindowMeter
               key={cell.card.key}
@@ -287,15 +283,15 @@ export function UsageAccountRow({
       ) : account?.notice ? (
         // Better than "No usage yet": the host knows why there is no reading,
         // and a throttle must read as a throttle rather than a broken account.
-        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
+        <span className="usage-footnote">
           {accountNoticeLine(account.notice, nowMs)}
         </span>
       ) : account ? (
-        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>No usage yet</span>
+        <span className="usage-footnote">No usage yet</span>
       ) : null}
 
       {outcome ? (
-        <span role="status" className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
+        <span role="status" className="usage-footnote">
           {outcome}
         </span>
       ) : null}
@@ -327,6 +323,7 @@ function WindowMeter({
   const { segment, card } = cell;
   const left = Math.round(segment.percentLeft);
   const fill = usageHeadroomColor(segment.percentLeft);
+  const level = segment.percentLeft <= 5 ? "crit" : segment.percentLeft <= 20 ? "warn" : null;
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const closeTimerRef = useRef<number | null>(null);
@@ -402,58 +399,35 @@ function WindowMeter({
         aria-controls={open ? panelId : undefined}
         aria-label={`${card.label} · ${accountLabel}: ${left}% left`}
         onClick={() => onOpenChange(!open)}
-        /* `isolate` puts the fill in this button's own stacking context, so the
-           absolutely positioned fill cannot paint past the clip — the corners
-           that "escaped the radius" were the fill rendering over an ancestor
-           that had the rounding but not the clip. */
-        className={cn(
-          "relative isolate flex h-[22px] w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-left",
-          "bg-fg/[0.05]",
-          "focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-fg/40",
-        )}
-        // One colour, named once: the bar tint and the number read the same
-        // custom property, so they cannot drift apart.
+        className="usage-limit-row"
+        data-level={level}
+        // The headroom colour, named once: the details panel's header reads it
+        // so a panel that floated away still matches the row it came from.
         style={{ [FILL_VAR]: fill } as React.CSSProperties}
       >
-        {/* The fill IS the headroom: it is the same quantity the number names,
-            so a row reading "85% left" shows a bar that is 85% full. What is
-            spent is simply the empty part of the track. */}
-        <span
-          className="absolute inset-y-0 left-0 rounded-md"
-          style={{
-            width: `${segment.percentLeft}%`,
-            background: `color-mix(in srgb, var(${FILL_VAR}) 30%, transparent)`,
-            transition: reducedMotion ? undefined : "width 420ms cubic-bezier(0.22,1,0.36,1)",
-          }}
-          aria-hidden
-        />
-        <span
-          className={cn(USAGE_TEXT.micro, "relative z-[1] shrink-0 font-medium text-fg/75")}
-          aria-hidden
-        >
+        <span className="usage-limit-label" aria-hidden>
           {shortWindowLabel(segment.window)}
         </span>
-        <span
-          className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "relative z-[1] font-semibold")}
-          style={{ color: `var(${FILL_VAR})` }}
-          aria-hidden
-        >
-          {left}%
-        </span>
-        <span className={cn(USAGE_TEXT.micro, "relative z-[1] shrink-0 text-muted-fg")} aria-hidden>
-          left
-        </span>
-        {segment.window.resetsAt ? (
+        {/* A thin neutral meter whose fill is the HEADROOM — the same quantity
+            the number names, so "85% left" is a bar 85% full. It only takes a
+            colour once it means something: warn at 20% left, critical at 5%. */}
+        <span className="kit-meter" data-level={level ?? undefined} aria-hidden>
           <span
-            className="relative z-[1] ml-auto flex shrink-0 items-center gap-0.5 text-muted-fg"
-            aria-hidden
-          >
-            <ArrowClockwise size={9} />
-            <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS)}>
+            style={{
+              width: `${segment.percentLeft}%`,
+              transition: reducedMotion ? "none" : undefined,
+            }}
+          />
+        </span>
+        <span className="usage-limit-value" aria-hidden>
+          <b>{left}%</b> <span>left</span>
+          {segment.window.resetsAt ? (
+            <>
+              <span className="usage-limit-sep">·</span>
               {formatCountdown(segment.resetsInMs)}
-            </span>
-          </span>
-        ) : null}
+            </>
+          ) : null}
+        </span>
       </button>
 
       {open ? (

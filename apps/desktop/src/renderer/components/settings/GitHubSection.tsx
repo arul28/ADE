@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
   CheckCircle,
@@ -13,10 +13,11 @@ import {
   GitBranch,
   ArrowSquareOut,
   TerminalWindow,
+  GithubLogo,
+  FlowArrow,
 } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
-import { GitHubAppInstallPanel, PILL_TONE_COLORS } from "../github/GitHubAppInstallPanel";
+import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
 import {
   describeGithubPatVerification,
   describeGithubAppCredentialBadge,
@@ -30,12 +31,8 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import {
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
-import { SettingsTextField } from "./primitives";
+import { ModernSection, SettingsTextField } from "./primitives";
+import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
@@ -64,6 +61,13 @@ const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Commit statuses: Read",
   "Workflows: Write",
 ] as const;
+
+const PERMISSION_USES = [
+  { title: "Pull requests", detail: "Create PRs, request reviewers, and post review comments.", icon: <GitPullRequest size={15} weight="duotone" /> },
+  { title: "Contents", detail: "Read repository files and push branch changes.", icon: <GitBranch size={15} weight="duotone" /> },
+  { title: "Workflows", detail: "Push lane changes that edit GitHub workflow files.", icon: <FlowArrow size={15} weight="duotone" /> },
+  { title: "Actions", detail: "Inspect workflow runs and re-run failed jobs.", icon: <Eye size={15} weight="duotone" /> },
+];
 
 function detectTokenType(token: string): TokenType {
   if (token.startsWith("github_pat_")) return "fine-grained";
@@ -112,36 +116,36 @@ function credentialStateBadge(
   outage: boolean,
   /** The account axis, which knows why the App credential is idle. */
   appAccount: { state: GithubAccountAuthState; blockedUntil: string | null } | null,
-): { label: string; color: string } {
-  if (state.activeFor.length === 2) return { label: "Reads & writes", color: COLORS.success };
-  if (state.activeFor[0] === "read") return { label: "Reads", color: COLORS.success };
-  if (state.activeFor[0] === "write") return { label: "Writes", color: COLORS.success };
+): { label: string; tone: StatusTone } {
+  if (state.activeFor.length === 2) return { label: "Reads & writes", tone: "ok" };
+  if (state.activeFor[0] === "read") return { label: "Reads", tone: "ok" };
+  if (state.activeFor[0] === "write") return { label: "Writes", tone: "ok" };
   // The App's own credential state outranks the generic ladder states: it is
   // the only place that can tell a paused renewal from a dead authorization,
   // and only the dead one may ask the user to re-authorize. It says nothing
   // about the other rows, so the row decides here rather than at the call site.
   if (appAccount && state.source === "app") {
     const badge = describeGithubAppCredentialBadge(appAccount.state, appAccount.blockedUntil);
-    if (badge) return { label: badge.label, color: PILL_TONE_COLORS[badge.tone] };
+    if (badge) return { label: badge.label, tone: badge.tone === "ok" ? "ok" : badge.tone === "warn" ? "warn" : "neutral" };
   }
   if (state.state === "cooldown") {
     // During a GitHub outage a cooldown says nothing about the credential —
     // it only records that GitHub failed to answer. "Reconnect needed" here
     // would be an outright false accusation.
-    if (outage) return { label: "Waiting on GitHub", color: COLORS.textMuted };
+    if (outage) return { label: "Waiting on GitHub", tone: "neutral" };
     const retryAt = formatGithubShortTime(state.failure?.retryAt);
     if (state.failure?.kind === "rate_limited") {
-      return { label: retryAt ? `Paused until ${retryAt}` : "Paused", color: COLORS.warning };
+      return { label: retryAt ? `Paused until ${retryAt}` : "Paused", tone: "warn" };
     }
-    if (state.failure?.kind === "invalid_token") return { label: "Reconnect needed", color: COLORS.warning };
-    if (state.failure?.kind === "permission_denied") return { label: "Access unavailable", color: COLORS.warning };
-    return { label: "Temporarily unavailable", color: COLORS.warning };
+    if (state.failure?.kind === "invalid_token") return { label: "Reconnect needed", tone: "warn" };
+    if (state.failure?.kind === "permission_denied") return { label: "Access unavailable", tone: "warn" };
+    return { label: "Temporarily unavailable", tone: "warn" };
   }
-  return {
-    label: state.available ? "Fallback" : "Not set up",
-    color: state.available ? COLORS.textSecondary : COLORS.textDim,
-  };
+  return { label: state.available ? "Fallback" : "Not set up", tone: "neutral" };
 }
+
+/** Colour carries status only: ok, needs attention, or nothing to say. */
+type StatusTone = "ok" | "warn" | "neutral";
 
 export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [actionError, setActionError] = useState<string | null>(null);
@@ -272,7 +276,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   // instructions are hidden so nobody re-runs `gh auth login` and replaces a
   // credential that was working fine.
   const outage = describeGithubOutage(githubStatus);
-  let statusColor: string;
+  let statusTone: StatusTone;
   let statusLabel: string;
   // Unreadable store first, ahead of the outage: it is a LOCAL fact with a
   // repair control two clicks away, and it stays true after GitHub recovers.
@@ -280,25 +284,25 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   // the user can actually fix would hide the fix for the duration of someone
   // else's incident.
   if (credentialStoreUnreadable) {
-    statusColor = COLORS.warning;
+    statusTone = "warn";
     statusLabel = GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.statusLabel;
   } else if (outage) {
-    statusColor = COLORS.textMuted;
+    statusTone = "neutral";
     statusLabel = outage.statusLabel;
   } else if (isConnected && credentialFallback) {
-    statusColor = COLORS.warning;
+    statusTone = "warn";
     statusLabel = "Connected · fallback";
   } else if (isConnected) {
-    statusColor = COLORS.success;
+    statusTone = "ok";
     statusLabel = "Connected";
   } else if (authFailurePresentation) {
-    statusColor = COLORS.warning;
+    statusTone = "warn";
     statusLabel = authFailurePresentation.statusLabel;
   } else if (tokenAuthenticated) {
-    statusColor = COLORS.warning;
+    statusTone = "warn";
     statusLabel = "Needs permission";
   } else {
-    statusColor = COLORS.textMuted;
+    statusTone = "neutral";
     statusLabel = "Not connected";
   }
   const ghAuthAlreadyConfigured =
@@ -327,61 +331,19 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     void window.ade.app.openExternal(url);
   };
 
-  const sectionGap: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
-  };
-
-  const scopeRowStyle = (present: boolean): CSSProperties => ({
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: present ? COLORS.success : COLORS.textMuted,
-  });
-
-  const infoBoxStyle: CSSProperties = {
-    background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)",
-    borderRadius: 0,
-    padding: "10px 14px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: COLORS.textSecondary,
-    lineHeight: "18px",
-  };
-
-  const commandStyle: CSSProperties = {
-    display: "block",
-    marginTop: 8,
-    padding: "8px 10px",
-    border: `1px solid ${COLORS.border}`,
-    background: COLORS.recessedBg,
-    color: COLORS.textPrimary,
-    fontFamily: MONO_FONT,
-    fontSize: 11,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  };
-
-  const linkButtonStyle: CSSProperties = {
-    ...outlineButton({ height: 30 }),
-    fontSize: 10,
-    padding: "0 10px",
-  };
-
-  // The summary row keeps its mono face and its "N/A" fallback; only the
-  // surrounding grid became a manager table.
-  const summaryCell = (value: string | null) => (
-    <span style={{ fontSize: 13, fontFamily: MONO_FONT, color: COLORS.textPrimary, minWidth: 0, overflowWrap: "anywhere" }}>
-      {value ?? "N/A"}
-    </span>
+  const tag = (tone: StatusTone, label: string) => (
+    <span className="kit-tag" data-tone={tone === "neutral" ? undefined : tone}>{label}</span>
   );
+  const repoName = githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null;
+  const readsWith = outage && !activeReadCredential ? "Unknown" : readsWithLabel;
+  // While GitHub is down ADE can't resolve which credential would win, so it
+  // reports the honest "Unknown" rather than the false-negative "Not connected".
+  const writesWith = outage && effectiveWriteAuthSource === "none"
+    ? "Unknown"
+    : credentialSourceLabel(effectiveWriteAuthSource);
 
   return (
-    <div style={sectionGap}>
+    <div className="ade-int-page">
       {saveNotice ? (
         <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
       ) : null}
@@ -389,436 +351,350 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
       ) : null}
 
-      <SettingsManagerPage
+      <ModernSection
+        group="GitHub"
         anchor="github-connection"
-        title="GitHub connection"
-        description={
+        title="Connection"
+        hint={
           embedded
-            ? undefined
+            ? "Sign in with the GitHub CLI or a personal access token."
             : "Authenticate with GitHub CLI or a personal access token, and install ADE for GitHub for webhook-backed PR updates."
         }
-        toolbar={
+        actions={(
           <>
-            {githubStatus ? <span style={inlineBadge(statusColor)}>{statusLabel}</span> : null}
-            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleRefreshStatus}>
-              <ArrowsClockwise size={12} weight="bold" /> Refresh status
+            <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={githubBusy} onClick={handleRefreshStatus}>
+              <ArrowsClockwise size={12} weight="bold" /> Refresh
             </button>
             {githubStatus?.patTokenStored ? (
-              <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleClearToken}>
+              <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleClearToken}>
                 <LinkBreak size={12} weight="bold" /> Clear PAT
               </button>
             ) : null}
-            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
+            <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
               <Key size={12} weight="bold" /> {showPatSetup ? "Hide PAT setup" : githubStatus?.patTokenStored ? "Replace PAT" : "Use PAT instead"}
             </button>
           </>
-        }
+        )}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <SettingsManagerTable
-            // Narrow tracks, so the summary fits a half-width column without
-            // scrolling sideways.
-            columns={[
-              { label: "User", width: "minmax(90px, 1fr)" },
-              { label: "Repository", width: "minmax(110px, 1.2fr)" },
-              { label: "Reads with", width: "minmax(96px, 1fr)" },
-              { label: "Writes with", width: "minmax(96px, 1fr)" },
-            ]}
-            minWidth={470}
-          >
-            <SettingsManagerRow>
-              {summaryCell(githubStatus?.userLogin ?? null)}
-              {summaryCell(githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
-              {/* While GitHub is down ADE can't resolve which credential would
-                  win, so it reports the honest "Unknown" rather than the
-                  false-negative "Not connected". */}
-              {summaryCell(outage && !activeReadCredential ? "Unknown" : readsWithLabel)}
-              {summaryCell(
-                outage && effectiveWriteAuthSource === "none"
-                  ? "Unknown"
-                  : credentialSourceLabel(effectiveWriteAuthSource),
-              )}
-            </SettingsManagerRow>
-          </SettingsManagerTable>
-
-          {credentialStoreUnreadable ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-credential-store-unreadable",
-                tone: "warning",
-                title: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title,
-                detail: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail,
-                actions: [
-                  {
-                    label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action,
-                    onClick: () => openConnectionsPanel("machines"),
-                  },
-                ],
-              }}
-            />
-          ) : null}
-
-          {credentialFallback ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-credential-fallback",
-                tone: "warning",
-                title: (
-                  <span style={{ fontWeight: 500 }}>
-                    <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
-                    <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
-                    {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
-                  </span>
-                ),
-              }}
-            />
-          ) : null}
-
-          {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-background-paused",
-                tone: "warning",
-                title: (
-                  <span style={{ fontWeight: 500 }}>
-                    Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
-                  </span>
-                ),
-              }}
-            />
-          ) : null}
-
-          {credentialStates.length > 0 ? (
-            <div>
-              <SettingsManagerTable
-                columns={[
-                  { label: "Order", width: "56px" },
-                  { label: "Connection" },
-                  { label: "Capabilities" },
-                  { label: "Status", align: "right" },
-                ]}
-                minWidth={480}
-              >
-                {credentialStates.map((credential, index) => {
-                  const badge = credentialStateBadge(credential, outage != null, appAccount);
-                  return (
-                    <SettingsManagerRow
-                      key={credential.source}
-                      actions={<span style={inlineBadge(badge.color)}>{badge.label}</span>}
-                    >
-                      <span style={{ fontFamily: SANS_FONT, color: COLORS.textMuted }}>{index + 1}</span>
-                      <span style={{ fontSize: 12, fontWeight: 650, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                        {credentialSourceLabel(credential.source)}
-                      </span>
-                      <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                        {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
-                      </span>
-                    </SettingsManagerRow>
-                  );
-                })}
-              </SettingsManagerTable>
-              <div style={{ marginTop: 7, fontSize: 10, lineHeight: "16px", fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                ADE uses the first working connection. Read requests can use the GitHub App; write actions skip it and use the first available write connection.
-              </div>
+        <div className="ade-modern-rows">
+          <div className="ade-int-hero">
+            <span className="ade-int-logo" aria-hidden><GithubLogo size={20} weight="fill" /></span>
+            <div className="ade-int-hero-id">
+              <span className="ade-int-hero-name">{githubStatus?.userLogin ?? (githubStatus ? "Not signed in" : "Checking…")}</span>
+              <span className="ade-int-hero-sub">{repoName ?? "No GitHub repository detected"}</span>
             </div>
-          ) : null}
-
-          <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
-              {/* The model names the heading in capitals; the page reads in
-                  sentence case. */}
-              {sentenceCase(credentialPresentation.permissionHeading)}
+            {githubStatus ? tag(statusTone, statusLabel) : null}
+          </div>
+          <div className="ade-int-facts">
+            <div className="ade-int-fact">
+              <span className="ade-int-fact-label">Reads with</span>
+              <span className="ade-int-fact-value">{readsWith}</span>
             </div>
-            {permissionMode === "auth-failure" ? (
-              <Banner
-                layout="inline"
-                model={{
-                  id: "github-auth-failure",
-                  // Neutral during an outage: a warning tone implies the user has
-                  // something to fix, and they don't.
-                  tone: outage ? "neutral" : "warning",
-                  title: authFailurePresentation?.title ?? "",
-                  detail: authFailurePresentation?.settingsDetail,
-                  actions: outage
-                    ? [
-                        {
-                          label: "GitHub status",
-                          icon: <ArrowSquareOut size={12} />,
-                          onClick: () => openExternal(outage.actionUrl),
-                        },
-                      ]
-                    : undefined,
-                }}
-              />
-            ) : permissionMode === "app" ? (
-              <div style={{ display: "grid", gap: 6 }}>
-                <div style={scopeRowStyle(githubStatus?.repoAccessOk === true)}>
-                  <ShieldCheck size={14} weight="fill" />
-                  <span>{credentialPresentation.repoAccessLabel}</span>
-                </div>
-                <div style={{ ...infoBoxStyle, marginTop: 4 }}>
-                  The ADE GitHub App is read-only. ADE uses it for pull request data and real-time updates, then uses GitHub CLI or a personal access token for actions that change GitHub.
-                </div>
+            <div className="ade-int-fact">
+              <span className="ade-int-fact-label">Writes with</span>
+              <span className="ade-int-fact-value">{writesWith}</span>
+            </div>
+          </div>
+        </div>
+
+        {credentialStoreUnreadable ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-credential-store-unreadable",
+              tone: "warning",
+              title: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title,
+              detail: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail,
+              actions: [
+                {
+                  label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action,
+                  onClick: () => openConnectionsPanel("machines"),
+                },
+              ],
+            }}
+          />
+        ) : null}
+
+        {credentialFallback ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-credential-fallback",
+              tone: "warning",
+              title: (
+                <span style={{ fontWeight: 500 }}>
+                  <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
+                  <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
+                  {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
+                </span>
+              ),
+            }}
+          />
+        ) : null}
+
+        {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-background-paused",
+              tone: "warning",
+              title: (
+                <span style={{ fontWeight: 500 }}>
+                  Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
+                </span>
+              ),
+            }}
+          />
+        ) : null}
+
+        {shouldShowGhAuthInstructions ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-cli-auth-instructions",
+              tone: "warning",
+              icon: <TerminalWindow size={15} weight="duotone" />,
+              title: "GitHub CLI auth",
+              detail: githubStatus?.ghAuthError
+                ? githubStatus.ghAuthError
+                : "Run this command in Terminal, then refresh this panel.",
+              extra: <code className="ade-int-command">{ghCommand}</code>,
+            }}
+          />
+        ) : null}
+      </ModernSection>
+
+      {showPatSetup ? (
+        <ModernSection
+          group="GitHub"
+          title="Personal access token"
+          hint="Optional. Use it when you cannot or do not want to use GitHub CLI auth on this machine."
+        >
+          <div className="ade-int-token-grid">
+            <div className="ade-int-token-card">
+              <div className="ade-int-token-head">
+                <Shield size={16} weight="duotone" />
+                <span>Classic token</span>
               </div>
-            ) : permissionMode === "fine-grained" ? (
-              <div style={{ display: "grid", gap: 6 }}>
-                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((permission) => (
-                  <div key={permission} style={{ ...scopeRowStyle(false), color: COLORS.textSecondary }}>
-                    <ShieldCheck size={14} weight="fill" />
-                    <span>{permission}</span>
-                  </div>
+              <p className="ade-int-quiet">Generate a classic token with repo and workflow scopes.</p>
+              <div className="ade-int-chip-row">
+                {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => (
+                  <span key={scope} className="kit-tag">{scope}</span>
                 ))}
-                <div style={{ ...infoBoxStyle, marginTop: 4 }}>
-                  GitHub does not expose fine-grained PAT permissions through OAuth scope headers. ADE verifies repo access directly when an active GitHub remote is available.
-                </div>
               </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "grid", gap: 6 }}>
-                  {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
-                    const present = accessState.requirements[scope].present;
-                    return (
-                      <div key={scope} style={scopeRowStyle(present)}>
-                        {present ? <CheckCircle size={14} weight="fill" /> : <Warning size={14} weight="fill" />}
-                        <span>{scope}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {accessState.normalizedScopes.length > 0 ? accessState.normalizedScopes.map((scope) => (
-                    <span key={scope} style={{
-                      display: "inline-block",
-                      fontSize: 10,
-                      fontFamily: MONO_FONT,
-                      color: COLORS.textSecondary,
-                      background: "color-mix(in srgb, var(--color-border) 55%, transparent)",
-                      padding: "3px 7px",
-                      borderRadius: 4,
-                    }}>
-                      {scope}
-                    </span>
-                  )) : (
-                    <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                      No OAuth scopes detected yet.
-                    </span>
-                  )}
-                </div>
+              <div className="ade-int-btn-row">
+                <button type="button" className="ade-modern-btn" onClick={() => openExternal(classicTokenUrl)}>
+                  <ArrowSquareOut size={12} weight="bold" /> Create classic token
+                </button>
+                <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={() => openExternal(GITHUB_CLASSIC_TOKENS_URL)}>
+                  Manage tokens
+                </button>
               </div>
-            )}
+            </div>
+
+            <div className="ade-int-token-card">
+              <div className="ade-int-token-head">
+                <ShieldCheck size={16} weight="duotone" />
+                <span>Fine-grained token</span>
+              </div>
+              <p className="ade-int-quiet">Include this repository and grant the permissions below.</p>
+              <div className="ade-int-chip-row">
+                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((perm) => (
+                  <span key={perm} className="kit-tag">{perm}</span>
+                ))}
+              </div>
+              <div className="ade-int-btn-row">
+                <button type="button" className="ade-modern-btn" onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKEN_NEW_URL)}>
+                  <ArrowSquareOut size={12} weight="bold" /> Create fine-grained token
+                </button>
+                <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKENS_URL)}>
+                  Manage tokens
+                </button>
+              </div>
+            </div>
           </div>
 
-          {hasMissingScopes ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-missing-scopes",
-                tone: "error",
-                title: (
-                  <>
-                    Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
-                  </>
-                ),
-              }}
-            />
-          ) : null}
-
-          {repoProbeFailed ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-repo-probe",
-                tone: "error",
-                title: (
-                  <span style={{ fontWeight: 500 }}>
-                    Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
-                    <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
-                    {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
-                    {isFineGrainedToken ? (
-                      <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
-                    ) : (
-                      <> Make sure the token has access to this repository.</>
-                    )}
-                  </span>
-                ),
-              }}
-            />
-          ) : null}
-
-          {shouldShowGhAuthInstructions ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "github-cli-auth-instructions",
-                tone: "warning",
-                icon: <TerminalWindow size={15} weight="duotone" />,
-                title: "GitHub CLI auth",
-                detail: githubStatus?.ghAuthError
-                  ? githubStatus.ghAuthError
-                  : "Run this command in Terminal, then refresh this panel.",
-                extra: <code style={commandStyle}>{ghCommand}</code>,
-              }}
-            />
-          ) : null}
-        </div>
-      </SettingsManagerPage>
+          <div className="ade-ap-rowcard" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="ade-ap-rowtitle">Token</span>
+              <SettingsTextField
+                type="password"
+                value={githubTokenDraft}
+                onChange={setGithubTokenDraft}
+                placeholder="ghp_... or github_pat_..."
+                mono
+              />
+              {githubTokenDraft.trim() ? (
+                <span className="ade-int-quiet">
+                  Detected: {tokenTypeDetectionLabel(detectTokenType(githubTokenDraft.trim()))}
+                </span>
+              ) : null}
+            </label>
+            <div className="ade-int-btn-row">
+              <button type="button" className="ade-modern-btn" data-tone="primary" disabled={githubBusy} onClick={handleSaveToken}>
+                <Key size={12} weight="bold" /> {githubBusy ? "Saving..." : "Save token"}
+              </button>
+              <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleRefreshStatus}>
+                <ArrowsClockwise size={12} weight="bold" /> Check status
+              </button>
+            </div>
+          </div>
+        </ModernSection>
+      ) : null}
 
       <GitHubAppInstallPanel />
 
-      {showPatSetup ? (
-        <div style={cardStyle()}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <Key size={18} color={COLORS.accent} weight="fill" />
-            <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              Personal access token
-            </span>
-          </div>
-          <div style={{ ...infoBoxStyle, marginBottom: 14 }}>
-            PAT setup is optional. Use it when you cannot or do not want to use GitHub CLI auth on this machine.
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
-            <div style={{ padding: "14px 16px", border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <Shield size={18} weight="duotone" style={{ color: COLORS.accent }} />
-                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  Classic token
-                </div>
-              </div>
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
-                Generate a classic token with repo and workflow scopes.
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-                <button type="button" style={linkButtonStyle} onClick={() => openExternal(classicTokenUrl)}>
-                  <ArrowSquareOut size={12} weight="bold" /> Create classic token
-                </button>
-                <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_CLASSIC_TOKENS_URL)}>
-                  Manage tokens
-                </button>
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => (
-                  <span key={scope} style={{
-                    display: "inline-block",
-                    fontSize: 10,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.accent,
-                    background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-                    padding: "3px 8px",
-                    borderRadius: 4,
-                    fontWeight: 500,
-                  }}>
-                    {scope}
+      {credentialStates.length > 0 ? (
+        <ModernSection
+          group="GitHub"
+          title="Access order"
+          hint="ADE uses the first working connection. Reads can use the GitHub App; writes skip it and use the first connection that can write."
+        >
+          <div className="ade-modern-rows">
+            {credentialStates.map((credential, index) => {
+              const badge = credentialStateBadge(credential, outage != null, appAccount);
+              return (
+                <div key={credential.source} className="ade-int-order-row">
+                  <span className="ade-int-order-num kit-num">{index + 1}</span>
+                  <span className="ade-int-order-name">{credentialSourceLabel(credential.source)}</span>
+                  <span className="ade-int-order-cap">
+                    {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
                   </span>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ padding: "14px 16px", border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.success}`, borderRadius: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <ShieldCheck size={18} weight="duotone" style={{ color: COLORS.success }} />
-                <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  Fine-grained token
+                  {tag(badge.tone, badge.label)}
                 </div>
-              </div>
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
-                Include this repository and grant the permissions below.
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-                <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKEN_NEW_URL)}>
-                  <ArrowSquareOut size={12} weight="bold" /> Create fine-grained token
-                </button>
-                <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKENS_URL)}>
-                  Manage tokens
-                </button>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((perm) => (
-                  <span key={perm} style={{
-                    display: "inline-block",
-                    fontSize: 10,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.success,
-                    background: "color-mix(in srgb, var(--color-success) 10%, transparent)",
-                    padding: "3px 8px",
-                    borderRadius: 4,
-                    fontWeight: 500,
-                    alignSelf: "flex-start",
-                  }}>
-                    {perm}
-                  </span>
-                ))}
-              </div>
-            </div>
+              );
+            })}
           </div>
-
-          <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={LABEL_STYLE}>Personal access token</span>
-            <SettingsTextField
-              type="password"
-              value={githubTokenDraft}
-              onChange={setGithubTokenDraft}
-              placeholder="ghp_... or github_pat_..."
-              mono
-            />
-            {githubTokenDraft.trim() ? (
-              <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                Detected: {tokenTypeDetectionLabel(detectTokenType(githubTokenDraft.trim()))}
-              </span>
-            ) : null}
-          </label>
-
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button type="button" style={primaryButton()} disabled={githubBusy} onClick={handleSaveToken}>
-              <Key size={12} weight="bold" /> {githubBusy ? "Saving..." : "Save token"}
-            </button>
-            <button type="button" style={outlineButton()} disabled={githubBusy} onClick={handleRefreshStatus}>
-              <ArrowsClockwise size={12} weight="bold" /> Check status
-            </button>
-          </div>
-        </div>
+        </ModernSection>
       ) : null}
 
-      <div style={cardStyle()}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-          <ShieldCheck size={18} color={COLORS.info} weight="fill" />
-          <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-            Permission use
-          </span>
+      <ModernSection
+        group="GitHub"
+        // The model names the heading in capitals; the page reads in sentence case.
+        title={sentenceCase(credentialPresentation.permissionHeading)}
+        hint="Pull requests, reviews, CI re-runs and branch pushes all need this access. GitHub CLI and PAT auth need the same."
+      >
+        {permissionMode === "auth-failure" ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-auth-failure",
+              // Neutral during an outage: a warning tone implies the user has
+              // something to fix, and they don't.
+              tone: outage ? "neutral" : "warning",
+              title: authFailurePresentation?.title ?? "",
+              detail: authFailurePresentation?.settingsDetail,
+              actions: outage
+                ? [
+                    {
+                      label: "GitHub status",
+                      icon: <ArrowSquareOut size={12} />,
+                      onClick: () => openExternal(outage.actionUrl),
+                    },
+                  ]
+                : undefined,
+            }}
+          />
+        ) : permissionMode === "app" ? (
+          <div className="ade-modern-rows">
+            <div className="ade-int-perm-row">
+              <span className="ade-int-perm-icon" data-tone={githubStatus?.repoAccessOk === true ? "ok" : undefined}>
+                <ShieldCheck size={14} weight="fill" />
+              </span>
+              <span className="ade-int-perm-name">{credentialPresentation.repoAccessLabel}</span>
+            </div>
+            <p className="ade-int-note">
+              The ADE GitHub App is read-only. ADE uses it for pull request data and real-time updates, then uses GitHub CLI or a personal access token for actions that change GitHub.
+            </p>
+          </div>
+        ) : permissionMode === "fine-grained" ? (
+          <div className="ade-modern-rows">
+            <div className="ade-int-perm-list">
+              {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((permission) => (
+                <span key={permission} className="ade-int-perm-item">
+                  <ShieldCheck size={13} weight="fill" />
+                  {permission}
+                </span>
+              ))}
+            </div>
+            <p className="ade-int-note">
+              GitHub does not expose fine-grained PAT permissions through OAuth scope headers. ADE verifies repo access directly when an active GitHub remote is available.
+            </p>
+          </div>
+        ) : (
+          <div className="ade-modern-rows">
+            <div className="ade-int-perm-list">
+              {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
+                const present = accessState.requirements[scope].present;
+                return (
+                  <span key={scope} className="ade-int-perm-item" data-tone={present ? "ok" : "warn"}>
+                    {present ? <CheckCircle size={13} weight="fill" /> : <Warning size={13} weight="fill" />}
+                    <span className="ade-int-mono">{scope}</span>
+                  </span>
+                );
+              })}
+            </div>
+            <div className="ade-int-scope-row">
+              <span className="ade-int-fact-label">Granted</span>
+              {accessState.normalizedScopes.length > 0 ? accessState.normalizedScopes.map((scope) => (
+                <span key={scope} className="kit-tag">{scope}</span>
+              )) : (
+                <span className="ade-int-quiet">No OAuth scopes detected yet.</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {hasMissingScopes ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-missing-scopes",
+              tone: "error",
+              title: (
+                <>
+                  Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
+                </>
+              ),
+            }}
+          />
+        ) : null}
+
+        {repoProbeFailed ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-repo-probe",
+              tone: "error",
+              title: (
+                <span style={{ fontWeight: 500 }}>
+                  Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
+                  <strong>{repoName ?? "this repo"}</strong>
+                  {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
+                  {isFineGrainedToken ? (
+                    <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
+                  ) : (
+                    <> Make sure the token has access to this repository.</>
+                  )}
+                </span>
+              ),
+            }}
+          />
+        ) : null}
+
+        <div className="ade-int-uses">
+          {PERMISSION_USES.map((use) => (
+            <div key={use.title} className="ade-int-use-row">
+              <span className="ade-modern-glyph" aria-hidden>{use.icon}</span>
+              <div style={{ minWidth: 0 }}>
+                <div className="ade-ap-rowtitle">{use.title}</div>
+                <div className="ade-ap-rowhint">{use.detail}</div>
+              </div>
+            </div>
+          ))}
         </div>
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "20px", marginBottom: 14 }}>
-          ADE needs GitHub access to create PRs, post reviews, inspect CI, re-run failed jobs, and push branch updates. GitHub CLI auth and PAT auth use the same required access.
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <GitPullRequest size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Pull requests</strong> - create PRs, request reviewers, and post review comments
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <GitBranch size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Contents</strong> - read repository files and push branch changes
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Eye size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Workflows</strong> - push lane changes that edit GitHub workflow files
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Eye size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Actions</strong> - inspect workflow runs and trigger failed job re-runs
-            </span>
-          </div>
-        </div>
-      </div>
+      </ModernSection>
+
     </div>
   );
 }

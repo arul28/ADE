@@ -952,6 +952,25 @@ const browserMockIosElementResult = (
 
 const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";
 
+/**
+ * Preview-only: `?mockGate=signed_out|expired|unreadable` opens the launch
+ * gate in that account state (the welcome video is skipped so the sign-in
+ * screen shows directly). Signing in clears it for the rest of the page load.
+ */
+type BrowserMockGateState = "signed_out" | "expired" | "unreadable";
+let browserMockGateSignedIn = false;
+
+function browserMockGateState(): BrowserMockGateState | null {
+  if (browserMockGateSignedIn) return null;
+  try {
+    const value = new URLSearchParams(window.location.search).get("mockGate");
+    if (value === "expired" || value === "unreadable") return value;
+    return value === null ? null : "signed_out";
+  } catch {
+    return null;
+  }
+}
+
 function readBrowserMockWelcomeVideoState() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(WELCOME_VIDEO_STORAGE_KEY) ?? "null") as {
@@ -3888,6 +3907,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     willLastToReset: used <= elapsed,
     resetsInHours,
   });
+  // Recents for the welcome screen preview: one repo on three machines, a
+  // couple on two, and a few local-only, so the machine stack has every shape.
+  const browserMockAgo = (ms: number) => new Date(BROWSER_MOCK_NOW_MS - ms).toISOString();
+  const browserMockRemoteRecent = (
+    targetId: string,
+    runtimeName: string,
+    hostname: string,
+    projectId: string,
+    displayName: string,
+    rootPath: string,
+    agoMs: number,
+    gitOriginUrl: string | null,
+  ) => ({
+    rootPath,
+    displayName,
+    lastOpenedAt: browserMockAgo(agoMs),
+    exists: true,
+    kind: "remote" as const,
+    gitOriginUrl,
+    remote: { targetId, projectId, runtimeName, hostname, gitOriginUrl },
+  });
+  const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
+    { rootPath: "/Users/arul/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/ADE.git", pinned: true },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/arul28/ADE"),
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/arul/ADE", 3 * 86_400_000, "https://github.com/arul28/ADE"),
+    { rootPath: "/Users/arul/Projects/berth", displayName: "berth", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/berth.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "berth", "berth", "/Users/admin/Projects/berth", 6 * 3_600_000, "https://github.com/arul28/berth"),
+    { rootPath: "/Users/arul/Projects/portfolio-site", displayName: "portfolio-site", lastOpenedAt: browserMockAgo(5 * 3_600_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/portfolio-site.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "beat-lab", "beat-lab", "/Users/admin/Music/beat-lab", 26 * 3_600_000, "https://github.com/arul28/beat-lab"),
+    { rootPath: "/Users/arul/Projects/ios-companion", displayName: "ios-companion", lastOpenedAt: browserMockAgo(2 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "game-engine", "game-engine", "C:/Users/arul/dev/game-engine", 4 * 86_400_000, "https://github.com/arul28/game-engine"),
+    { rootPath: "/Users/arul/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/dotfiles.git" },
+    { rootPath: "/Users/arul/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+  ];
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     accounts: [
       {
@@ -3913,6 +3966,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         machines: [{ machineKey: "nucbox", label: "nucbox-1", checkedAt: now }],
         url: usageProviderAccountUrl("claude"),
       },
+      {
+        id: "claude:arul.sharma@example.com",
+        instanceId: "claude-side",
+        label: "Side",
+        provider: "claude",
+        email: "arul.sharma@example.com",
+        plan: "Claude Max 5x",
+        machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }],
+        url: usageProviderAccountUrl("claude"),
+      },
+      { id: "cursor:dev@example.com", label: "Default", provider: "cursor", email: "dev@example.com", plan: "Cursor Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
+      { id: "copilot:arul28", label: "arul28", provider: "copilot", plan: "Copilot Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
+      { id: "opencode:dev@example.com", label: "Default", provider: "opencode", email: "dev@example.com", plan: "OpenCode Go", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
       {
         id: "codex:dev@example.com",
         instanceId: "codex",
@@ -3995,6 +4061,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         resetsInMs: 6 * 86_400_000 + 6 * 3_600_000,
         pacing: browserMockPacing(71, 14, 150),
       },
+      {
+        provider: "claude",
+        windowType: "weekly",
+        accountId: "claude:arul.sharma@example.com",
+        percentUsed: 84,
+        resetsAt: browserMockResetAt(1 * 86_400_000 + 3 * 3_600_000),
+        resetsInMs: 1 * 86_400_000 + 3 * 3_600_000,
+        pacing: browserMockPacing(84, 80, 27),
+      },
+      { provider: "cursor", windowType: "monthly", accountId: "cursor:dev@example.com", percentUsed: 38, resetsAt: browserMockResetAt(17 * 86_400_000), resetsInMs: 17 * 86_400_000 },
+      { provider: "copilot", windowType: "monthly", accountId: "copilot:arul28", percentUsed: 97, resetsAt: browserMockResetAt(9 * 86_400_000), resetsInMs: 9 * 86_400_000 },
+      { provider: "opencode", windowType: "weekly", accountId: "opencode:dev@example.com", percentUsed: 12, resetsAt: browserMockResetAt(4 * 86_400_000), resetsInMs: 4 * 86_400_000 },
     ],
     pacing: browserMockPacing(48, 42, 151),
     providerStatus: {
@@ -4149,9 +4227,165 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     typeof ADE_DB_SNAPSHOT.adeUsageStatsByPreset === "object"
       ? ADE_DB_SNAPSHOT.adeUsageStatsByPreset
       : {};
+  /**
+   * A believable range of usage for the preview, so the Usage page and the
+   * Activity card can be laid out against real-looking shapes instead of an
+   * empty skeleton. Deterministic: the same day always gets the same numbers.
+   */
+  const makeBrowserSampleAdeUsageStats = (preset: AdeUsageRangePreset): any => {
+    const base = makeBrowserEmptyAdeUsageStats(preset);
+    const noise = (seed: number) => {
+      const x = Math.sin(seed * 12.9898) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    const providerMix: Array<[string, number, number]> = [
+      ["claude", 0.52, 6.2],
+      ["codex", 0.31, 3.4],
+      ["cursor", 0.11, 2.1],
+      ["gemini", 0.06, 0.9],
+    ];
+    const totalDays = base.daily.length;
+    const daily = base.daily.map((point: any, index: number) => {
+      const dayNumber = Math.floor(Date.parse(`${point.date}T00:00:00Z`) / 86_400_000);
+      const weekday = new Date(`${point.date}T12:00:00Z`).getUTCDay();
+      const quiet = weekday === 0 || weekday === 6 ? 0.35 : 1;
+      const idle = noise(dayNumber + 7) < 0.12 && index < totalDays - 3;
+      const trend = 0.55 + (index / Math.max(1, totalDays - 1)) * 0.6;
+      const scale = idle ? 0 : quiet * trend * (0.45 + noise(dayNumber) * 0.9);
+      const totalTokens = Math.round(scale * 9_200_000);
+      const byProvider: Record<string, { totalTokens: number; costUsd: number }> = {};
+      for (const [provider, share, costPerMillion] of providerMix) {
+        const tokens = Math.round(totalTokens * share * (0.7 + noise(dayNumber * 3 + share * 10) * 0.6));
+        if (tokens > 0) byProvider[provider] = { totalTokens: tokens, costUsd: (tokens / 1_000_000) * costPerMillion };
+      }
+      const sessions = idle ? 0 : Math.max(1, Math.round(scale * 14));
+      const interactions = idle ? 0 : Math.round(scale * 120);
+      return {
+        ...point,
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        sessions,
+        interactions,
+        durationMs: sessions * 38 * 60_000,
+        commits: idle ? 0 : Math.round(scale * 9),
+        insertions: idle ? 0 : Math.round(scale * 1_400),
+        deletions: idle ? 0 : Math.round(scale * 520),
+        filesChanged: idle ? 0 : Math.round(scale * 34),
+        githubCommits: idle ? 0 : Math.round(scale * 8),
+        githubPrs: idle ? 0 : Math.round(scale * 2),
+        githubAdditions: idle ? 0 : Math.round(scale * 1_250),
+        githubDeletions: idle ? 0 : Math.round(scale * 480),
+        clients: idle
+          ? {}
+          : {
+              desktop: Math.round(interactions * 0.81),
+              tui: Math.round(interactions * 0.11),
+              mobile: Math.round(interactions * 0.06),
+              web: Math.round(interactions * 0.02),
+            },
+        byProvider,
+      };
+    });
+    const sum = (pick: (point: any) => number) => daily.reduce((acc: number, point: any) => acc + (pick(point) || 0), 0);
+    const providers = providerMix.map(([provider]) => {
+      const totalTokens = sum((point) => point.byProvider[provider]?.totalTokens ?? 0);
+      const rangeCostUsd = sum((point) => point.byProvider[provider]?.costUsd ?? 0);
+      return {
+        provider,
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        rangeCostUsd,
+        todayCostUsd: daily.at(-1)?.byProvider[provider]?.costUsd ?? 0,
+        last30dCostUsd: rangeCostUsd,
+        estimation: provider === "cursor" ? "chars" : "exact",
+        pricingSource: "list",
+        costSplit: {
+          input: rangeCostUsd * 0.34,
+          cacheRead: rangeCostUsd * 0.21,
+          cacheWrite: rangeCostUsd * 0.09,
+          output: rangeCostUsd * 0.36,
+          other: 0,
+          fastPremium: 0,
+          ultrafastPremium: 0,
+        },
+      };
+    });
+    const modelRows: Array<[string, string, number]> = [
+      ["claude", "claude-opus-5-5", 0.7],
+      ["claude", "claude-sonnet-5", 0.3],
+      ["codex", "gpt-5.6", 0.8],
+      ["codex", "gpt-5.6-mini", 0.2],
+      ["cursor", "cursor-fast", 1],
+      ["gemini", "gemini-3-pro", 1],
+    ];
+    const models = modelRows.map(([provider, model, share]) => {
+      const owner = providers.find((entry) => entry.provider === provider)!;
+      const totalTokens = Math.round(owner.totalTokens * share);
+      return {
+        provider,
+        model,
+        calls: Math.round(totalTokens / 42_000),
+        totalTokens,
+        inputTokens: Math.round(totalTokens * 0.82),
+        outputTokens: Math.round(totalTokens * 0.18),
+        cachedTokens: Math.round(totalTokens * 0.61),
+        costUsd: owner.rangeCostUsd * share,
+      };
+    });
+    const totalTokens = sum((point) => point.totalTokens);
+    const totalCost = providers.reduce((acc, entry) => acc + entry.rangeCostUsd, 0);
+    const interactions = sum((point) => point.interactions);
+    const activeDays = daily.filter((point: any) => point.totalTokens > 0).length;
+    const clientTotal = (client: string) => sum((point) => point.clients?.[client] ?? 0);
+    return {
+      ...base,
+      summary: {
+        ...base.summary,
+        totalTokens,
+        observedProviderTokens: totalTokens,
+        observedProviderInputTokens: Math.round(totalTokens * 0.82),
+        observedProviderOutputTokens: Math.round(totalTokens * 0.18),
+        observedProviderCachedTokens: Math.round(totalTokens * 0.61),
+        observedProviderCostRangeUsd: totalCost,
+        observedProviderCost30dUsd: totalCost,
+        observedProviderCostTodayUsd: providers.reduce((acc, entry) => acc + entry.todayCostUsd, 0),
+        chatSessions: sum((point) => point.sessions),
+        terminalSessions: Math.round(sum((point) => point.sessions) * 0.4),
+        commitsCreated: sum((point) => point.commits),
+        insertions: sum((point) => point.insertions),
+        deletions: sum((point) => point.deletions),
+        filesChanged: sum((point) => point.filesChanged),
+        prsTracked: sum((point) => point.githubPrs),
+        prsMerged: Math.round(sum((point) => point.githubPrs) * 0.7),
+        prAdditions: sum((point) => point.githubAdditions),
+        prDeletions: sum((point) => point.githubDeletions),
+        totalInteractions: interactions,
+        activeDays,
+        currentStreakDays: 4,
+        longestStreakDays: Math.min(activeDays, 17),
+        longestSessionMs: 3 * 3_600_000 + 12 * 60_000,
+      },
+      providers,
+      models,
+      clients: ["desktop", "tui", "mobile", "web"].map((client) => ({
+        client,
+        interactions: clientTotal(client),
+        activeDays: Math.round(activeDays * (client === "desktop" ? 1 : 0.4)),
+        sessions: Math.round(clientTotal(client) / 9),
+        lastActiveAt: now,
+      })),
+      daily,
+      pricingUpdatedAt: now,
+      freshness: { state: "fresh", providerUpdatedAt: now, githubUpdatedAt: now },
+    };
+  };
   const getBrowserAdeUsageStats = async (args?: { preset?: string }) => {
     const preset = isAdeUsageRangePreset(args?.preset) ? args.preset : "7d";
-    return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserEmptyAdeUsageStats(preset);
+    return BROWSER_ADE_USAGE_STATS_BY_PRESET[preset] ?? makeBrowserSampleAdeUsageStats(preset);
   };
 
   const BROWSER_MOCK_BUDGET_CONFIG: any = {
@@ -4319,7 +4553,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         imageUrl: null,
         configured: true,
       };
-      const status = () => (signedOut() ? signedOutStatus : signedInStatus);
+      const status = () => {
+        const gate = browserMockGateState();
+        if (gate) {
+          return {
+            ...signedOutStatus,
+            sessionState: gate,
+            sessionReadState: gate === "unreadable" ? ("unreadable" as const) : undefined,
+          };
+        }
+        return signedOut() ? signedOutStatus : signedInStatus;
+      };
       return {
         status: async () => status(),
         startLogin: async () => ({
@@ -4329,6 +4573,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }),
         pollLogin: async () => {
           setSignedOut(false);
+          browserMockGateSignedIn = true;
           return {
             status: "signed_in" as const,
             message: null,
@@ -4592,7 +4837,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
         openProjectTabs: [MOCK_PROJECT],
       }),
-      getWelcomeVideoState: async () => readBrowserMockWelcomeVideoState(),
+      getWelcomeVideoState: async () => {
+        const state = readBrowserMockWelcomeVideoState();
+        return browserMockGateState() && !state.completedAt && !state.dismissedAt
+          ? { ...state, dismissedAt: new Date().toISOString() }
+          : state;
+      },
       markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
         const current = readBrowserMockWelcomeVideoState();
         const next = {
@@ -4603,7 +4853,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         writeBrowserMockWelcomeVideoState(next);
         return next;
       },
-      getLaunchGateState: resolved({ resolved: true }),
+      getLaunchGateState: async () => ({ resolved: browserMockGateState() === null }),
       resolveLaunchGate: resolved({ resolved: true as const }),
       setWindowProjectTabs: resolved({ openProjectTabs: [MOCK_PROJECT] }),
       newWindow: resolved({ windowId: 2 }),
@@ -4756,7 +5006,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         deletedPaths: [],
         clearedAt: new Date().toISOString(),
       }),
-      listRecent: resolved([]),
+      listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({
@@ -4841,6 +5091,29 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now(),
           connectedAt: Date.now(),
+        }, {
+          target: {
+            id: "mock-windows",
+            name: "windows",
+            hostname: "win-box.local",
+            transport: "paired",
+            pairedMachine: { hostIdentity: "mock-windows" },
+            sshUser: null,
+            port: null,
+            sshKeyPath: null,
+            lastSeenArch: "win32-x64",
+            runtimeBinaryVersion: "0.0.0-browser",
+            lastConnectedAt: Date.now() - 3 * 86_400_000,
+          },
+          state: "idle",
+          arch: "win32-x64",
+          version: "0.0.0-browser",
+          route: null,
+          capabilities: null,
+          projects: [],
+          lastError: null,
+          lastAttemptedAt: Date.now() - 3 * 86_400_000,
+          connectedAt: null,
         }],
         connectedCount: 1,
         updatedAt: Date.now(),

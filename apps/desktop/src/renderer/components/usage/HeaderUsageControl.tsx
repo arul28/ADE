@@ -12,7 +12,6 @@ import { HeaderSheet } from "../app/HeaderSheet";
 import { headerUsageProviders } from "./usageLimitModel";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import {
-  USAGE_BUTTON_CLASS,
   USAGE_DIVIDER_COLOR_CLASS,
   USAGE_HAIRLINE_CLASS,
   USAGE_NUMERIC_CLASS,
@@ -472,7 +471,7 @@ export function HeaderUsageControl({
         }
         onClose={() => setOpen(false)}
       >
-        <div className="flex flex-col gap-3 p-3">
+        <div className="flex flex-col gap-3 px-3 pb-3 pt-2">
           <UsageLimitsBand nowMs={nowMs} usage={usage} />
           <button
             type="button"
@@ -480,7 +479,7 @@ export function HeaderUsageControl({
               setOpen(false);
               navigateToAppTarget({ kind: "settings", tab: "stats", anchor: "ade-usage" });
             }}
-            className={cn(USAGE_BUTTON_CLASS, "min-h-9 justify-center", USAGE_TEXT.detail)}
+            className="usage-popover-foot"
           >
             Open Usage
             <ArrowSquareOut size={12} weight="regular" />

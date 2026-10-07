@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "./styles/surfaceKit.css";
+@import "./styles/scene.css";
 /* The config, named rather than found, and load-bearing today.
    `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
    beside package.json. I compiled this stylesheet both ways: with the line,
@@ -3876,13 +3878,27 @@ button, [role="button"] {
   border: 1px solid var(--chat-glass-border);
   border-top: 0;
   border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
+  /* A drawer tucked under the composer: frosted like the composer so it reads
+     on a picture as well as on the gradient, a touch darker so it sits behind
+     it, and a soft shadow at its top edge where the composer overlaps it. */
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-glass-bg) 76%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%
+      color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
     );
-  box-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 55%),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent),
+    0 18px 36px -22px rgb(0 0 0 / 70%);
+}
+
+[data-theme="light"] .ade-chat-launch-shelf {
+  box-shadow:
+    inset 0 14px 14px -14px rgb(0 0 0 / 14%),
+    0 14px 30px -22px rgb(0 0 0 / 30%);
 }
 
 .ade-liquid-glass {
@@ -6935,54 +6951,58 @@ html[data-motion="reduced"] *::after {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 22%, transparent);
 }
 
-/* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   single-column list of named blocks, top to bottom. The even two-column grid
-   was tried and read as two columns of uneven height, so it is gone. */
+/* Section pages (General, Lanes, Integrations, Diagnostics): one column of
+   named blocks. A block is led by a quiet mono label on a hairline, then its
+   sections run at the modern settings rhythm (44px apart, see
+   settingsModern.css). */
 .ade-settings-flow {
+  container: modernpage / inline-size;
   display: flex;
   flex-direction: column;
-  gap: 48px;
+  gap: 56px;
+  min-width: 0;
 }
 
-/* One named block: a heading with its icon and one line, then its sections. */
 .ade-settings-group-block {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 44px;
   scroll-margin-top: 12px;
+  min-width: 0;
 }
 
 .ade-settings-group-head {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  margin-bottom: -22px;
+}
+
+.ade-settings-group-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
 }
 
 .ade-settings-group-title {
   margin: 0;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-fg);
-}
-
-.ade-settings-group-description {
-  margin: 3px 0 0;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--color-muted-fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
 }
 
 /* The danger zone says so before anything in it is read. */
-.ade-settings-group-block[data-tone="red"] .ade-settings-group-head {
-  border-bottom-color: color-mix(in srgb, var(--color-error) 35%, transparent);
-}
-
 .ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
   color: var(--color-error);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head::after {
+  background: color-mix(in srgb, var(--color-error) 30%, transparent);
 }
 
 .ade-settings-rail svg {
@@ -6993,7 +7013,7 @@ html[data-motion="reduced"] *::after {
 .ade-settings-flow-item {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 44px;
   min-width: 0;
 }
 
@@ -7020,52 +7040,6 @@ html[data-motion="reduced"] *::after {
     display: block;
     position: sticky;
     top: 8px;
-  }
-}
-
-/* Settings → Providers: one tile per provider, as many across as fit. */
-.ade-provider-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
-}
-
-.ade-provider-tile {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.ade-provider-tile:hover {
-  border-color: color-mix(in srgb, var(--color-fg) 22%, var(--color-border));
-  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
-  transform: translateY(-1px);
-}
-
-.ade-provider-tile[data-state="connected"] {
-  border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border));
-}
-
-.ade-provider-tile:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ade-provider-tile,
-  .ade-provider-tile:hover {
-    transition: none;
-    transform: none;
   }
 }
 

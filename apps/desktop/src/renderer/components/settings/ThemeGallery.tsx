@@ -65,13 +65,16 @@ const MODE_OPTIONS: { mode: Mode; label: string; Icon: typeof Sun }[] = [
   { mode: "dark", label: "Dark", Icon: Moon },
 ];
 
-export function ThemeStage() {
-  const { effectiveId, followsSystem, mode, family, customThemes, setTheme, setThemeFollowsSystem } = useThemeSelection();
-  const painted = resolveThemeById(effectiveId, customThemes);
-  const palette = useMemo(() => resolveTheme(painted).palette, [painted]);
-  const activeMode: Mode | null = !family ? null : followsSystem ? "system" : mode;
-  const title = family?.name ?? painted.name;
+export type ThemeMode = Mode;
 
+/**
+ * The mode switch on its own: which of Auto / Light / Dark is active (null for
+ * a single-mode custom theme) and how to pick one. A custom theme falls back to
+ * the ADE family, as the stage always has.
+ */
+export function useThemeMode(): { activeMode: Mode | null; choose: (next: Mode) => void; family: AdeThemeFamily | null } {
+  const { followsSystem, mode, family, setTheme, setThemeFollowsSystem } = useThemeSelection();
+  const activeMode: Mode | null = !family ? null : followsSystem ? "system" : mode;
   const choose = (next: Mode) => {
     if (next === "system") {
       if (!family) setTheme(ADE_FAMILY.dark.id);
@@ -81,6 +84,15 @@ export function ThemeStage() {
     setThemeFollowsSystem(false);
     setTheme((family ?? ADE_FAMILY)[next].id);
   };
+  return { activeMode, choose, family: family ?? null };
+}
+
+export function ThemeStage() {
+  const { effectiveId, followsSystem, family, customThemes } = useThemeSelection();
+  const { activeMode, choose } = useThemeMode();
+  const painted = resolveThemeById(effectiveId, customThemes);
+  const palette = useMemo(() => resolveTheme(painted).palette, [painted]);
+  const title = family?.name ?? painted.name;
 
   const chips: { label: string; color: string }[] = [
     { label: "Background", color: palette.bg },
@@ -329,7 +341,46 @@ function matchesSearch(text: string, needle: string): boolean {
   return !needle || needle.split(/\s+/).every((word) => text.includes(word));
 }
 
-export function ThemeGallery() {
+/**
+ * A family as one small circle, split on the diagonal into its light and dark
+ * variants, with the accent as a dot — the compact picker. Clicking the circle
+ * keeps the current mode; the active family wears a ring.
+ */
+function FamilySwatchDot({
+  family,
+  active,
+  onSelect,
+}: {
+  family: AdeThemeFamily;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const light = useMemo(() => resolveTheme(family.light).palette, [family]);
+  const dark = useMemo(() => resolveTheme(family.dark).palette, [family]);
+  return (
+    <button
+      type="button"
+      className="ade-swatch-dot-tile"
+      data-active={active}
+      data-theme-family={family.id}
+      aria-pressed={active}
+      aria-label={`Use the ${family.name} theme`}
+      title={family.name}
+      onClick={onSelect}
+    >
+      <span
+        className="ade-swatch-dot-circle"
+        style={{ background: `linear-gradient(135deg, ${light.bg} 0 50%, ${dark.bg} 50% 100%)` }}
+      >
+        <span className="ade-swatch-dot-accent" style={{ background: light.accent, left: "24%", top: "24%" }} />
+        <span className="ade-swatch-dot-accent" style={{ background: dark.accent, right: "24%", bottom: "24%" }} />
+      </span>
+      <span className="ade-swatch-dot-name">{family.name}</span>
+    </button>
+  );
+}
+
+export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
   const { themeId, effectiveId, mode, customThemes, family, setTheme, setThemeFollowsSystem } = useThemeSelection();
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
@@ -373,8 +424,15 @@ export function ThemeGallery() {
               <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>{collection.label}</span>
               <span style={{ fontSize: 11.5, color: COLORS.textDim }}>{collection.blurb}</span>
             </h3>
-            <div role="group" aria-label={`${collection.label} themes`} className="ade-swatch-grid">
-              {entries.map(({ entry }) => (
+            <div role="group" aria-label={`${collection.label} themes`} className={compact ? "ade-swatch-dots" : "ade-swatch-grid"}>
+              {entries.map(({ entry }) => compact ? (
+                <FamilySwatchDot
+                  key={entry.id}
+                  family={entry}
+                  active={family?.id === entry.id}
+                  onSelect={() => setTheme(entry[mode].id)}
+                />
+              ) : (
                 <FamilyTile
                   key={entry.id}
                   family={entry}

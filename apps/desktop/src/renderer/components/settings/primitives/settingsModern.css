@@ -1,0 +1,298 @@
+/*
+ * Modern settings sections — the look Settings › Appearance introduced, shared
+ * by every redesigned settings page: a short heading and hint over a visual
+ * block (choice cards, row cards, option strips). One rhythm: 44px between
+ * sections, 14px from a heading to its block, 12px between items. Every colour
+ * is a theme token.
+ */
+
+.ade-modern-page { container: modernpage / inline-size; display: flex; flex-direction: column; gap: 44px; padding-bottom: 32px; min-width: 0; }
+
+.ade-modern-rows { display: flex; flex-direction: column; border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent); background: color-mix(in srgb, var(--color-fg) 2.5%, transparent); overflow: hidden; }
+.ade-modern-rows > .ade-ap-rowcard { border: 0; border-radius: 0; background: transparent; }
+.ade-modern-rows > .ade-ap-rowcard + .ade-ap-rowcard { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
+
+.ade-ap-section { display: flex; flex-direction: column; gap: 14px; min-width: 0; scroll-margin-top: 16px; }
+.ade-ap-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ade-ap-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-ap-head p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--color-muted-fg);
+}
+.ade-ap-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.ade-ap-check { margin-left: auto; color: var(--color-fg); opacity: 0.85; flex: none; }
+.ade-ap-grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.ade-ap-choice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+.ade-ap-choice:hover { border-color: color-mix(in srgb, var(--color-fg) 18%, transparent); }
+.ade-ap-choice[data-active="true"] {
+  border-color: color-mix(in srgb, var(--color-fg) 55%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4.5%, transparent);
+}
+.ade-ap-choice:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-ap-choice-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.ade-ap-choice-foot > svg:first-child { color: var(--color-muted-fg); }
+.ade-ap-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+}
+.ade-ap-option { display: inline-flex; align-items: center; gap: 10px; }
+.ade-ap-rowcard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+}
+.ade-ap-rowtitle { font-size: 13px; font-weight: 500; color: var(--color-fg); }
+.ade-ap-rowhint { margin-top: 2px; font-size: 12px; color: var(--color-muted-fg); line-height: 1.45; }
+.ade-ap-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ade-ap-field select, .ade-ap-field > :last-child { width: 100%; min-width: 0; }
+.ade-ap-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: var(--radius-md);
+}
+
+@container modernpage (max-width: 520px) {
+  .ade-ap-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+}
+
+/* ── Shared pieces for the machine pages (General, Lanes, Diagnostics,
+   Archive): buttons, a stat strip, a facts list, an inline note and text
+   choice cards. Same tokens as everything above. ───────────────────────── */
+
+.ade-modern-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.ade-modern-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 8%, transparent); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-modern-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ade-modern-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-modern-btn[data-size="sm"] { height: 24px; padding: 0 9px; font-size: 11.5px; }
+.ade-modern-btn[data-tone="primary"] { color: var(--color-bg); border-color: transparent; background: var(--color-fg); }
+.ade-modern-btn[data-tone="primary"]:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, transparent); }
+.ade-modern-btn[data-tone="danger"], .ade-modern-btn.ade-modern-btn-danger {
+  color: var(--color-error);
+  border-color: color-mix(in srgb, var(--color-error) 28%, transparent);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
+}
+.ade-modern-btn[data-tone="danger"]:hover:not(:disabled), .ade-modern-btn.ade-modern-btn-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-error) 45%, transparent);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+}
+.ade-modern-btn[data-variant="ghost"] { border-color: transparent; background: transparent; color: var(--kit-text-3); }
+.ade-modern-btn[data-variant="ghost"]:hover:not(:disabled) { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); border-color: transparent; }
+.ade-modern-btn[data-variant="link"] { height: auto; padding: 0; border: 0; background: transparent; color: var(--kit-text-2); text-decoration: underline; text-underline-offset: 2px; font-weight: 450; }
+.ade-modern-btn[data-variant="link"]:hover:not(:disabled) { color: var(--color-fg); background: transparent; }
+
+/* A strip of facts: eyebrow, a big number, one quiet line. Cells share a
+   hairline and wrap on a narrow page. */
+.ade-modern-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  overflow: hidden;
+}
+.ade-modern-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px;
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--color-fg) 7%, transparent), 0 -1px 0 color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-modern-stat-value { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.ade-modern-stat-value .kit-stat { font-size: 22px; }
+.ade-modern-stat-value .kit-stat.kit-num { letter-spacing: -0.03em; }
+.ade-modern-stat-sub { font-size: 12px; line-height: 1.45; color: var(--kit-text-3); min-width: 0; overflow-wrap: anywhere; }
+.ade-modern-stat-sub .kit-num { font-size: 11px; }
+
+/* Label / value pairs inside a row or card. */
+.ade-modern-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 20px; margin: 0; font-size: 12.5px; }
+.ade-modern-facts > dt { color: var(--kit-text-3); }
+.ade-modern-facts > dd { margin: 0; min-width: 0; color: var(--color-fg); overflow-wrap: anywhere; }
+
+.ade-modern-path { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-3); overflow-wrap: anywhere; }
+.ade-modern-code { font-family: var(--font-mono); font-size: 11px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--color-fg) 7%, transparent); color: var(--color-fg); }
+.ade-modern-muted { font-size: 12px; line-height: 1.5; color: var(--kit-text-3); margin: 0; }
+
+/* An inline note under a control: neutral, or tinted for a status. */
+.ade-modern-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
+}
+.ade-modern-note > svg { flex: none; margin-top: 2px; color: var(--kit-text-3); }
+.ade-modern-note-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ade-modern-note[data-tone="warn"] { border-color: color-mix(in srgb, var(--kit-warn) 26%, transparent); background: color-mix(in srgb, var(--kit-warn) 8%, transparent); }
+.ade-modern-note[data-tone="warn"] > svg { color: var(--kit-warn); }
+.ade-modern-note[data-tone="crit"] { border-color: color-mix(in srgb, var(--kit-crit) 26%, transparent); background: color-mix(in srgb, var(--kit-crit) 8%, transparent); }
+.ade-modern-note[data-tone="crit"] > svg { color: var(--kit-crit); }
+.ade-modern-note[data-tone="ok"] > svg { color: var(--kit-ok); }
+.ade-modern-error { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-crit); }
+.ade-modern-warn { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-warn); }
+
+/* Text choice cards: `.ade-ap-choice` with a title and a hint instead of art. */
+.ade-modern-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.ade-modern-choice-body { display: flex; flex-direction: column; gap: 4px; padding: 13px 14px 14px; min-width: 0; }
+.ade-modern-choice-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--color-fg); }
+.ade-modern-choice-title > svg:first-child { color: var(--kit-text-3); flex: none; }
+.ade-ap-choice[data-active="true"] .ade-modern-choice-title > svg:first-child { color: var(--color-fg); }
+.ade-modern-choice-hint { font-size: 12px; line-height: 1.45; color: var(--kit-text-3); }
+.ade-ap-choice:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* A row of buttons at the foot of a block. */
+.ade-modern-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.ade-modern-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* Several modern sections returned by one component, at the page rhythm. */
+.ade-modern-sections { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+
+/* ── shared modern buttons and fields (Providers, Integrations, Secrets) ── */
+
+.ade-modern-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.ade-modern-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 8%, transparent); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-modern-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ade-modern-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-modern-btn[data-tone="primary"] { color: var(--color-bg); border-color: transparent; background: var(--color-fg); }
+.ade-modern-btn[data-tone="primary"]:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 86%, transparent); }
+.ade-modern-btn[data-tone="danger"], .ade-modern-btn.ade-modern-btn-danger {
+  color: var(--color-error);
+  border-color: color-mix(in srgb, var(--color-error) 28%, transparent);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
+}
+.ade-modern-btn[data-tone="danger"]:hover:not(:disabled), .ade-modern-btn.ade-modern-btn-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-error) 45%, transparent);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+}
+.ade-modern-btn[data-variant="ghost"] { border-color: transparent; background: transparent; color: var(--color-muted-fg); }
+.ade-modern-btn[data-variant="ghost"]:hover:not(:disabled) { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); border-color: transparent; }
+.ade-modern-btn[data-icon="true"] { width: 28px; padding: 0; }
+
+/* A leading glyph tile for a row (brand logo, icon). */
+.ade-modern-glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--color-muted-fg);
+}
+
+/* A text field in the modern look (search, inline edits). */
+.ade-modern-field {
+  height: 28px;
+  min-width: 0;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.ade-modern-field::placeholder { color: var(--color-muted-fg); }
+.ade-modern-field:focus { border-color: color-mix(in srgb, var(--color-fg) 30%, transparent); }
+.ade-modern-field[data-mono="true"] { font-family: var(--font-mono); font-size: 12px; }
+.ade-ap-rowcard { row-gap: 10px; }
+.ade-modern-field[data-mono="true"]::placeholder { font-family: var(--font-sans); }

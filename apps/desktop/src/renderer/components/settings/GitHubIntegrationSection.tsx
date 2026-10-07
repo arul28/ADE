@@ -1,18 +1,10 @@
 import React from "react";
-import { GithubLogo } from "@phosphor-icons/react";
 import { GitHubSection } from "./GitHubSection";
-import { SettingsSectionShell } from "./settingsSectionUi";
 
+/**
+ * Settings › Integrations › GitHub. The tab's block already names the group,
+ * so the section's own headings (Connection, Access order, …) carry the page.
+ */
 export function GitHubIntegrationSection() {
-  return (
-    <SettingsSectionShell
-      title="GitHub integration"
-      description="Sign in with the GitHub CLI or a token, and add ADE for GitHub for live PR updates."
-      icon={GithubLogo}
-      brandColor="#3FB950"
-      iconWeight="fill"
-    >
-      <GitHubSection embedded />
-    </SettingsSectionShell>
-  );
+  return <GitHubSection embedded />;
 }

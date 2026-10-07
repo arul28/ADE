@@ -1,0 +1,211 @@
+/*
+ * Settings › Chat. Same language as Settings › Appearance: choices on the
+ * left, a sticky live thread on the right. One rhythm: 44px between sections,
+ * 14px from a heading to its block, 12px between options. Every colour is a
+ * theme token; the runtime-colour cards borrow the runtime accents because
+ * hue is the choice being made.
+ */
+
+.ade-cs { container: chatset / inline-size; padding-bottom: 32px; }
+
+.ade-cs-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+@container chatset (min-width: 720px) {
+  .ade-cs-layout { grid-template-columns: minmax(0, 1fr) clamp(280px, 36%, 400px); align-items: start; }
+}
+
+.ade-cs-main { container: chatmain / inline-size; display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+
+/* On a narrow window the preview leads, capped so the choices stay reachable. */
+.ade-cs-aside { order: -1; display: flex; flex-direction: column; min-width: 0; scroll-margin-top: 16px; }
+.ade-cs-aside .ade-cs-preview { max-height: 420px; }
+@container chatset (min-width: 720px) {
+  .ade-cs-aside { order: 0; position: sticky; top: 12px; }
+  .ade-cs-aside .ade-cs-preview { max-height: calc(100vh - 230px); }
+}
+
+.ade-cs-aside-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.ade-cs-aside-foot { margin-top: 10px; }
+.ade-cs-aside-foot .kit-eyebrow { font-size: 9.5px; letter-spacing: 0.18em; }
+
+.ade-cs-runtimes > button { display: inline-grid; place-items: center; width: 26px; padding: 0; }
+.ade-cs-runtimes > button:not([aria-checked="true"]) svg { opacity: 0.55; filter: grayscale(0.6); transition: opacity 100ms ease, filter 100ms ease; }
+.ade-cs-runtimes > button:hover svg { opacity: 1; filter: none; }
+
+.ade-cs-preview {
+  position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2%, var(--color-bg));
+  padding: 10px;
+  box-shadow: 0 24px 60px -32px rgb(0 0 0 / 60%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+.ade-cs-preview::-webkit-scrollbar { display: none; }
+
+/* ── text size ──────────────────────────────────────────────────────── */
+
+.ade-cs-size {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 14px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+}
+.ade-cs-size-sample {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  color: var(--color-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: font-size 80ms ease;
+}
+.ade-cs-size-row { display: flex; align-items: center; gap: 10px; }
+.ade-cs-size-a { color: var(--color-muted-fg); line-height: 1; flex: none; }
+.ade-cs-size-value { font-size: 11px; color: var(--color-muted-fg); width: 34px; text-align: right; flex: none; }
+
+.ade-cs-range {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.ade-cs-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--color-fg) 70%, transparent) var(--ade-cs-fill, 0%), color-mix(in srgb, var(--color-fg) 10%, transparent) var(--ade-cs-fill, 0%));
+}
+.ade-cs-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 999px;
+  background: var(--color-fg);
+  box-shadow: 0 0 0 3px var(--color-bg);
+}
+.ade-cs-range:focus-visible { outline: none; }
+.ade-cs-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--color-bg), 0 0 0 5px var(--color-accent); }
+
+/* ── choice-card art ────────────────────────────────────────────────── */
+
+.ade-cs-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+.ade-cs-art {
+  position: relative;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+}
+
+.ade-cs-line { display: block; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 22%, transparent); flex: none; }
+
+/* Density: a tiny thread. */
+.ade-cs-thread { display: flex; flex-direction: column; width: 100%; max-width: 150px; transition: gap 160ms ease; }
+.ade-cs-bubble {
+  display: block;
+  align-self: flex-end;
+  width: 44%;
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-fg) 38%, transparent);
+  flex: none;
+}
+
+/* Corners: a tiny chat window. */
+.ade-cs-window {
+  width: 100%;
+  max-width: 132px;
+  height: 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+.ade-cs-window > .ade-cs-line { margin-left: 10px; }
+.ade-cs-window-head { display: block; height: 12px; flex: none; background: color-mix(in srgb, var(--color-fg) 8%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent); }
+
+/* Runtime colour: three tiny shell headers. */
+.ade-cs-tints { display: flex; flex-direction: column; gap: 5px; width: 100%; max-width: 170px; }
+.ade-cs-tint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 15px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+.ade-cs-tint i { width: 6px; height: 6px; border-radius: 999px; flex: none; background: color-mix(in srgb, var(--color-fg) 35%, transparent); }
+
+/* Copy button: a tiny code block. */
+.ade-cs-code {
+  position: relative;
+  width: 100%;
+  max-width: 150px;
+  height: 58px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.ade-cs-code-line { display: block; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 24%, transparent); }
+.ade-cs-code-copy {
+  position: absolute;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+.ade-cs-code[data-position="top"] .ade-cs-code-copy { top: 5px; }
+.ade-cs-code[data-position="bottom"] .ade-cs-code-copy { bottom: 5px; }
+.ade-cs-code[data-position="auto"] .ade-cs-code-copy {
+  top: 50%;
+  right: -6px;
+  transform: translateY(-50%);
+  background: var(--color-bg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 20%, transparent);
+  box-shadow: 0 4px 10px -4px rgb(0 0 0 / 50%);
+}
+
+.ade-ap-choice:not([data-active="true"]) .ade-cs-art > * { opacity: 0.75; }
+
+@container chatmain (max-width: 340px) {
+  .ade-cs-grid2 { gap: 8px; }
+}
+
+/* Voice conversations: name and language side by side. */
+.ade-voice-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-top: 2px; }
+@container chatmain (max-width: 400px) {
+  .ade-voice-fields { grid-template-columns: minmax(0, 1fr); }
+}

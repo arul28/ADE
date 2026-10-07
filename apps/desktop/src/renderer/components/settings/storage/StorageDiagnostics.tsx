@@ -1,22 +1,13 @@
 import React from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  ChartLineUp,
-  Clock,
-  Gauge,
-  Pulse,
-  WarningCircle,
-} from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, Gauge } from "@phosphor-icons/react";
 import type {
   RuntimeHealthSnapshot,
   StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
 import type { AppResourceUsageSnapshot } from "../../../../shared/types";
 import { appResourcePressureLevel } from "../../../lib/resourcePressure";
-import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
-import { SettingsDashboardPage, SettingsDashboardStat } from "../primitives/SettingsDashboardPage";
-import { STORAGE_BRAND } from "./storageUiConstants";
+import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { ModernSection } from "../primitives";
 import {
   daemonMemoryBytes,
   dbSizeSamples,
@@ -53,33 +44,22 @@ export function TrendArrow({ trend }: { trend: Trend }) {
   );
 }
 
-/**
- * One diagnostic figure. The tile itself is `SettingsDashboardStat` — the one
- * stat tile every dashboard page uses — with an icon glyph tucked in front of
- * the label, which is the only thing this surface adds over a plain stat.
- */
+/** One diagnostic figure in the strip: eyebrow, value, one quiet line. */
 function DiagnosticTile({
-  icon,
   label,
   value,
   sub,
 }: {
-  icon: React.ReactNode;
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
 }) {
   return (
-    <SettingsDashboardStat
-      label={
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-          {icon}
-          {label}
-        </span>
-      }
-      value={value}
-      hint={sub}
-    />
+    <div className="ade-modern-stat">
+      <span className="kit-eyebrow">{label}</span>
+      <span className="ade-modern-stat-value">{value}</span>
+      {sub ? <span className="ade-modern-stat-sub">{sub}</span> : null}
+    </div>
   );
 }
 
@@ -90,11 +70,11 @@ function Sparkline({ samples }: { samples: DbSizeSample[] }) {
   if (points.length < 2) return null;
   const path = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: "block", overflow: "visible" }} aria-hidden>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: "block", overflow: "visible", color: "var(--kit-fill)" }} aria-hidden>
       <polyline
         points={path}
         fill="none"
-        stroke={STORAGE_BRAND}
+        stroke="currentColor"
         strokeWidth={1.5}
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -109,12 +89,15 @@ export function DiagnosticsStrip({
   usageReady,
   runtimeHealth,
   runtimeHealthAvailable,
+  children,
 }: {
   extras: StorageSnapshotExtras | undefined;
   usage: AppResourceUsageSnapshot | null;
   usageReady: boolean;
   runtimeHealth: RuntimeHealthSnapshot | null;
   runtimeHealthAvailable: boolean;
+  /** Extra blocks under the figures (recordings warning, cleanup journal). */
+  children?: React.ReactNode;
 }) {
   const samples = React.useMemo(() => dbSizeSamples(extras), [extras]);
   const latestDb = samples.length > 0 ? samples[samples.length - 1] : null;
@@ -138,36 +121,32 @@ export function DiagnosticsStrip({
         .some((value) => typeof value === "number" && Number.isFinite(value)),
   );
   const hasPressureSignal = hasCpuSignal || hasMemorySignal;
-  const healthColor = health.tone === "busy" ? COLORS.danger : health.tone === "elevated" ? COLORS.warning : COLORS.success;
+  const healthTone = health.tone === "busy" ? "crit" : health.tone === "elevated" ? "warn" : "ok";
 
-  const notAvailable = <span style={{ color: COLORS.textMuted, fontWeight: 500, fontSize: 13 }}>Not available yet</span>;
+  const notAvailable = <span className="ade-modern-stat-sub" style={{ fontSize: 13 }}>Not available yet</span>;
+  const slow = runtimeHealth && runtimeHealth.slowActions24h > 0;
 
   return (
-    // Read-only figures, so this is a dashboard page: the panel, the title and
-    // the scope chip come from the template rather than being drawn here.
-    <SettingsDashboardPage
+    <ModernSection
+      group="Health & diagnostics"
       anchor="diagnostics"
       title="Health & diagnostics"
-      description="How the background service is doing on this computer."
+      hint="How the background service is doing on this computer."
+      actions={usageReady && hasPressureSignal ? (
+        <span className="kit-tag" data-tone={healthTone}>
+          <Gauge size={11} weight="fill" style={{ marginRight: 4 }} />{health.label}
+        </span>
+      ) : undefined}
     >
-      {usageReady && hasPressureSignal ? (
-        <div>
-          <span style={{ ...inlineBadge(healthColor, { fontSize: 11, gap: 5 }), display: "inline-flex", alignItems: "center" }}>
-            <Gauge size={13} weight="fill" /> {health.label}
-          </span>
-        </div>
-      ) : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+      <div className="ade-modern-stats">
         <DiagnosticTile
-          icon={<ChartLineUp size={14} />}
           label="Database size"
           value={
             latestDb ? (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                {formatBytes(latestDb.bytes)}
+              <>
+                <span className="kit-stat kit-num">{formatBytes(latestDb.bytes)}</span>
                 {trend ? <TrendArrow trend={trend} /> : null}
-              </span>
+              </>
             ) : (
               notAvailable
             )
@@ -175,17 +154,15 @@ export function DiagnosticsStrip({
           sub={samples.length >= 2 ? <Sparkline samples={samples} /> : latestDb ? "Trend appears after the next cleanup" : undefined}
         />
         <DiagnosticTile
-          icon={<Pulse size={14} />}
           label="Service memory"
-          value={daemonMem != null ? formatBytes(daemonMem) : notAvailable}
+          value={daemonMem != null ? <span className="kit-stat kit-num">{formatBytes(daemonMem)}</span> : notAvailable}
           sub={daemonMem != null ? "Resident right now" : undefined}
         />
         <DiagnosticTile
-          icon={<WarningCircle size={14} />}
           label="Slow responses"
           value={
             runtimeHealthAvailable ? (
-              <span style={{ color: runtimeHealth && runtimeHealth.slowActions24h > 0 ? COLORS.warning : COLORS.textPrimary }}>
+              <span className="kit-stat" style={{ fontSize: 17, color: slow ? "var(--kit-warn)" : undefined }}>
                 {formatSlowActions(runtimeHealth)}
               </span>
             ) : (
@@ -194,11 +171,11 @@ export function DiagnosticsStrip({
           }
         />
         <DiagnosticTile
-          icon={<Clock size={14} />}
           label="Last cleanup"
-          value={lastRun ? <span style={{ fontSize: 13 }}>{maintenanceHeadline(lastRun)}</span> : notAvailable}
+          value={lastRun ? <span className="kit-stat" style={{ fontSize: 14, lineHeight: 1.35, letterSpacing: 0 }}>{maintenanceHeadline(lastRun)}</span> : notAvailable}
         />
       </div>
-    </SettingsDashboardPage>
+      {children}
+    </ModernSection>
   );
 }

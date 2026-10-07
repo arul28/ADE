@@ -1,0 +1,158 @@
+/*
+ * Settings › Providers. The provider grid, grouped by state, in the modern
+ * settings rhythm (see primitives/settingsModern.css). Colour only carries
+ * status, through .kit-tag; every colour is a theme token.
+ */
+
+.ade-pv-page { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-pv-detail { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+.ade-pv-usage-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--color-muted-fg);
+  white-space: nowrap;
+}
+
+/* Group headings and the folded strip span the grid; a heading opens a group. */
+.ade-pv-group-head { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-height: 20px; margin-top: 14px; margin-bottom: -2px; }
+.ade-pv-group-head[data-first="true"] { margin-top: 0; }
+.ade-pv-count { font-size: 11px; color: var(--color-muted-fg); }
+.ade-pv-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-muted-fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-pv-fold:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-pv-fold:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+/* The folded "not set up" group: one quiet strip of logos and names. */
+.ade-pv-folded {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: transparent;
+  color: var(--color-muted-fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-pv-folded > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pv-folded:hover { border-color: color-mix(in srgb, var(--color-fg) 22%, transparent); color: var(--color-fg); }
+.ade-pv-folded:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-pv-folded-logos { display: inline-flex; align-items: center; gap: 6px; flex: none; opacity: 0.75; }
+.ade-pv-folded-logos > span { display: inline-flex; padding: 3px; border-radius: 6px; background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+
+.ade-pv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.ade-pv-card[hidden] { display: none; }
+
+.ade-pv-card { position: relative; min-width: 0; display: flex; }
+.ade-pv-open {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-pv-open:hover {
+  border-color: color-mix(in srgb, var(--color-fg) 18%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+.ade-pv-open:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-pv-card[data-state="not-installed"] .ade-pv-logo,
+.ade-pv-card[data-state="disabled"] .ade-pv-logo { opacity: 0.6; filter: grayscale(0.4); }
+
+.ade-pv-top { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.ade-pv-logo {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+.ade-pv-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-top: 1px; }
+.ade-pv-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ade-pv-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--color-fg);
+  min-width: 0;
+  /* Never clipped: the name is the card's identity. */
+  overflow-wrap: anywhere;
+}
+.ade-pv-meta { font-size: 11.5px; color: var(--color-muted-fg); font-variant-numeric: tabular-nums; }
+.ade-pv-caret { flex: none; margin-top: 4px; color: var(--color-muted-fg); opacity: 0.6; transition: opacity 120ms ease, transform 120ms ease; }
+.ade-pv-open:hover .ade-pv-caret { opacity: 1; transform: translateX(1px); }
+.ade-pv-foot { display: flex; align-items: center; min-height: 24px; margin-top: auto; }
+.ade-pv-foot .kit-tag { white-space: nowrap; }
+
+.ade-pv-line {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-muted-fg);
+  overflow-wrap: anywhere;
+}
+
+.ade-pv-action {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 14%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-pv-action:hover {
+  border-color: color-mix(in srgb, var(--color-fg) 28%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-pv-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-pv-open, .ade-pv-action { transition: none; }
+}

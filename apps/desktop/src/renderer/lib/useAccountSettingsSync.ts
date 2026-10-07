@@ -39,13 +39,26 @@ export function useAccountSettingsSync(): void {
   useEffect(() => {
     let signedIn = false;
     let accountUserId: string | null = null;
+    // Per-device settings (Apple devices) file under this computer's sync
+    // device id. It arrives asynchronously; when it does, re-run the pull so
+    // those rows hydrate without waiting for the next tick.
+    let localDeviceId: string | null = null;
+    let notifySignedIn: (() => void) | null = null;
+    const sync = window.ade?.sync;
+    void (sync?.getLocalStatus ? sync.getLocalStatus() : sync?.getStatus?.())
+      ?.then((status) => {
+        localDeviceId = status?.localDevice?.deviceId?.trim() || null;
+        if (localDeviceId && signedIn) notifySignedIn?.();
+      })
+      .catch(() => undefined);
     const stop = startAccountSettingsSync({
       store: rootAppStoreApi,
       getApi: () => window.ade?.accountSettings ?? null,
       isSignedIn: () => signedIn,
       getAccountUserId: () => accountUserId,
-      subscribeSignedIn: (listener) =>
-        subscribeAccountStatus((status) => {
+      subscribeSignedIn: (listener) => {
+        notifySignedIn = listener;
+        return subscribeAccountStatus((status) => {
           // Only a CHANGE is worth a pull. The status bus republishes the same
           // signed-in status on every cached read, and hydrating on each of
           // those would be a request storm carrying no new information.
@@ -54,8 +67,10 @@ export function useAccountSettingsSync(): void {
           signedIn = status.signedIn;
           accountUserId = nextUserId;
           listener();
-        }),
+        });
+      },
       getProjectRemote: () => null,
+      getLocalDeviceId: () => localDeviceId,
     });
     // Seeds `signedIn` through the status bus above, which is also what a later
     // sign-in arrives on. One subscriber, one path.

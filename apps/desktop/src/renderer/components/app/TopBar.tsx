@@ -2479,6 +2479,35 @@ export function TopBar({
             reachable from every tab and project without a nav detour. */}
         <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
+        {/* App settings with no project surface in front (welcome page, new
+            tab, Chats). A project's own sidebar carries Settings otherwise. */}
+        {!webMode && !projectSurfaceVisible && !isSettingsTabOpen ? (
+          <SmartTooltip
+            forceEnabled
+            side="bottom"
+            content={{ label: "Settings", description: "App preferences" }}
+            wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-md"
+              data-variant="ghost"
+              data-tour="project.settings"
+              aria-label="Settings"
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              onClick={() => {
+                // Leave the new-tab state first: it is what holds the welcome
+                // page in front, so a bare navigate would leave Settings behind it.
+                cancelNewTab();
+                setStandaloneSettingsOpen(true);
+                onNavigate?.("/settings");
+              }}
+            >
+              <GearSix size={14} weight="regular" />
+            </button>
+          </SmartTooltip>
+        ) : null}
+
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopConnectionsControl()}
         </div>

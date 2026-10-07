@@ -36,6 +36,7 @@
 
 import {
   ACCOUNT_SCOPE_ALL,
+  accountDeviceScopeKey,
   accountRepoScopeKey,
   isAccountScope,
 } from "../../shared/accountSettingsScope";
@@ -83,6 +84,12 @@ export type AccountSyncedSetting<State = AccountSyncedState> = {
   /** The store key, which is also the account store's key. One name, not two. */
   key: string;
   scope: SettingScope;
+  /**
+   * Account-scoped, but one value per computer: filed under this device's
+   * scope (`accountDeviceScopeKey`) instead of the account-wide one, and kept
+   * local until the device id is known.
+   */
+  perDevice?: boolean;
   read: (state: State) => unknown;
   apply: (state: State, value: unknown) => void;
 };
@@ -93,10 +100,12 @@ function pref<Value>(
   read: (state: AppState) => Value,
   apply: (state: AppState, value: Value) => void,
   scope: SettingScope = "account",
+  options?: { perDevice?: boolean },
 ): AccountSyncedSetting {
   return {
     key,
     scope,
+    ...(options?.perDevice ? { perDevice: true } : {}),
     read,
     apply: (state, value) => apply(state, value as Value),
   };
@@ -138,14 +147,18 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
   pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
-  // Apple device options stay on the account: the host reads the remote
-  // streaming cap from the account store, so this one is not per computer.
+  // Apple device options are per computer (Settings › This computer › Apple
+  // devices). They still go through the account store, under this device's
+  // own scope, because the brain on this computer reads the remote streaming
+  // cap from its account-settings store.
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ realisticBody: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.tapRings",
@@ -153,6 +166,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingTapRings: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingOverlays.keyBadges",
@@ -160,6 +175,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingKeyBadges: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.remoteBitrateKbpsCap",
@@ -167,6 +184,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ remoteBitrateKbpsCap: value });
     },
+    "account",
+    { perDevice: true },
   ),
   pref(
     "apple.recordingsWarnBytes",
@@ -174,6 +193,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     (state, value) => {
       if (typeof value === "number") state.setAppleDevicePreferences({ recordingsWarnBytes: value });
     },
+    "account",
+    { perDevice: true },
   ),
 ] as const;
 
@@ -218,6 +239,8 @@ type AccountSettingsSyncOptionsBase<State> = {
   subscribeSignedIn?: (listener: () => void) => () => void;
   /** The open project's git remote, for `account-repo` keys. */
   getProjectRemote?: () => string | null;
+  /** This computer's sync device id, for per-device settings; null until known. */
+  getLocalDeviceId?: () => string | null;
   settings?: readonly AccountSyncedSetting<State>[];
   pollMs?: number;
   now?: () => number;
@@ -404,6 +427,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
    * so its settings wait here until it gets one.
    */
   const scopeKeyFor = (entry: AccountSyncedSetting<State>): string | null => {
+    if (entry.perDevice) return accountDeviceScopeKey(options.getLocalDeviceId?.() ?? null);
     if (entry.scope === "account") return ACCOUNT_SCOPE_ALL;
     return accountRepoScopeKey(options.getProjectRemote?.() ?? null);
   };

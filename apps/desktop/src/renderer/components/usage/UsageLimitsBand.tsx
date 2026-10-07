@@ -35,12 +35,12 @@ import { ProviderMark, UsageAccountRow } from "./UsageAccountRow";
 import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_CARD_CLASS,
-  USAGE_DIVIDER_COLOR_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
   usagePressureColor,
 } from "./usageDesign";
 import { formatUpdatedAge } from "./usageWindowFormat";
+import "./usageSurfaces.css";
 import {
   type AccountLimitRow,
   type UsageAccountView,
@@ -353,7 +353,7 @@ export function UsageLimitsBand({
       ) : (
         // A logo, a hairline, then the accounts. The old rounded box made every
         // provider a card stacked on the popover's own card.
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-2">
           {visibleProviders.map((provider) => (
             <ProviderLimitsRow
               key={provider}
@@ -496,19 +496,17 @@ function ProviderLimitsRow({
     : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
-    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-2 py-2 first:pt-0">
-      {/* Logo, then a hairline, then the accounts. The name stays for the
-          screen reader; the mark is what the row shows. */}
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2" title={`${meta.label} · ${sourceLine}`}>
-          <ProviderMark provider={provider} size={18} dim={dim} />
-          <span className="sr-only">{meta.label}</span>
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-0.5">
+    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-1.5 pb-3 pt-1 last:pb-0">
+      {/* Logo · name · where the reading came from ……… actions, then a
+          hairline, then the accounts. */}
+      <div className="usage-provider-head">
+        <ProviderMark provider={provider} size={16} dim={dim} />
+        <span className="usage-provider-name">{meta.label}</span>
+        <span className="usage-provider-source">{sourceLine}</span>
+        <span className="usage-provider-actions">
           <button
             type="button"
             onClick={() => setUsageProviderVisible(provider, !shownInHeader)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
             aria-label={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
             aria-pressed={shownInHeader}
             title={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
@@ -519,7 +517,6 @@ function ProviderLimitsRow({
             <button
               type="button"
               onClick={() => openExternalUrl(usageUrl)}
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
               aria-label={`Open ${meta.label} limits in browser`}
               title={`Open ${meta.label} limits in browser`}
             >
@@ -528,9 +525,9 @@ function ProviderLimitsRow({
           ) : null}
         </span>
       </div>
-      <div data-provider-divider className={cn("border-b", USAGE_DIVIDER_COLOR_CLASS)} />
+      <hr data-provider-divider className="kit-rule" />
 
-      <div className="flex min-w-0 flex-col gap-2">
+      <div className="flex min-w-0 flex-col gap-2.5">
       {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
 
       {/* A failed refresh sits above the readings it could not update — with

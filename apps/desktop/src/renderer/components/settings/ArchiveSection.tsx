@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowCounterClockwise, Check, Trash, X } from "@phosphor-icons/react";
+import { Archive as ArchiveIcon, ArrowCounterClockwise, Check, Trash, X } from "@phosphor-icons/react";
 import type {
   ArchiveActionResult,
   ArchiveItemKind,
@@ -10,13 +10,14 @@ import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
 import { archiveKindCountParts, archiveKindPlural, emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import type { TerminalToolType } from "../../../shared/types/sessions";
 import { formatBytes, relativeWhen } from "../../lib/format";
-import { cn } from "../ui/cn";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { SettingsManagerEmpty } from "./primitives";
+import { SettingsColumn } from "./primitives";
+import "./primitives/settingsModern.css";
+import "./machineSettings.css";
 
 /**
  * Settings → Archive: every lane, chat and shell you archived, in one place.
@@ -64,7 +65,7 @@ function ItemMark({ item }: { item: ArchivedItem }) {
     const color = laneDisplayColor(item.laneColor);
     return (
       <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg"
+        className="ade-ar-mark"
         style={{
           background: `color-mix(in srgb, ${color} 16%, transparent)`,
           boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 28%, transparent)`,
@@ -75,7 +76,7 @@ function ItemMark({ item }: { item: ArchivedItem }) {
     );
   }
   return (
-    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-fg/[0.04] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]">
+    <span className="ade-ar-mark">
       <ToolLogo toolType={(item.toolType ?? "shell") as TerminalToolType} size={15} />
     </span>
   );
@@ -104,25 +105,12 @@ function MarkOrSelect({
       aria-checked={checked}
       aria-label={`Select ${item.title}`}
       onClick={onToggle}
-      className="relative size-8 shrink-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-400/60"
+      className="ade-ar-select"
+      data-show-box={showBox || undefined}
     >
-      <span className={cn("absolute inset-0 transition-opacity", showBox ? "opacity-0" : "group-hover:opacity-0")}>
-        <ItemMark item={item} />
-      </span>
-      <span
-        className={cn(
-          "absolute inset-0 flex items-center justify-center transition-opacity",
-          showBox ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-        )}
-      >
-        <span
-          className={cn(
-            "flex size-4 items-center justify-center rounded-[5px] border",
-            checked
-              ? "border-violet-400 bg-violet-400 text-(color:--ade-on-tone-ink)"
-              : "border-white/25 text-transparent hover:border-white/50",
-          )}
-        >
+      <span className="ade-ar-select-mark"><ItemMark item={item} /></span>
+      <span className="ade-ar-select-box-wrap">
+        <span className="ade-ar-select-box" data-checked={checked || undefined}>
           <Check size={10} weight="bold" />
         </span>
       </span>
@@ -150,10 +138,8 @@ function IconAction({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className={cn(
-        "flex size-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors disabled:pointer-events-none disabled:opacity-40",
-        danger ? "hover:bg-red-500/10 hover:text-red-300" : "hover:bg-fg/[0.06] hover:text-fg",
-      )}
+      className="ade-ar-icon-btn"
+      data-danger={danger || undefined}
     >
       {children}
     </button>
@@ -181,30 +167,28 @@ function ArchiveRow({
   if (item.sizeBytes != null && item.sizeBytes > 0) meta.push(formatBytes(item.sizeBytes));
   if (item.kind === "lane" && item.worktreePresent === false) meta.push("folder already removed");
   const where = item.kind === "lane"
-    ? (item.branchRef ? <span className="truncate font-mono text-[10.5px]">{item.branchRef}</span> : null)
+    ? (item.branchRef ? <span className="ade-ar-branch">{item.branchRef}</span> : null)
     : (item.laneName ? <LaneChip laneName={item.laneName} laneColor={item.laneColor} maxWidth={160} /> : null);
   return (
     <div
       role="row"
       data-testid="archive-row"
-      className={cn(
-        "group flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors",
-        selected ? "bg-violet-400/[0.07]" : "hover:bg-fg/[0.03]",
-      )}
+      className="ade-ar-row"
+      data-selected={selected || undefined}
     >
       <MarkOrSelect item={item} checked={selected} selecting={selecting} onToggle={onToggle} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-medium text-fg">{item.title}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-fg/60">
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="ade-ar-title">{item.title}</div>
+        <div className="ade-ar-meta">
           {where}
-          {where ? <span className="text-muted-fg/30">·</span> : null}
-          <span className="shrink-0 tabular-nums">{meta.join(" · ")}</span>
+          {where ? <span aria-hidden style={{ opacity: 0.5 }}>·</span> : null}
+          <span style={{ flex: "none", fontVariantNumeric: "tabular-nums" }}>{meta.join(" · ")}</span>
         </div>
       </div>
       {/* While selecting, the selection bar is the only place to act: the
           row's own actions leave the tab order too, not just the screen. */}
       {selecting ? null : (
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <div className="ade-ar-actions">
           <IconAction label="Restore" onClick={onRestore} disabled={busy}>
             <ArrowCounterClockwise size={14} />
           </IconAction>
@@ -220,13 +204,13 @@ function ArchiveRow({
 function GroupHeader({ title, items, action }: { title: string; items: ArchivedItem[]; action?: React.ReactNode }) {
   const bytes = totalBytes(items);
   return (
-    <div className="flex h-9 items-end gap-2 px-2.5 pb-1.5">
-      <span className="text-[11px] font-medium text-muted-fg/70">{title}</span>
-      <span className="text-[11px] tabular-nums text-muted-fg/40">
+    <div className="ade-ar-group">
+      <span className="kit-eyebrow">{title}</span>
+      <span className="ade-ar-group-count kit-num">
         {items.length}
         {bytes > 0 ? ` · ${formatBytes(bytes)}` : ""}
       </span>
-      <span className="flex-1" />
+      <span style={{ flex: 1 }} />
       {action}
     </div>
   );
@@ -415,113 +399,172 @@ export function ArchiveSection() {
       />
     ));
 
-  return (
-    <section id={ARCHIVE_SETTINGS_ANCHOR} data-settings-anchor={ARCHIVE_SETTINGS_ANCHOR} className="flex flex-col">
-      {/* One bar: the filter, or — while something is selected — what to do with it. */}
-      <div className="flex h-9 items-center gap-2">
-        {selecting ? (
-          <div data-testid="archive-selection-bar" className="flex w-full items-center gap-2">
-            <button
-              type="button"
-              aria-label="Clear selection"
-              onClick={() => setSelected(new Set())}
-              className="flex size-7 items-center justify-center rounded-md text-muted-fg/70 hover:bg-fg/[0.06] hover:text-fg"
-            >
-              <X size={13} />
-            </button>
-            <span className="text-[12px] font-medium tabular-nums text-fg">{selectedRefs.length} selected</span>
-            <span className="flex-1" />
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void restore(selectedRefs)}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-fg/[0.06] disabled:opacity-40"
-            >
-              <ArrowCounterClockwise size={13} /> Restore
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void remove(selectedRefs)}
-              className="flex h-7 items-center gap-1.5 rounded-md bg-red-500/10 px-2.5 text-[12px] font-medium text-red-300 transition-colors hover:bg-red-500/[0.16] disabled:opacity-40"
-            >
-              <Trash size={13} /> Delete
-            </button>
-          </div>
-        ) : (
-          <div role="radiogroup" aria-label="Show" className="flex items-center gap-1">
-            {FILTERS.map((option) => {
-              const count = option.value === "all" ? items?.length ?? 0 : counts[option.value];
-              const active = filter === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setFilter(option.value)}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition-colors",
-                    active ? "bg-fg/[0.08] text-fg" : "text-muted-fg/70 hover:bg-fg/[0.04] hover:text-fg",
-                  )}
-                >
-                  {option.label}
-                  <span className={cn("tabular-nums", active ? "text-muted-fg/80" : "text-muted-fg/40")}>{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
+  const all = items ?? [];
+  const allBytes = totalBytes(all);
+  const staleAll = React.useMemo(() => {
+    const nowMs = Date.now();
+    return all.filter((item) => isArchiveStale(item.archivedAt, DEFAULT_ARCHIVE_STALE_DAYS, nowMs));
+  }, [all]);
+  const staleBytes = totalBytes(staleAll);
 
-      {error && !items ? (
-        <SettingsManagerEmpty
-          title="Couldn't open the archive"
-          description={error}
-          action={
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="h-7 rounded-md px-3 text-[12px] font-medium text-fg hover:bg-fg/[0.06]"
-            >
-              Try again
-            </button>
-          }
-        />
-      ) : items && visible.length === 0 ? (
-        <SettingsManagerEmpty
-          title={filter === "all" ? "Nothing archived" : `No archived ${archiveKindPlural(filter)}`}
-          description="Archived lanes, chats, and shells show up here."
-        />
-      ) : items ? (
-        <div role="table" aria-label="Archived items" className="flex flex-col">
-          {recent.length > 0 ? (
-            <>
-              <GroupHeader title={`Last ${DEFAULT_ARCHIVE_STALE_DAYS} days`} items={recent} />
-              {renderRows(recent)}
-            </>
-          ) : null}
-          {older.length > 0 ? (
-            <>
-              <GroupHeader
-                title={`Older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`}
-                items={older}
-                action={
-                  <button
-                    type="button"
-                    disabled={busy || selecting}
-                    onClick={() => void remove(older.map(toRef))}
-                    className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-red-300/80 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
-                  >
-                    <Trash size={12} /> Delete all
-                  </button>
-                }
-              />
-              {renderRows(older)}
-            </>
-          ) : null}
+  const filterBar = (
+    <div role="radiogroup" aria-label="Show" className="kit-seg" data-case="sentence">
+      {FILTERS.map((option) => {
+        const count = option.value === "all" ? items?.length ?? 0 : counts[option.value];
+        const active = filter === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => setFilter(option.value)}
+          >
+            {option.label}
+            <span className="kit-num" style={{ marginLeft: 6, opacity: 0.6, fontSize: 10.5 }}>{count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const selectionBar = (
+    <div data-testid="archive-selection-bar" className="ade-ar-selection">
+      <button
+        type="button"
+        aria-label="Clear selection"
+        onClick={() => setSelected(new Set())}
+        className="ade-ar-icon-btn"
+      >
+        <X size={13} />
+      </button>
+      <span className="ade-ar-title" style={{ fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{selectedRefs.length} selected</span>
+      <span style={{ flex: 1 }} />
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void restore(selectedRefs)}
+        className="ade-modern-btn"
+        data-size="sm"
+      >
+        <ArrowCounterClockwise size={12} /> Restore
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void remove(selectedRefs)}
+        className="ade-modern-btn"
+        data-size="sm"
+        data-tone="danger"
+      >
+        <Trash size={12} /> Delete
+      </button>
+    </div>
+  );
+
+  return (
+    <SettingsColumn wide>
+      <section id={ARCHIVE_SETTINGS_ANCHOR} data-settings-anchor={ARCHIVE_SETTINGS_ANCHOR} className="ade-modern-page">
+        <div className="ade-ap-section">
+          <header className="ade-ap-head">
+            <div style={{ minWidth: 0 }}>
+              <h2>On this machine</h2>
+              <p>Archive only hides a thing. It stays on disk until you delete it here — ADE never deletes on its own.</p>
+            </div>
+          </header>
+          <div className="ade-modern-stats">
+            {(["lane", "chat", "shell"] as const).map((kind) => (
+              <div key={kind} className="ade-modern-stat">
+                <span className="kit-eyebrow">{archiveKindPlural(kind)}</span>
+                <span className="ade-modern-stat-value">
+                  <span className="kit-stat kit-num">{items ? counts[kind] : "–"}</span>
+                </span>
+                <span className="ade-modern-stat-sub">
+                  {items ? (() => {
+                    const bytes = totalBytes(all.filter((item) => item.kind === kind));
+                    return bytes > 0 ? `${formatBytes(bytes)} on disk` : "Archived";
+                  })() : "Loading…"}
+                </span>
+              </div>
+            ))}
+            <div className="ade-modern-stat">
+              <span className="kit-eyebrow">On disk</span>
+              <span className="ade-modern-stat-value">
+                <span className="kit-stat kit-num">{items ? formatBytes(allBytes) : "–"}</span>
+              </span>
+              <div className="kit-meter" data-level={staleBytes > 0 ? "warn" : undefined} aria-hidden>
+                <span style={{ width: `${allBytes > 0 ? Math.max(2, (staleBytes / allBytes) * 100) : 0}%` }} />
+              </div>
+              <span className="ade-modern-stat-sub">
+                {staleAll.length > 0
+                  ? `${formatBytes(staleBytes)} older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`
+                  : `Nothing older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`}
+              </span>
+            </div>
+          </div>
         </div>
-      ) : null}
-    </section>
+
+        <div className="ade-ap-section">
+          <header className="ade-ap-head" style={{ alignItems: "center", minHeight: 30 }}>
+            {selecting ? selectionBar : (
+              <>
+                <div style={{ minWidth: 0 }}>
+                  <h2>Archived</h2>
+                </div>
+                {filterBar}
+              </>
+            )}
+          </header>
+
+          {error && !items ? (
+            <div className="ade-ar-empty">
+              <div className="ade-ap-rowtitle">Couldn&apos;t open the archive</div>
+              <p className="ade-modern-muted">{error}</p>
+              <button type="button" onClick={() => void load()} className="ade-modern-btn" data-size="sm">
+                Try again
+              </button>
+            </div>
+          ) : items && visible.length === 0 ? (
+            <div className="ade-ar-empty">
+              <ArchiveIcon size={22} weight="light" />
+              <div className="ade-ap-rowtitle">{filter === "all" ? "Nothing archived" : `No archived ${archiveKindPlural(filter)}`}</div>
+              <p className="ade-modern-muted">Archived lanes, chats, and shells show up here.</p>
+            </div>
+          ) : items ? (
+            <div role="table" aria-label="Archived items" className="ade-ar-table">
+              {recent.length > 0 ? (
+                <div className="ade-ar-block">
+                  <GroupHeader title={`Last ${DEFAULT_ARCHIVE_STALE_DAYS} days`} items={recent} />
+                  <div className="ade-modern-rows ade-ar-list">{renderRows(recent)}</div>
+                </div>
+              ) : null}
+              {older.length > 0 ? (
+                <div className="ade-ar-block">
+                  <GroupHeader
+                    title={`Older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`}
+                    items={older}
+                    action={
+                      <button
+                        type="button"
+                        disabled={busy || selecting}
+                        onClick={() => void remove(older.map(toRef))}
+                        className="ade-modern-btn"
+                        data-size="sm"
+                        data-tone="danger"
+                      >
+                        <Trash size={12} /> Delete all
+                      </button>
+                    }
+                  />
+                  <div className="ade-modern-rows ade-ar-list">{renderRows(older)}</div>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <p className="ade-modern-muted">Loading the archive…</p>
+          )}
+        </div>
+      </section>
+    </SettingsColumn>
   );
 }

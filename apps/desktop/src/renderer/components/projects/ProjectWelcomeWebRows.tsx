@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   Folder,
@@ -130,7 +130,7 @@ function RecentProjectIcon({
   return (
     <ProjectIconArtwork
       dataUrl={icon?.dataUrl}
-      fallback={<Folder size={16} weight="regular" />}
+      fallback={<Folder size={14} weight="regular" />}
       onAccentColor={onAccentColor}
     />
   );
@@ -200,7 +200,7 @@ export function welcomeRelativeTime(iso: string | null, nowMs = Date.now()): str
 }
 
 // ---------------------------------------------------------------------------
-// Machine chips
+// Machines
 // ---------------------------------------------------------------------------
 
 type DotState = "online" | "busy" | "available" | "offline";
@@ -235,8 +235,14 @@ function machineLocationKey(location: RecentProjectLocation): string {
   return `${location.machineId}:${location.recentKey ?? location.summary.rootPath}`;
 }
 
-/** One chip per machine that has this project; the others open it there. */
-function ProjectMachineChips({
+/**
+ * The machines that have this project, as one quiet chip: a monitor glyph and
+ * "3 machines", with a dot that is green while any of them is online. Nothing
+ * when the project lives only on this machine — the common case says nothing.
+ * The chip opens a small menu listing every machine and its state; picking one
+ * other than the row's own opens the project there.
+ */
+function ProjectMachineStack({
   locations,
   primary,
   busy,
@@ -249,51 +255,79 @@ function ProjectMachineChips({
   web: WebRowChrome | null;
   onSelectMachine?: (location: RecentProjectLocation) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
   if (locations.length === 0) return null;
-  const orderedLocations = [
+  if (locations.length === 1 && locations[0]!.summary.kind !== "remote") return null;
+  const ordered = [
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
   ];
+  const entries = ordered.map((location) => {
+    const name = welcomeProjectMachineName(location);
+    const dot = locationDotState(location, location === primary, web);
+    return { location, name, dot };
+  });
+  const online = entries.filter((entry) => entry.dot === "online").length;
+  const summary = entries.map((entry) => `${entry.name} · ${DOT_LABEL[entry.dot]}`).join("\n");
   return (
-    <div
-      className="ade-welcome-chips"
-      data-ade-project-machines="true"
-      aria-label="Project machines"
-    >
-      {orderedLocations.map((location) => {
-        const isPrimary = location === primary;
-        const canSelect = !isPrimary && Boolean(onSelectMachine) && !busy;
-        const machineName = welcomeProjectMachineName(location);
-        const dot = locationDotState(location, isPrimary, web);
-        const content = (
-          <>
-            <span aria-hidden className="ade-welcome-dot" data-state={dot} />
-            <span>{machineName}</span>
-          </>
-        );
-        return canSelect ? (
-          <button
-            key={machineLocationKey(location)}
-            type="button"
-            className="ade-welcome-chip"
-            title={`Open on ${machineName} (${DOT_LABEL[dot]})`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectMachine?.(location);
-            }}
-          >
-            {content}
-          </button>
-        ) : (
-          <span
-            key={machineLocationKey(location)}
-            className="ade-welcome-chip"
-            title={`${machineName} (${DOT_LABEL[dot]})`}
-          >
-            {content}
-          </span>
-        );
-      })}
+    <div ref={rootRef} className="ade-welcome-machines" data-ade-project-machines="true">
+      <button
+        type="button"
+        className="ade-welcome-machines-chip"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`On ${entries.length} machines, ${online} online`}
+        title={summary}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+      >
+        <span className="kit-dot" data-state={online > 0 ? "ok" : undefined} aria-hidden />
+        {entries.length} {entries.length === 1 ? "machine" : "machines"}
+      </button>
+      {open ? (
+        <div className="ade-welcome-machines-menu" role="menu" aria-label="Open on machine">
+          {entries.map(({ location, name, dot }) => {
+            const isPrimary = location === primary;
+            const canSelect = !isPrimary && Boolean(onSelectMachine) && !busy;
+            return (
+              <button
+                key={machineLocationKey(location)}
+                type="button"
+                role="menuitem"
+                className="ade-welcome-machines-item"
+                disabled={!canSelect}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen(false);
+                  onSelectMachine?.(location);
+                }}
+              >
+                <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
+                <span className="ade-welcome-machines-name">{name}</span>
+                <span className="ade-welcome-machines-state">{isPrimary ? "this row" : DOT_LABEL[dot]}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -303,7 +337,7 @@ function ProjectMachineChips({
 // ---------------------------------------------------------------------------
 
 // A single recents row: project icon, name and path on the left (the open
-// button), time and machine chips on the right. Offline remote rows are dimmed
+// button), machines and time on the right. Offline remote rows are dimmed
 // with a Reconnect affordance; an in-flight connect replaces the path line.
 export function RecentProjectRow({
   rp,
@@ -372,7 +406,7 @@ export function RecentProjectRow({
       data-busy={busy ? "true" : undefined}
       data-has-actions={showRowActions ? "true" : undefined}
       // The time and machine column is part of the row's hit area; its own
-      // buttons (chips, row actions) stop propagation.
+      // buttons (machine avatars, row actions) stop propagation.
       onClick={(event) => {
         if (busy) return;
         if ((event.target as HTMLElement).closest("button")) return;
@@ -397,7 +431,7 @@ export function RecentProjectRow({
           {projectIconDataUrl ? (
             <ProjectIconArtwork
               dataUrl={projectIconDataUrl}
-              fallback={<Folder size={16} weight="regular" />}
+              fallback={<Folder size={14} weight="regular" />}
               onAccentColor={setAccentColor}
             />
           ) : localIconRootPath ? (
@@ -407,7 +441,7 @@ export function RecentProjectRow({
               onResolved={setLocalArtwork}
             />
           ) : (
-            <Folder size={16} weight="regular" />
+            <Folder size={14} weight="regular" />
           )}
         </span>
         <span className="ade-welcome-row-text">
@@ -439,10 +473,17 @@ export function RecentProjectRow({
       </button>
 
       <div className="ade-welcome-row-aside">
+        <ProjectMachineStack
+          locations={locations}
+          primary={primary}
+          busy={busy}
+          web={web}
+          onSelectMachine={onSelectMachine}
+        />
         <div className="ade-welcome-row-top">
           {isOpen ? (
             <span className="ade-welcome-row-open">
-              <span aria-hidden className="ade-welcome-dot" data-state="open" />
+              <span aria-hidden className="kit-dot" data-state="accent" />
               Open
             </span>
           ) : !web && offline && !connecting ? (
@@ -505,13 +546,6 @@ export function RecentProjectRow({
             </div>
           ) : null}
         </div>
-        <ProjectMachineChips
-          locations={locations}
-          primary={primary}
-          busy={busy}
-          web={web}
-          onSelectMachine={onSelectMachine}
-        />
       </div>
     </div>
   );

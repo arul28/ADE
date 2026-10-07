@@ -99,7 +99,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine. */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "agents", "lanes-git", "integrations", "storage", "archive"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "apple", "agents", "lanes-git", "integrations", "storage", "archive"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -108,10 +108,11 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
 /**
  * Machines pages that describe the screen in front of you, not the machine's
  * runtime. Appearance is painted by the window you are looking at and kept in
- * its own storage, so it has one page, under This computer. A remote machine
- * has no copy of it to show or edit from here.
+ * its own storage, so it has one page, under This computer. Apple devices is
+ * edited from the computer whose simulators it drives. A remote machine has no
+ * copy of either to show or edit from here.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance", "apple"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -122,10 +123,6 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
-  // Apple device options follow the account on purpose: the host reads the
-  // remote streaming cap from the account store, so this page cannot be
-  // per computer without moving that read.
-  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming.", group: "account" },
   { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
@@ -143,6 +140,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
   { id: "agents", label: "Providers", group: "machines" },
+  // Apple devices is per computer: each Mac has its own simulators and its own
+  // network. Values are filed under this device's account scope so the brain
+  // on this computer can read the remote streaming cap (see accountSettingsSync).
+  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "machines" },
   { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
   { id: "integrations", label: "Integrations", description: "GitHub and Linear, as connected on this machine.", group: "machines" },
   { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
@@ -369,6 +370,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Theme",
   },
   {
+    id: "appearance.background",
+    label: "Background",
+    keywords: ["wallpaper", "picture", "image", "photo", "scene", "shuffle", "gradient", "background"],
+    tab: "appearance",
+    anchor: "background",
+    scope: "machine",
+    web: "browser",
+    group: "Background",
+  },
+  {
     id: "appearance.chat-font-size",
     label: "Chat font size",
     keywords: ["text size", "typography", "zoom", "bigger", "smaller"],
@@ -504,7 +515,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "3d", "body", "mesh", "apple.realisticBody"],
     tab: "apple",
     anchor: "apple-realistic-body",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -514,7 +525,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "tap", "apple.recordingOverlays.tapRings"],
     tab: "apple",
     anchor: "apple-tap-rings",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -524,7 +535,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "overlay", "badge", "keyboard", "apple.recordingOverlays.keyBadges"],
     tab: "apple",
     anchor: "apple-typed-badges",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -534,7 +545,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "stream", "bitrate", "kbit", "remote", "apple.remoteBitrateKbpsCap"],
     tab: "apple",
     anchor: "apple-remote-bitrate",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },
@@ -544,7 +555,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["apple", "simulator", "ios", "recording", "storage", "disk", "warn", "apple.recordingsWarnBytes"],
     tab: "apple",
     anchor: "apple-recordings-warn",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Apple Development",
   },

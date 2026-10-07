@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
-  CaretDown,
   CaretRight,
-  DesktopTower,
   DeviceMobile,
   DotsThreeVertical,
   Laptop,
@@ -35,12 +33,7 @@ import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
   MONO_FONT,
-  RADII,
-  SANS_FONT,
-  cardStyle,
-  inlineBadge,
   outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
 import {
   accountSessionState,
@@ -68,32 +61,16 @@ import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
 import { Banner } from "../ui/notice/Banner";
+import { ModernRows, ModernSection } from "../settings/primitives";
+import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
 function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        fontFamily: SANS_FONT,
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.07em",
-        textTransform: "uppercase",
-        color: COLORS.textMuted,
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="kit-eyebrow ade-acct-inventory-label">{children}</div>;
 }
 
 function InventoryEmpty({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{children}</div>
-  );
+  return <div className="ade-acct-inventory-empty">{children}</div>;
 }
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
@@ -818,60 +795,31 @@ export function YourMacsCard() {
     }
   }, [pendingForget, workspace]);
 
-  return (
-    <div
-      id={YOUR_COMPUTERS_SETTINGS_ANCHOR}
-      data-settings-anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
-      style={cardStyle({ padding: 0, overflow: "hidden" })}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "16px 18px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: COLORS.accentSubtle,
-              color: COLORS.accent,
-              flexShrink: 0,
-            }}
-          >
-            <DesktopTower size={16} weight="duotone" />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              Your computers
-            </div>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
-            {thisComputerVersion ? (
-              <div
-                style={{
-                  marginTop: 1,
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  color: COLORS.textMuted,
-                }}
-              >
-                This machine: {thisComputerVersion.text}
-              </div>
-            ) : null}
-          </div>
-        </div>
-        {!webMode ? (
-          <button
-            type="button"
-            onClick={() => openConnectionsPanel("machines")}
-            style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px" })}
-          >
-            Manage connections
-            <ArrowRight size={13} weight="bold" />
-          </button>
-        ) : null}
-      </div>
+  const directoryOffline =
+    (!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
+    || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured"));
 
+  return (
+    <ModernSection
+      group="Computers"
+      anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
+      title="Your computers"
+      hint={(
+        <>
+          {summary}
+          {thisComputerVersion ? (
+            <span className="ade-acct-version">This machine: {thisComputerVersion.text}</span>
+          ) : null}
+        </>
+      )}
+      actions={!webMode ? (
+        <button type="button" className="ade-acct-btn" onClick={() => openConnectionsPanel("machines")}>
+          Manage connections
+          <ArrowRight size={12} weight="bold" />
+        </button>
+      ) : null}
+    >
+      <div className="ade-acct-banners">
       {/*
         A missing directory row used to be treated as a one-way removal. Restart,
         sign-out, and reinstall still cannot put a truly revoked machine back,
@@ -886,7 +834,6 @@ export function YourMacsCard() {
       {showReconnectRow ? (
         <Banner
           layout="inline"
-          style={{ margin: "12px 18px" }}
           model={{
             id: "this-computer-reconnect",
             tone: "warning",
@@ -916,7 +863,6 @@ export function YourMacsCard() {
       {rows.length > MOBILE_LIVE_MACHINE_LIMIT ? (
         <Banner
           layout="inline"
-          style={{ margin: "12px 18px" }}
           model={{
             id: "mobile-live-machine-limit",
             tone: "info",
@@ -927,319 +873,9 @@ export function YourMacsCard() {
         />
       ) : null}
 
-      {rows.length > 0 ? (
-        <div style={{ borderTop: `1px solid ${COLORS.borderMuted}` }}>
-          {rows.map((row) => {
-            const machine = row.accountMachine;
-            const menuOpen = openMenuKey === row.key;
-            const renaming = Boolean(machine && renamingKey === machine.machineKey);
-            const inventoryState = machine ? inventoryByMachine[machine.machineKey] : undefined;
-            const expanded = Boolean(machine && expandedMachineKey === machine.machineKey);
-            return (
-              <div key={row.key}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 8,
-                    padding: "11px 18px",
-                    borderTop: `1px solid ${COLORS.borderMuted}`,
-                  }}
-                >
-                  {machine ? (
-                    <button
-                      type="button"
-                      aria-label={`${expanded ? "Hide" : "Show"} provider inventory for ${row.name}`}
-                      aria-expanded={expanded}
-                      onClick={() => void toggleMachineInventory(row)}
-                      style={{
-                        ...outlineButton({ height: 24, width: 22, padding: 0 }),
-                        flexShrink: 0,
-                        border: "none",
-                        background: "transparent",
-                        color: COLORS.textMuted,
-                      }}
-                    >
-                      {expanded ? <CaretDown size={14} weight="bold" /> : <CaretRight size={14} weight="bold" />}
-                    </button>
-                  ) : <span style={{ width: 22, flexShrink: 0 }} />}
-                  {/* The dot states the SAME presence as the line beside it. */}
-                  <span
-                    aria-hidden
-                    data-machine-presence={row.presence ?? undefined}
-                    style={{
-                      width: 7,
-                      height: 7,
-                      marginTop: 7,
-                      borderRadius: "50%",
-                      flexShrink: 0,
-                      background: row.statusColor,
-                      boxShadow: row.awake
-                        ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
-                        : undefined,
-                    }}
-                  />
-                  <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0, marginTop: 3 }} />
-                  <div
-                    data-machine-presence={row.presence ?? undefined}
-                    style={{ minWidth: 0, flex: 1 }}
-                  >
-                    {renaming && machine ? (
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void saveRename(machine);
-                        }}
-                        style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
-                      >
-                        <input
-                          aria-label={`Name for ${row.name}`}
-                          autoFocus
-                          maxLength={80}
-                          value={renameValue}
-                          disabled={renameBusy}
-                          onChange={(event) => setRenameValue(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") {
-                              event.preventDefault();
-                              cancelRename();
-                            }
-                          }}
-                          style={{
-                            minWidth: 0,
-                            flex: 1,
-                            height: 28,
-                            borderRadius: RADII.sm,
-                            border: `1px solid ${COLORS.borderMuted}`,
-                            background: COLORS.recessedBg,
-                            color: COLORS.textPrimary,
-                            fontFamily: SANS_FONT,
-                            fontSize: 12.5,
-                            padding: "0 9px",
-                            outline: "none",
-                          }}
-                        />
-                        <button type="submit" disabled={renameBusy || !renameValue.trim()} style={primaryButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
-                          {renameBusy ? "Saving…" : "Save"}
-                        </button>
-                        {machine.customName ? (
-                          <button type="button" disabled={renameBusy} onClick={() => void saveRename(machine, null)} style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
-                            Use hostname
-                          </button>
-                        ) : null}
-                        <button type="button" disabled={renameBusy} onClick={cancelRename} style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
-                          Cancel
-                        </button>
-                      </form>
-                    ) : (
-                      <>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-                          <span
-                            data-machine-presence={row.presence ?? undefined}
-                            title={row.adeHome ?? undefined}
-                            style={{
-                              fontFamily: SANS_FONT,
-                              fontSize: 13,
-                              color: COLORS.textPrimary,
-                              minWidth: 0,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {row.label}
-                          </span>
-                          {row.thisMac ? (
-                            <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                              {THIS_MACHINE_NAME}
-                            </span>
-                          ) : null}
-                          {row.rememberedOnly ? (
-                            <span style={inlineBadge(COLORS.textMuted, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                              This browser
-                            </span>
-                          ) : null}
-                          {row.connected ? (
-                            <span style={inlineBadge(COLORS.success, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                              Connected
-                            </span>
-                          ) : null}
-                        </div>
-                        {row.statusLine ? (
-                          <div
-                            style={{
-                              marginTop: 2,
-                              fontFamily: SANS_FONT,
-                              fontSize: 11,
-                              color: row.awake ? COLORS.success : COLORS.textMuted,
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {row.statusLine}
-                          </div>
-                        ) : null}
-                        {/* No inventory chips here. A collapsed machine row is
-                            "which computer, is it up" — a second line of
-                            "Claude · 2 accounts · 6 models" chips made every
-                            row two lines tall to say something nobody reads at
-                            a glance. It is all in the expanded details now,
-                            grouped and with the provider marks on it. */}
-                      </>
-                    )}
-                  </div>
-                  {renaming ? (
-                    <span style={{ width: 26, flexShrink: 0 }} />
-                  ) : (
-                    <button
-                      type="button"
-                      aria-label={`Options for ${row.name}`}
-                      aria-haspopup="menu"
-                      aria-expanded={menuOpen}
-                      onClick={(event) =>
-                        menuOpen ? closeMenu() : openMenu(row.key, event.currentTarget)
-                      }
-                      style={{
-                        ...outlineButton({ height: 26, width: 26, padding: 0 }),
-                        flexShrink: 0,
-                        border: "none",
-                        background: menuOpen ? COLORS.hoverBg : "transparent",
-                        color: COLORS.textMuted,
-                      }}
-                    >
-                      <DotsThreeVertical size={16} weight="bold" />
-                    </button>
-                  )}
-                </div>
-                {expanded && machine ? (
-                  <div
-                    data-machine-inventory-detail
-                    style={{
-                      borderTop: `1px solid ${COLORS.borderMuted}`,
-                      padding: "10px 18px 13px 68px",
-                      background: COLORS.recessedBg,
-                    }}
-                  >
-                    {inventoryState?.status === "loading" ? (
-                      <div role="status" style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                        Loading provider inventory…
-                      </div>
-                    ) : inventoryState?.status === "error" ? (
-                      <div role="status" style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                        {inventoryState.message}
-                      </div>
-                    ) : inventoryState?.status === "ready" ? (
-                      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
-                        {/* One tile per provider, in that provider's own
-                            colour, with its mark and its model count on the
-                            header. The old version was three nested plain
-                            divs per account with no mark anywhere, so two
-                            providers read as one undifferentiated list. */}
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                          <InventoryGroupLabel>Accounts</InventoryGroupLabel>
-                          {inventoryState.detail.providers.length === 0 ? (
-                            <InventoryEmpty>No provider accounts here.</InventoryEmpty>
-                          ) : inventoryState.detail.providers.map((provider) => {
-                            const tone = providerColor(provider.provider);
-                            return (
-                              <div
-                                key={provider.provider}
-                                data-machine-inventory-provider={provider.provider}
-                                style={{
-                                  minWidth: 0,
-                                  overflow: "hidden",
-                                  borderRadius: 8,
-                                  border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
-                                  background: `color-mix(in srgb, ${tone} 6%, transparent)`,
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    gap: 8,
-                                    padding: "5px 9px",
-                                    background: `color-mix(in srgb, ${tone} 12%, transparent)`,
-                                  }}
-                                >
-                                  <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                                    <ProviderLogo family={provider.provider} size={13} />
-                                    <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
-                                      {providerInventoryLabel(provider.provider)}
-                                    </span>
-                                  </span>
-                                  <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted, whiteSpace: "nowrap" }}>
-                                    {provider.modelCount} {provider.modelCount === 1 ? "model" : "models"}
-                                  </span>
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "7px 9px" }}>
-                                  {provider.accounts.map((account) => {
-                                    const accountMeta = [account.email, account.plan].filter(Boolean).join(" · ");
-                                    return (
-                                      <div key={account.instanceId} style={{ minWidth: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
-                                        <div style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                          {account.label}
-                                          {account.isDefault && account.label !== "Default" ? (
-                                            <span style={{ color: COLORS.textMuted }}> · default</span>
-                                          ) : null}
-                                        </div>
-                                        {accountMeta ? (
-                                          <div style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                            {accountMeta}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                          <InventoryGroupLabel>
-                            <CustomToolMark size={13} />
-                            Custom
-                          </InventoryGroupLabel>
-                          {inventoryState.detail.presets.length === 0 ? (
-                            <InventoryEmpty>Nothing custom here.</InventoryEmpty>
-                          ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                              {inventoryState.detail.presets.map((preset) => (
-                                <div key={preset.id} style={{ minWidth: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
-                                  <div style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {preset.name}
-                                  </div>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, color: COLORS.textMuted }}>
-                                    <ProviderLogo family={preset.harness} size={11} />
-                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {providerInventoryLabel(preset.harness)} · {preset.model}
-                                    </span>
-                                    {!preset.bound ? (
-                                      <span style={{ ...inlineBadge(COLORS.warning, { fontSize: 9, padding: "1px 5px" }), flexShrink: 0 }}>
-                                        Not here
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-
       {renameError ? (
         <Banner
           layout="inline"
-          style={{ margin: "10px 18px" }}
           model={{ id: "this-computer-rename-error", tone: "error", title: renameError }}
         />
       ) : null}
@@ -1254,7 +890,6 @@ export function YourMacsCard() {
       {reconnectAction.cancels && !showReconnectRow ? (
         <Banner
           layout="inline"
-          style={{ margin: "10px 18px" }}
           model={{
             id: "this-computer-reconnect-running",
             tone: "info",
@@ -1275,7 +910,6 @@ export function YourMacsCard() {
       {reconnectOutcome && (!showReconnectRow || reconnectOutcome.tone === "success") ? (
         <Banner
           layout="inline"
-          style={{ margin: "10px 18px" }}
           model={{
             id: "this-computer-reconnect-outcome",
             tone: reconnectOutcome.tone === "danger" ? "error" : reconnectOutcome.tone,
@@ -1287,43 +921,249 @@ export function YourMacsCard() {
       {removeError ? (
         <Banner
           layout="inline"
-          style={{ margin: "10px 18px" }}
           model={{ id: "this-computer-remove-error", tone: "error", title: removeError }}
         />
       ) : null}
+      </div>
 
-      {(!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
-        || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured")) ? (
-        <div
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "12px 18px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-          }}
-        >
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            {webMode
-              ? "Use the machine menu above to switch computers."
-              : result?.state === "not_configured" || workspace?.account.state === "unconfigured"
-              ? "Your computers still connect from Connections — the shared directory just isn't live yet."
-              : "Your computers still connect from Connections while the directory reconnects."}
-          </span>
-          {result?.state === "unavailable" || workspace?.account.state === "directory_unavailable" ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (workspace) void workspace.retryDirectory();
-                else void load();
-              }}
-              style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
-            >
-              Retry
-            </button>
+      {rows.length > 0 || directoryOffline ? (
+        <ModernRows>
+          {rows.map((row) => {
+            const machine = row.accountMachine;
+            const menuOpen = openMenuKey === row.key;
+            const renaming = Boolean(machine && renamingKey === machine.machineKey);
+            const inventoryState = machine ? inventoryByMachine[machine.machineKey] : undefined;
+            const expanded = Boolean(machine && expandedMachineKey === machine.machineKey);
+            return (
+              <div key={row.key} className="ade-acct-machine">
+                <div className="ade-acct-machine-row">
+                  {machine ? (
+                    <button
+                      type="button"
+                      className="ade-acct-caret"
+                      aria-label={`${expanded ? "Hide" : "Show"} provider inventory for ${row.name}`}
+                      aria-expanded={expanded}
+                      onClick={() => void toggleMachineInventory(row)}
+                    >
+                      <CaretRight size={12} weight="bold" />
+                    </button>
+                  ) : <span className="ade-acct-caret-spacer" />}
+                  <span className="ade-acct-glyph" aria-hidden>
+                    <Laptop size={16} />
+                    {/* The dot states the SAME presence as the line beside it. */}
+                    <span
+                      className="ade-acct-presence"
+                      data-machine-presence={row.presence ?? undefined}
+                      style={{
+                        background: row.statusColor,
+                        boxShadow: row.awake
+                          ? `0 0 0 2px var(--color-bg), 0 0 0 4px color-mix(in srgb, ${row.statusColor} 25%, transparent)`
+                          : undefined,
+                      }}
+                    />
+                  </span>
+                  <div className="ade-acct-machine-body" data-machine-presence={row.presence ?? undefined}>
+                    {renaming && machine ? (
+                      <form
+                        className="ade-acct-rename"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveRename(machine);
+                        }}
+                      >
+                        <input
+                          aria-label={`Name for ${row.name}`}
+                          autoFocus
+                          maxLength={80}
+                          value={renameValue}
+                          disabled={renameBusy}
+                          onChange={(event) => setRenameValue(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelRename();
+                            }
+                          }}
+                        />
+                        <button type="submit" className="ade-acct-btn" data-tone="primary" disabled={renameBusy || !renameValue.trim()}>
+                          {renameBusy ? "Saving…" : "Save"}
+                        </button>
+                        {machine.customName ? (
+                          <button type="button" className="ade-acct-btn" disabled={renameBusy} onClick={() => void saveRename(machine, null)}>
+                            Use hostname
+                          </button>
+                        ) : null}
+                        <button type="button" className="ade-acct-btn" data-variant="ghost" disabled={renameBusy} onClick={cancelRename}>
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <div className="ade-acct-machine-title">
+                          <span
+                            className="ade-acct-machine-name"
+                            data-machine-presence={row.presence ?? undefined}
+                            title={row.adeHome ?? undefined}
+                          >
+                            {row.label}
+                          </span>
+                          {row.thisMac ? <span className="kit-tag">{THIS_MACHINE_NAME}</span> : null}
+                          {row.rememberedOnly ? <span className="kit-tag">This browser</span> : null}
+                          {row.connected ? <span className="kit-tag" data-tone="ok">Connected</span> : null}
+                        </div>
+                        {row.statusLine ? (
+                          <div className="ade-acct-machine-status" data-awake={row.awake ? "true" : undefined}>
+                            {row.statusLine}
+                          </div>
+                        ) : null}
+                        {/* No inventory chips here. A collapsed machine row is
+                            "which computer, is it up" — a second line of
+                            "Claude · 2 accounts · 6 models" chips made every
+                            row two lines tall to say something nobody reads at
+                            a glance. It is all in the expanded details now,
+                            grouped and with the provider marks on it. */}
+                      </>
+                    )}
+                  </div>
+                  {renaming ? (
+                    <span style={{ width: 28, flexShrink: 0 }} />
+                  ) : (
+                    <button
+                      type="button"
+                      className="ade-acct-btn ade-acct-icon-btn ade-acct-kebab"
+                      data-variant="ghost"
+                      aria-label={`Options for ${row.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen}
+                      onClick={(event) =>
+                        menuOpen ? closeMenu() : openMenu(row.key, event.currentTarget)
+                      }
+                    >
+                      <DotsThreeVertical size={16} weight="bold" />
+                    </button>
+                  )}
+                </div>
+                {expanded && machine ? (
+                  <div data-machine-inventory-detail className="ade-acct-inventory">
+                    {inventoryState?.status === "loading" ? (
+                      <div role="status" className="ade-acct-inventory-empty">
+                        Loading provider inventory…
+                      </div>
+                    ) : inventoryState?.status === "error" ? (
+                      <div role="status" className="ade-acct-inventory-empty">
+                        {inventoryState.message}
+                      </div>
+                    ) : inventoryState?.status === "ready" ? (
+                      <div className="ade-acct-inventory-grid">
+                        {/* One tile per provider, with its mark and its model
+                            count on the header, so two providers never read as
+                            one undifferentiated list. Colour stays on the mark. */}
+                        <div className="ade-acct-inventory-col">
+                          <InventoryGroupLabel>Accounts</InventoryGroupLabel>
+                          {inventoryState.detail.providers.length === 0 ? (
+                            <InventoryEmpty>No provider accounts here.</InventoryEmpty>
+                          ) : inventoryState.detail.providers.map((provider) => {
+                            const tone = providerColor(provider.provider);
+                            return (
+                              <div
+                                key={provider.provider}
+                                data-machine-inventory-provider={provider.provider}
+                                className="ade-acct-provider"
+                                style={{ borderColor: `color-mix(in srgb, ${tone} 22%, color-mix(in srgb, var(--color-fg) 8%, transparent))` }}
+                              >
+                                <div className="ade-acct-provider-head">
+                                  <span className="ade-acct-provider-name">
+                                    <ProviderLogo family={provider.provider} size={13} />
+                                    {providerInventoryLabel(provider.provider)}
+                                  </span>
+                                  <span className="kit-num" style={{ fontSize: 10.5, color: "var(--kit-text-3)", whiteSpace: "nowrap" }}>
+                                    {provider.modelCount} {provider.modelCount === 1 ? "model" : "models"}
+                                  </span>
+                                </div>
+                                <div className="ade-acct-provider-body">
+                                  {provider.accounts.map((account) => {
+                                    const accountMeta = [account.email, account.plan].filter(Boolean).join(" · ");
+                                    return (
+                                      <div key={account.instanceId} className="ade-acct-line">
+                                        <div className="ade-acct-line-main">
+                                          {account.label}
+                                          {account.isDefault && account.label !== "Default" ? (
+                                            <span style={{ color: "var(--kit-text-3)" }}> · default</span>
+                                          ) : null}
+                                        </div>
+                                        {accountMeta ? (
+                                          <div style={{ color: "var(--kit-text-3)" }}>{accountMeta}</div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="ade-acct-inventory-col">
+                          <InventoryGroupLabel>
+                            <CustomToolMark size={13} />
+                            Custom
+                          </InventoryGroupLabel>
+                          {inventoryState.detail.presets.length === 0 ? (
+                            <InventoryEmpty>Nothing custom here.</InventoryEmpty>
+                          ) : (
+                            <div className="ade-acct-provider">
+                              <div className="ade-acct-provider-body">
+                                {inventoryState.detail.presets.map((preset) => (
+                                  <div key={preset.id} className="ade-acct-line">
+                                    <div className="ade-acct-line-main">{preset.name}</div>
+                                    <div className="ade-acct-line-sub">
+                                      <ProviderLogo family={preset.harness} size={11} />
+                                      <span>
+                                        {providerInventoryLabel(preset.harness)} · {preset.model}
+                                      </span>
+                                      {!preset.bound ? (
+                                        <span className="kit-tag" data-tone="warn" style={{ height: 16, flexShrink: 0 }}>
+                                          Not here
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+
+          {directoryOffline ? (
+            <div className="ade-acct-footnote" style={rows.length === 0 ? { borderTop: 0 } : undefined}>
+              <span>
+                {webMode
+                  ? "Use the machine menu above to switch computers."
+                  : result?.state === "not_configured" || workspace?.account.state === "unconfigured"
+                  ? "Your computers still connect from Connections — the shared directory just isn't live yet."
+                  : "Your computers still connect from Connections while the directory reconnects."}
+              </span>
+              {result?.state === "unavailable" || workspace?.account.state === "directory_unavailable" ? (
+                <button
+                  type="button"
+                  className="ade-acct-btn"
+                  onClick={() => {
+                    if (workspace) void workspace.retryDirectory();
+                    else void load();
+                  }}
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
           ) : null}
-        </div>
+        </ModernRows>
       ) : null}
 
       {openMenuKey && openMenuRow && menuAnchor
@@ -1338,6 +1178,7 @@ export function YourMacsCard() {
                 <div
                   ref={menuRef}
                   role="menu"
+                  className="ade-acct-menu"
                   onKeyDown={(event) => {
                     if (event.key !== "Escape") return;
                     event.preventDefault();
@@ -1345,17 +1186,10 @@ export function YourMacsCard() {
                     closeMenu();
                   }}
                   style={{
-                    position: "absolute",
                     left: menuPosition?.left ?? menuAnchor.x,
                     top: menuPosition?.top ?? menuAnchor.y,
                     visibility: menuPosition ? "visible" : "hidden",
                     width: ACCOUNT_MENU_WIDTH,
-                    padding: 4,
-                    borderRadius: RADII.md,
-                    background: COLORS.cardBgSolid,
-                    border: `1px solid ${COLORS.outlineBorder}`,
-                    boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
-                    pointerEvents: "auto",
                   }}
                 >
                 {openMenuMachine ? (
@@ -1363,24 +1197,11 @@ export function YourMacsCard() {
                   ref={menuItemRef}
                   type="button"
                   role="menuitem"
+                  className="ade-acct-menu-item"
                   onClick={() => {
                     const machine = openMenuMachine;
                     closeMenu();
                     startRename(machine);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    width: "100%",
-                    padding: "8px 10px",
-                    borderRadius: RADII.sm,
-                    border: "none",
-                    background: "transparent",
-                    color: COLORS.textPrimary,
-                    fontFamily: SANS_FONT,
-                    fontSize: 12.5,
-                    textAlign: "left",
-                    cursor: "pointer",
                   }}
                 >
                   Rename…
@@ -1396,25 +1217,11 @@ export function YourMacsCard() {
                   <button
                     type="button"
                     role="menuitem"
+                    className="ade-acct-menu-item"
                     disabled={reconnectAction.disabled}
                     onClick={() => {
                       closeMenu();
                       reconnectAction.onClick();
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: RADII.sm,
-                      border: "none",
-                      background: "transparent",
-                      color: COLORS.textPrimary,
-                      fontFamily: SANS_FONT,
-                      fontSize: 12.5,
-                      textAlign: "left",
-                      cursor: reconnectAction.disabled ? "not-allowed" : "pointer",
-                      opacity: reconnectAction.disabled ? 0.6 : 1,
                     }}
                   >
                     {reconnectAction.label}
@@ -1431,25 +1238,13 @@ export function YourMacsCard() {
                   <button
                     type="button"
                     role="menuitem"
+                    className="ade-acct-menu-item"
+                    data-tone="danger"
                     onClick={() => {
                       const machine = openMenuMachine;
                       closeMenu();
                       setRemoveError(null);
                       setPendingRemoval(machine);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: RADII.sm,
-                      border: "none",
-                      background: "transparent",
-                      color: COLORS.danger,
-                      fontFamily: SANS_FONT,
-                      fontSize: 12.5,
-                      textAlign: "left",
-                      cursor: "pointer",
                     }}
                   >
                     Remove from account…
@@ -1460,25 +1255,13 @@ export function YourMacsCard() {
                     ref={openMenuMachine ? undefined : menuItemRef}
                     type="button"
                     role="menuitem"
+                    className="ade-acct-menu-item"
+                    data-tone="danger"
                     onClick={() => {
                       const row = openMenuRow;
                       closeMenu();
                       setRemoveError(null);
                       setPendingForget(row);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: RADII.sm,
-                      border: "none",
-                      background: "transparent",
-                      color: COLORS.danger,
-                      fontFamily: SANS_FONT,
-                      fontSize: 12.5,
-                      textAlign: "left",
-                      cursor: "pointer",
                     }}
                   >
                     Forget on this browser…
@@ -1525,6 +1308,6 @@ export function YourMacsCard() {
           }}
         />
       ) : null}
-    </div>
+    </ModernSection>
   );
 }

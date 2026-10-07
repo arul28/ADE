@@ -1,7 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  EyeSlash,
-  NumberCircleOne,
   Confetti,
   DesktopTower,
   HourglassMedium,
@@ -33,8 +31,7 @@ import {
 import { useAccountStatus } from "../../lib/account";
 import { supportsNativeNotch } from "../../lib/platform";
 import { useActivityStore } from "../../state/activityStore";
-import { SettingsPanel, SettingsRow, SettingsSection, SettingsSelect, SettingsToggle } from "./primitives";
-import { COLORS } from "../lanes/laneDesignTokens";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
  * Every Activity setting, once.
@@ -589,26 +586,74 @@ export function ActivitySettingsControls({
   );
 }
 
+/**
+ * A two-or-three-way choice as a segmented control (`.kit-seg`), exposed as a
+ * radio group under the same accessible name the old select carried.
+ */
+function SegmentedChoice<T extends string>({
+  ariaLabel,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  disabled?: boolean;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div
+      className="kit-seg"
+      data-case="sentence"
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
+      style={disabled ? { opacity: 0.5 } : undefined}
+    >
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            style={disabled ? { cursor: "not-allowed" } : undefined}
+            onClick={() => { if (!active) onChange(option.value); }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** The notch and its flourish. Rendered disabled, with the reason, off macOS. */
 export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }) {
   const { account, loading, signedOut, notchEnabled, notchPresentation, notchSupported, updateAccount, toggleNotchEnabled, setNotchPresentation } = model;
   const busy = loading || signedOut;
   const notchOff = !notchSupported || !notchEnabled;
   return (
-    <SettingsSection title="Notch">
-      <SettingsPanel>
-        <SettingsRow
+    <ModernSection
+      group="Notch"
+      title="Notch"
+      hint={
+        notchSupported
+          ? "A small HUD by the menu bar for work that needs you."
+          : supportsNativeNotch
+            ? "A macOS surface. Not available in the web client."
+            : "A macOS surface. Not available on this computer."
+      }
+    >
+      <ModernRows>
+        <ModernRow
           anchor="activity-notch"
-          icon={<Notches size={15} weight="duotone" />}
-          tone="accent"
           title="ADE notch"
-          description={
-            notchSupported
-              ? "A small HUD by the menu bar for work that needs you."
-              : supportsNativeNotch
-                ? "A macOS surface. Not available in the web client."
-                : "A macOS surface. Not available on this computer."
-          }
+          hint="Ambient agent status at the top of this display."
           control={
             <SettingsToggle
               label="ADE notch"
@@ -618,14 +663,12 @@ export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }
             />
           }
         />
-        <SettingsRow
+        <ModernRow
           anchor="activity-notch-reveal"
-          icon={<CursorClick size={15} weight="duotone" />}
-          tone="blue"
           title="Show the strip"
-          description={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
+          hint={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
           control={
-            <SettingsSelect
+            <SegmentedChoice
               ariaLabel="Notch behavior"
               value={notchPresentation.revealMode}
               options={REVEAL_OPTIONS}
@@ -634,12 +677,10 @@ export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }
             />
           }
         />
-        <SettingsRow
+        <ModernRow
           anchor="activity-notch-expanded"
-          icon={<ArrowsOutSimple size={15} weight="duotone" />}
-          tone="teal"
           title="Expanded panel"
-          description="Let the notch open into the full list of sessions."
+          hint="Let the notch open into the full list of sessions."
           control={
             <SettingsToggle
               label="Expanded panel"
@@ -649,12 +690,10 @@ export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }
             />
           }
         />
-        <SettingsRow
+        <ModernRow
           anchor="activity-celebrations"
-          icon={<Confetti size={15} weight="duotone" />}
-          tone="pink"
           title="Celebrations"
-          description="A brief flourish when meaningful work lands."
+          hint="A brief flourish when meaningful work lands."
           control={
             <SettingsToggle
               label="Celebrations"
@@ -664,8 +703,8 @@ export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }
             />
           }
         />
-      </SettingsPanel>
-    </SettingsSection>
+      </ModernRows>
+    </ModernSection>
   );
 }
 
@@ -674,14 +713,12 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
   const { account, loading, signedOut, updateAccount } = model;
   const busy = loading || signedOut;
   return (
-    <SettingsSection title="Privacy and badges">
-      <SettingsPanel>
-        <SettingsRow
+    <ModernSection group="Privacy" title="Privacy and badges" hint="What ambient surfaces reveal, and what the badge counts.">
+      <ModernRows>
+        <ModernRow
           anchor="activity-hide-details"
-          icon={<EyeSlash size={15} weight="duotone" />}
-          tone="slate"
           title="Hide previews"
-          description="Show private summaries, not agent text, on the notch, the phone, and the lock screen."
+          hint="Show private summaries, not agent text, on the notch, the phone, and the lock screen."
           control={
             <SettingsToggle
               label="Hide previews"
@@ -691,14 +728,12 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
             />
           }
         />
-        <SettingsRow
+        <ModernRow
           anchor="activity-dock-badge"
-          icon={<NumberCircleOne size={15} weight="duotone" />}
-          tone="red"
           title="Dock badge counts"
-          description="Work waiting on this computer, or on every machine."
+          hint="Work waiting on this computer, or on every machine."
           control={
-            <SettingsSelect
+            <SegmentedChoice
               ariaLabel="Dock badge counts"
               value={account.dockBadgeScope}
               options={DOCK_BADGE_SCOPE_OPTIONS}
@@ -707,8 +742,8 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
             />
           }
         />
-      </SettingsPanel>
-    </SettingsSection>
+      </ModernRows>
+    </ModernSection>
   );
 }
 
@@ -716,48 +751,41 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
 export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
   const { machines, signedOut, setMachineMuted, machineMuted } = model;
   return (
-    <SettingsSection title="Machines">
-      <SettingsPanel>
-        <div id="activity-machines" data-settings-anchor="activity-machines" className="ade-settings-row-group">
-          {machines.length === 0 ? (
-            <SettingsRow title="No machines yet" description="Machines appear here once they report Activity." />
-          ) : (
-            machines.map((machine) => {
-              const muted = machineMuted(machine.machineKey);
-              return (
-                <SettingsRow
-                  key={machine.machineKey}
-                  icon={<DesktopTower size={15} weight="duotone" />}
-                  tone={machine.online ? "green" : "slate"}
-                  title={machine.name}
-                  description={
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <span
-                        aria-hidden
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 999,
-                          background: machine.online ? COLORS.success : COLORS.textDim,
-                        }}
-                      />
-                      {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
-                    </span>
-                  }
-                  control={
-                    <SettingsToggle
-                      label={`Notify me about ${machine.name}`}
-                      checked={!muted}
-                      disabled={signedOut}
-                      onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
-                    />
-                  }
-                />
-              );
-            })
-          )}
-        </div>
-      </SettingsPanel>
-    </SettingsSection>
+    <ModernSection group="Machines" anchor="activity-machines" title="Machines" hint="Mute a machine to keep it in Activity without notifications.">
+      <ModernRows>
+        {machines.length === 0 ? (
+          <ModernRow title="No machines yet" hint="Machines appear here once they report Activity." />
+        ) : (
+          machines.map((machine) => {
+            const muted = machineMuted(machine.machineKey);
+            return (
+              <ModernRow
+                key={machine.machineKey}
+                title={(
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <DesktopTower size={14} style={{ color: "var(--kit-text-3)" }} />
+                    {machine.name}
+                  </span>
+                )}
+                hint={(
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
+                    {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                  </span>
+                )}
+                control={
+                  <SettingsToggle
+                    label={`Notify me about ${machine.name}`}
+                    checked={!muted}
+                    disabled={signedOut}
+                    onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
+                  />
+                }
+              />
+            );
+          })
+        )}
+      </ModernRows>
+    </ModernSection>
   );
 }

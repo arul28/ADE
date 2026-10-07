@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { ChartBar } from "@phosphor-icons/react";
 import type { ProductAnalyticsStatus } from "../../../shared/types/productAnalytics";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import "./machineSettings.css";
 
 const READ_ERROR = "Analytics settings are unavailable right now.";
 const WRITE_ERROR = "ADE could not save this analytics preference.";
@@ -55,42 +54,47 @@ export function ProductAnalyticsSection() {
     : "Analytics delivery will remain idle until this ADE build is connected to its analytics project.";
 
   return (
-    <SettingsGroup title="Privacy">
-      <SettingsCard
-        anchor="product-analytics"
-        icon={<ChartBar size={15} weight="duotone" />}
-        tone="violet"
-        title="Anonymous product analytics"
-        description="Help improve ADE by sharing anonymous usage events and a daily usage summary."
-        control={
-          <SettingsToggle
-            label="Share anonymous usage analytics"
-            checked={status?.enabled ?? true}
-            disabled={!status || saving}
-            onChange={(enabled) => void setEnabled(enabled)}
-          />
-        }
-      >
-        <p style={{ margin: 0, color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-          ADE uses a random installation ID plus installation-salted opaque project and session IDs.
-          It sends only allowlisted feature, screen, outcome, version, and aggregate usage
-          counts—never prompts, code, file or terminal content, repository names or paths, command
-          arguments, or recordings.
-        </p>
-        <p style={{ margin: "8px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-          ADE also sends one usage summary a day to ADE's own servers: the providers and models you
-          used, token counts, costs, your plan tier, and the local hour of each turn. It never
-          includes prompts, file paths, or account emails.
-        </p>
-        <p style={{ margin: "8px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
-          {footnote}
-        </p>
-        {error ? (
-          <p role="alert" style={{ margin: "8px 0 0", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
-            {error}
-          </p>
-        ) : null}
-      </SettingsCard>
-    </SettingsGroup>
+    <ModernSection
+      group="Privacy"
+      anchor="product-analytics"
+      title="Product analytics"
+      hint="Help improve ADE by sharing anonymous usage events and a daily usage summary."
+    >
+      <ModernRows>
+        <ModernRow
+          title="Share anonymous usage analytics"
+          hint={footnote}
+          control={
+            <SettingsToggle
+              label="Share anonymous usage analytics"
+              checked={status?.enabled ?? true}
+              disabled={!status || saving}
+              onChange={(enabled) => void setEnabled(enabled)}
+            />
+          }
+        >
+          <div className="ade-ms-privacy">
+            <div>
+              <span className="kit-eyebrow">Events</span>
+              <p className="ade-modern-muted">
+                ADE uses a random installation ID plus installation-salted opaque project and session IDs.
+                It sends only allowlisted feature, screen, outcome, version, and aggregate usage
+                counts—never prompts, code, file or terminal content, repository names or paths, command
+                arguments, or recordings.
+              </p>
+            </div>
+            <div>
+              <span className="kit-eyebrow">Daily summary</span>
+              <p className="ade-modern-muted">
+                ADE also sends one usage summary a day to ADE&apos;s own servers: the providers and models you
+                used, token counts, costs, your plan tier, and the local hour of each turn. It never
+                includes prompts, file paths, or account emails.
+              </p>
+            </div>
+          </div>
+          {error ? <p role="alert" className="ade-modern-error" style={{ marginTop: 8 }}>{error}</p> : null}
+        </ModernRow>
+      </ModernRows>
+    </ModernSection>
   );
 }

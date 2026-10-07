@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { TextAa, Rows, BoundingBox, Palette, Copy, MapTrifold, BookmarkSimple, CaretDown, Check } from "@phosphor-icons/react";
+import React, { useState } from "react";
+import { Check, Copy } from "@phosphor-icons/react";
 import {
   CHAT_FONT_SIZE_MAX_PX,
   CHAT_FONT_SIZE_MIN_PX,
@@ -9,9 +9,12 @@ import {
   CODE_BLOCK_COPY_POSITION_IDS,
   useAppStore,
   useRootAppStore,
+  type ChatChromeTint,
+  type ChatShellGeometry,
+  type ChatTranscriptDensity,
+  type CodeBlockCopyButtonPosition,
 } from "../../state/appStore";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { Z_LAYERS } from "../ui/zLayers";
+import { PROVIDER_CHAT_ACCENTS } from "../chat/chatSurfaceTheme";
 import {
   CHAT_CHROME_TINT_LABEL,
   COPY_POSITION_META,
@@ -27,23 +30,17 @@ import {
 import { DictationSection } from "./DictationSection";
 import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
-import {
-  SettingsColumn,
-  SettingsPanel,
-  SettingsRow,
-  SettingsSection,
-  SettingsSegmented,
-  SettingsSlider,
-  SettingsSplit,
-  SettingsToggle,
-} from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
+import "./ChatSection.css";
 
 /**
  * Chat settings: how the transcript reads and what the composer does.
  *
- * The page leads with one live thread, drawn for the runtime picked in its
- * header, so every choice below shows its effect in place. Six threads side by
- * side made the page a wall and hid the one that mattered.
+ * Laid out like Settings › Appearance: the choices on the left, each a short
+ * heading over a visual option (a type sample, cards with tiny transcripts),
+ * and on the right one live thread that stays in view, drawn for the runtime
+ * picked above it, so every choice shows its effect the moment it is made.
+ * On a narrow window the preview moves above the choices.
  *
  * The label maps stay in `AppearanceSection` and are imported here rather than
  * copied, so the two pages cannot drift on what "Comfortable" means. Every
@@ -69,169 +66,286 @@ export function ChatSection() {
 
   return (
     <SettingsColumn wide>
-      <SettingsSplit
-        stickyStart
-        ratio="start-wide"
-        start={(
-          <div id="appearance-preview" data-settings-anchor="appearance-preview" style={{ scrollMarginTop: 16 }}>
-            <SettingsSection
-              title="Preview"
-              actions={<PreviewProviderPicker value={previewProvider} onChange={setPreviewProvider} />}
+      <div className="ade-cs">
+        <div className="ade-cs-layout">
+          <div className="ade-cs-main">
+            <ModernSection
+              group="Transcript"
+              anchor="chat-font-size"
+              title="Text size"
+              hint="The transcript and the composer. The rest of ADE keeps its size."
             >
-              <div className="ade-chat-preview-stage">
-                <div className="ade-chat-preview-frame">
-                  <ChatAppearancePreview
-                    theme={theme}
-                    provider={previewProvider}
-                    chatFontSizePx={chatFontSizePx}
-                    transcriptDensity={chatTranscriptDensity}
-                    chromeTint={chatChromeTint}
-                    shellGeometry={chatShellGeometry}
-                    chatUserMinimapEnabled={chatUserMinimapEnabled}
-                  />
-                </div>
-              </div>
-            </SettingsSection>
+              <FontSizeControl value={chatFontSizePx} onChange={setChatFontSizePx} />
+            </ModernSection>
+
+            <ModernSection group="Transcript" anchor="transcript-density" title="Density" hint="Space between messages.">
+              <ChoiceGrid
+                ariaLabel="Transcript density"
+                value={chatTranscriptDensity}
+                options={CHAT_TRANSCRIPT_DENSITY_IDS}
+                label={(id) => TRANSCRIPT_DENSITY_LABEL[id]}
+                onChange={setChatTranscriptDensity}
+                art={(id) => <DensityArt density={id} />}
+              />
+            </ModernSection>
+
+            <ModernSection group="Transcript" anchor="chat-corners" title="Corners" hint="How round the chat window is.">
+              <ChoiceGrid
+                ariaLabel="Chat shell corners"
+                value={chatShellGeometry}
+                options={CHAT_SHELL_GEOMETRY_IDS}
+                label={(id) => SHELL_GEOMETRY_LABEL[id]}
+                onChange={setChatShellGeometry}
+                art={(id) => <CornersArt geometry={id} />}
+              />
+            </ModernSection>
+
+            <ModernSection
+              group="Transcript"
+              anchor="chat-tint"
+              title="Runtime color"
+              hint="Give each runtime its own hue in the chat chrome."
+            >
+              <ChoiceGrid
+                ariaLabel="Chat tint"
+                value={chatChromeTint}
+                options={CHAT_CHROME_TINT_IDS}
+                label={(id) => CHAT_CHROME_TINT_LABEL[id]}
+                onChange={setChatChromeTint}
+                art={(id) => <TintArt tint={id} />}
+                columns={2}
+              />
+            </ModernSection>
+
+            <ModernSection
+              group="Transcript"
+              anchor="code-block-copy-position"
+              title="Code block copy button"
+              hint={COPY_POSITION_META[codeBlockCopyButtonPosition].hint}
+            >
+              <ChoiceGrid
+                ariaLabel="Code block copy button position"
+                value={codeBlockCopyButtonPosition}
+                options={CODE_BLOCK_COPY_POSITION_IDS}
+                label={(id) => COPY_POSITION_META[id].label}
+                onChange={setCodeBlockCopyButtonPosition}
+                art={(id) => <CopyArt position={id} />}
+              />
+            </ModernSection>
+
+            <ModernSection group="Details" title="Details" hint="Small helpers around the transcript and the composer.">
+              <ModernRows>
+                <ModernRow
+                  anchor="user-message-minimap"
+                  title="Message minimap"
+                  hint="A tick per message you sent in the left gutter. Hover to preview, click to jump."
+                  control={(
+                    <SettingsToggle
+                      label="User message minimap"
+                      checked={chatUserMinimapEnabled}
+                      onChange={setChatUserMinimapEnabled}
+                    />
+                  )}
+                />
+                <ModernRow
+                  anchor="prompt-stash-button"
+                  title="Prompt stash button"
+                  hint="The bookmark beside the context meter. ⌘S works either way."
+                  control={(
+                    <SettingsToggle
+                      label="Prompt stash button"
+                      checked={promptStashButtonEnabled}
+                      onChange={setPromptStashButtonEnabled}
+                    />
+                  )}
+                />
+              </ModernRows>
+            </ModernSection>
+
+            <LaunchPromptSection />
+
+            {/* Voice input is chat dictation, so it lives with chat. */}
+            <DictationSection />
+
+            {/* Spoken conversations with a chat, carried by Codex voice. */}
+            <VoiceConversationSection />
           </div>
-        )}
-        end={(
-          <>
-          <SettingsSection title="Transcript">
-            <SettingsPanel>
-              <SettingsRow
-                anchor="chat-font-size"
-                icon={<TextAa size={15} weight="duotone" />}
-                tone="violet"
-                title="Font size"
-                description="The transcript and the composer. The rest of ADE keeps its size."
-                control={
-                  <SettingsSlider
-                    min={CHAT_FONT_SIZE_MIN_PX}
-                    max={CHAT_FONT_SIZE_MAX_PX}
-                    value={chatFontSizePx}
-                    onChange={setChatFontSizePx}
-                    ariaLabel="Chat font size"
-                    valueLabel={`${chatFontSizePx}px`}
-                  />
-                }
-              />
-              <SettingsRow
-                anchor="transcript-density"
-                icon={<Rows size={15} weight="duotone" />}
-                tone="blue"
-                title="Density"
-                description="Space between messages."
-                control={
-                  <SettingsSegmented
-                    ariaLabel="Transcript density"
-                    value={chatTranscriptDensity}
-                    onChange={setChatTranscriptDensity}
-                    options={CHAT_TRANSCRIPT_DENSITY_IDS.map((id) => ({
-                      value: id,
-                      label: TRANSCRIPT_DENSITY_LABEL[id],
-                    }))}
-                  />
-                }
-              />
-              <SettingsRow
-                anchor="chat-corners"
-                icon={<BoundingBox size={15} weight="duotone" />}
-                tone="teal"
-                title="Corners"
-                description="How round the chat window is."
-                control={
-                  <SettingsSegmented
-                    ariaLabel="Chat shell corners"
-                    value={chatShellGeometry}
-                    onChange={setChatShellGeometry}
-                    options={CHAT_SHELL_GEOMETRY_IDS.map((id) => ({ value: id, label: SHELL_GEOMETRY_LABEL[id] }))}
-                  />
-                }
-              />
-              <SettingsRow
-                anchor="chat-tint"
-                icon={<Palette size={15} weight="duotone" />}
-                tone="pink"
-                title="Runtime color"
-                description="Give each runtime its own hue in the chat chrome."
-                control={
-                  <SettingsSegmented
-                    ariaLabel="Chat tint"
-                    value={chatChromeTint}
-                    onChange={setChatChromeTint}
-                    options={CHAT_CHROME_TINT_IDS.map((id) => ({ value: id, label: CHAT_CHROME_TINT_LABEL[id] }))}
-                  />
-                }
-              />
-            </SettingsPanel>
-          </SettingsSection>
 
-          <SettingsSection title="Details">
-            <SettingsPanel>
-              <SettingsRow
-                anchor="code-block-copy-position"
-                icon={<Copy size={15} weight="duotone" />}
-                tone="blue"
-                title="Code block copy button"
-                description={COPY_POSITION_META[codeBlockCopyButtonPosition].hint}
-                control={
-                  <SettingsSegmented
-                    ariaLabel="Code block copy button position"
-                    value={codeBlockCopyButtonPosition}
-                    onChange={setCodeBlockCopyButtonPosition}
-                    options={CODE_BLOCK_COPY_POSITION_IDS.map((id) => ({
-                      value: id,
-                      label: COPY_POSITION_META[id].label,
-                    }))}
-                  />
-                }
+          <aside
+            className="ade-cs-aside"
+            id="appearance-preview"
+            data-settings-anchor="appearance-preview"
+          >
+            <div className="ade-cs-aside-head">
+              <span className="kit-eyebrow">Preview</span>
+              <PreviewProviderPicker value={previewProvider} onChange={setPreviewProvider} />
+            </div>
+            <div className="ade-cs-preview">
+              <ChatAppearancePreview
+                theme={theme}
+                provider={previewProvider}
+                chatFontSizePx={chatFontSizePx}
+                transcriptDensity={chatTranscriptDensity}
+                chromeTint={chatChromeTint}
+                shellGeometry={chatShellGeometry}
+                chatUserMinimapEnabled={chatUserMinimapEnabled}
               />
-              <SettingsRow
-                anchor="user-message-minimap"
-                icon={<MapTrifold size={15} weight="duotone" />}
-                tone="teal"
-                title="Message minimap"
-                description="A tick per message you sent in the left gutter. Hover to preview, click to jump."
-                control={
-                  <SettingsToggle
-                    label="User message minimap"
-                    checked={chatUserMinimapEnabled}
-                    onChange={setChatUserMinimapEnabled}
-                  />
-                }
-              />
-              <SettingsRow
-                anchor="prompt-stash-button"
-                icon={<BookmarkSimple size={15} weight="duotone" />}
-                tone="amber"
-                title="Prompt stash button"
-                description="The bookmark beside the context meter. ⌘S works either way."
-                control={
-                  <SettingsToggle
-                    label="Prompt stash button"
-                    checked={promptStashButtonEnabled}
-                    onChange={setPromptStashButtonEnabled}
-                  />
-                }
-              />
-            </SettingsPanel>
-          </SettingsSection>
-
-          <LaunchPromptSection />
-
-          {/* Voice input is chat dictation, so it lives with chat. */}
-          <DictationSection />
-
-          {/* Spoken conversations with a chat, carried by Codex voice. */}
-          <VoiceConversationSection />
-          </>
-        )}
-      />
+            </div>
+            <div className="ade-cs-aside-foot">
+              <span className="kit-eyebrow">
+                {PREVIEW_PROVIDER_META[previewProvider].name} · <span className="kit-num">{chatFontSizePx}px</span> · {TRANSCRIPT_DENSITY_LABEL[chatTranscriptDensity]}
+              </span>
+            </div>
+          </aside>
+        </div>
+      </div>
     </SettingsColumn>
   );
 }
 
-/** The runtime the preview draws, picked from a small menu with each logo. */
+/* ── Text size ──────────────────────────────────────────────────────── */
+
+function FontSizeControl({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const span = CHAT_FONT_SIZE_MAX_PX - CHAT_FONT_SIZE_MIN_PX;
+  const fill = span > 0 ? ((value - CHAT_FONT_SIZE_MIN_PX) / span) * 100 : 0;
+  return (
+    <div className="ade-cs-size">
+      <div className="ade-cs-size-sample" style={{ fontSize: value }}>
+        Ship the lane, then open the PR.
+      </div>
+      <div className="ade-cs-size-row">
+        <span className="ade-cs-size-a" style={{ fontSize: 11 }} aria-hidden>A</span>
+        <input
+          type="range"
+          min={CHAT_FONT_SIZE_MIN_PX}
+          max={CHAT_FONT_SIZE_MAX_PX}
+          step={1}
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+          aria-label="Chat font size"
+          className="ade-cs-range"
+          style={{ "--ade-cs-fill": `${fill}%` } as React.CSSProperties}
+        />
+        <span className="ade-cs-size-a" style={{ fontSize: 17 }} aria-hidden>A</span>
+        <span className="kit-num ade-cs-size-value">{value}px</span>
+      </div>
+    </div>
+  );
+}
+
+/* ── Choice cards ───────────────────────────────────────────────────── */
+
+function ChoiceGrid<T extends string>({
+  ariaLabel,
+  value,
+  options,
+  label,
+  onChange,
+  art,
+  columns = 3,
+}: {
+  ariaLabel: string;
+  value: T;
+  options: readonly T[];
+  label: (id: T) => string;
+  onChange: (next: T) => void;
+  art: (id: T) => React.ReactNode;
+  columns?: 2 | 3;
+}) {
+  return (
+    <div className={columns === 2 ? "ade-cs-grid2" : "ade-ap-grid3"} role="radiogroup" aria-label={ariaLabel}>
+      {options.map((id) => {
+        const active = id === value;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            className="ade-ap-choice"
+            data-active={active}
+            onClick={() => onChange(id)}
+          >
+            <div className="ade-cs-art" aria-hidden>{art(id)}</div>
+            <div className="ade-ap-choice-foot">
+              <span>{label(id)}</span>
+              {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Gap between rows in each density, at a third of the real spacing. */
+const DENSITY_ART_GAP: Record<ChatTranscriptDensity, number> = { compact: 2, comfortable: 5, spacious: 9 };
+
+function DensityArt({ density }: { density: ChatTranscriptDensity }) {
+  return (
+    <div className="ade-cs-thread" style={{ gap: DENSITY_ART_GAP[density] }}>
+      <span className="ade-cs-bubble" />
+      <span className="ade-cs-line" style={{ width: "78%" }} />
+      <span className="ade-cs-line" style={{ width: "56%" }} />
+      <span className="ade-cs-bubble" style={{ width: "34%" }} />
+      <span className="ade-cs-line" style={{ width: "66%" }} />
+    </div>
+  );
+}
+
+const CORNER_ART_RADIUS: Record<ChatShellGeometry, number> = { soft: 14, default: 8, sharp: 2 };
+
+function CornersArt({ geometry }: { geometry: ChatShellGeometry }) {
+  return (
+    <div className="ade-cs-window" style={{ borderRadius: CORNER_ART_RADIUS[geometry] }}>
+      <span className="ade-cs-window-head" />
+      <span className="ade-cs-line" style={{ width: "60%" }} />
+      <span className="ade-cs-line" style={{ width: "42%" }} />
+    </div>
+  );
+}
+
+const TINT_ART_RUNTIMES = ["claude", "codex", "opencode"] as const;
+
+function TintArt({ tint }: { tint: ChatChromeTint }) {
+  return (
+    <div className="ade-cs-tints">
+      {TINT_ART_RUNTIMES.map((runtime) => {
+        const accent = PROVIDER_CHAT_ACCENTS[runtime] ?? "var(--color-accent)";
+        const colored = tint === "colored";
+        return (
+          <div
+            key={runtime}
+            className="ade-cs-tint"
+            style={colored ? {
+              background: `color-mix(in srgb, ${accent} 14%, transparent)`,
+              borderColor: `color-mix(in srgb, ${accent} 38%, transparent)`,
+            } : undefined}
+          >
+            <i style={{ background: colored ? accent : undefined }} />
+            <span className="ade-cs-line" style={{ width: "55%" }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CopyArt({ position }: { position: CodeBlockCopyButtonPosition }) {
+  return (
+    <div className="ade-cs-code" data-position={position}>
+      <span className="ade-cs-code-line" style={{ width: "64%" }} />
+      <span className="ade-cs-code-line" style={{ width: "48%", marginLeft: 8 }} />
+      <span className="ade-cs-code-line" style={{ width: "56%", marginLeft: 8 }} />
+      <span className="ade-cs-code-line" style={{ width: "30%" }} />
+      <span className="ade-cs-code-copy"><Copy size={9} weight="bold" /></span>
+    </div>
+  );
+}
+
+/* ── Preview runtime picker ─────────────────────────────────────────── */
+
+/** The runtime the preview draws, picked from a strip of runtime logos. */
 function PreviewProviderPicker({
   value,
   onChange,
@@ -239,66 +353,25 @@ function PreviewProviderPicker({
   value: PreviewProviderKey;
   onChange: (value: PreviewProviderKey) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const { name, Logo } = PREVIEW_PROVIDER_META[value];
-
-  // Close on a click outside the picker or on Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   return (
-    <div ref={wrapRef} style={{ position: "relative", display: "flex" }}>
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Preview runtime: ${name}`}
-        className="ade-settings-section-action"
-        onClick={() => setOpen((next) => !next)}
-      >
-        <Logo size={13} />
-        <span>{name}</span>
-        <CaretDown size={11} />
-      </button>
-      {open ? (
-        <div role="menu" className="ade-settings-menu" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: Z_LAYERS.popover }}>
-          {PREVIEW_PROVIDER_KEYS.map((key) => {
-            const meta = PREVIEW_PROVIDER_META[key];
-            const selected = key === value;
-            return (
-              <button
-                key={key}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                className="ade-settings-menu-item"
-                onClick={() => {
-                  onChange(key);
-                  setOpen(false);
-                }}
-              >
-                <meta.Logo size={14} />
-                <span style={{ flex: 1, fontFamily: SANS_FONT }}>{meta.name}</span>
-                {selected ? <Check size={12} weight="bold" style={{ color: COLORS.accent }} /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+    <div className="kit-seg ade-cs-runtimes" role="radiogroup" aria-label="Preview runtime">
+      {PREVIEW_PROVIDER_KEYS.map((key) => {
+        const meta = PREVIEW_PROVIDER_META[key];
+        const selected = key === value;
+        return (
+          <button
+            key={key}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            aria-label={`Preview runtime: ${meta.name}`}
+            title={meta.name}
+            onClick={() => onChange(key)}
+          >
+            <meta.Logo size={13} />
+          </button>
+        );
+      })}
     </div>
   );
 }

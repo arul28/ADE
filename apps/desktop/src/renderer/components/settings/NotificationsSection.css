@@ -1,0 +1,209 @@
+/*
+ * Settings › Notifications, in the modern settings look (settingsModern.css):
+ * an event × delivery matrix, sound cards with a preview, and grouped rows.
+ * Every colour is a theme token; colour marks status only.
+ */
+
+/* Two columns of sections under the matrix on a wide window. */
+.ade-nt-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 44px;
+}
+.ade-nt-col { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+@container modernpage (min-width: 900px) {
+  .ade-nt-columns { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 44px 32px; }
+}
+
+.ade-nt-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  font-size: 12.5px;
+  color: var(--kit-text-2);
+}
+.ade-nt-note[data-tone="error"] { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 25%, transparent); }
+.ade-nt-note + .ade-nt-note { margin-top: -32px; }
+
+.ade-nt-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--kit-text-3); }
+.ade-nt-summary b { font-family: var(--font-mono); font-weight: 500; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+
+/* ── event matrix ───────────────────────────────────────────────────── */
+
+.ade-nt-matrix-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+@container modernpage (min-width: 980px) {
+  .ade-nt-matrix-wrap { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
+
+.ade-nt-matrix {
+  --nt-col: 76px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  overflow: hidden;
+}
+.ade-nt-mhead,
+.ade-nt-mrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, var(--nt-col));
+  align-items: center;
+  column-gap: 0;
+}
+.ade-nt-mhead {
+  height: 38px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-nt-mhead .kit-eyebrow { text-align: center; letter-spacing: 0.16em; }
+.ade-nt-mhead .kit-eyebrow:first-child { text-align: left; color: var(--kit-text-2); letter-spacing: 0.22em; }
+.ade-nt-mrow {
+  min-height: 52px;
+  padding: 8px 8px 8px 14px;
+}
+.ade-nt-mrow + .ade-nt-mrow { border-top: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-nt-event { display: flex; align-items: center; gap: 11px; min-width: 0; padding-right: 8px; }
+.ade-nt-event-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--kit-text-2);
+}
+.ade-nt-event-icon[data-tone="ok"] { color: var(--kit-ok); background: color-mix(in srgb, var(--kit-ok) 12%, transparent); }
+.ade-nt-event-icon[data-tone="warn"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 12%, transparent); }
+.ade-nt-event-icon[data-tone="crit"] { color: var(--kit-crit); background: color-mix(in srgb, var(--kit-crit) 12%, transparent); }
+.ade-nt-event-copy { min-width: 0; }
+.ade-nt-event-title { font-size: 13px; font-weight: 500; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-nt-event-hint { margin-top: 1px; font-size: 11.5px; line-height: 1.4; color: var(--color-muted-fg); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* The three cells of one row are one radio group. */
+.ade-nt-cells { display: contents; }
+.ade-nt-cell {
+  justify-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+.ade-nt-cell:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-nt-cell:disabled { cursor: not-allowed; opacity: 0.5; }
+.ade-nt-cell:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 0; }
+.ade-nt-mark {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-fg) 22%, transparent);
+  transition: box-shadow 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+.ade-nt-cell:hover:not(:disabled) .ade-nt-mark { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-fg) 45%, transparent); }
+.ade-nt-cell[aria-checked="true"] .ade-nt-mark {
+  box-shadow: inset 0 0 0 1.5px var(--color-fg);
+}
+.ade-nt-cell[aria-checked="true"] .ade-nt-mark::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  background: var(--color-fg);
+}
+/* Notify is the loud one: a solid accent disc. */
+.ade-nt-cell[data-level="notify"][aria-checked="true"] .ade-nt-mark { background: var(--color-accent); box-shadow: none; }
+.ade-nt-cell[data-level="notify"][aria-checked="true"] .ade-nt-mark::after { inset: 5px; background: var(--color-bg); }
+/* Off reads as off: a muted dash. */
+.ade-nt-cell[data-level="off"][aria-checked="true"] .ade-nt-mark { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-fg) 40%, transparent); }
+.ade-nt-cell[data-level="off"][aria-checked="true"] .ade-nt-mark::after { inset: 7px 4px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 55%, transparent); }
+
+.ade-nt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-nt-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.ade-nt-legend .ade-nt-cell { width: auto; height: auto; pointer-events: none; }
+
+@container modernpage (max-width: 520px) {
+  .ade-nt-matrix { --nt-col: 44px; }
+  .ade-nt-event-hint { display: none; }
+}
+
+/* ── sound cards ────────────────────────────────────────────────────── */
+
+.ade-nt-sounds {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+@container modernpage (max-width: 520px) {
+  .ade-nt-sounds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ade-nt-sound-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 58px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 38%, transparent);
+}
+.ade-ap-choice[data-active="true"] .ade-nt-sound-art { color: var(--color-fg); }
+.ade-nt-sound-art i { display: block; width: 3px; border-radius: 2px; background: currentColor; }
+.ade-nt-sound-off { width: 26px; height: 2px; border-radius: 2px; background: currentColor; opacity: 0.6; }
+.ade-ap-choice:hover .ade-nt-sound-art i { animation: ade-nt-wave 900ms ease-in-out infinite alternate; }
+.ade-ap-choice:hover .ade-nt-sound-art i:nth-child(2n) { animation-delay: -300ms; }
+.ade-ap-choice:hover .ade-nt-sound-art i:nth-child(3n) { animation-delay: -600ms; }
+@keyframes ade-nt-wave { from { transform: scaleY(0.55); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .ade-ap-choice:hover .ade-nt-sound-art i { animation: none; }
+}
+html[data-reduce-motion="true"] .ade-ap-choice:hover .ade-nt-sound-art i { animation: none; }
+
+.ade-nt-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ade-nt-preview:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 8%, transparent); }
+.ade-nt-preview:disabled { opacity: 0.45; cursor: not-allowed; }
+.ade-nt-preview:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* ── rows ───────────────────────────────────────────────────────────── */
+
+.ade-nt-quiet { display: inline-flex; align-items: center; gap: 6px; }
+.ade-nt-quiet span { font-size: 12px; color: var(--kit-text-3); }
+.ade-nt-machine { display: inline-flex; align-items: center; gap: 7px; }
+.ade-nt-machine-name { display: inline-flex; align-items: center; gap: 8px; }
+.ade-nt-job { font-family: var(--font-mono); font-size: 11px; }
+.ade-nt-empty { font-size: 12.5px; color: var(--kit-text-3); }

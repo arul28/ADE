@@ -8,49 +8,42 @@ import {
   scoreActivityDays,
   trimLeadingInactiveDays,
 } from "./activityIntensity";
-import { USAGE_TEXT } from "./usageDesign";
-import { cn } from "../ui/cn";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 const HEATMAP_GAP = 3;
 const HEATMAP_MIN_CELL = 6;
 
 /**
- * The intensity ramp, as light/dark pairs in the same shape `providerColors.ts`
- * uses — the one place in this module allowed to name colours, because a
- * sequential scale is a scale, not a theme token.
+ * The intensity ramp: one warm hue at four strengths, as a light/dark pair in
+ * the same shape `providerColors.ts` uses — the one place in this module
+ * allowed to name a colour, because a sequential scale is a scale, not a theme
+ * token.
  *
- * Why pairs and not one hue at five opacities: an opacity ramp of a single hue
- * (what this was) is only a lightness ramp, and a lightness ramp against a card
- * of nearly the same lightness reads as five greys — a busy day looked like a
- * slightly darker quiet day. This ramp moves along two channels at once: hue
- * turns cool → warm, and contrast against the card rises at every step. Either
- * channel alone is enough to order the levels, so the scale still reads in
- * greyscale, with colour-vision deficiency, and on a forced-contrast display.
- *
- * Contrast ratios against their own card (dark #1E1B2E / light #FFFFFF):
- *   dark  2.0 → 3.4 → 4.7 → 7.9      light 1.6 → 2.6 → 3.7 → 6.0
- * Monotonic in both themes, which is why the top step is a bright orange on
- * dark and a deep brick on light: "hot" has to mean luminous on a dark card and
- * dense on a white one. Saturation climbs with the level too, so the low half
- * stays near-neutral and recedes — this module sits above the composer and must
- * not compete with it, and only the busy days should carry colour.
+ * One hue reads as a calm Less → More scale; the earlier cool → warm ramp
+ * (slate, teal, ember, orange) made a quiet card look busy. The steps are far
+ * enough apart (22 / 44 / 70 / 100 %) that each one still has its own
+ * contrast against the card, and empty days stay a neutral foreground tint, so
+ * the scale reads in greyscale and with colour-vision deficiency too.
  *
  * Nothing here borrows `--color-accent`: it is violet in dark and green in
- * light, so a ramp built on it would swap hue families between themes and land
- * on exactly the generic violet this product avoids.
+ * light, so a ramp built on it would swap hue families between themes.
  */
 type RampPair = { light: string; dark: string };
 
+const HEATMAP_HUE: RampPair = { light: "#C2410C", dark: "#FB923C" };
+
+function rampStep(percent: number): RampPair {
+  return {
+    light: `color-mix(in srgb, ${HEATMAP_HUE.light} ${percent}%, transparent)`,
+    dark: `color-mix(in srgb, ${HEATMAP_HUE.dark} ${percent}%, transparent)`,
+  };
+}
+
 const HEATMAP_RAMP: Record<Exclude<ActivityLevel, 0>, RampPair> = {
-  // desaturated slate — quiet, but unmistakably "something happened"
-  1: { light: "#BCCEDA", dark: "#3A4E63" },
-  // teal — the midpoint, still cool
-  2: { light: "#79ABA5", dark: "#2F7A80" },
-  // ember — the turn to warm
-  3: { light: "#C96C1E", dark: "#DE6039" },
-  // the top quartile, and the only tone allowed to shout
-  4: { light: "#B23A20", dark: "#FF9A3D" },
+  1: rampStep(24),
+  2: rampStep(46),
+  3: rampStep(72),
+  4: rampStep(100),
 };
 
 /** Empty day: structure, not damage — a visible tile, not a hole in the card. */
@@ -82,7 +75,10 @@ export function computeHeatmapLayout({
   availableWidth,
   leading = 0,
   trailing = 0,
+  gap = HEATMAP_GAP,
 }: {
+  /** Gutter between cells; the compact strip uses a tighter one. */
+  gap?: number;
   cellCount: number;
   maxCell: number;
   availableWidth: number;
@@ -97,19 +93,19 @@ export function computeHeatmapLayout({
   const pad = rows === 1 ? { leading: 0, trailing: 0 } : { leading, trailing };
   const slots = cellCount + pad.leading + pad.trailing;
   const cols = Math.max(1, Math.ceil(slots / rows));
-  const spanOf = (columns: number, cell: number) => columns * cell + (columns - 1) * HEATMAP_GAP;
+  const spanOf = (columns: number, cell: number) => columns * cell + (columns - 1) * gap;
 
   if (availableWidth <= 0) {
     return { rows, cols, cell: maxCell, width: spanOf(cols, maxCell), visible: cellCount };
   }
 
-  const fitted = Math.floor((availableWidth - (cols - 1) * HEATMAP_GAP) / cols);
+  const fitted = Math.floor((availableWidth - (cols - 1) * gap) / cols);
   const cell = Math.max(HEATMAP_MIN_CELL, Math.min(maxCell, fitted));
   if (spanOf(cols, cell) <= availableWidth) {
     return { rows, cols, cell, width: spanOf(cols, cell), visible: cellCount };
   }
 
-  const visibleCols = Math.max(1, Math.floor((availableWidth + HEATMAP_GAP) / (cell + HEATMAP_GAP)));
+  const visibleCols = Math.max(1, Math.floor((availableWidth + gap) / (cell + gap)));
   // Dropping whole weeks from the front is what keeps the surviving tail on its
   // real weekday rows: subtracting the trailing pad makes the kept run end
   // exactly where it does now and start on the first row of a column.
@@ -253,14 +249,24 @@ type HeatmapTooltip = {
 /** "Less → More" key, so the ramp explains itself instead of being decoded. */
 function RampKey({ styles }: { styles: Record<ActivityLevel, React.CSSProperties> }) {
   return (
-    <div className={cn("flex items-center gap-1 text-muted-fg", USAGE_TEXT.micro)} aria-hidden="true">
+    <div className="usage-ramp-key" aria-hidden="true">
       <span>Less</span>
-      {([0, 1, 2, 3, 4] as const).map((level) => (
-        <span key={level} className="h-2 w-2 rounded-[2px]" style={{ background: styles[level].background }} />
-      ))}
+      <div>
+        {([0, 1, 2, 3, 4] as const).map((level) => (
+          <i key={level} style={{ background: styles[level].background }} />
+        ))}
+      </div>
       <span>More</span>
     </div>
   );
+}
+
+/** The ramp key on its own, for a host that places it elsewhere (a footer). */
+export function HeatmapRampKey() {
+  const theme = useAppStore((state) => state.theme);
+  const contrast = usePrefersMoreContrast();
+  const levelStyles = useLevelStyles(theme, contrast, true);
+  return <RampKey styles={levelStyles.cell} />;
 }
 
 export function ActivityHeatmap({
@@ -268,7 +274,12 @@ export function ActivityHeatmap({
   layout,
   reduced,
   tooltip,
+  showKey = true,
+  gap = HEATMAP_GAP,
 }: {
+  showKey?: boolean;
+  /** Must match the gap the layout was computed with. */
+  gap?: number;
   cells: HeatmapCell[];
   layout: HeatmapLayout;
   reduced: boolean;
@@ -286,13 +297,13 @@ export function ActivityHeatmap({
   const rowStart = rows === 7 && shown[0] ? weekdayOfDayKey(shown[0].point.date) + 1 : 1;
 
   return (
-    <div className="flex w-full flex-col items-center gap-1.5">
+    <div className="flex w-full flex-col items-center gap-2">
       <div
         className="grid"
         style={{
-          gap: HEATMAP_GAP,
+          gap,
           width: layout.width,
-          height: rows * cell + (rows - 1) * HEATMAP_GAP,
+          height: rows * cell + (rows - 1) * gap,
           gridAutoFlow: "column",
           gridTemplateRows: `repeat(${rows}, ${cell}px)`,
           gridAutoColumns: `${cell}px`,
@@ -319,9 +330,11 @@ export function ActivityHeatmap({
           );
         })}
       </div>
-      <div className="flex items-center justify-end" style={{ width: layout.width || undefined }}>
-        <RampKey styles={levelStyles.cell} />
-      </div>
+      {showKey ? (
+        <div className="flex items-center justify-end" style={{ width: layout.width || undefined }}>
+          <RampKey styles={levelStyles.cell} />
+        </div>
+      ) : null}
     </div>
   );
 }

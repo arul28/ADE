@@ -7,7 +7,8 @@ import type {
 } from "../../../shared/types";
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
+import { ModernSection } from "../settings/primitives/SettingsModern";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import {
   deriveGithubAccountAuthState,
   deriveGithubRepoConnectionState,
@@ -17,7 +18,6 @@ import {
   githubRepoIssueCopy,
   isGithubRateLimitMessage,
   isGithubAppUserAuthSupported,
-  isGithubRealtimeHealthy,
   isGithubRepoAccessPending,
   type GithubAccountAuthState,
   type GithubAccountAxisTone,
@@ -265,7 +265,6 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   const repoState = deriveGithubRepoConnectionState(status, accountState);
   const appAuthorized = accountState === "valid";
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
-  const healthy = isGithubRealtimeHealthy(accountState, repoState);
   // The account axis is "checking" until the account read lands, and nothing
   // else decides that. `loading` belongs to the REPO status beside it, and
   // gating on it reported an unread account as `missing` — an offer to
@@ -273,8 +272,12 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   // status settled first.
   const accountChecking = !appAuthLoaded;
 
-  const secondaryBtnStyle = outlineButton(compact ? compactSecondaryButtonStyle : undefined);
-  const primaryBtnStyle = primaryButton(compact ? compactPrimaryButtonStyle : undefined);
+  // Settings draws its buttons with the modern settings classes; onboarding
+  // keeps the compact inline styles it was designed with.
+  const secondaryBtnStyle = compact ? outlineButton(compactSecondaryButtonStyle) : undefined;
+  const primaryBtnStyle = compact ? primaryButton(compactPrimaryButtonStyle) : undefined;
+  const secondaryBtnProps = compact ? {} : { className: "ade-modern-btn" };
+  const primaryBtnProps = compact ? {} : { className: "ade-modern-btn", "data-tone": "primary" };
 
   const authBusy = authLoading || Boolean(deviceSession);
   const account = describeGithubAccountAxis(accountChecking ? "checking" : accountState, appAuth);
@@ -285,6 +288,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     <button
       type="button"
       style={account.cta === "authorize" ? primaryBtnStyle : secondaryBtnStyle}
+      {...(account.cta === "authorize" ? primaryBtnProps : secondaryBtnProps)}
       onClick={() => void startAppAuthorization()}
       disabled={authBusy}
     >
@@ -324,6 +328,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         <button
           type="button"
           style={secondaryBtnStyle}
+          {...secondaryBtnProps}
           onClick={() => void disconnectAppAuthorization()}
           disabled={disconnecting}
         >
@@ -341,6 +346,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     <button
       type="button"
       style={primaryStyle ? primaryBtnStyle : secondaryBtnStyle}
+      {...(primaryStyle ? primaryBtnProps : secondaryBtnProps)}
       onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
       disabled={loading}
     >
@@ -349,13 +355,13 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     </button>
   );
   const installButton = (
-    <button type="button" style={primaryBtnStyle} onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}>
+    <button type="button" style={primaryBtnStyle} {...primaryBtnProps} onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}>
       <ArrowSquareOut size={12} weight="bold" />
       Install
     </button>
   );
   const manageButton = (
-    <button type="button" style={secondaryBtnStyle} onClick={() => openExternalUrl(status?.manageUrl ?? GITHUB_APP_INSTALLATIONS_URL)}>
+    <button type="button" style={secondaryBtnStyle} {...secondaryBtnProps} onClick={() => openExternalUrl(status?.manageUrl ?? GITHUB_APP_INSTALLATIONS_URL)}>
       Manage
     </button>
   );
@@ -387,103 +393,110 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   // `.length` would throw.
   const showWebhookEvents = repoState === "connected" && (status?.webhookEvents?.length ?? 0) > 0;
 
+  const blocks = (
+  <div style={compact ? blocksWrapStyle(compact) : undefined} className={compact ? undefined : "ade-modern-rows"}>
+    <section style={axisBlockStyle}>
+      <div style={axisTopRowStyle}>
+        <span style={axisHeadingStyle}>Account · ADE for GitHub</span>
+        {renderPill(accountPill(account.tone, account.label), !compact)}
+      </div>
+      <div style={axisBodyRowStyle}>
+        <p style={axisSubtextStyle}>{account.subtext}</p>
+        {!accountChecking && (accountCta || disconnectControl) ? (
+          <div style={axisActionsStyle}>
+            {disconnectControl}
+            {accountCta}
+          </div>
+        ) : null}
+      </div>
+      {account.note ? <p style={authMessageStyle}>{account.note}</p> : null}
+      {disconnectArmed ? (
+        <p style={authMessageStyle}>
+          Disconnecting removes ADE's GitHub authorization on this machine. Real-time pull request updates stop until you authorize again.
+        </p>
+      ) : null}
+
+      {deviceSession ? (
+        <div style={deviceAuthBlockStyle}>
+          <p style={deviceInstructionStyle}>
+            Enter this code at{" "}
+            <button type="button" style={deviceLinkButtonStyle} onClick={() => openExternalUrl(deviceSession.verificationUri)}>
+              github.com/login/device
+            </button>
+          </p>
+          <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
+            <span style={deviceLabelStyle}>GitHub code</span>
+            <span style={deviceValueStyle}>{deviceSession.userCode}</span>
+            <span style={deviceCopyIconStyle} aria-hidden="true">
+              {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
+            </span>
+          </button>
+          {deviceMessage ? null : <p style={authMessageStyle}>Waiting for GitHub authorization…</p>}
+        </div>
+      ) : null}
+      {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+      {accountState === "missing" && !deviceSession && !accountChecking ? (
+        <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p>
+      ) : null}
+    </section>
+
+    {compact ? <div style={axisDividerStyle} /> : null}
+
+    <section style={axisBlockStyle}>
+      <div style={axisTopRowStyle}>
+        <span style={axisHeadingStyle}>{repoLabel ? `This repo · ${repoLabel}` : "This repo"}</span>
+        {renderPill(repo.pill, !compact)}
+      </div>
+      <div style={axisBodyRowStyle}>
+        <p style={axisSubtextStyle}>{repo.subtext}</p>
+        <div style={axisActionsStyle}>
+          {repoActions.map((action, index) => (
+            <span key={index} style={{ display: "inline-flex" }}>
+              {action}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {showWebhookEvents ? (
+        <div style={eventChipRowStyle}>
+          {status!.webhookEvents.map((event) => (
+            <span key={event} style={eventChipStyle}>
+              {event}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  </div>
+  );
+
+  // In Settings the panel is a section of the GitHub page: the heading comes
+  // from the section and the two axes are rows of one panel.
+  if (!compact) {
+    return (
+      <ModernSection
+        group="GitHub"
+        title="ADE for GitHub"
+        hint="Webhook-backed, real-time pull request updates — independent of your account token."
+      >
+        {blocks}
+      </ModernSection>
+    );
+  }
+
   return (
-    <div
-      style={
-        compact
-          ? onboardingRootStyle
-          : cardStyle({
-              borderColor: healthy
-                ? "color-mix(in srgb, var(--color-success) 26%, transparent)"
-                : "color-mix(in srgb, var(--color-border) 88%, transparent)",
-            })
-      }
-    >
-      <div style={compact ? compactHeaderStyle : headerStyle}>
+    <div style={onboardingRootStyle}>
+      <div style={compactHeaderStyle}>
         <div style={iconStyle(compact)}>
-          <WebhooksLogo size={compact ? 15 : 18} weight="duotone" />
+          <WebhooksLogo size={15} weight="duotone" />
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <span style={titleStyle}>ADE for GitHub</span>
           <p style={descriptionStyle}>Webhook-backed, real-time pull request updates — independent of your account token.</p>
         </div>
       </div>
-
-      <div style={blocksWrapStyle(compact)}>
-        <section style={axisBlockStyle}>
-          <div style={axisTopRowStyle}>
-            <span style={axisHeadingStyle}>Account · ADE for GitHub</span>
-            {renderPill(accountPill(account.tone, account.label))}
-          </div>
-          <div style={axisBodyRowStyle}>
-            <p style={axisSubtextStyle}>{account.subtext}</p>
-            {!accountChecking && (accountCta || disconnectControl) ? (
-              <div style={axisActionsStyle}>
-                {disconnectControl}
-                {accountCta}
-              </div>
-            ) : null}
-          </div>
-          {account.note ? <p style={authMessageStyle}>{account.note}</p> : null}
-          {disconnectArmed ? (
-            <p style={authMessageStyle}>
-              Disconnecting removes ADE's GitHub authorization on this machine. Real-time pull request updates stop until you authorize again.
-            </p>
-          ) : null}
-
-          {deviceSession ? (
-            <div style={deviceAuthBlockStyle}>
-              <p style={deviceInstructionStyle}>
-                Enter this code at{" "}
-                <button type="button" style={deviceLinkButtonStyle} onClick={() => openExternalUrl(deviceSession.verificationUri)}>
-                  github.com/login/device
-                </button>
-              </p>
-              <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
-                <span style={deviceLabelStyle}>GitHub code</span>
-                <span style={deviceValueStyle}>{deviceSession.userCode}</span>
-                <span style={deviceCopyIconStyle} aria-hidden="true">
-                  {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
-                </span>
-              </button>
-              {deviceMessage ? null : <p style={authMessageStyle}>Waiting for GitHub authorization…</p>}
-            </div>
-          ) : null}
-          {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
-          {accountState === "missing" && !deviceSession && !accountChecking ? (
-            <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p>
-          ) : null}
-        </section>
-
-        <div style={axisDividerStyle} />
-
-        <section style={axisBlockStyle}>
-          <div style={axisTopRowStyle}>
-            <span style={axisHeadingStyle}>{repoLabel ? `This repo · ${repoLabel}` : "This repo"}</span>
-            {renderPill(repo.pill)}
-          </div>
-          <div style={axisBodyRowStyle}>
-            <p style={axisSubtextStyle}>{repo.subtext}</p>
-            <div style={axisActionsStyle}>
-              {repoActions.map((action, index) => (
-                <span key={index} style={{ display: "inline-flex" }}>
-                  {action}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {showWebhookEvents ? (
-            <div style={eventChipRowStyle}>
-              {status!.webhookEvents.map((event) => (
-                <span key={event} style={eventChipStyle}>
-                  {event}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      </div>
+      {blocks}
     </div>
   );
 }
@@ -499,7 +512,16 @@ function sleepMs(ms: number): Promise<void> {
 type PillTone = "ok" | "warn" | "pending" | "neutral";
 type PillSpec = { tone: PillTone; color: string; label: string };
 
-function renderPill({ tone, color, label }: PillSpec): ReactNode {
+function renderPill({ tone, color, label }: PillSpec, modern = false): ReactNode {
+  // Settings: a status tag in the shared surface kit, coloured only when the
+  // state asks something of the user (warn) or is healthy (ok).
+  if (modern) {
+    return (
+      <span className="kit-tag" data-tone={tone === "ok" ? "ok" : tone === "warn" ? "warn" : undefined} style={{ flexShrink: 0, whiteSpace: "nowrap" }}>
+        {label}
+      </span>
+    );
+  }
   const icon =
     tone === "ok" ? (
       <CheckCircle size={11} weight="fill" />

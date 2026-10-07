@@ -7,8 +7,8 @@ import type {
   BudgetCapType,
   BudgetPreset,
 } from "../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton, recessedStyle } from "../lanes/laneDesignTokens";
-import { SettingsCard, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
+import { COLORS, MONO_FONT, SANS_FONT, recessedStyle } from "../lanes/laneDesignTokens";
+import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 /**
@@ -115,11 +115,9 @@ export function BudgetCapEditor({
   if (!config && !onSave) {
     return (
       <div className={className}>
-        <SettingsCard
-          anchor="budget-cap"
-          title="Usage Guardrails"
-          description="No budget configuration loaded."
-        />
+        <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint="No budget configuration loaded.">
+          {null}
+        </ModernSection>
       </div>
     );
   }
@@ -153,29 +151,32 @@ export function BudgetCapEditor({
 
   return (
     <div className={className}>
-      <SettingsCard
+      <ModernSection
+        group="Budget"
         anchor="budget-cap"
-        title="Usage Guardrails"
-        description={
-          summaryChips.length > 0 ? summaryChips.join(" · ") : "No budget caps configured yet."
-        }
-        control={
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            {dirty ? (
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.warning }}>Unsaved</span>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setExpanded((value) => !value)}
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
-            >
-              {expanded ? "Collapse" : `${caps.length} cap${caps.length !== 1 ? "s" : ""}`}
-            </button>
-          </span>
-        }
+        title="Spend cap"
+        hint="Warn, pause or block agents before they use up a subscription window."
       >
+        <ModernRows>
+        <ModernRow
+          title="Usage guardrails"
+          hint={summaryChips.length > 0 ? summaryChips.join(" · ") : "No budget caps configured yet."}
+          control={(
+            <>
+              {dirty ? <span className="kit-tag" data-tone="warn">Unsaved</span> : null}
+              <button
+                type="button"
+                onClick={() => setExpanded((value) => !value)}
+                className="ade-modern-btn"
+                aria-expanded={expanded}
+              >
+                {expanded ? "Collapse" : `${caps.length} cap${caps.length !== 1 ? "s" : ""}`}
+              </button>
+            </>
+          )}
+        >
         {expanded ? (
-          <div style={{ display: "grid", gap: 14 }}>
+          <div style={{ display: "grid", gap: 14, marginTop: 14, paddingTop: 14, borderTop: "1px solid color-mix(in srgb, var(--color-fg) 7%, transparent)" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
               <Field label="Preset">
                 <SettingsSelect
@@ -209,7 +210,7 @@ export function BudgetCapEditor({
                 <span style={fieldLabelStyle}>Cap rules</span>
                 <button
                   type="button"
-                  style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
+                  className="ade-modern-btn"
                   onClick={() => {
                     setDraft((current) => ({
                       ...current,
@@ -292,7 +293,7 @@ export function BudgetCapEditor({
                     </span>
                     <button
                       type="button"
-                      style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
+                      className="ade-modern-btn"
                       onClick={() => {
                         setDraft((current) => ({ ...current, caps: current.caps.filter((entry) => entry.rowId !== cap.rowId) }));
                         setDirty(true);
@@ -324,7 +325,7 @@ export function BudgetCapEditor({
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
               <button
                 type="button"
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
+                className="ade-modern-btn"
                 onClick={() => {
                   setDraft(toDraft(config));
                   setDirty(false);
@@ -335,7 +336,8 @@ export function BudgetCapEditor({
               </button>
               <button
                 type="button"
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
+                className="ade-modern-btn"
+                data-tone="primary"
                 onClick={() => void handleSave()}
                 disabled={!dirty || saving || !onSave}
               >
@@ -344,7 +346,9 @@ export function BudgetCapEditor({
             </div>
           </div>
         ) : null}
-      </SettingsCard>
+        </ModernRow>
+        </ModernRows>
+      </ModernSection>
     </div>
   );
 }

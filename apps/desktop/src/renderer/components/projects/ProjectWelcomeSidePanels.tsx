@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
-import { ArrowRight } from "@phosphor-icons/react";
+import { ArrowRight, type Icon } from "@phosphor-icons/react";
 import {
   attentionDestinationDeepLink,
   type AiProviderConnections,
@@ -14,7 +13,6 @@ import { formatBytes } from "../../lib/format";
 import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { requestUsagePopover } from "../../lib/usagePopover";
-import { useAppStore } from "../../state/appStore";
 import {
   acknowledgeActivityItem,
   useActivityStore,
@@ -26,47 +24,49 @@ import {
 } from "../activity/activityPresentation";
 import { ActivityStateGlyphMark } from "../activity/ActivityStateGlyphMark";
 import { deriveLaneMachineOptions } from "../lanes/laneMachines";
-import { providerColor } from "../usage/providerColors";
-import { ProviderMark } from "../usage/UsageAccountRow";
-import { usagePressureColor } from "../usage/usageDesign";
 import {
   buildAccountRows,
   poolAccounts,
   quotaPopoverProviders,
 } from "../usage/usageLimitModel";
 import { useUsageSnapshot } from "../usage/useUsageSnapshot";
-import { shortWindowLabel, windowLabel } from "../usage/usageWindowFormat";
+import { windowLabel } from "../usage/usageWindowFormat";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
 import "../activity/Activity.css";
 
 // ---------------------------------------------------------------------------
-// The welcome page's side column: chats that are still running, usage limits,
-// and machines. Each section reads state the renderer already holds — the
-// account Activity stream AppShell keeps in sync, the usage snapshot
-// subscription, and the remote-runtime connection snapshot — and adds no
-// polling. Sections are compact on purpose; each links to its full surface.
+// The welcome page's data: chats that are still running, usage limits and
+// machines. Each reads state the renderer already holds — the account Activity
+// stream AppShell keeps in sync, the usage snapshot subscription, and the
+// remote-runtime connection snapshot — and adds no polling. The home screen's
+// cards and tiles (ProjectWelcomeHome.tsx) render them.
 // ---------------------------------------------------------------------------
 
-type SideSectionId = "running" | "usage" | "machines";
-
-function SectionHead({
+/** The one card header: icon · label · count ………… action. */
+export function WelcomeCardHead({
+  icon: IconGlyph,
   title,
   count,
   action,
+  children,
 }: {
+  icon: Icon;
   title: string;
   count?: number | null;
   action?: { label: string; onClick: () => void } | null;
+  children?: ReactNode;
 }) {
   return (
-    <div className="ade-welcome-section-head">
-      <span className="ade-welcome-section-title">{title}</span>
-      {count != null ? <span className="ade-welcome-section-count">{count}</span> : null}
+    <div className="kit-card-head">
+      <IconGlyph size={14} weight="regular" aria-hidden />
+      <span className="ade-welcome-head-title">{title}</span>
+      {count != null ? <span className="kit-card-head-count">{count}</span> : null}
+      {children}
       {action ? (
-        <button type="button" className="ade-welcome-link" onClick={action.onClick}>
+        <button type="button" className="kit-card-head-action" onClick={action.onClick}>
           {action.label}
-          <ArrowRight size={11} weight="bold" />
+          <ArrowRight size={11} weight="bold" aria-hidden />
         </button>
       ) : null}
     </div>
@@ -83,7 +83,7 @@ function navigationErrorMessage(error: unknown): string {
 }
 
 /** Agent chats that are working or waiting on you, on every machine. */
-function useRunningChats(): AttentionItem[] {
+export function useRunningChats(): AttentionItem[] {
   const itemsById = useActivityStore((state) => state.itemsById);
   return useMemo(
     () => activitySections(itemsById)
@@ -93,30 +93,34 @@ function useRunningChats(): AttentionItem[] {
   );
 }
 
-function RunningList({ items }: { items: AttentionItem[] }) {
+/** Opens an Activity item the way the Activity pane does; resolves to an error message or null. */
+export async function openAttentionItem(item: AttentionItem): Promise<string | null> {
+  try {
+    const bridge = window.ade?.attention;
+    if (bridge?.openItem) await bridge.openItem(item);
+    else openAdeDeeplink(attentionDestinationDeepLink(item.destination, item));
+  } catch (openError) {
+    return navigationErrorMessage(openError);
+  }
+  await acknowledgeActivityItem(item.id, "seen").catch(() => {});
+  return null;
+}
+
+export function RunningList({ items }: { items: AttentionItem[] }) {
   const availability = useActivityStore((state) => state.availability);
   const [error, setError] = useState<string | null>(null);
 
-  // Same path the Activity pane uses to open an item.
   const openItem = useCallback(async (item: AttentionItem) => {
     setError(null);
-    try {
-      const bridge = window.ade?.attention;
-      if (bridge?.openItem) await bridge.openItem(item);
-      else openAdeDeeplink(attentionDestinationDeepLink(item.destination, item));
-    } catch (openError) {
-      setError(navigationErrorMessage(openError));
-      return;
-    }
-    await acknowledgeActivityItem(item.id, "seen").catch(() => {});
+    setError(await openAttentionItem(item));
   }, []);
 
   if (items.length === 0) {
     return (
       <div className="ade-welcome-empty">
         {availability?.state === "signed_out"
-          ? "No chats running on this machine. Sign in to include your other machines."
-          : "No chats running. Chats that are working or waiting on you show up here, from every machine."}
+          ? "Nothing running on this machine. Sign in to include your other machines."
+          : "Nothing running right now."}
       </div>
     );
   }
@@ -132,7 +136,7 @@ function RunningList({ items }: { items: AttentionItem[] }) {
             key={item.id}
             type="button"
             role="listitem"
-            className="ade-welcome-item"
+            className="kit-row ade-welcome-item"
             onClick={() => void openItem(item)}
             title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
           >
@@ -172,13 +176,20 @@ const PROVIDER_LABEL: Record<UsageProvider, string> = {
   kimi: "Kimi",
 };
 
-type UsageLine = {
+export type UsageLine = {
   key: string;
-  provider: UsageProvider;
-  name: string;
+  /** The account's short name, or null when the provider has one account. */
+  label: string | null;
+  providerLabel: string;
+  /** The tightest main window (5h / weekly / monthly): least headroom wins. */
   percentLeft: number;
-  windowShort: string;
+  resetsInMs: number;
   title: string;
+};
+
+export type UsageGroup = {
+  provider: UsageProvider;
+  lines: UsageLine[];
 };
 
 /**
@@ -200,12 +211,42 @@ function windowRank(window: { windowType: UsageWindowType; windowDurationMs?: nu
 }
 
 /**
- * One line per account: its longest main window (monthly, else weekly, else
- * 5h), as a small bar — the quota that says how much room is left overall. The full
- * band — every window, pace, resets — is the top-bar popover "Details" opens.
- * Same subscription, provider filter and account pooling as that band.
+ * The name that tells two logins on one provider apart: the account's own
+ * label when it has a real one ("Work"), else the email's local part.
+ * "Default" is what most hosts send, so it never counts as a name.
  */
-function useUsageLines(): { lines: UsageLine[]; bridgeMissing: boolean; loaded: boolean } {
+function accountShortLabel(account: { label?: string; email?: string } | null): string | null {
+  const label = account?.label?.trim();
+  if (label && label.toLowerCase() !== "default") return label;
+  const local = account?.email?.split("@")[0]?.trim();
+  return local || label || null;
+}
+
+/** "3d" / "4h" / "58m" — the reset, as short as a meter row allows. */
+function compactCountdown(ms: number): string {
+  if (ms <= 0) return "now";
+  const days = Math.floor(ms / 86_400_000);
+  if (days > 0) return `${days}d`;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours > 0) return `${hours}h`;
+  return `${Math.max(1, Math.floor(ms / 60_000))}m`;
+}
+
+/** Same thresholds as the top-bar usage popover: warn at 20% left, crit at 5%. */
+export function usageLevel(percentLeft: number): "warn" | "crit" | undefined {
+  if (percentLeft <= 5) return "crit";
+  if (percentLeft <= 20) return "warn";
+  return undefined;
+}
+
+/**
+ * One group per provider, one line per account: its longest main window
+ * (monthly, else weekly, else 5h) — the quota that says how much room is left
+ * overall. The full band — every window, pace, resets — is the top-bar popover
+ * "Details" opens. Same subscription, provider filter and account pooling as
+ * that band.
+ */
+export function useUsageGroups(): { groups: UsageGroup[]; bridgeMissing: boolean; loaded: boolean } {
   const usage = useUsageSnapshot({ readSnapshot: true, noteDemand: true });
   const { snapshot, bridgeMissing, bindingRevision } = usage;
   const [connections, setConnections] = useState<AiProviderConnections | null>(null);
@@ -234,7 +275,7 @@ function useUsageLines(): { lines: UsageLine[]; bridgeMissing: boolean; loaded: 
     };
   }, [bindingRevision]);
 
-  const lines = useMemo(() => {
+  const groups = useMemo(() => {
     if (!snapshot) return [];
     const providers = quotaPopoverProviders({
       connections,
@@ -242,94 +283,57 @@ function useUsageLines(): { lines: UsageLine[]; bridgeMissing: boolean; loaded: 
       statuses: snapshot.providerStatus,
     });
     const accounts = poolAccounts(snapshot.accounts);
-    const result: UsageLine[] = [];
+    const result: UsageGroup[] = [];
     for (const provider of providers) {
       const windows = snapshot.windows.filter((window) => window.provider === provider);
       const rows = buildAccountRows(provider, windows, accounts, nowMs);
+      const lines: UsageLine[] = [];
       for (const row of rows) {
-        const shown = row.cells.reduce<(typeof row.cells)[number] | null>(
-          (best, cell) => (!best || windowRank(cell.segment.window) > windowRank(best.segment.window) ? cell : best),
+        // The main windows (5h, weekly, monthly) when there are any; the side
+        // limits only stand in when a provider reports nothing else. Of those,
+        // the one with the least headroom is what the summary shows.
+        const main = row.cells.filter((cell) => windowRank(cell.segment.window) >= 10);
+        const candidates = main.length > 0 ? main : row.cells;
+        const shown = candidates.reduce<(typeof row.cells)[number] | null>(
+          (best, cell) => (!best || cell.segment.percentLeft < best.segment.percentLeft ? cell : best),
           null,
         );
-        // A provider with no reading yet (a login that has never polled, a
-        // host that could not be reached) says nothing useful in a summary.
+        // A login with no reading yet (never polled, host unreachable) says
+        // nothing useful in a summary.
         if (!shown) continue;
-        // The provider names the line; a second login on the same provider
-        // is told apart by its email (account labels are often "Default").
-        const accountName = row.account?.email?.trim() || row.account?.label?.trim() || null;
-        const name = rows.length > 1 && accountName
-          ? `${PROVIDER_LABEL[provider]} · ${accountName}`
-          : PROVIDER_LABEL[provider];
+        const label = accountShortLabel(row.account);
+        const who = row.account?.email?.trim() || label;
         const detail = row.cells
           .map((cell) => `${windowLabel(cell.segment.window)} ${Math.round(cell.segment.percentLeft)}% left`)
           .join(" · ");
-        result.push({
+        lines.push({
           key: row.key,
-          provider,
-          name,
+          label,
+          providerLabel: PROVIDER_LABEL[provider],
           percentLeft: shown.segment.percentLeft,
-          windowShort: shortWindowLabel(shown.segment.window),
-          title: `${name}${accountName && rows.length === 1 ? ` (${accountName})` : ""} — ${detail}`,
+          resetsInMs: shown.segment.resetsInMs,
+          title: `${PROVIDER_LABEL[provider]}${who ? ` · ${who}` : ""} — ${detail}`,
         });
       }
+      if (lines.length === 0) continue;
+      // One login names nothing; the provider row says it all.
+      if (lines.length === 1) lines[0] = { ...lines[0]!, label: null };
+      result.push({ provider, lines });
     }
     return result;
   }, [connections, nowMs, snapshot]);
 
-  return { lines, bridgeMissing, loaded: snapshot != null };
+  return { groups, bridgeMissing, loaded: snapshot != null };
 }
 
-function openUsageDetails(): void {
+export function openUsageDetails(): void {
   if (requestUsagePopover()) return;
   navigateToAppTarget({ kind: "settings", tab: "stats", anchor: "ade-usage" });
 }
 
-function UsageList({ lines, bridgeMissing, loaded }: ReturnType<typeof useUsageLines>) {
-  const theme = useAppStore((state) => state.theme);
-  if (bridgeMissing) {
-    return <div className="ade-welcome-empty">Usage isn’t available in this view.</div>;
-  }
-  if (lines.length === 0) {
-    return (
-      <div className="ade-welcome-empty">
-        {loaded
-          ? "No limits reported yet. Signed-in Claude Code or Codex CLI accounts show up here."
-          : "Reading usage…"}
-      </div>
-    );
-  }
-  return (
-    <div role="list">
-      {lines.map((line) => {
-        const left = line.percentLeft;
-        const color = usagePressureColor(100 - left, providerColor(line.provider, theme));
-        return (
-          <button
-            key={line.key}
-            type="button"
-            role="listitem"
-            className="ade-welcome-item"
-            title={line.title}
-            onClick={openUsageDetails}
-          >
-            <ProviderMark provider={line.provider} size={14} />
-            <span className="ade-welcome-usage-name">{line.name}</span>
-            <span className="ade-welcome-meter" aria-hidden>
-              <span style={{ width: `${left}%`, background: color }} />
-            </span>
-            <span className="ade-welcome-usage-value">
-              <strong>{Math.round(left)}%</strong> {line.windowShort}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── machines ───────────────────────────────────────────────────────
 
-type MachineRow = {
+export type MachineRow = {
   key: string;
   name: string;
   dot: "online" | "busy" | "available" | "offline";
@@ -370,7 +374,7 @@ function sortMachines(rows: MachineRow[]): MachineRow[] {
     || a.name.localeCompare(b.name));
 }
 
-function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | null): MachineRow[] {
+export function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | null): MachineRow[] {
   const connections = snapshot?.connections ?? [];
   if (connections.length === 0) return [];
   // Free disk only when the connection snapshot already carries it.
@@ -397,7 +401,7 @@ function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | null): M
   ];
 }
 
-function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow[] {
+export function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow[] {
   return sortMachines(machines
     .filter((machine) => !machine.rememberedOnly)
     .map((machine): MachineRow => {
@@ -420,171 +424,10 @@ function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow[] {
     }));
 }
 
-function openMachines(webMode: boolean): void {
+export function openMachines(webMode: boolean): void {
   if (webMode) {
     window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab: "machines" } }));
     return;
   }
   openConnectionsPanel("machines");
-}
-
-function MachineList({ rows, webMode }: { rows: MachineRow[]; webMode: boolean }) {
-  if (rows.length === 0) {
-    return (
-      <div className="ade-welcome-empty">
-        Only this machine. Connect another computer to open its projects and run chats on it from here.
-        <br />
-        <button type="button" className="ade-welcome-link" onClick={() => openMachines(webMode)}>
-          Connect a machine
-          <ArrowRight size={11} weight="bold" />
-        </button>
-      </div>
-    );
-  }
-  return (
-    <div role="list">
-      {rows.map((row) => (
-        <button
-          key={row.key}
-          type="button"
-          role="listitem"
-          className="ade-welcome-item"
-          onClick={() => openMachines(webMode)}
-          title={`${row.name} — ${row.detail}`}
-        >
-          <span aria-hidden className="ade-welcome-dot" data-state={row.dot} />
-          <span className="ade-welcome-item-text">
-            <span className="ade-welcome-item-title">{row.name}</span>
-            <span className="ade-welcome-item-sub">{row.detail}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ── the column ─────────────────────────────────────────────────────
-
-/**
- * Wide windows: one quiet plane with the sections stacked, running chats first
- * whenever there are any. Narrow windows: one tabbed strip, so the side info
- * never pushes the page into scrolling.
- */
-export function WelcomeSideColumn({
-  webMode,
-  remoteSnapshot,
-  webMachines,
-  narrow,
-}: {
-  webMode: boolean;
-  remoteSnapshot: RemoteRuntimeConnectionSnapshot | null;
-  webMachines: readonly WebMachineEntry[];
-  narrow: boolean;
-}) {
-  const navigate = useNavigate();
-  const running = useRunningChats();
-  const usage = useUsageLines();
-  const machines = useMemo(
-    () => (webMode ? webMachineRows(webMachines) : desktopMachineRows(remoteSnapshot)),
-    [remoteSnapshot, webMachines, webMode],
-  );
-
-  const sections: Record<SideSectionId, {
-    title: string;
-    count: number | null;
-    action: { label: string; onClick: () => void } | null;
-    body: ReactNode;
-  }> = {
-    running: {
-      title: "Still running",
-      count: running.length > 0 ? running.length : null,
-      action: running.length > 0 ? { label: "Activity", onClick: () => navigate("/activity") } : null,
-      body: <RunningList items={running} />,
-    },
-    usage: {
-      title: "Usage limits",
-      count: null,
-      action: usage.bridgeMissing ? null : { label: "Details", onClick: openUsageDetails },
-      body: <UsageList {...usage} />,
-    },
-    machines: {
-      title: "Machines",
-      count: machines.length > 0 ? machines.length : null,
-      action: machines.length > 0 ? { label: "Manage", onClick: () => openMachines(webMode) } : null,
-      body: <MachineList rows={machines} webMode={webMode} />,
-    },
-  };
-
-  const order: SideSectionId[] = ["running", "usage", "machines"];
-
-  const [tab, setTab] = useState<SideSectionId>(running.length > 0 ? "running" : "usage");
-  // Chats starting while the strip shows something else take the first tab.
-  const hasRunning = running.length > 0;
-  useEffect(() => {
-    if (hasRunning) setTab("running");
-  }, [hasRunning]);
-
-  if (narrow) {
-    const current = sections[tab];
-    return (
-      <aside className="ade-welcome-plane ade-welcome-side" data-quiet="true" aria-label="Status">
-        <div className="ade-welcome-tabs" role="tablist" aria-label="Status">
-          {order.map((id) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`ade-welcome-tab-${id}`}
-              aria-selected={tab === id}
-              aria-controls="ade-welcome-tabpanel"
-              className="ade-welcome-tab"
-              onClick={() => setTab(id)}
-            >
-              {sections[id].title}
-              {sections[id].count != null ? (
-                <span className="ade-welcome-section-count">{sections[id].count}</span>
-              ) : null}
-            </button>
-          ))}
-          {current.action ? (
-            <button type="button" className="ade-welcome-link" onClick={current.action.onClick}>
-              {current.action.label}
-              <ArrowRight size={11} weight="bold" />
-            </button>
-          ) : null}
-        </div>
-        <div
-          id="ade-welcome-tabpanel"
-          role="tabpanel"
-          aria-labelledby={`ade-welcome-tab-${tab}`}
-          className="ade-welcome-tabpanel"
-        >
-          {current.body}
-        </div>
-      </aside>
-    );
-  }
-
-  const renderSection = (id: SideSectionId, className = "ade-welcome-side-section") => (
-    <section key={id} className={className} aria-label={sections[id].title}>
-      <SectionHead
-        title={sections[id].title}
-        count={sections[id].count}
-        action={sections[id].action}
-      />
-      <div className="ade-welcome-side-body">{sections[id].body}</div>
-    </section>
-  );
-
-  // Live agent status leads; the two quieter summaries share the row below
-  // it, side by side, so neither is pushed out of view.
-  return (
-    <aside className="ade-welcome-plane ade-welcome-side" data-quiet="true" aria-label="Status">
-      {renderSection("running", "ade-welcome-side-section ade-welcome-side-running")}
-      <div className="ade-welcome-side-split">
-        {renderSection("usage", "ade-welcome-side-cell")}
-        {renderSection("machines", "ade-welcome-side-cell")}
-      </div>
-    </aside>
-  );
 }

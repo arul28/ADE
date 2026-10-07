@@ -3,10 +3,9 @@ import type {
   AiConfig,
   AgentChatScheduledWorkItem,
 } from "../../../shared/types";
-import { ArrowClockwise, Clock, PauseCircle } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { Clock } from "@phosphor-icons/react";
 import { showToast } from "../app/toast/toastStore";
-import { SettingsPanel, SettingsRow, SettingsSection, SettingsToggle } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -110,14 +109,12 @@ export function AiFeaturesSection() {
       : null;
 
   return (
-    <SettingsSection title="Scheduled work">
-      <SettingsPanel>
-        <SettingsRow
+    <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule, and what happens to chats after a restart.">
+      <ModernRows>
+        <ModernRow
           anchor="scheduled-work"
-          icon={<PauseCircle size={15} weight="duotone" />}
-          tone="amber"
           title="Pause all scheduled work"
-          description={unavailable ?? "Wakeups, cron tasks, and loops stay armed. Overdue work runs once on resume."}
+          hint={unavailable ?? "Wakeups, cron tasks, and loops stay armed. Overdue work runs once on resume."}
           control={
             <SettingsToggle
               label="Pause all scheduled work"
@@ -127,12 +124,10 @@ export function AiFeaturesSection() {
             />
           }
         />
-        <SettingsRow
+        <ModernRow
           anchor="continue-after-restart"
-          icon={<ArrowClockwise size={15} weight="duotone" />}
-          tone="blue"
           title="Continue chats after restarts"
-          description={loading ? "Loading…" : configLoadFailed ? "Unavailable until the configuration loads." : "When ADE restarts mid-response — a crash, a force quit, a reboot — the chat picks up where it stopped, and the agent is told which background jobs were stopped. Settled chats stay asleep."}
+          hint={loading ? "Loading…" : configLoadFailed ? "Unavailable until the configuration loads." : "When ADE restarts mid-response — a crash, a force quit, a reboot — the chat picks up where it stopped, and the agent is told which background jobs were stopped. Settled chats stay asleep."}
           control={
             <SettingsToggle
               label="Continue chats after restarts"
@@ -143,42 +138,43 @@ export function AiFeaturesSection() {
           }
         />
         {unavailable ? null : scheduledWorkError ? (
-          <SettingsRow
+          <ModernRow
             title="Scheduled work is unavailable"
-            description={<span style={{ color: COLORS.warning }}>{scheduledWorkError}</span>}
+            hint={<span style={{ color: "var(--color-warning)" }}>{scheduledWorkError}</span>}
           />
         ) : scheduledWork.length ? (
-          <div className="ade-settings-row-group">
-            {scheduledWork.map((item) => (
-              <SettingsRow
-                key={`${item.sessionId}:${item.id}`}
-                icon={<Clock size={15} weight="duotone" />}
-                tone="blue"
-                title={item.title}
-                description={
-                  <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>
-                    {item.kind} · {item.status}
-                    {item.nextRunAt ? ` · next ${new Date(item.nextRunAt).toLocaleString()}` : ""}
-                  </span>
-                }
-                control={
-                  <button
-                    type="button"
-                    className="ade-settings-section-action"
-                    style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 7 }}
-                    onClick={() => void handleCancelScheduledWork(item)}
-                    disabled={!item.cancellable}
-                  >
-                    Cancel
-                  </button>
-                }
-              />
-            ))}
-          </div>
+          scheduledWork.map((item) => (
+            <ModernRow
+              key={`${item.sessionId}:${item.id}`}
+              title={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <Clock size={14} style={{ color: "var(--kit-text-3)" }} />
+                  {item.title}
+                </span>
+              )}
+              hint={
+                <span className="kit-num" style={{ fontSize: 11 }}>
+                  {item.kind} · {item.status}
+                  {item.nextRunAt ? ` · next ${new Date(item.nextRunAt).toLocaleString()}` : ""}
+                </span>
+              }
+              control={
+                <button
+                  type="button"
+                  className="ade-settings-section-action"
+                  style={{ border: "1px solid color-mix(in srgb, var(--color-fg) 12%, transparent)", borderRadius: 7 }}
+                  onClick={() => void handleCancelScheduledWork(item)}
+                  disabled={!item.cancellable}
+                >
+                  Cancel
+                </button>
+              }
+            />
+          ))
         ) : (
-          <SettingsRow title="Nothing scheduled" description="Jobs agents schedule show up here." />
+          <ModernRow title="Nothing scheduled" hint="Jobs agents schedule show up here." />
         )}
-      </SettingsPanel>
-    </SettingsSection>
+      </ModernRows>
+    </ModernSection>
   );
 }

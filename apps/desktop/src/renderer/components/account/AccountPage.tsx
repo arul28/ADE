@@ -18,7 +18,6 @@ import {
   RADII,
   SANS_FONT,
   cardStyle,
-  dangerButton,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
@@ -44,6 +43,8 @@ import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { ModernPage, ModernRows, ModernSection } from "../settings/primitives";
+import "./accountPage.css";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -88,14 +89,6 @@ function writeDismissed(key: string): void {
 }
 
 
-const sectionLabelStyle: CSSProperties = {
-  fontFamily: SANS_FONT,
-  fontSize: 11,
-  fontWeight: 600,
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  color: COLORS.textMuted,
-};
 
 // ---------------------------------------------------------------------------
 // Signed-out: the rich sign-in card.
@@ -105,9 +98,16 @@ export function SignInCard({
   configured,
   onSignedIn,
   sessionState = "signed_out",
+  variant = "card",
 }: {
   configured: boolean;
   onSignedIn: () => void;
+  /**
+   * `card` is the solid panel the Account page embeds. `glass` is the launch
+   * gate's frosted card, meant to float over the mesh backdrop; it needs
+   * `launchGateGlass.css` and an `.ade-gate` ancestor for its tokens.
+   */
+  variant?: "card" | "glass";
   /**
    * Why there is no account here. "unreadable" is the one that must not lead
    * with a sign-in button — the stored session is probably fine and a new one
@@ -126,6 +126,95 @@ export function SignInCard({
     void fetchAccountStatus({ force: true });
   });
   const signInLabel = expired ? "Sign in" : "Sign in or create account";
+
+  if (variant === "glass") {
+    const blocked = busy || !configured;
+    return (
+      <div className="ade-glass-card" data-testid="sign-in-glass-card">
+        <span className="ade-glass-mark">
+          <img src="./logo.png" alt="ADE" draggable={false} />
+        </span>
+        <h1 className="ade-glass-title">
+          {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
+        </h1>
+        <p className="ade-glass-sub">
+          {notice ?? "One account for every computer and phone you run ADE on."}
+        </p>
+
+        {!configured ? (
+          <div className="ade-glass-notice">
+            <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>Account sign-in isn't available in this build.</span>
+          </div>
+        ) : null}
+
+        {unreadable ? (
+          <div style={{ marginTop: 26, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            {repair.available ? (
+              <BrainRepairButton repair={repair} height={44} />
+            ) : (
+              <button
+                type="button"
+                className="ade-glass-secondary"
+                onClick={() => void fetchAccountStatus({ force: true })}
+              >
+                Try again
+              </button>
+            )}
+            <button
+              type="button"
+              className="ade-glass-link"
+              disabled={blocked}
+              onClick={() => void beginLogin()}
+            >
+              Sign in anyway
+            </button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 26 }}>
+            <button
+              type="button"
+              className="ade-glass-primary"
+              disabled={blocked}
+              onClick={() => void beginLogin()}
+            >
+              {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : null}
+              {signInLabel}
+              {busy ? null : <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />}
+            </button>
+          </div>
+        )}
+
+        {phase === "awaiting" ? (
+          <div className="ade-glass-awaiting">
+            <span>
+              <CircleNotch size={14} weight="bold" className="animate-spin" />
+              Finish signing in in your browser…
+            </span>
+            <button type="button" onClick={cancel}>
+              Cancel
+            </button>
+          </div>
+        ) : null}
+
+        {error ? <div className="ade-glass-error">{error}</div> : null}
+
+        <div className="ade-glass-foot">
+          <span>Sign in to use ADE Relay</span>
+          <SmartTooltip content={{ label: "ADE Relay", description: "ADE's hosted relay pairs this machine with your account so phones and other Macs can reach it.", docUrl: docs.adeRelay }}>
+            <button
+              type="button"
+              className="ade-glass-help"
+              aria-label="Learn about ADE Relay"
+              onClick={() => openExternalUrl(docs.adeRelay)}
+            >
+              <Question size={12} weight="bold" />
+            </button>
+          </SmartTooltip>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -330,44 +419,35 @@ export function SignInCard({
 
 
 // ---------------------------------------------------------------------------
-// Signed-in: sign-out card (honest single-machine scope, behind a confirmation).
+// Signed-in: sign-out row (honest single-machine scope, behind a confirmation).
 // ---------------------------------------------------------------------------
 
 function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
   const [confirming, setConfirming] = useState(false);
 
   return (
-    <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
-      <div style={{ padding: "16px 18px 12px" }}>
-        <div style={sectionLabelStyle}>Session</div>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "0 18px 16px",
-        }}
-      >
-        <Laptop size={16} weight="regular" color={COLORS.textSecondary} style={{ flexShrink: 0 }} />
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this computer</div>
+    <>
+      <ModernRows>
+        <div className="ade-ap-rowcard">
+          <span className="ade-acct-glyph" aria-hidden>
+            <Laptop size={16} />
+          </span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="ade-ap-rowtitle">Signed in on this computer</div>
+            <div className="ade-ap-rowhint">Signing out only affects this computer. Your other computers and phones stay signed in.</div>
+          </div>
+          <button
+            type="button"
+            className="ade-acct-btn"
+            data-tone="danger"
+            disabled={signingOut}
+            onClick={() => setConfirming(true)}
+          >
+            {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
+            Sign out
+          </button>
         </div>
-        <button
-          type="button"
-          disabled={signingOut}
-          onClick={() => setConfirming(true)}
-          style={dangerButton({
-            height: 32,
-            fontSize: 12,
-            opacity: signingOut ? 0.6 : 1,
-            cursor: signingOut ? "not-allowed" : "pointer",
-          })}
-        >
-          {signingOut ? <CircleNotch size={14} weight="bold" className="animate-spin" /> : <SignOut size={14} weight="bold" />}
-          Sign out
-        </button>
-      </div>
+      </ModernRows>
 
       {confirming ? (
         <ConfirmSheet
@@ -383,6 +463,63 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
           onCancel={() => setConfirming(false)}
         />
       ) : null}
+    </>
+  );
+}
+
+/** The profile card: avatar, name, email, and the facts about this sign-in. */
+function ProfileCard({
+  status,
+  avatarImage,
+  avatarBroken,
+  onAvatarError,
+  ringTint,
+  providerCaption,
+}: {
+  status: AdeAccountStatus;
+  avatarImage: string | null;
+  avatarBroken: boolean;
+  onAvatarError: () => void;
+  ringTint: string;
+  providerCaption: string | null;
+}) {
+  return (
+    <div className="ade-acct-profile" style={{ "--ade-acct-tint": ringTint } as CSSProperties}>
+      <div className="ade-acct-profile-main">
+        <span className="ade-acct-avatar">
+          {avatarImage && !avatarBroken ? (
+            <img src={avatarImage} alt="" width={64} height={64} draggable={false} onError={onAvatarError} />
+          ) : (
+            <span className="ade-acct-monogram">{accountInitials(status)}</span>
+          )}
+          <span className="ade-acct-avatar-dot" aria-hidden />
+        </span>
+        <div className="ade-acct-who">
+          {status.name ? <div className="ade-acct-name">{status.name}</div> : null}
+          <div className={status.name ? "ade-acct-email" : "ade-acct-name"}>{status.email ?? "Your ADE account"}</div>
+        </div>
+      </div>
+      <div className="ade-acct-facts">
+        <div className="ade-acct-fact">
+          <span className="kit-eyebrow">Session</span>
+          <span className="ade-acct-fact-value">
+            <span className="kit-dot" data-state="ok" aria-hidden />
+            <span>Active on this computer</span>
+          </span>
+        </div>
+        <div className="ade-acct-fact">
+          <span className="kit-eyebrow">Sign-in</span>
+          <span className="ade-acct-fact-value">
+            <span>{providerCaption ?? "ADE account"}</span>
+          </span>
+        </div>
+        <div className="ade-acct-fact">
+          <span className="kit-eyebrow">Account ID</span>
+          <span className="ade-acct-fact-value kit-num" title={status.userId ?? undefined}>
+            <span>{status.userId ?? "—"}</span>
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -484,7 +621,60 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
     </button>
   );
 
-  const content = (
+  const signedInContent = (
+    <ModernPage>
+      <ProfileCard
+          status={status}
+          avatarImage={avatarImage}
+          avatarBroken={avatarBroken}
+          onAvatarError={() => setAvatarBroken(true)}
+          ringTint={ringTint}
+          providerCaption={providerCaption}
+        />
+
+      {/* GitHub repo bridge — identity stays decoupled from repo connection */}
+      {showRepoBridge ? (
+        <ModernSection group="Account" title="GitHub" hint="Your identity and your GitHub repo access stay separate — link it when you're ready.">
+          <div className="ade-ap-rowcard">
+            <span className="ade-acct-glyph" aria-hidden>
+              <GithubLogo size={17} weight="fill" />
+            </span>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="ade-ap-rowtitle">Connect your repos & PRs too?</div>
+              <div className="ade-ap-rowhint">Lanes, pull requests and checks read from GitHub once it is connected.</div>
+            </div>
+            <button
+              type="button"
+              className="ade-acct-btn"
+              onClick={() => navigate(settingsRouteFor("integrations.github"))}
+            >
+              Connect GitHub
+            </button>
+            <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
+              <button
+                type="button"
+                onClick={dismissRepoBridge}
+                aria-label="Dismiss"
+                className="ade-acct-btn ade-acct-icon-btn"
+                data-variant="ghost"
+              >
+                <X size={13} weight="bold" />
+              </button>
+            </SmartTooltip>
+          </div>
+        </ModernSection>
+      ) : null}
+
+      <YourMacsCard />
+
+      <ModernSection group="Account" title="Session">
+        <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
+      </ModernSection>
+      {signOutError ? <p role="alert" className="ade-acct-error">{signOutError}</p> : null}
+    </ModernPage>
+  );
+
+  const content = !status.signedIn ? (
     <div
       style={embedded
         ? { display: "flex", flexDirection: "column", gap: 16 }
@@ -498,174 +688,31 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
           minHeight: "100%",
         }}
     >
-      {!status.signedIn ? (
-        <>
-          {backButton}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              flex: 1,
-              gap: 16,
-              padding: embedded ? "32px 0" : undefined,
-            }}
-          >
-            <SignInCard
-              configured={status.configured !== false}
-              onSignedIn={handleSignedIn}
-              sessionState={accountSessionState(status)}
-            />
-          </div>
-        </>
-      ) : (
-        <>
-          {backButton}
-
-          {/* Identity header */}
-          <div style={cardStyle({ display: "flex", alignItems: "center", gap: 16 })}>
-            <span style={{ flexShrink: 0 }}>
-              {avatarImage && !avatarBroken ? (
-                <img
-                  src={avatarImage}
-                  alt=""
-                  width={52}
-                  height={52}
-                  draggable={false}
-                  onError={() => setAvatarBroken(true)}
-                  style={{
-                    width: 52,
-                    height: 52,
-                    borderRadius: "50%",
-                    objectFit: "cover",
-                    boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-                  }}
-                />
-              ) : (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 52,
-                    height: 52,
-                    borderRadius: "50%",
-                    fontFamily: SANS_FONT,
-                    fontSize: 18,
-                    fontWeight: 700,
-                    color: COLORS.textPrimary,
-                    background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
-                    boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-                  }}
-                >
-                  {accountInitials(status)}
-                </span>
-              )}
-            </span>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              {status.name ? (
-                <div
-                  style={{
-                    fontFamily: SANS_FONT,
-                    fontSize: 15,
-                    fontWeight: 700,
-                    color: COLORS.textPrimary,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {status.name}
-                </div>
-              ) : null}
-              <div
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: status.name ? 14 : 16,
-                  fontWeight: status.name ? 500 : 700,
-                  color: status.name ? COLORS.textSecondary : COLORS.textPrimary,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {status.email ?? "Your ADE account"}
-              </div>
-              {providerCaption ? (
-                <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                  {providerCaption}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          {/* GitHub repo bridge — identity stays decoupled from repo connection */}
-          {showRepoBridge ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "13px 16px",
-                borderRadius: RADII.lg,
-                background: COLORS.cardBg,
-                border: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 30,
-                  height: 30,
-                  borderRadius: 8,
-                  background: "color-mix(in srgb, #8b949e 20%, transparent)",
-                  color: COLORS.textPrimary,
-                  flexShrink: 0,
-                }}
-              >
-                <GithubLogo size={17} weight="fill" />
-              </span>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                  Connect your repos & PRs too?
-                </div>
-                <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                  Your identity and your GitHub repo access stay separate — link it when you're ready.
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate(settingsRouteFor("integrations.github"))}
-                style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px", flexShrink: 0 })}
-              >
-                Connect GitHub
-              </button>
-              <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
-                <button
-                  type="button"
-                  onClick={dismissRepoBridge}
-                  aria-label="Dismiss"
-                  style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent", flexShrink: 0 }}
-                >
-                  <X size={13} weight="bold" />
-                </button>
-              </SmartTooltip>
-            </div>
-          ) : null}
-
-          <YourMacsCard />
-
-          <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
-          {signOutError ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
-              {signOutError}
-            </div>
-          ) : null}
-        </>
-      )}
+      {backButton}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          flex: 1,
+          gap: 16,
+          padding: embedded ? "32px 0" : undefined,
+        }}
+      >
+        <SignInCard
+          configured={status.configured !== false}
+          onSignedIn={handleSignedIn}
+          sessionState={accountSessionState(status)}
+        />
+      </div>
+    </div>
+  ) : embedded ? (
+    signedInContent
+  ) : (
+    <div className="ade-acct-standalone">
+      {backButton}
+      {signedInContent}
     </div>
   );
 
