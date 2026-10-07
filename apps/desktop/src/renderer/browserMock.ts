@@ -7121,6 +7121,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       navigate: resolvedArg({} as any),
       createTab: resolvedArg({} as any),
       switchTab: resolvedArg({} as any),
+      handTabToChat: resolvedArg({} as any),
       closeTab: resolvedArg({} as any),
       reload: resolvedArg({} as any),
       goBack: resolvedArg({} as any),

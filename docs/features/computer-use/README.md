@@ -138,7 +138,7 @@ for a reviewer. Only an explicit proof call writes a record:
   skip both checks. A CLI capture counts as ADE's only when the RPC server's
   capture registry still holds the file with the same hash. See [Already-filed bytes and older videos](../proof.md#already-filed-bytes-and-older-videos).
 - **Browser use is visible to the human, automatically.** Every
-  capability-validated `ade browser …` command marks the calling chat as using
+  `ade browser …` command from a chat marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the
   Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
   Nothing is asked of the agent — there is no "announce it" instruction to

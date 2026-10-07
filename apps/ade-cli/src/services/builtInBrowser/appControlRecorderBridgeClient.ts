@@ -11,8 +11,8 @@ import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
  * daemon reaches it.
  *
  * The recorder writes the `.aderaw` capture that the desktop's Chromium demo
- * engine renders, so it lives in the desktop with that engine. The daemon talks to it over the same desktop bridge socket and with the same
- * bridge token as the built-in browser. Methods are
+ * engine renders, so it lives in the desktop with that engine. The daemon talks to it over the same desktop bridge socket as the built-in
+ * browser. Methods are
  * `app_control_recorder.<start|pushFrame|stop|cancel>`.
  *
  * Frames: at most one `pushFrame` is in flight per recording. A frame that

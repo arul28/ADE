@@ -359,8 +359,8 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
       return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
     }
-    // Kept for brains from before the bridge dropped its secret: they probe
-    // with it before every call.
+    // The brain's attach probe (`probeDesktopBridge`). The name predates the
+    // bridge dropping its secret and is kept so older brains' probes answer.
     if (name === "authenticate") {
       return { authenticated: true };
     }
@@ -467,18 +467,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Desktop bridge cannot dispatch built_in_browser.${name}.`,
       );
     }
-    // Presence is a chat's ("this chat is browsing"); a chatless call has none.
-    if (!chatSessionId) {
-      try {
-        return await (callable as (input: unknown) => Promise<unknown>).call(service, params);
-      } catch (error) {
-        if (error instanceof JsonRpcError) throw error;
-        throw new JsonRpcError(
-          JsonRpcErrorCode.internalError,
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
     // Recorded on BOTH edges of the call.
     //
     // Before, because a `wait`, a slow navigation or a long `observe` is
@@ -491,13 +479,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     // Every method counts, reads included: `status` and `observe` are how an
     // agent looks at the page, and a badge that lit only for writes would go
     // dark while it read.
-    const presenceTouch = {
-      chatSessionId,
-      laneId,
-      projectRoot,
-      tabId: normalizedString(rawParams.tabId),
-    };
-    const opened = builtInBrowserAgentPresence.touch(presenceTouch);
+    //
+    // Presence is a chat's ("this chat is browsing"); a chatless call has none.
+    const presenceTouch = chatSessionId
+      ? { chatSessionId, laneId, projectRoot, tabId: normalizedString(rawParams.tabId) }
+      : null;
+    const opened = presenceTouch ? builtInBrowserAgentPresence.touch(presenceTouch) : null;
     try {
       const result = await (callable as (input: unknown) => Promise<unknown>).call(service, params);
       // …except after the two calls that END the agent's turn at the tab. Both
@@ -506,7 +493,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       // tab id — leaving the badge saying "browsing" for a full expiry window
       // after the agent closed its last tab, or pulsing beside the very banner
       // asking a human to sign in.
-      if (!TURN_ENDING_BRIDGE_METHODS.has(name)) {
+      if (presenceTouch && !TURN_ENDING_BRIDGE_METHODS.has(name)) {
         builtInBrowserAgentPresence.touch(presenceTouch);
       }
       return result;
@@ -517,7 +504,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       // the earlier ones earned, and the `ifSequence` guard drops the undo if a
       // concurrent command from the same chat moved the entry meanwhile (or if
       // a recording took a hold on it while this call was in flight).
-      if (opened.created) {
+      if (chatSessionId && opened?.created) {
         builtInBrowserAgentPresence.clearForChatSession(chatSessionId, {
           ifSequence: opened.sequence,
         });

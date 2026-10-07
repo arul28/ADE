@@ -202,6 +202,7 @@ import type { BuiltInBrowserService } from "../../desktop/src/main/services/buil
 import {
   createBuiltInBrowserDesktopBridgeClient,
   probeDesktopBridge,
+  type DesktopBridgeProbe,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
@@ -1747,6 +1748,56 @@ export async function createAdeRuntime(args: {
     // closure reads at call time. The chat session store lives in agentChatService
     // (getSessionSummary), not in sessionService (which holds terminal sessions).
     const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    // `built_in_browser` is hosted by the desktop's Electron main process (the
+    // browser pane owns a WebContentsView). The runtime daemon proxies calls
+    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+    // individual calls fail clearly. Override the socket path with
+    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+    // ADE home.
+    const builtInBrowserBridgeSocketPath =
+      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+    // Whether the desktop app answers on its bridge, as last probed. The brain
+    // asks for itself rather than waiting to be told: it probes at start, when
+    // a desktop connects, and in the background whenever the answer is older
+    // than DESKTOP_BRIDGE_PROBE_STALE_MS and someone reads it. Browser calls do
+    // not read it at all — each one just dials the socket.
+    // `result` is null until the first probe answers.
+    let desktopBridgeProbe: { result: DesktopBridgeProbe | null; at: number } = { result: null, at: 0 };
+    let desktopBridgeProbeInFlight: Promise<void> | null = null;
+    const DESKTOP_BRIDGE_PROBE_STALE_MS = 10_000;
+    const refreshDesktopBridgeProbe = (): Promise<void> => {
+      if (desktopBridgeProbeInFlight) return desktopBridgeProbeInFlight;
+      desktopBridgeProbeInFlight = probeDesktopBridge({ socketPath: builtInBrowserBridgeSocketPath })
+        .then((result) => {
+          const changed = desktopBridgeProbe.result?.attached !== result.attached;
+          desktopBridgeProbe = { result, at: Date.now() };
+          if (changed) {
+            logger[result.attached ? "info" : "warn"]("built_in_browser_bridge.desktop_probe", {
+              socketPath: builtInBrowserBridgeSocketPath,
+              projectRoot,
+              attached: result.attached,
+              ...(result.attached ? {} : { kind: result.kind, reason: result.reason }),
+            });
+          }
+        })
+        .finally(() => {
+          desktopBridgeProbeInFlight = null;
+        });
+      return desktopBridgeProbeInFlight;
+    };
+    const readDesktopBridgeProbe = (): DesktopBridgeProbe | null => {
+      if (Date.now() - desktopBridgeProbe.at > DESKTOP_BRIDGE_PROBE_STALE_MS) {
+        void refreshDesktopBridgeProbe();
+      }
+      return desktopBridgeProbe.result;
+    };
+    const desktopBridgeAttached = (): boolean => readDesktopBridgeProbe()?.attached === true;
+    /** Why the desktop app does not answer; null while it does or before the first probe. */
+    const desktopBridgeUnattachedReason = (): string | null => {
+      const probe = readDesktopBridgeProbe();
+      return probe && !probe.attached ? probe.reason : null;
+    };
     // Windows/Linux App Control recording runs in the desktop's encoder, over
     // the desktop bridge. Set once the bridge client exists (below); null
     // while no desktop has attached here, which refuses a screencast start.
@@ -1756,10 +1807,7 @@ export async function createAdeRuntime(args: {
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       /** The desktop's scene previewer, over the same bridge. */
       scenePreview: ScenePreviewer | null;
-      isAttached: () => boolean;
-      /** Why a desktop that tried to attach could not; null otherwise. */
-      unattachedReason: () => string | null;
-    } = { current: null, demoEngine: null, scenePreview: null, isAttached: () => false, unattachedReason: () => null };
+    } = { current: null, demoEngine: null, scenePreview: null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1778,9 +1826,9 @@ export async function createAdeRuntime(args: {
           return chatSession?.laneId ?? null;
         },
         getScreencastRecorder: () =>
-          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.current : null,
+          desktopBridgeAttached() ? desktopBridgeHolder.current : null,
         getChromiumDemoEngine: () =>
-          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
+          desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
@@ -1865,8 +1913,8 @@ export async function createAdeRuntime(args: {
         demoEngines: createDemoEngineSet({
           logger: macDesktopLogger,
           getChromiumDemoEngine: () =>
-            desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
-          getChromiumUnavailableReason: () => desktopBridgeHolder.unattachedReason(),
+            desktopBridgeAttached() ? desktopBridgeHolder.demoEngine : null,
+          getChromiumUnavailableReason: desktopBridgeUnattachedReason,
         }),
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
@@ -1906,58 +1954,6 @@ export async function createAdeRuntime(args: {
         }),
       });
     teardown.push(() => macDesktopService?.dispose());
-    // `built_in_browser` is hosted by the desktop's Electron main process (the
-    // browser pane owns a WebContentsView). The runtime daemon proxies calls
-    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
-    // individual calls fail clearly. Override the socket path with
-    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
-    // ADE home.
-    const builtInBrowserBridgeSocketPath =
-      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveMachineAdeLayout().desktopBridgeSocketPath;
-    // Whether the desktop app answers on its bridge, as last probed. The brain
-    // asks for itself rather than waiting to be told: it probes at start, when
-    // a desktop connects, and in the background whenever the answer is older
-    // than DESKTOP_BRIDGE_PROBE_STALE_MS and someone reads it. Browser calls do
-    // not read it at all — each one just dials the socket.
-    let desktopBridgeProbe: { attached: boolean; reason: string | null; at: number } = {
-      attached: false,
-      reason: null,
-      at: 0,
-    };
-    let desktopBridgeProbeInFlight: Promise<void> | null = null;
-    const DESKTOP_BRIDGE_PROBE_STALE_MS = 10_000;
-    const refreshDesktopBridgeProbe = (): Promise<void> => {
-      if (desktopBridgeProbeInFlight) return desktopBridgeProbeInFlight;
-      desktopBridgeProbeInFlight = probeDesktopBridge({ socketPath: builtInBrowserBridgeSocketPath })
-        .then((result) => {
-          const changed = desktopBridgeProbe.attached !== result.attached;
-          desktopBridgeProbe = {
-            attached: result.attached,
-            reason: result.attached ? null : result.reason,
-            at: Date.now(),
-          };
-          if (changed) {
-            logger[result.attached ? "info" : "warn"]("built_in_browser_bridge.desktop_probe", {
-              socketPath: builtInBrowserBridgeSocketPath,
-              projectRoot,
-              attached: result.attached,
-              ...(result.attached ? {} : { kind: result.kind, reason: result.reason }),
-            });
-          }
-        })
-        .finally(() => {
-          desktopBridgeProbeInFlight = null;
-        });
-      return desktopBridgeProbeInFlight;
-    };
-    const readDesktopBridgeProbe = () => {
-      if (Date.now() - desktopBridgeProbe.at > DESKTOP_BRIDGE_PROBE_STALE_MS) {
-        void refreshDesktopBridgeProbe();
-      }
-      return desktopBridgeProbe;
-    };
-    desktopBridgeHolder.unattachedReason = () => readDesktopBridgeProbe().reason;
     // With no desktop attached HERE, `browser open` is still satisfiable: a
     // desktop that holds a remote pin on this machine can open the URL in its
     // own browser and reach this machine's localhost through a port-forward.
@@ -1992,7 +1988,6 @@ export async function createAdeRuntime(args: {
       desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
       });
-      desktopBridgeHolder.isAttached = () => readDesktopBridgeProbe().attached;
       void refreshDesktopBridgeProbe();
       // Released by the teardown step registered before appControlService's.
     }
@@ -3373,12 +3368,14 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
-      getScenePreviewer: () => (desktopBridgeHolder.isAttached() ? desktopBridgeHolder.scenePreview : null),
+      getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
       workToolsStateService,
       noteDesktopAppConnected: () => {
-        void refreshDesktopBridgeProbe();
+        // A probe already in flight may have started before this desktop was
+        // listening, so ask again once it settles.
+        void (desktopBridgeProbeInFlight ?? Promise.resolve()).then(() => refreshDesktopBridgeProbe());
       },
       eventBuffer,
       isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),

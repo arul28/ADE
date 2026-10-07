@@ -6,7 +6,7 @@ import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClie
  * socket, shared by the clients that reach desktop-only engines through it (the
  * App Control recorder, the demo engine, the scene previewer).
  *
- * Every call carries the bridge token. The socket is opened on the first call,
+ * The socket is opened on the first call,
  * with a connect deadline, and reopened after it closes. A transport failure
  * drops the socket so the next call reconnects; an error ANSWER does not,
  * because the desktop ties work (a recording, a demo job) to the connection
@@ -22,6 +22,15 @@ export type DesktopBridgeConnection = {
   close(): void;
 };
 
+/**
+ * True when nothing can be listening at `socketPath`: a Unix socket file that
+ * does not exist. A Windows named pipe has no file to check, so it is never
+ * reported missing here; connecting answers that.
+ */
+export function desktopBridgeSocketMissing(socketPath: string): boolean {
+  return !socketPath.startsWith("\\\\") && !fs.existsSync(socketPath);
+}
+
 export function createDesktopBridgeConnection(args: {
   socketPath: string;
   /** Why a call cannot run: no desktop app attached on this machine. */
@@ -30,7 +39,6 @@ export function createDesktopBridgeConnection(args: {
   closedMessage: string;
 }): DesktopBridgeConnection {
   const { socketPath } = args;
-  const isNamedPipe = socketPath.startsWith("\\\\");
   let client: JsonRpcClient | null = null;
   let connecting: Promise<JsonRpcClient> | null = null;
   let closed = false;
@@ -40,7 +48,7 @@ export function createDesktopBridgeConnection(args: {
     if (closed) throw new Error(args.closedMessage);
     if (!connecting) {
       connecting = (async () => {
-        if (!isNamedPipe && !fs.existsSync(socketPath)) throw new Error(args.unavailableMessage);
+        if (desktopBridgeSocketMissing(socketPath)) throw new Error(args.unavailableMessage);
         let timer: ReturnType<typeof setTimeout> | null = null;
         try {
           const next = await Promise.race([

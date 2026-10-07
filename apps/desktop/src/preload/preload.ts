@@ -9885,6 +9885,13 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
       ),
+    // Local IPC only: the tab is this desktop's own, and reassigning it is the
+    // person's move, never the bridge's.
+    handTabToChat: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserHandTabToChat, args),
+      ),
     closeTab: async (
       args: BuiltInBrowserTabArgs,
       _pin?: OpenProjectBinding | null,

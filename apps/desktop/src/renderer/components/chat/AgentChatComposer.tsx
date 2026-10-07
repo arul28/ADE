@@ -142,7 +142,12 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
-import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
+import {
+  COMPOSER_MENTION_CHIP_CLASS,
+  COMPOSER_TOKEN_CHIP_ICON_CLASS,
+  mentionChipMarkSvg,
+  type ComposerAtChipKind,
+} from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -174,7 +179,7 @@ import {
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { hasBrowserTabMention, parseBrowserTabMentions } from "../../../shared/browserTabMention";
-import { createBrowserTabChipNode, hydrateBrowserTabChipsInEditor } from "./composerBrowserTabChip";
+import { hydrateBrowserTabChipsInEditor, insertBrowserTabChip } from "./composerBrowserTabChip";
 import type { ChatThreadComment } from "../../../shared/threadComments";
 import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
 import { countCommentsForNextSend } from "./threadCommentsStore";
@@ -335,10 +340,6 @@ const SMART_LINK_ICON_MARK_CLASS =
   "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
-const COMPOSER_TOKEN_CHIP_ICON_CLASS =
-  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
-const COMPOSER_MENTION_CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
 const COMPOSER_TOKEN_CHIP_CLASS =
   "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
 
@@ -4168,24 +4169,7 @@ export function AgentChatComposer({
       const editor = richEditorRef.current;
       if (!editor) return;
       appliedBrowserTabInsertIdRef.current = request.id;
-      const saved = richSelectionRef.current;
-      const range = saved && editor.contains(saved.commonAncestorContainer)
-        ? saved.cloneRange()
-        : (() => {
-          const end = document.createRange();
-          end.selectNodeContents(editor);
-          return end;
-        })();
-      // Insert beside a selection, never over it: the user was elsewhere when
-      // they picked the tab, and a stale highlight is not an edit intent.
-      range.collapse(false);
-      const chip = createBrowserTabChipNode(match);
-      range.insertNode(chip);
-      const before = chip.previousSibling;
-      if (before && !(before instanceof Text && /[\s\u00a0]$/.test(before.textContent ?? ""))) {
-        chip.before(document.createTextNode(" "));
-      }
-      placeCaretAfterChip(chip);
+      placeCaretAfterChip(insertBrowserTabChip(editor, richSelectionRef.current, match));
       syncRichDraft();
       return;
     }

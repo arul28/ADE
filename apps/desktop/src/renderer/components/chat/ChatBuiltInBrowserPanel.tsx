@@ -1318,8 +1318,18 @@ export function ChatBuiltInBrowserPanel({
       });
     } catch (error) {
       setMessage({ tone: "error", text: errorMessage(error) });
+      return;
     }
-  }, [onAttachTab]);
+    // Attaching is handing the tab over: move its lease to this chat (or drop
+    // it, for a draft), so another chat's lease cannot refuse the claim.
+    void getBrowserApi()?.handTabToChat?.(withBrowserScope({
+      tabId: tab.id,
+      chatSessionId: sessionId ?? null,
+      laneId: contextLaneId ?? null,
+    })).catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
   const handleAttachActiveTab = useCallback(() => {
     const tabId = statusRef.current?.activeTabId ?? null;
     if (tabId) handleAttachTab(tabId);
@@ -1332,8 +1342,8 @@ export function ChatBuiltInBrowserPanel({
         throw new Error("This ADE build does not support handing the browser back.");
       }
       // Deliberately un-pinned. The handed-off tab is THIS Electron process's
-      // own WebContentsView; the daemon round trip cannot reach it, and the
-      // bridge refuses a user client for having no chat capability. Preload
+      // own WebContentsView, which the daemon round trip cannot reach, and
+      // hand-back is the person's move, not on the bridge at all. Preload
       // routes this one call straight to local IPC.
       await api.endHandoff(withBrowserScope({ endedBy }));
       setHandoffOfferSilencedOrigin(null);

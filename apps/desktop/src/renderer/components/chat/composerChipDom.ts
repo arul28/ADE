@@ -160,3 +160,51 @@ export function composerDomPointAtSerializedOffset(
   root.childNodes.forEach(visit);
   return found ?? { node: root, offset: root.childNodes.length };
 }
+
+// Loose text inside these is already a chip (or a context card) and is left alone.
+const HYDRATE_SKIP_SELECTOR =
+  "[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]";
+
+/**
+ * Turn every serialized block a parser finds in the editor's loose text into
+ * the chip `createNode` builds for it. Returns whether anything changed.
+ */
+export function hydrateTokenChipsInEditor<Match extends { start: number; end: number }>(
+  editor: HTMLElement,
+  options: {
+    has: (text: string) => boolean;
+    parse: (text: string) => Match[];
+    createNode: (match: Match) => HTMLElement;
+  },
+): boolean {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest(HYDRATE_SKIP_SELECTOR)) return NodeFilter.FILTER_REJECT;
+      return options.has(node.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let current = walker.nextNode();
+  while (current) {
+    nodes.push(current as Text);
+    current = walker.nextNode();
+  }
+  let changed = false;
+  for (const node of nodes) {
+    const text = node.textContent ?? "";
+    const matches = options.parse(text);
+    if (!matches.length) continue;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      if (match.start > offset) fragment.append(document.createTextNode(text.slice(offset, match.start)));
+      fragment.append(options.createNode(match));
+      offset = match.end;
+    }
+    if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+    node.replaceWith(fragment);
+    changed = true;
+  }
+  return changed;
+}

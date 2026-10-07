@@ -127,17 +127,13 @@ export type BuiltInBrowserDesktopBridgeClient = {
   dispose: () => void;
 };
 
-const BUILT_IN_BROWSER_BRIDGE_SERVED_METHOD_SET = new Set<string>([
-  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
-]);
-
 /**
- * True for the methods the bridge server answers itself (the read-only runtime
+ * True for the method the bridge server answers itself (the read-only runtime
  * status), kept out of `isBuiltInBrowserDesktopBridgeMethod` so the bridge
- * server never dispatches them onto `BuiltInBrowserService`.
+ * server never dispatches it onto `BuiltInBrowserService`.
  */
 export function isBuiltInBrowserBridgeServedMethod(value: string): boolean {
-  return BUILT_IN_BROWSER_BRIDGE_SERVED_METHOD_SET.has(value);
+  return value === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD;
 }
 
 const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHOD_SET = new Set<string>(

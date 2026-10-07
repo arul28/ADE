@@ -1355,8 +1355,8 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   // Every member of `TerminalToolType`. The `satisfies` binding is the point:
   // a tool type added to the union but missed here silently normalises to
   // "other", which strips the session of every tracked-CLI behaviour — turn
-  // markers, resume capture, the disk-pressure gate, and the browser-actor
-  // capability revoke — with nothing to show for it.
+  // markers, resume capture and the disk-pressure gate — with nothing to show
+  // for it.
   const allowed = [
     "shell",
     "claude",

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatBrowserTabMentionToken } from "../../../shared/browserTabMention";
 import { ArrowLeft, Globe, SpinnerGap, TerminalWindow } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -940,7 +941,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
             </div>
             {toolPanel === "browser" ? (
               <div className="w-[min(44%,560px)] min-w-[340px] border-l border-fg/[0.07] bg-bg max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92%,560px)] max-lg:shadow-2xl">
-                <ChatBuiltInBrowserPanel sessionId={selectedId} projectRootOverride={null} onInsertDraft={appendDraft} />
+                <ChatBuiltInBrowserPanel
+                  sessionId={selectedId}
+                  projectRootOverride={null}
+                  onInsertDraft={appendDraft}
+                  onAttachTab={(tab) => appendDraft(formatBrowserTabMentionToken(tab))}
+                />
               </div>
             ) : null}
             {toolPanel === "terminal" ? (

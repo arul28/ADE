@@ -243,6 +243,8 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
+  /** The caller's chat is a personal (project-less) chat — its `ADE_CHAT_SCOPE`. */
+  personalChat: boolean;
 };
 
 type SessionState = {
@@ -3504,12 +3506,12 @@ function scopeSearchAdeActionArgs(
   return unscopedArgs;
 }
 
-async function scopeBuiltInBrowserAdeActionArgs(
+function scopeBuiltInBrowserAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
   action: string,
   browserArgs: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Record<string, unknown> {
   const method = `run_ade_action:built_in_browser.${action}`;
   // Anything on this machine may drive the browser, exactly like Mac Desktop:
   // the brain's socket is owner-only, so a local caller is already the user.
@@ -3530,19 +3532,21 @@ async function scopeBuiltInBrowserAdeActionArgs(
   // tab and keeps the lane it asked for.
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const { chatSessionId: _callerSupplied, ...rest } = browserArgs;
-  const chatSummary = callerChatSessionId
-    ? await runtime.agentChatService?.getSessionSummary?.(callerChatSessionId).catch(() => null) ?? null
-    : null;
-  const personalChat = chatSummary?.surface === "personal";
+  const scoped = { ...rest, projectRoot: undefined, force: false };
+  if (!callerChatSessionId) {
+    return { ...scoped, chatSessionId: undefined, laneId: asOptionalTrimmedString(rest.laneId) ?? undefined, tabCollection: undefined };
+  }
+  // A personal chat's call is routed to whatever runtime its scratch directory
+  // resolves to, which does not know the chat; its own `ADE_CHAT_SCOPE` claim
+  // is what says it is personal, trusted like its chat id.
+  if (session.identity.personalChat) {
+    return { ...scoped, chatSessionId: callerChatSessionId, laneId: undefined, tabCollection: "personal" };
+  }
   return {
-    ...rest,
-    chatSessionId: callerChatSessionId ?? undefined,
-    laneId: callerChatSessionId
-      ? (personalChat ? undefined : resolveChatSessionLaneId(runtime, session) ?? undefined)
-      : asOptionalTrimmedString(rest.laneId) ?? undefined,
-    projectRoot: undefined,
-    tabCollection: personalChat ? "personal" : undefined,
-    force: false,
+    ...scoped,
+    chatSessionId: callerChatSessionId,
+    laneId: resolveChatSessionLaneId(runtime, session) ?? undefined,
+    tabCollection: undefined,
   };
 }
 
@@ -4927,6 +4931,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
+    personalChat: identity.chatScope === "personal",
   };
 }
 
@@ -5887,7 +5892,7 @@ async function runTool(args: {
         rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
-      scopedObjectArgs = await scopeBuiltInBrowserAdeActionArgs(
+      scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(
         runtime,
         session,
         action,
@@ -5910,10 +5915,11 @@ async function runTool(args: {
       //
       // Only for a chat: presence says which chat is browsing, and a chatless
       // caller (the user's own terminal) is not an agent.
-      if (asOptionalTrimmedString(session.identity.chatSessionId)) {
+      const presenceChatSessionId = asOptionalTrimmedString(scopedObjectArgs.chatSessionId);
+      if (presenceChatSessionId) {
         const presenceArgs = {
-          laneId: resolveChatSessionLaneId(runtime, session),
-          chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null,
+          laneId: asOptionalTrimmedString(scopedObjectArgs.laneId),
+          chatSessionId: presenceChatSessionId,
         };
         const opened = runtime.workToolsStateService?.noteAgentBrowserActivity(presenceArgs)
           ?? null;
@@ -7174,7 +7180,7 @@ async function runTool(args: {
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     if (typeof browser?.noteDemoStep === "function" && callerChatSessionId) {
       try {
-        const scoped = await scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text });
+        const scoped = scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text });
         const reply = await Promise.race([
           Promise.resolve(browser.noteDemoStep(scoped)),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
@@ -8081,6 +8087,7 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
+      personalChat: false,
     },
     askUserEvents: [],
     askUserRateLimit: {

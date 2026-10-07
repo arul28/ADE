@@ -23,8 +23,11 @@ const OPEN_TAG = "<ade-browser-tab ";
 const CLOSE_TAG = "</ade-browser-tab>";
 const BROWSER_TAB_MENTION_RE = /<ade-browser-tab id="([^"\n]*)" title="([^"\n]*)" url="([^"\n]*)">[^\n]*?<\/ade-browser-tab>/g;
 
+// One line, and no control characters: a page title reaches a CLI agent as a
+// bracketed paste, where an embedded escape sequence could end the paste early
+// and type the rest as keystrokes.
 function oneLine(value: string | null | undefined): string {
-  return (value ?? "").replace(/\s+/g, " ").trim();
+  return (value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function escapeAttribute(value: string): string {
@@ -80,4 +83,21 @@ export function parseBrowserTabMentions(text: string): BrowserTabMentionMatch[] 
     });
   }
   return out;
+}
+
+/**
+ * `text` with every attached-tab block blanked out (same length, so offsets
+ * still line up). A page title is the page's text, not the user's: an
+ * `@chat:` or `@lane:` inside one must not expand into a mention.
+ */
+export function maskBrowserTabMentions(text: string): string {
+  const matches = parseBrowserTabMentions(text);
+  if (!matches.length) return text;
+  let out = "";
+  let offset = 0;
+  for (const match of matches) {
+    out += text.slice(offset, match.start) + " ".repeat(match.end - match.start);
+    offset = match.end;
+  }
+  return out + text.slice(offset);
 }

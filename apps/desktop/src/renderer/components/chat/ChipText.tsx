@@ -98,6 +98,12 @@ function openChip(
   // A terminal mention has no deeplink target; it stays a label.
 }
 
+/** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
+function chipTokenTitle(chip: Chip, label: string): string {
+  if (chip.kind === "browser_tab") return [label, chip.detail].filter(Boolean).join(" — ");
+  return chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+}
+
 function isActionable(chip: Chip): boolean {
   // A folder chip is a label, like a terminal mention: there is no folder
   // destination to open, and a pill that looks clickable and does nothing is
@@ -290,11 +296,7 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const label = facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
   const actionable = isActionable(chip);
   const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped);
-  // An attached tab's token is the agent's instruction block; the hover shows
-  // the tab itself.
-  const tokenTitle = chip.kind === "browser_tab"
-    ? [label, chip.detail].filter(Boolean).join(" — ")
-    : chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
+  const tokenTitle = chipTokenTitle(chip, label);
 
   return (
     <>

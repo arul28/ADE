@@ -20720,6 +20720,7 @@ function buildInitializeParams(
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
+  const envChatScope = asString(process.env.ADE_CHAT_SCOPE);
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
@@ -20732,6 +20733,7 @@ function buildInitializeParams(
       ...(envStepId ? { stepId: envStepId } : {}),
       ...(envAttemptId ? { attemptId: envAttemptId } : {}),
       ...(envOwnerId ? { ownerId: envOwnerId } : {}),
+      ...(envChatScope === "personal" ? { chatScope: "personal" } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -10,6 +9,7 @@ import {
   isBuiltInBrowserDesktopBridgeMethod,
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
+import { desktopBridgeSocketMissing } from "./desktopBridgeConnection";
 
 /**
  * Proxy `built_in_browser` service used by the runtime daemon.
@@ -69,6 +69,15 @@ export class DesktopBridgeUnavailableError extends Error {
   }
 }
 
+/**
+ * An ADE Desktop from before the bridge dropped its secret refuses every call
+ * with this. It only happens mid-update, while the background service is newer
+ * than the app.
+ */
+const OLD_DESKTOP_AUTH_REFUSAL = /bridge authentication failed/i;
+const OLD_DESKTOP_MESSAGE =
+  "ADE Desktop is older than ADE's background service. Restart ADE Desktop to finish updating.";
+
 function isClosedSocketError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /(?:socket (?:is )?closed|socket hang up|EPIPE|ECONNRESET|ERR_STREAM_DESTROYED)/i.test(message);
@@ -85,12 +94,11 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
   let connecting: Promise<JsonRpcClient> | null = null;
   let disposed = false;
 
-  const isNamedPipe = socketPath.startsWith("\\\\");
   const socketDescription = path.basename(socketPath) || socketPath;
 
   async function connect(): Promise<JsonRpcClient> {
     if (disposed) throw new Error("Desktop browser bridge client has been disposed.");
-    if (!isNamedPipe && !fs.existsSync(socketPath)) {
+    if (desktopBridgeSocketMissing(socketPath)) {
       throw new DesktopBridgeUnavailableError(
         socketPath,
         `No ADE Desktop browser is attached to this machine (bridge socket ${socketPath} is not listening). The built-in browser runs inside ADE Desktop, so browser actions need a desktop attached here. \`ade browser open <url>\` is the exception: it forwards the URL to a desktop that has this lane pinned, which reaches this machine's localhost ports over a tunnel.`,
@@ -193,6 +201,9 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       if (!retried && isClosedSocketError(error)) {
         return await callBridge(method, params, true);
       }
+      if (OLD_DESKTOP_AUTH_REFUSAL.test(error instanceof Error ? error.message : String(error))) {
+        throw new Error(OLD_DESKTOP_MESSAGE);
+      }
       throw error;
     }
   }
@@ -277,6 +288,9 @@ function bridgeProbeFailure(error: unknown): DesktopBridgeProbe & { attached: fa
   if (/timed out/i.test(message)) {
     return { attached: false, kind: "timeout", reason: "the ADE desktop app did not answer in time" };
   }
+  if (OLD_DESKTOP_AUTH_REFUSAL.test(message)) {
+    return { attached: false, kind: "unreachable", reason: OLD_DESKTOP_MESSAGE };
+  }
   return { attached: false, kind: "unreachable", reason: `the ADE desktop app could not be reached (${message})` };
 }
 
@@ -290,17 +304,13 @@ export async function probeDesktopBridge(args: {
   timeoutMs?: number;
 }): Promise<DesktopBridgeProbe> {
   const timeoutMs = args.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const isNamedPipe = args.socketPath.startsWith("\\\\");
-  if (!isNamedPipe && !fs.existsSync(args.socketPath)) {
+  if (desktopBridgeSocketMissing(args.socketPath)) {
     return { attached: false, kind: "unreachable", reason: "the ADE desktop app is not running on this machine" };
   }
   let client: JsonRpcClient | null = null;
+  const connecting = JsonRpcClient.connect(args.socketPath);
   try {
-    client = await raceWithTimeout(
-      JsonRpcClient.connect(args.socketPath),
-      timeoutMs,
-      "Timed out reaching the ADE desktop app's bridge.",
-    );
+    client = await raceWithTimeout(connecting, timeoutMs, "Timed out reaching the ADE desktop app's bridge.");
     await raceWithTimeout(
       client.request("built_in_browser.authenticate", {}),
       timeoutMs,
@@ -308,6 +318,8 @@ export async function probeDesktopBridge(args: {
     );
     return { attached: true };
   } catch (error) {
+    // A connect that lands after the timeout is nobody's: close it then.
+    if (!client) void connecting.then((late) => late.close(), () => {});
     return bridgeProbeFailure(error);
   } finally {
     client?.close();

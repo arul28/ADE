@@ -981,9 +981,8 @@ flag and the runtime rejects it, and calls from another machine's brain are
 refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
 forwarded to a desktop that has this lane pinned.
 
-`ade app-control` is not gated by a capability of its own — there is no
-app_control actor token, and the daemon has no app_control-specific scoping
-branch the way it has for `built_in_browser` and `work_tools`. A machine has
+`ade app-control` has no app_control-specific scoping branch the way the daemon
+has for `built_in_browser` and `work_tools`. A machine has
 one active App Control session at a time, and `--lane`/`--chat-session` (or
 `ade app-control claim`) attribute that session to the caller so the Work row,
 the trace and proof artifacts land on the right lane. `--force` here means
