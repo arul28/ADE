@@ -42,8 +42,13 @@ struct HubChatBoardState: Hashable {
 ///   snoozed (not failed or awaiting) → Waiting, reason snoozed
 ///   running, lane PR CI or review    → Waiting, reason ci / review
 ///   running                          → Working
+///   idle, scheduled wake pending     → Waiting, reason scheduled
 ///   idle, ended                      → Done
-func hubChatBoardState(_ chat: RemoteRosterChat, lane: RemoteRosterLane?) -> HubChatBoardState {
+func hubChatBoardState(
+  _ chat: RemoteRosterChat,
+  lane: RemoteRosterLane?,
+  now: Date = Date()
+) -> HubChatBoardState {
   if chat.status == .failed {
     return HubChatBoardState(column: .needsYou, failed: true, waitingReason: nil)
   }
@@ -59,6 +64,8 @@ func hubChatBoardState(_ chat: RemoteRosterChat, lane: RemoteRosterLane?) -> Hub
       return HubChatBoardState(column: .waiting, failed: false, waitingReason: reason)
     }
     return HubChatBoardState(column: .working, failed: false, waitingReason: nil)
+  case .idle where workScheduledWakeIsPending(chat.nextWakeAt, now: now):
+    return HubChatBoardState(column: .waiting, failed: false, waitingReason: .scheduled)
   case .idle, .ended, .awaiting, .failed:
     return HubChatBoardState(column: .done, failed: false, waitingReason: nil)
   }

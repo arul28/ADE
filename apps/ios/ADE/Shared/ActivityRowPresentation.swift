@@ -284,6 +284,8 @@ public enum ActivityWaitingReason: String, Codable, Hashable, Sendable {
     case snoozed
     case ci
     case review
+    case scheduled
+    case subagent
 
     public init?(wireValue: String?) {
         guard let wireValue, let value = ActivityWaitingReason(rawValue: wireValue.lowercased()) else {
@@ -297,6 +299,8 @@ public enum ActivityWaitingReason: String, Codable, Hashable, Sendable {
         case .snoozed: return "Snoozed"
         case .ci: return "CI running"
         case .review: return "Review requested"
+        case .scheduled: return "Wake scheduled"
+        case .subagent: return "Subagent working"
         }
     }
 }
