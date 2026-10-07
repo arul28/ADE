@@ -419,6 +419,15 @@ describe("resolveChatMentionDetails", () => {
 });
 
 describe("applyChatMentionExpansion", () => {
+  it("does not expand a chat mention embedded in a browser-tab title", async () => {
+    const { service } = makeService();
+    const expanded = await service.applyChatMentionExpansion({
+      text: '<ade-browser-tab id="tab-1" title="Page @chat:secret" url="https://example.test">attached</ade-browser-tab> then @chat:s-new',
+    });
+    expect(expanded.text).not.toContain('id="secret"');
+    expect(expanded.text).toContain('<ade-mention kind="chat" id="s-new"');
+  });
+
   it("pins displayText to the user's literal chips and expands the prompt text", async () => {
     const { service } = makeService();
     const expanded = await service.applyChatMentionExpansion({

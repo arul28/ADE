@@ -1823,10 +1823,19 @@ export async function createAdeRuntime(args: {
       }
       return desktopBridgeProbe.result;
     };
-    const desktopBridgeAttached = (): boolean => readDesktopBridgeProbe()?.attached === true;
+    const desktopBridgeAttached = (): boolean => {
+      const probe = readDesktopBridgeProbe();
+      if (probe?.attached === true) return true;
+      // A stale negative result should not win a race with a desktop that has
+      // just connected. The bridge clients are already live, so let the next
+      // operation use them while the fresh probe settles; an actually absent
+      // desktop will still return its normal bridge-unavailable error.
+      return Boolean(probe && desktopBridgeProbeInFlight && desktopBridgeHolder.current);
+    };
     /** Why the desktop app does not answer; null while it does or before the first probe. */
     const desktopBridgeUnattachedReason = (): string | null => {
       const probe = readDesktopBridgeProbe();
+      if (desktopBridgeProbeInFlight) return null;
       return probe && !probe.attached ? probe.reason : null;
     };
     // Windows/Linux App Control recording runs in the desktop's encoder, over

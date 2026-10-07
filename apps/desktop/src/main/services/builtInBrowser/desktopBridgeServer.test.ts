@@ -10,8 +10,13 @@ import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { startBuiltInBrowserDesktopBridgeServer } from "./desktopBridgeServer";
 import { requestDesktopAppUpdate } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
+import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 
 const tempDirs: string[] = [];
+
+it("keeps renderer-only tab attachment out of the desktop bridge allowlist", () => {
+  expect(BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS).not.toContain("handTabToChat");
+});
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
@@ -167,7 +172,6 @@ describe("app update over the desktop bridge", () => {
     try {
       const routing = await requestDesktopAppUpdate({
         socketPath,
-        authToken: bridge.authToken,
         targetVersion: "1.2.91",
       });
       expect(routing).toEqual({
@@ -179,18 +183,11 @@ describe("app update over the desktop bridge", () => {
     }
   });
 
-  it.each([
-    // Each is "no capable app": the brain must fall back to its standalone
-    // update rather than report a failure the user cannot act on.
-    ["a stale token", "wrong-token", true],
-    ["an app with no updater to offer", null, false],
-    ["no token at all", "", true],
-  ])("treats %s as no app attached", async (_label, token, withInstaller) => {
-    const { bridge, socketPath } = await startBridge(withInstaller ? installingInstaller() : null);
+  it("treats an app with no updater to offer as no app attached", async () => {
+    const { bridge, socketPath } = await startBridge(null);
     try {
       const routing = await requestDesktopAppUpdate({
         socketPath,
-        authToken: token === null ? bridge.authToken : token,
         targetVersion: "1.2.91",
       });
       expect(routing.attached).toBe(false);
@@ -202,7 +199,6 @@ describe("app update over the desktop bridge", () => {
   it("treats a bridge nobody listens on as no app attached", async () => {
     const routing = await requestDesktopAppUpdate({
       socketPath: bridgePath("absent"),
-      authToken: "token",
       targetVersion: "1.2.91",
       connectTimeoutMs: 1_000,
     });
@@ -213,8 +209,8 @@ describe("app update over the desktop bridge", () => {
 /**
  * `ade scene preview` reaches the desktop over this socket: the runtime daemon
  * sends the agent's scene source and gets back the screenshot and the problems.
- * The source is the only input, the bridge token is the only gate, and a scene
- * over the preview cap is refused before it reaches Chromium.
+ * The source is the only input, and a scene over the preview cap is refused
+ * before it reaches Chromium.
  */
 describe("scene preview over the desktop bridge", () => {
   const bridges: Array<{ dispose: () => void }> = [];
@@ -237,15 +233,13 @@ describe("scene preview over the desktop bridge", () => {
   }
 
   async function callRender(
-    bridge: { socketPath: string; authToken: string },
+    bridge: { socketPath: string },
     params: Record<string, unknown>,
-    token: string | null = bridge.authToken,
   ): Promise<unknown> {
     const client = await JsonRpcClient.connect(bridge.socketPath);
     try {
       return await client.request("scene_preview.render", {
         ...params,
-        ...(token === null ? {} : { __adeDesktopBridgeAuth: token }),
       }, { timeoutMs: 5_000 });
     } finally {
       client.close();
@@ -272,12 +266,6 @@ describe("scene preview over the desktop bridge", () => {
     const result = await callRender(bridge, { request: { source: '<p>x</p>', theme: "light" } });
     expect(result).toEqual(RESULT);
     expect(seen).toEqual([{ source: '<p>x</p>', theme: "light" }]);
-  });
-
-  it("refuses a render without the bridge token", async () => {
-    const bridge = await startSceneBridge(async () => RESULT);
-    await expect(callRender(bridge, { request: { source: "<p>x</p>" } }, null))
-      .rejects.toThrow(/authentication failed/i);
   });
 
   it("refuses a source over the preview size cap before rendering", async () => {

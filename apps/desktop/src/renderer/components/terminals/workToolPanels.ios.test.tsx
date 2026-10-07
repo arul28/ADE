@@ -76,6 +76,7 @@ function props(): WorkToolPanelProps {
     onClearDiffSelection: vi.fn(),
     onAddAttachment: undefined,
     onAddBuiltInBrowserContext: undefined,
+    onAttachBrowserTab: undefined,
     onAddAppControlContext: undefined,
     onAddIosContext: undefined,
     onInsertDraft: undefined,

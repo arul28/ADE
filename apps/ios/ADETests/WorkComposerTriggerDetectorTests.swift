@@ -561,6 +561,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .model: return "model"
     case .permission: return "permission"
     case .skill: return "skill"
+    case .browserTab: return "browser_tab"
     case .adeLink: return "ade_link"
     }
   }
