@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,10 +51,6 @@ function progressFiles(channel: string | null) {
     cancel: `${heartbeat}.cancel`,
     log: path.join(dir, "progress.log"),
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function processAlive(pid: number): boolean {
@@ -120,14 +117,21 @@ export function startWindowsInstallProgress(args: {
   log: (event: string, data?: Record<string, unknown>) => void;
 }): (() => void) | null {
   const files = progressFiles(args.channel);
+  // Names this attempt in the cancel file, so a window from another attempt
+  // never acts on a cancel that is not its own.
+  const runId = randomUUID();
   const unavailable = (reason: string, error: unknown) => {
-    args.log("autoUpdate.install_progress_unavailable", { reason, message: errorMessage(error) });
+    args.log("autoUpdate.install_progress_unavailable", {
+      reason,
+      message: error instanceof Error ? error.message : String(error),
+    });
     return null;
   };
   try {
     fs.mkdirSync(files.dir, { recursive: true });
     fs.copyFileSync(path.join(args.resourcesPath, "ade-cli", "windows-update-progress.ps1"), files.script);
     fs.writeFileSync(files.args, JSON.stringify({
+      runId,
       targetVersion: args.targetVersion,
       currentVersion: args.currentVersion,
       productName: args.productName,
@@ -138,10 +142,7 @@ export function startWindowsInstallProgress(args: {
       logPath: files.log,
       installerPath: args.installerPath ?? "",
     }));
-    // The cancel file is left alone: a window from an earlier attempt that has
-    // not ticked yet still needs to see it. The new window only honors a cancel
-    // written after it started.
-    for (const stale of [files.heartbeat, files.log]) fs.rmSync(stale, { force: true });
+    for (const stale of [files.heartbeat, files.cancel, files.log]) fs.rmSync(stale, { force: true });
   } catch (error) {
     return unavailable("prepare_failed", error);
   }
@@ -179,7 +180,7 @@ export function startWindowsInstallProgress(args: {
   // quits, so a cancel that cannot be written still ends it.
   return () => {
     try {
-      fs.writeFileSync(files.cancel, String(process.pid));
+      fs.writeFileSync(files.cancel, runId);
     } catch {
       // See above.
     }

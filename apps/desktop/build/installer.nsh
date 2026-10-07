@@ -26,7 +26,7 @@
 ; running in place never stops itself. If PowerShell cannot start at all, the
 ; check steps aside the way the default does without PowerShell.
 ; ADE_CHECK_MODE picks the pass: "probe" only reports (exit 1 = running),
-; "stop" stops them (exit 0 = gone, 2 = still running after 10s).
+; "stop" stops them (exit 0 = gone, 2 = still running 10s after forcing began).
 ; ADE_CHECK_GRACE_SECONDS is how long "stop" only waits before it forces. An
 ; update gets 4s: electron-updater starts the installer and then quits ADE, and
 ; ADE's quit is what ends its agent and terminal children (they live outside
@@ -36,9 +36,10 @@
   System::Call 'kernel32::GetCurrentProcessId()i.r9'
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_INSTDIR", t "$INSTDIR")i'
   System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_SELF_PID", t "$9")i'
-  System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_GRACE_SECONDS", t "0")i'
   ${If} ${isUpdated}
     System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_GRACE_SECONDS", t "4")i'
+  ${Else}
+    System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_GRACE_SECONDS", t "0")i'
   ${EndIf}
   ${IfNot} ${isUpdated}
     System::Call 'kernel32::SetEnvironmentVariable(t "ADE_CHECK_MODE", t "probe")i'
@@ -108,6 +109,7 @@
   ; This runs on updates too. An uninstaller older than the -Updating branch
   ; below removes the rule on every update, and the script is idempotent and
   ; about a second, so putting the rule back costs less than losing it.
+  ;
   ; Pre-authorize the LAN sync listener so first run does not raise the Windows
   ; Firewall prompt. Windows only accepts firewall rules from an elevated
   ; process and this installer is per-user (perMachine/allowElevation are both

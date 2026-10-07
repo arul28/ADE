@@ -423,6 +423,15 @@ if (-not $SkipProtocolRemoval -and $normalizedPackageChannel -eq "stable" -and -
   Remove-OwnedStableProtocolRegistration (Join-Path $resolvedInstallDir $AppExecutableName)
 }
 
+# The update window's working folder (windowsInstallProgress.ts). Only on a real
+# uninstall: an update is about to use it.
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  $updateProgressDir = Join-Path $env:LOCALAPPDATA "ADE\update-progress-$normalizedPackageChannel"
+  if (Test-Path -LiteralPath $updateProgressDir -PathType Container) {
+    Remove-Item -LiteralPath $updateProgressDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # The capture helper registers NOTHING that survives it: its WH_KEYBOARD_LL hook
 # dies with the process, and it writes no registry keys, no services and no
 # startup entries. The one thing it can leave behind is a directory of PNGs in

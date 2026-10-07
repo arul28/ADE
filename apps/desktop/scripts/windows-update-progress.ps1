@@ -41,6 +41,7 @@ function Read-ConfigString([string]$Name, [string]$Default = "") {
   if ($null -eq $value) { return $Default }
   return [string]$value
 }
+$RunId = Read-ConfigString "runId"
 $TargetVersion = Read-ConfigString "targetVersion"
 $AppExe = Read-ConfigString "appExe"
 $HeartbeatPath = Read-ConfigString "heartbeatPath"
@@ -56,6 +57,10 @@ $TimeoutSeconds = 600
 # ADE quits for the installer to appear.
 $AppOpenGraceSeconds = 20
 $InstallerStartGraceSeconds = 60
+# Without the installer's path there is no "installer exited" signal, so the
+# outcome is judged this long after ADE quit (an update measures well under a
+# minute) rather than at the overall timeout.
+$UnknownInstallerOutcomeSeconds = 180
 if ([string]::IsNullOrWhiteSpace($TargetVersion) -or [string]::IsNullOrWhiteSpace($AppExe) -or [string]::IsNullOrWhiteSpace($HeartbeatPath)) {
   throw "progress-args.json needs targetVersion, appExe and heartbeatPath."
 }
@@ -306,12 +311,11 @@ $timer.Add_Tick({
 
     if ($state.phase -eq "failed") { return }
 
-    # ADE unwound the install and is staying open: nothing to show. Only a
-    # cancel written after this window started is for it; an older one belongs
-    # to an earlier attempt.
-    $cancelFile = Get-Item -LiteralPath "$HeartbeatPath.cancel" -ErrorAction SilentlyContinue
-    if ($cancelFile -and $cancelFile.LastWriteTime -ge $startedAt) {
-      Remove-Item -LiteralPath $cancelFile.FullName -Force -ErrorAction SilentlyContinue
+    # ADE unwound the install and is staying open: nothing to show. The cancel
+    # names the attempt it is for, so one meant for another window is ignored.
+    $cancelFor = Get-Content -LiteralPath "$HeartbeatPath.cancel" -Raw -ErrorAction SilentlyContinue
+    if ($cancelFor -and $RunId -and $cancelFor.Trim() -eq $RunId) {
+      Remove-Item -LiteralPath "$HeartbeatPath.cancel" -Force -ErrorAction SilentlyContinue
       Write-ProgressLog "cancelled"
       $window.Close()
       return
@@ -390,6 +394,10 @@ $timer.Add_Tick({
       ($now - $state.installerGoneAt).TotalSeconds -ge $AppOpenGraceSeconds
     $installerNeverRan = $installerKnown -and -not $state.installerSeen -and $state.parentGoneAt -and
       ($now - $state.parentGoneAt).TotalSeconds -ge $InstallerStartGraceSeconds
+    if (-not $installerKnown -and -not $opening -and $state.parentGoneAt -and
+      ($now - $state.parentGoneAt).TotalSeconds -ge $UnknownInstallerOutcomeSeconds) {
+      $installerFinished = $true
+    }
     if ($installerFinished -or $installerNeverRan) {
       $installed = Get-InstalledVersion
       if ($installed -eq $TargetVersion) {

@@ -1736,7 +1736,7 @@ export function createAutoUpdateService({
   }
 
   async function unwindArmedInstall(rollbackReason: string): Promise<void> {
-    cancelInstallHandoffSurface();
+    runInstallHandoffCancel();
     clearQuitDeadline();
     installQuitArmed = false;
     clearPendingInstallUpdate();
@@ -1919,7 +1919,7 @@ export function createAutoUpdateService({
     });
   }
 
-  function cancelInstallHandoffSurface(): void {
+  function runInstallHandoffCancel(): void {
     const cancel = cancelInstallHandoff;
     cancelInstallHandoff = null;
     if (!cancel) return;
@@ -2027,7 +2027,7 @@ export function createAutoUpdateService({
         currentPhase = "install";
         // Started before the quit deadline is armed, so whatever the hook
         // costs is not counted as quitting.
-        cancelInstallHandoffSurface();
+        runInstallHandoffCancel();
         try {
           cancelInstallHandoff = onInstallHandoff?.({
             version: snapshot.version ?? installVersion,
