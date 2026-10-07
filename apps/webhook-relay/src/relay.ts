@@ -2,6 +2,7 @@ import {
   type AccountMappingRow,
   base64ToBytes,
   base64UrlEncode,
+  claimPeriodicRun,
   constantTimeEqual,
   contentLengthExceedsLimit,
   type CursorRow,
@@ -1429,6 +1430,8 @@ export function slimGitHubPayloadForStorage(
 }
 
 async function pruneOldEvents(env: RelayEnv): Promise<void> {
+  // Retention is measured in days; sweeping on every webhook only adds reads.
+  if (!claimPeriodicRun(env.DB, "prune-github-events", 10 * 60 * 1000)) return;
   const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
   const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
@@ -2131,11 +2134,47 @@ async function authorizeCursorEventsRead(
     return { accountId: null, secretId: CURSOR_ENV_SECRET_ID };
   }
   if (bearer) {
-    const registered = await listCursorWebhookSecrets(env);
-    const match = registered.find((row) => constantTimeEqual(bearer, row.webhook_secret));
-    if (match) return { accountId: match.account_id, secretId: match.id };
+    // Indexed point lookup. Reading every registered secret here, once per
+    // client poll, was the relay's largest D1 bill line.
+    const match = await env.DB
+      .prepare("select id, webhook_secret, account_id, last_polled_at from cursor_webhook_secrets where webhook_secret = ? limit 1")
+      .bind(bearer)
+      .first<CursorWebhookSecretRow & { last_polled_at: string | null }>();
+    if (match && constantTimeEqual(bearer, match.webhook_secret)) {
+      await touchCursorWebhookSecret(env, match.id, match.last_polled_at);
+      return { accountId: match.account_id, secretId: match.id };
+    }
   }
   return json({ ok: false, error: "unauthorized" }, { status: 401 });
+}
+
+const CURSOR_SECRET_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
+const CURSOR_SECRET_IDLE_DAYS = 30;
+
+// Records that a secret is still in use, at most once an hour per secret, so
+// the sweep below can tell live installs from abandoned registrations.
+async function touchCursorWebhookSecret(env: RelayEnv, id: string, lastPolledAt: string | null): Promise<void> {
+  const last = lastPolledAt ? Date.parse(lastPolledAt) : Number.NaN;
+  if (Number.isFinite(last) && Date.now() - last < CURSOR_SECRET_TOUCH_INTERVAL_MS) return;
+  await env.DB
+    .prepare("update cursor_webhook_secrets set last_polled_at = ? where id = ?")
+    .bind(new Date().toISOString(), id)
+    .run();
+}
+
+// Unowned secrets nobody has polled with for a month are abandoned; a client
+// that comes back gets a 401 and re-registers its stored secret.
+async function sweepIdleCursorWebhookSecrets(env: RelayEnv): Promise<void> {
+  if (!claimPeriodicRun(env.DB, "sweep-cursor-secrets", 60 * 60 * 1000)) return;
+  const cutoff = new Date(Date.now() - CURSOR_SECRET_IDLE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare(`
+      delete from cursor_webhook_secrets
+       where account_id is null
+         and coalesce(last_polled_at, registered_at) < ?
+    `)
+    .bind(cutoff)
+    .run();
 }
 
 async function handleCursorRegister(request: Request, env: RelayEnv): Promise<Response> {
@@ -2209,6 +2248,11 @@ async function handleCursorRegister(request: Request, env: RelayEnv): Promise<Re
       `)
       .bind(accountId, id)
       .run();
+  }
+  try {
+    await sweepIdleCursorWebhookSecrets(env);
+  } catch {
+    // Sweeping is opportunistic; registration already committed.
   }
   return json({ ok: true, secretId: id });
 }

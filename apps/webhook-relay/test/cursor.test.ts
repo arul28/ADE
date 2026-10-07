@@ -59,6 +59,12 @@ class FakeCursorD1Database {
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
+    if (sql.includes("from cursor_webhook_secrets where webhook_secret = ?")) {
+      const row = this.secrets.find((entry) => entry.webhook_secret === values[0]);
+      return row
+        ? ({ id: row.id, webhook_secret: row.webhook_secret, account_id: row.account_id, last_polled_at: null } as T)
+        : null;
+    }
     if (sql.includes("select event_id from cursor_events")) {
       const row = this.events.find((entry) => entry.event_id === values[0]);
       return row ? ({ event_id: row.event_id } as T) : null;
