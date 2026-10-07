@@ -458,9 +458,11 @@ bounded by `boundChatSourceRefs` (http(s) only, deduped, 20 per event).
   button. A cited row carries a small `cited` mark. Opened from a turn chip it
   lists that turn's sources with `This turn · Show all`.
 - **Turn chip.** `N sources` with up to three stacked favicons sits on the
-  turn-end line (`DoneTurnDivider`, next to the proof chip), not in the
-  answer's hover footer. A turn's list keeps its identity while its sources
-  are unchanged, so streaming does not re-render every turn-end row.
+  turn-end line (`DoneTurnDivider`, next to the proof chip) on wider screens,
+  not in the answer's hover footer. It is hidden on mobile to keep the turn
+  summary readable; the Sources section remains available in the chat Actions
+  drawer. A turn's list keeps its identity while its sources are unchanged, so
+  streaming does not re-render every turn-end row.
 - **Fold row.** `· N sources` behind a globe icon (see Turn fold).
 - **Rows.** Provider web tool rows (`webSearch`, `websearch`, `webfetch`,
   `FetchUrl`, …) use the same globe meta as Claude's `WebSearch`/`WebFetch`

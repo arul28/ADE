@@ -4133,7 +4133,7 @@ function TurnSourcesChip({
       <span>{label}</span>
     </>
   );
-  const className = "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45";
+  const className = "hidden shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 sm:inline-flex";
   return onOpen ? (
     <button
       type="button"
