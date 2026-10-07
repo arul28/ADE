@@ -224,3 +224,11 @@ func workParseMachineFilter(_ raw: String) -> Set<String> {
 func workSerializeMachineFilter(_ ids: Set<String>) -> String {
   ids.sorted().joined(separator: "\n")
 }
+
+/// The roster row of a chat that lives on another machine's checkout.
+func workRemoteMachineRosterChat(sessionId: String, in repos: [WorkRemoteMachineRepo]) -> RemoteRosterChat? {
+  for repo in repos {
+    if let chat = repo.chats.first(where: { $0.id == sessionId }) { return chat }
+  }
+  return nil
+}

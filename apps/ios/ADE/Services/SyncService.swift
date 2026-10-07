@@ -1005,6 +1005,18 @@ struct SyncConnectAttemptTarget: Equatable {
 /// and without those two the connection card cannot say "MacBook Pro (97) is
 /// asleep — you're still on Arul's Mac Studio" once the dust settles. Both
 /// default to absent so a failure that knows neither reads exactly as before.
+/// A project the machine would not open, for the hub to say so.
+struct SyncProjectOpenFailure: Equatable, Identifiable {
+  let id = UUID()
+  let projectName: String
+  let message: String
+}
+
+/// Why adding a machine next to the primary failed; shown on that machine's row.
+struct SyncPairAlongsideFailure: Error, Equatable {
+  let message: String
+}
+
 struct SyncConnectAttemptFailure: Equatable {
   let message: String
   var machineName: String?
@@ -1340,6 +1352,22 @@ func syncStableHostIdentityChanged(
   guard let previousIdentity = syncStableHostIdentity(previous),
         let nextIdentity = syncStableHostIdentity(next) else { return false }
   return previousIdentity != nextIdentity
+}
+
+/// The per-project-DB changeset cursors a rebuilt profile keeps: those of the
+/// same machine only. A profile for another machine (or one that never learned
+/// its identity) carries none, so one machine's cursors never reach another.
+func syncCarriedRemoteDbVersionBySite(
+  from previous: HostConnectionProfile?,
+  helloHostIdentity: String?
+) -> [String: Int]? {
+  guard let previous,
+        let bySite = previous.remoteDbVersionBySite, !bySite.isEmpty,
+        let previousIdentity = previous.machineIdentity,
+        let helloIdentity = nonEmptyTrimmed(helloHostIdentity)?.lowercased(),
+        previousIdentity == helloIdentity
+  else { return nil }
+  return bySite
 }
 
 func syncConnectionRouteKey(_ address: String) -> String {
@@ -4396,6 +4424,14 @@ final class SyncService: ObservableObject {
   private(set) var focusedSocketMachineKey: String?
   /// Machines the focused connection is dialing right now.
   private(set) var focusedDialingMachineKeys: Set<String> = []
+  /// The last project open the machine refused (it follows another machine,
+  /// the switch failed). The hub shows it: a refused open used to look like a
+  /// tap that hung.
+  @Published var projectOpenFailure: SyncProjectOpenFailure?
+  /// Account adoptions running next to the primary
+  /// (`pairAccountMachineAlongsidePrimary`): they speak as roster peers and
+  /// leave the primary's connect copy alone.
+  private var adoptionsAlongsidePrimary = 0
   /// The roster connections to every other live machine. Not owned here.
   weak var machineFleet: MachineFleet?
   #if DEBUG
@@ -5134,6 +5170,11 @@ final class SyncService: ObservableObject {
           try await self.switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration)
         } catch {
           guard self.isCurrentProjectSelection(selectionGeneration) else { return }
+          syncConnectLog.notice("ADE_SYNC_TRACE project_switch failure=\(syncLogErrorSummary(error), privacy: .public)")
+          self.projectOpenFailure = SyncProjectOpenFailure(
+            projectName: project.displayName,
+            message: SyncUserFacingError.message(for: error)
+          )
           self.logProjectSwitchPhase("failed", completed: true)
           self.lastError = SyncUserFacingError.message(for: error)
           self.setDomainStatus(SyncDomain.allCases, phase: .failed, error: self.lastError)
@@ -5198,6 +5239,7 @@ final class SyncService: ObservableObject {
       try await switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration, dismissHome: false)
     } catch {
       if isCurrentProjectSelection(selectionGeneration) {
+        syncConnectLog.notice("ADE_SYNC_TRACE project_switch failure=\(syncLogErrorSummary(error), privacy: .public)")
         logProjectSwitchPhase("failed", completed: true)
         lastError = SyncUserFacingError.message(for: error)
       }
@@ -5745,6 +5787,8 @@ final class SyncService: ObservableObject {
     let targetProject = result.project ?? project
     let previousActiveProjectId = activeProjectId
     let previousActiveProjectRootPath = activeProjectRootPath
+    // The project being left keeps its latest cursor in the carried map.
+    persistPendingRemoteDbCursorProfile()
     let previousProfile = loadProfile()
     let previousToken = tokenForProfile(previousProfile)
     let previousLatestRemoteDbVersion = latestRemoteDbVersion
@@ -5839,6 +5883,11 @@ final class SyncService: ObservableObject {
       authKind: resolvedAuthKind,
       pairedDeviceId: resolvedPairedDeviceId,
       lastRemoteDbVersion: 0,
+      // Same machine, another project: its other projects' cursors stay.
+      remoteDbVersionBySite: syncCarriedRemoteDbVersionBySite(
+        from: previousProfile,
+        helloHostIdentity: connection.hostIdentity.deviceId
+      ),
       lastHostDeviceId: connection.hostIdentity.deviceId,
       lastSuccessfulAddress: addressCandidates.first ?? relayCandidates.first,
       savedAddressCandidates: addressCandidates,
@@ -7028,15 +7077,18 @@ final class SyncService: ObservableObject {
     // profile has a usable key, and would equally suppress the restore below.
     // A key we cannot compute is not proof of anything.
     let targetKey = profileStorageKey(profile)
+    // `activeHostProfile` was retargeted before dialling, so it alone cannot
+    // tell a fresh link from the previous machine's socket that survived an
+    // early bail-out. The socket's own machine (set from its hello) can.
     if syncConnectReachedTarget(
       isAttached: isAttached,
       attachedStorageKey: activeHostProfile.flatMap(profileStorageKey),
       targetStorageKey: targetKey
-    ) { return true }
+    ), focusedSocketMachineKey == targetKey { return true }
     lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reconnect to \(host.hostName).")
     if let previousProfile,
        targetKey == nil || profileStorageKey(previousProfile) != targetKey {
-      if wasAttached {
+      if wasAttached, !autoReconnectPausedByUser {
         await restorePreviousConnection(previousProfile)
       } else if tokenForProfile(previousProfile) != nil {
         saveProfile(previousProfile)
@@ -7411,7 +7463,9 @@ final class SyncService: ObservableObject {
       guard let signingPublicKey else {
         throw AccountAdoptionIdentityVerificationError(machineName: machineName)
       }
-      publishAccountConnectStage("Verifying it's really \(machineName)…")
+      if adoptionsAlongsidePrimary == 0 {
+        publishAccountConnectStage("Verifying it's really \(machineName)…")
+      }
       challenge = try await performAccountAdoptionChallenge(
         transport: transport,
         expectedHostIdentity: expectedHostIdentity,
@@ -7480,7 +7534,11 @@ final class SyncService: ObservableObject {
       transport,
       type: "hello",
       payload: [
-        "peer": self.currentPeerMetadata(connectionAttempt: connectionAttempt),
+        // Next to the primary the adoption socket is a roster peer: it closes
+        // once the pairing is saved, so the host must not start a replica.
+        "peer": adoptionsAlongsidePrimary > 0
+          ? self.fleetPeerMetadata(connectionAttempt: connectionAttempt)
+          : self.currentPeerMetadata(connectionAttempt: connectionAttempt),
         "auth": auth,
       ],
       timeoutNanoseconds: connectAttemptBudget.overallNanoseconds,
@@ -7953,7 +8011,13 @@ final class SyncService: ObservableObject {
       let wasAttached = isAttached
       saveProfile(existing)
       await reconnectIfPossible(userInitiated: true)
-      let reconnected = isAttached
+      // Attached to THIS machine: a still-open socket to the previous one
+      // (the reconnect bailed out early) is not this machine connecting.
+      let reconnected = syncConnectReachedTarget(
+        isAttached: isAttached,
+        attachedStorageKey: activeHostProfile.flatMap(profileStorageKey),
+        targetStorageKey: profileStorageKey(existing)
+      ) && focusedSocketMachineKey == profileStorageKey(existing)
       ProductAnalytics.shared.captureMachineAdoptionOutcome(reconnected ? .reconnected : .failed)
       if !reconnected {
         lastConnectAttemptFailure = SyncConnectAttemptFailure(
@@ -7968,7 +8032,7 @@ final class SyncService: ObservableObject {
         if let previousProfile,
            syncNonEmpty(previousProfile.hostIdentity ?? previousProfile.lastHostDeviceId)
              != expectedHostIdentity {
-          if wasAttached {
+          if wasAttached, !autoReconnectPausedByUser {
             await restorePreviousConnection(previousProfile)
           } else if tokenForProfile(previousProfile) != nil {
             saveProfile(previousProfile)
@@ -8239,7 +8303,7 @@ final class SyncService: ObservableObject {
       if let previousProfile,
          syncNonEmpty(previousProfile.hostIdentity ?? previousProfile.lastHostDeviceId)
            != expectedHostIdentity {
-        if wasAttached {
+        if wasAttached, !autoReconnectPausedByUser {
           await restorePreviousConnection(previousProfile)
         } else if tokenForProfile(previousProfile) != nil {
           saveProfile(previousProfile)
@@ -8253,8 +8317,11 @@ final class SyncService: ObservableObject {
   /// deliberately allowed to be cleared by the restore's own `hello_ok` —
   /// `lastConnectAttemptFailure` is what keeps the failed attempt explainable
   /// once we are attached somewhere else again.
+  /// Never after the user disconnected during the attempt
+  /// (`autoReconnectPausedByUser`): a machine they just turned off must not
+  /// come back because a different machine failed to answer.
   private func restorePreviousConnection(_ profile: HostConnectionProfile) async {
-    guard tokenForProfile(profile) != nil else { return }
+    guard tokenForProfile(profile) != nil, !autoReconnectPausedByUser else { return }
     saveProfile(profile)
     // Re-point the attempt at the machine we are actually dialling now.
     // Leaving it on the machine that just failed would make the connecting copy
@@ -16421,6 +16488,12 @@ final class SyncService: ObservableObject {
   }
 
   private func saveProfileNow(_ profile: HostConnectionProfile?) {
+    // A cursor still waiting on its debounce belongs to the machine being
+    // left. Write it now, or it would land on the next machine's profile.
+    if pendingRemoteProfileDbVersion != nil,
+       syncStableHostIdentityChanged(previous: activeHostProfile, next: profile) {
+      persistPendingRemoteDbCursorProfile()
+    }
     let previousHostKey = activeHostStorageKey()
     let previousProfile = activeHostProfile ?? UserDefaults.standard.data(forKey: profileKey).flatMap {
       try? decoder.decode(HostConnectionProfile.self, from: $0)
@@ -20276,6 +20349,13 @@ final class SyncService: ObservableObject {
       at: connectedAt
     )
 
+    // The per-project-DB cursors belong to this machine and outlive one hello:
+    // dropping them made every project switch, and every return to this
+    // machine, replay the project's whole changeset history from 0.
+    let carriedDbVersionBySite = syncCarriedRemoteDbVersionBySite(
+      from: activeHostProfile,
+      helloHostIdentity: remoteHostIdentity
+    )
     let profile = HostConnectionProfile(
       hostIdentity: remoteHostIdentity ?? activeHostProfile?.hostIdentity ?? expectedHostIdentity,
       hostName: remoteHostName ?? activeHostProfile?.hostName,
@@ -20284,6 +20364,7 @@ final class SyncService: ObservableObject {
       authKind: authKind,
       pairedDeviceId: pairedDeviceId ?? activeHostProfile?.pairedDeviceId,
       lastRemoteDbVersion: latestRemoteDbVersion,
+      remoteDbVersionBySite: carriedDbVersionBySite,
       lastHostDeviceId: remoteHostIdentity ?? activeHostProfile?.lastHostDeviceId,
       lastSuccessfulAddress: connectedHost,
       savedAddressCandidates: savedCandidates,
@@ -25074,6 +25155,10 @@ extension SyncService {
     metadata.removeValue(forKey: "dbVersionBySite")
     metadata["capabilities"] = [
       "chunkedEnvelopes",
+      // The roster connection renews its relay account proof
+      // (`MachineConnection.startRelayReauthorization`). Without this the host
+      // closes a relay roster socket the moment its proof expires.
+      "relayReauthorizeV1",
       "binaryEnvelopes",
       "foldedReplay",
       "mobileChatSlimV1",
@@ -25168,6 +25253,30 @@ extension SyncService {
       remoteMachineChatsBySession[sessionId] = entry
     }
     workListRemoteChats = next
+  }
+
+  /// The roster row of a chat that lives on another connected machine: the
+  /// machine its routing names first, else any connected machine listing it.
+  /// Chats there never fetch a host summary, so this row is what names their
+  /// provider and model.
+  func remoteMachineRosterChat(sessionId: String) -> RemoteRosterChat? {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, let fleet = machineFleet else { return nil }
+    func find(in machine: MachineFleet.Machine) -> RemoteRosterChat? {
+      for project in machine.projects {
+        if let chat = project.chats.first(where: { $0.id == trimmed }) { return chat }
+      }
+      return nil
+    }
+    if let key = remoteMachineChatsBySession[trimmed]?.machineKey,
+       let machine = fleet.machine(for: key),
+       let chat = find(in: machine) {
+      return chat
+    }
+    for machine in fleet.machines where machine.machineKey != focusedMachineKey {
+      if let chat = find(in: machine) { return chat }
+    }
+    return nil
   }
 
   func isRemoteMachineChat(sessionId: String) -> Bool {
@@ -25412,7 +25521,8 @@ extension SyncService {
 
   /// Settings "Forget on this phone": the machine leaves the connected set,
   /// its saved pairing (profile and token) is dropped, and it is hidden from
-  /// this phone's lists until it comes back (`HiddenMachineStore`).
+  /// this phone's lists while it is offline (`HiddenMachineStore`). An online
+  /// account machine stays listed as Available, ready to connect again.
   func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String, isAvailableNow: Bool) {
     remoteLaneDetails.removeAll()
     if let machineKey {
@@ -25443,10 +25553,185 @@ extension SyncService {
     return true
   }
 
+  /// Adds an account machine next to the primary, the way desktop adds one:
+  /// the primary connection is never touched. A machine this phone already
+  /// holds a pairing for joins the connected set directly. Otherwise the
+  /// account adoption runs on its own socket (a roster peer, so the host keeps
+  /// no replica for it), the device-bound secret is saved as a saved machine
+  /// (not the active one), that socket closes, and the fleet dials the machine
+  /// like any other connected machine. Returns the machine key, or the
+  /// failure for that machine's row (the primary's connection state and copy
+  /// are not touched either way).
+  func pairAccountMachineAlongsidePrimary(
+    _ machine: AccountMachine,
+    authorization: AccountPairingAuthorization
+  ) async -> Result<String, SyncPairAlongsideFailure> {
+    func fail(_ message: String) -> Result<String, SyncPairAlongsideFailure> {
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      return .failure(SyncPairAlongsideFailure(message: message))
+    }
+    let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !owner.isEmpty,
+          AccountService.shared.isPairingCommitAuthorized(authorization),
+          let expectedHostIdentity = syncNonEmpty(machine.deviceId),
+          syncKnownSecureMachineIsAttemptable(directoryOnline: machine.online, hasStableIdentity: true)
+    else { return fail("Sign in again, then try connecting.") }
+    ProductAnalytics.shared.captureQuickConnect(.accountMachine)
+
+    let directHosts = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind != .relay else { return nil }
+      if let host = syncNonEmpty(endpoint.host) { return host }
+      return endpoint.url.flatMap(syncEndpointHost)
+    })
+    let relayRoutes = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind == .relay,
+            let url = syncNonEmpty(endpoint.url),
+            syncIsFullWebSocketRoute(url),
+            URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
+      return url
+    })
+
+    // Already paired on this phone (the row only looked unpaired, e.g. a
+    // pairing the fleet had not listed yet): learn the advertised routes and
+    // connect it. No adoption, no new secret.
+    var saved = loadSavedProfilesRaw()
+    // Only a device-bound ("paired") secret: anything else adopts afresh below.
+    if let (key, existing) = saved.first(where: { _, profile in
+      profile.authKind == "paired"
+        && profile.machineIdentity == expectedHostIdentity.lowercased()
+        && tokenForProfile(profile) != nil
+    }) {
+      guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
+        return fail("This saved computer belongs to a different signed-in account.")
+      }
+      var updated = existing
+      updated.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + directHosts)
+      updated.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + relayRoutes)
+      updated.relayAccountOwnerId = owner
+      updated.updatedAt = syncDateFormatter.string(from: Date())
+      saved[key] = updated
+      saveSavedProfiles(saved)
+      machineFleet?.savedMachinesChanged()
+      machineFleet?.keepLive(machineKey: key)
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.reconnected)
+      return .success(key)
+    }
+
+    let signingPublicKey: Curve25519.Signing.PublicKey?
+    do {
+      signingPublicKey = try AdoptChannelCrypto.signingPublicKey(fromOptionalDirectoryValue: machine.pubkey)
+    } catch {
+      return fail(AccountAdoptionIdentityVerificationError(machineName: machine.displayName).localizedDescription)
+    }
+    let routes = accountAdoptionRoutes(for: machine, hasSigningKey: signingPublicKey != nil)
+    guard !routes.isEmpty else {
+      return fail("That computer is not ready for account connection yet. Open ADE on the computer and try again.")
+    }
+    let classifiedDirectEndpoints = machine.reachableEndpoints.compactMap {
+      endpoint -> (kind: AccountMachineEndpoint.Kind, attempt: SyncConnectionEndpointAttempt)? in
+      guard endpoint.kind != .relay, let attempt = syncAccountAdoptionEndpointAttempt(endpoint) else { return nil }
+      return (endpoint.kind, attempt)
+    }
+    let lanHosts = deduplicatedAddresses(classifiedDirectEndpoints.compactMap { $0.kind == .lan ? $0.attempt.address : nil })
+    let tailnetHosts = deduplicatedAddresses(classifiedDirectEndpoints.compactMap { $0.kind == .tailnet ? $0.attempt.address : nil })
+    let preferredDirectPort = classifiedDirectEndpoints.first(where: { $0.kind == .lan })?.attempt.port
+      ?? classifiedDirectEndpoints.first(where: { $0.kind == .tailnet })?.attempt.port
+
+    // The primary's attempt generation, NOT a new one: the adoption must not
+    // supersede (or be mistaken for) the primary connection. If the primary
+    // does start a new attempt meanwhile, this adoption is abandoned.
+    let generation = connectAttemptGeneration
+    adoptionsAlongsidePrimary += 1
+    defer { adoptionsAlongsidePrimary -= 1 }
+    let routesByEndpoint = Dictionary(routes.map { ($0.endpoint, $0) }, uniquingKeysWith: { first, _ in first })
+    do {
+      let winner: AdoptedConnectionCandidate
+      do {
+        winner = try await raceAccountAdoptionCandidates(
+          syncConnectionRaceCandidatePlan(rankedAttempts: routes.map(\.endpoint)),
+          routesByEndpoint: routesByEndpoint,
+          expectedHostIdentity: expectedHostIdentity,
+          signingPublicKey: signingPublicKey,
+          machineName: machine.displayName,
+          owner: owner,
+          authorization: authorization,
+          connectAttemptGeneration: generation
+        )
+      } catch let failure as AccountAdoptionRaceFailure {
+        throw failure.underlying
+      }
+      defer { winner.task.cancel(with: .goingAway, reason: nil) }
+      let route = winner.route
+      let key: String = try await performAuthorizedAccountPairingCommit(
+        authorization: authorization,
+        receiveHello: { winner.helloPayload },
+        prepare: { raw -> (secret: String, profile: HostConnectionProfile) in
+          guard let payload = raw as? [String: Any],
+                let brain = payload["brain"] as? [String: Any],
+                self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
+            throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
+          }
+          guard let secret = syncResolveAccountHelloPairedSecret(
+            payload: payload,
+            expectedDeviceId: self.deviceId,
+            storedSecret: self.storedPairedSecret(forHostIdentity: expectedHostIdentity)
+          ) else {
+            throw NSError(domain: "ADE", code: 33, userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."])
+          }
+          let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
+          let profile = HostConnectionProfile(
+            hostIdentity: expectedHostIdentity,
+            hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
+            siteId: self.syncNonEmpty(brain["siteId"] as? String),
+            port: preferredDirectPort ?? route.endpoint.port,
+            authKind: "paired",
+            pairedDeviceId: self.deviceId,
+            lastRemoteDbVersion: 0,
+            lastHostDeviceId: expectedHostIdentity,
+            lastSuccessfulAddress: route.endpoint.address,
+            savedAddressCandidates: directHosts,
+            discoveredLanAddresses: lanHosts,
+            tailscaleAddress: tailnetHosts.first,
+            savedRelayCandidates: self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? [])),
+            accountOwnerId: owner,
+            relayAccountOwnerId: owner
+          )
+          return (secret, profile)
+        },
+        isAuthorized: { AccountService.shared.isPairingCommitAuthorized($0) },
+        isCurrentCandidate: { self.isCurrentConnectAttempt(generation) },
+        commit: { prepared in
+          guard let key = self.profileStorageKey(prepared.profile) else {
+            throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
+          }
+          self.keychain.saveToken(prepared.secret, hostKey: key)
+          var profiles = self.loadSavedProfilesRaw()
+          profiles[key] = prepared.profile
+          self.saveSavedProfiles(profiles)
+          return key
+        }
+      )
+      machineFleet?.savedMachinesChanged()
+      machineFleet?.keepLive(machineKey: key)
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
+      return .success(key)
+    } catch {
+      if error is AccountPairingConnectionSupersededError || error is CancellationError {
+        return fail("The connection to your primary machine changed while \(machine.displayName) was pairing. Try again.")
+      }
+      return fail(syncConnectFailureMessage(
+        wasWakingMachine: false,
+        transportMessage: SyncUserFacingError.message(for: error)
+      ))
+    }
+  }
+
   /// Open a project that lives on another machine: focus that machine, then
   /// select the project from its catalog.
   func openProject(_ project: MobileProjectSummary, onMachine machineKey: String) async {
-    guard await switchFocus(toMachineKey: machineKey) else { return }
+    // The machine being left stays connected, like a Settings switch: its
+    // projects stay on the hub and opening one again needs no new pairing.
+    guard await switchFocusKeepingPrevious(toMachineKey: machineKey) else { return }
     let root = normalizedProjectRoot(project.rootPath)
     let match = projects.first { candidate in
       candidate.id == project.id

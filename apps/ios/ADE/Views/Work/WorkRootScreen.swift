@@ -1127,7 +1127,8 @@ struct WorkRootListScreen: View, Equatable {
           initialOpeningDeliveryState: route.openingDeliveryState,
           initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
-          initialChatSummary: chatSummaries[route.sessionId],
+          initialChatSummary: chatSummaries[route.sessionId]
+            ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
           transitionNamespace: routeTransitionNamespace,
           isLive: inputs.isLive,
           navigationChrome: .pushedDetail,

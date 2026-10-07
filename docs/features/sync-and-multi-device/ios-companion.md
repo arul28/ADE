@@ -2508,8 +2508,40 @@ paired computers and lets the user hide one. Only machines in the user's
 connected set get a roster connection, and only their projects merge into the
 Hub and Work. Disconnecting a machine — the primary included — takes it out of
 that set until the user connects it again. With no primary attached, the next
-machine the user connects becomes primary. Pairing a new account machine makes
-it primary and keeps the previous primary connected when it was live. The Hub
+machine the user connects becomes primary. With a primary attached, connecting
+an account machine this phone never paired adds it next to the primary, as on
+desktop (`pairAccountMachineAlongsidePrimary`): the adoption runs on its own
+socket as a roster peer, the device-bound secret is saved as a saved machine
+(not the active one), and the fleet dials it. The primary's connection, state
+and connect copy are never touched, and the Settings toast says "connected"
+only once the new machine's link is live. With no primary, pairing makes the
+machine primary instead. Opening a project on another machine from the Hub
+keeps the previous primary connected (`switchFocusKeepingPrevious`), and a
+project the machine refuses to open (for example one set to follow another
+machine) shows its reason as a Hub toast. Settings rows report the route each
+machine's link actually took, and each row tracks its own action, so one
+machine connecting never locks the others.
+
+Roster connections renew their relay account proof the way the focused
+connection does (the hello advertises `relayReauthorizeV1`, and
+`MachineConnection` refreshes the lease before it expires). Without that the
+host closes a relay roster socket as soon as its proof expires, about a minute
+after connecting. A roster connection waiting out its retry backoff (5 s, 15 s,
+1 min, 5 min) dials again at once when the user taps Connect, the account
+directory shows the machine come online, the network changes, or the app comes
+back to the foreground.
+
+A saved machine keeps its per-project changeset cursors
+(`remoteDbVersionBySite`) across hellos, project switches and machine switches,
+so opening a project or returning to a machine resumes from where the phone
+left off instead of replaying the project's whole history. A cursor still
+waiting on its save delay is written to the machine being left before the
+active profile changes. A machine switch counts as reaching the target only
+when the socket's own hello names that machine, and a failed attempt never
+restores the previous machine after the user disconnected during it. A chat on
+another machine renders its composer's model and provider color from its
+roster row (`RemoteRosterChat.rosterChatSummary`), because that chat never
+fetches a host summary. The Hub
 chip reads "N machines" when more than one is live. The Hub composer lists the
 projects of every live machine; sending to another machine's project makes that
 machine primary first (`switchFocusKeepingPrevious`), then creates the chat

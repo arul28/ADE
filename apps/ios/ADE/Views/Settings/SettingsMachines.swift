@@ -153,9 +153,11 @@ func settingsMachines(
     let power = syncMachinePowerReadingIsFresh(directoryOnline: machine.online, lastSeenAt: lastSeen)
       ? accountMachinePowerClause(machine.power)
       : nil
+    // A connected machine names the route its link took, not the routes the
+    // directory advertises (a relay link used to read "Local network").
     let route = key == focusedKey
       ? syncService.lastConnectedRouteKind?.label ?? machine.routeLabel
-      : machine.routeLabel
+      : key.flatMap { fleet.machine(for: $0)?.routeKind?.label } ?? machine.routeLabel
     let detail = [route, power].compactMap { $0 }.joined(separator: " · ")
     result.append(SettingsMachine(
       id: "account-\(machine.machineKey)",
@@ -222,7 +224,9 @@ struct SettingsMachineLimitPrompt: Identifiable {
 
 @MainActor
 final class SettingsMachineController: ObservableObject {
-  @Published var busyMachineId: String?
+  /// Rows with an action in flight. Per row: one machine connecting never
+  /// locks the others.
+  @Published var busyMachineIds: Set<String> = []
   @Published var toast: ADEToastMessage?
   @Published var errors: [String: String] = [:]
   @Published var limitPrompt: SettingsMachineLimitPrompt?
@@ -252,7 +256,7 @@ final class SettingsMachineController: ObservableObject {
   }
 
   func connect(_ machine: SettingsMachine) {
-    guard let syncService, let fleet, busyMachineId == nil, !machine.isConnectedSet else { return }
+    guard let syncService, let fleet, !busyMachineIds.contains(machine.id), !machine.isConnectedSet else { return }
     errors[machine.id] = nil
     // With no primary attached the machine becomes primary (see
     // `performConnect`), so it does not count against the limit.
@@ -308,16 +312,31 @@ final class SettingsMachineController: ObservableObject {
       }
       return
     }
-    // Never paired on this phone: pair through the account. Pairing attaches
-    // the phone to it, so it becomes primary; the previous primary stays
-    // connected next to it.
+    // Never paired on this phone: pair through the account.
     guard let accountMachine = machine.account else { return }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
       errors[machine.id] = "Your account session ended. Sign in again, then connect."
       return
     }
-    run(machine, success: "\(machine.name) connected") {
-      await syncService.pairAccountMachineKeepingPrevious(accountMachine, authorization: authorization)
+    guard syncService.primaryIsAttached else {
+      // No primary to keep: this machine becomes the primary.
+      run(machine, success: "\(machine.name) connected") {
+        await syncService.pairAccountMachineKeepingPrevious(accountMachine, authorization: authorization)
+      }
+      return
+    }
+    // A primary is up: pair next to it, like desktop. The primary's connection
+    // is never touched, and the toast waits for the new machine's link.
+    var live = false
+    run(machine, successToast: { live ? "\(machine.name) connected" : "\(machine.name) paired · connecting…" }) {
+      switch await syncService.pairAccountMachineAlongsidePrimary(accountMachine, authorization: authorization) {
+      case .failure(let failure):
+        self.errors[machine.id] = failure.message
+        return false
+      case .success(let key):
+        live = await fleet.connect(machineKey: key, timeout: .seconds(15))
+        return true
+      }
     }
   }
 
@@ -393,13 +412,23 @@ final class SettingsMachineController: ObservableObject {
   }
 
   private func run(_ machine: SettingsMachine, success: String, _ body: @escaping () async -> Bool) {
-    busyMachineId = machine.id
+    run(machine, successToast: { success }, body)
+  }
+
+  /// `successToast` is read when the action finishes, so it can describe what
+  /// actually happened (connected, or paired and still connecting).
+  private func run(
+    _ machine: SettingsMachine,
+    successToast: @escaping () -> String,
+    _ body: @escaping () async -> Bool
+  ) {
+    busyMachineIds.insert(machine.id)
     Task { @MainActor in
       let ok = await body()
-      busyMachineId = nil
+      busyMachineIds.remove(machine.id)
       if ok {
         ADEHaptics.success()
-        toast = ADEToastMessage(text: success)
+        toast = ADEToastMessage(text: successToast())
       } else {
         ADEHaptics.error()
         if errors[machine.id] == nil, let syncService {
@@ -469,7 +498,7 @@ struct SettingsMachineSections: View {
     } label: {
       SettingsMachineRow(
         machine: machine,
-        busy: controller.busyMachineId == machine.id,
+        busy: controller.busyMachineIds.contains(machine.id),
         error: controller.errors[machine.id],
         onConnect: { controller.connect(machine) },
         onRetry: { controller.retry(machine) }
@@ -601,7 +630,7 @@ struct SettingsMachinePage: View {
       if let machine {
         SettingsMachinePageContent(
           machine: machine,
-          busy: controller.busyMachineId == machine.id,
+          busy: controller.busyMachineIds.contains(machine.id),
           error: controller.errors[machine.id],
           actions: SettingsMachinePageActions(
             connect: { controller.connect(machine) },

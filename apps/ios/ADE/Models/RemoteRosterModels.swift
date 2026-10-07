@@ -741,3 +741,38 @@ extension RemoteRosterChat {
     )
   }
 }
+
+extension RemoteRosterChat {
+  /// The provider and model this roster row already carries, as a chat
+  /// summary. A chat on another machine opens from its roster row and never
+  /// fetches `chat.getSummary` (that would boot its project there), so without
+  /// this its composer had no model pill and no provider color. A row without
+  /// a provider falls back to its tool type's family, and a row without a
+  /// model shows the provider with a generic "Model" label. Nil only for a row
+  /// that names no provider at all.
+  var rosterChatSummary: AgentChatSessionSummary? {
+    guard let provider = nonEmptyTrimmed(provider) ?? workChatProviderFamilyFromToolType(toolType) else { return nil }
+    let model = nonEmptyTrimmed(model) ?? ""
+    let at = lastActivityAt ?? lifecycleUpdatedAt ?? ""
+    let summaryStatus: String
+    switch status {
+    case .running, .awaiting: summaryStatus = "active"
+    case .idle: summaryStatus = "idle"
+    case .ended, .failed: summaryStatus = "ended"
+    }
+    var payload: [String: Any] = [
+      "sessionId": id,
+      "laneId": laneId,
+      "provider": provider,
+      "model": model,
+      "status": summaryStatus,
+      "startedAt": at,
+      "lastActivityAt": at,
+    ]
+    if let title = nonEmptyTrimmed(title) { payload["title"] = title }
+    if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
+    if let identityKey { payload["identityKey"] = identityKey }
+    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+    return try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+  }
+}

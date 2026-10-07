@@ -39,6 +39,7 @@ struct HubScreen: View {
   // Owned here so taps on the list behind it collapse it.
   @State private var composerExpanded = false
   @State private var composerSwitchingMachine = false
+  @State private var projectOpenFailureToast: ADEToastMessage?
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -115,6 +116,17 @@ struct HubScreen: View {
       }
     }
     .animation(.spring(response: 0.35, dampingFraction: 0.85), value: createdToast)
+    // A project the machine refused to open says why, instead of the tap
+    // looking like it hung on the hub.
+    .adeToast($projectOpenFailureToast)
+    .onChange(of: syncService.projectOpenFailure) { _, failure in
+      guard let failure else { return }
+      projectOpenFailureToast = ADEToastMessage(
+        text: "Couldn’t open \(failure.projectName): \(failure.message)",
+        kind: .failure
+      )
+      syncService.projectOpenFailure = nil
+    }
     .task(id: hubCollapseDefaultsConnectionKey) {
       loadHubLayoutForConnection(hubCollapseDefaultsConnectionKey)
     }

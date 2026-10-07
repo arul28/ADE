@@ -561,6 +561,10 @@ struct WorkSessionDestinationView: View {
       ?? initialChatSummary
       ?? lastKnownChatSummary
       ?? syncService.chatSummaryCache[sessionId]
+      // A chat on another machine has no host summary on this phone, however
+      // it was opened (Hub, Work, a notification): its machine's roster row
+      // names the provider and model.
+      ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.rosterChatSummary
   }
 
   var cursorCloudMirrorWatchKey: String {

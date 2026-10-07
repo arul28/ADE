@@ -53,6 +53,8 @@ final class MachineFleet: ObservableObject {
     var isPinned: Bool
     /// Ran out of retries: "Offline · Tap to retry" until a retry trigger.
     var gaveUp: Bool = false
+    /// The route its live link actually took.
+    var routeKind: SyncConnectionRouteKind? = nil
     var id: String { machineKey }
   }
 
@@ -177,18 +179,16 @@ final class MachineFleet: ObservableObject {
   /// retries again.
   func machinesCameOnline(machineKeys: Set<String>) {
     guard !machineKeys.isEmpty else { return }
-    var resumed = false
     for key in machineKeys {
-      guard let connection = connections[key], connection.gaveUp else { continue }
-      connection.resumeAfterGivingUp()
-      resumed = true
+      connections[key]?.dialSoonerIfWaiting()
     }
-    if resumed { reconcile() }
+    reconcile()
   }
 
+  /// Every connection waiting out a backoff, or that gave up, dials again.
   private func resumeGivenUpConnections() {
     for connection in connections.values {
-      connection.resumeAfterGivingUp()
+      connection.dialSoonerIfWaiting()
     }
   }
 
@@ -280,7 +280,8 @@ final class MachineFleet: ObservableObject {
       if case .needsAttention = connection.phase {
         connection.stop(reason: "Retry.", clearAttention: true)
       }
-      connection.resumeAfterGivingUp()
+      // Tapping Connect means now, not after the rest of a backoff wait.
+      connection.dialSoonerIfWaiting()
     }
     needsUpdateSince.removeValue(forKey: machineKey)
     reconcile()
@@ -515,7 +516,8 @@ final class MachineFleet: ObservableObject {
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
-        gaveUp: connection.gaveUp
+        gaveUp: connection.gaveUp,
+        routeKind: state == .live ? connection.liveRouteKind : nil
       )
     }
     if next != machines {
@@ -536,11 +538,13 @@ final class MachineFleet: ObservableObject {
 /// out of Settings > Machines, out of the Hub and Work merges, and out of the
 /// fleet's roster connections.
 ///
-/// A hidden machine comes back on its own only when it is on the account again
-/// AND online, after having been gone (off the account or offline) at some
-/// point since it was hidden -- or the moment the phone connects to it. So
-/// removing a machine that is online right now does not make it bounce straight
-/// back, and a stale offline machine reappears the next time it is really there.
+/// Only a machine that is gone (off the account, or offline) stays hidden. A
+/// machine the account shows online is always listed, as Available when this
+/// phone holds no pairing for it: hiding an online machine left it with no way
+/// back while it stayed on (a desktop that never sleeps), short of signing out.
+/// So hiding a machine that is online right now only drops it from lists until
+/// the next directory load, and a hidden offline machine reappears as soon as
+/// it is online again, or the moment the phone connects to it.
 @MainActor
 final class HiddenMachineStore: ObservableObject {
   static let shared = HiddenMachineStore()
@@ -630,11 +634,10 @@ final class HiddenMachineStore: ObservableObject {
     }
     var next = records
     for (key, record) in records {
-      let online = onlineByKey[key] == true
-      if !online {
-        if !record.sawGone { next[key]?.sawGone = true }
-      } else if record.sawGone {
+      if onlineByKey[key] == true {
         next.removeValue(forKey: key)
+      } else if !record.sawGone {
+        next[key]?.sawGone = true
       }
     }
     commit(next)
