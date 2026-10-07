@@ -32,6 +32,7 @@
 
 import {
   applyBrowserMockBrainDown,
+  applyBrowserMockUpdateAndFallback,
   browserMockBrainDownScenario,
   browserMockRecoveryScenario,
   createBrowserMockRecoveryBridges,
@@ -8633,6 +8634,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
   // Brain-down banner scenarios (`?adeBrainDown=<cause>`).
   applyBrowserMockBrainDown((window as any).ade);
+  applyBrowserMockUpdateAndFallback((window as any).ade);
   void attachBrowserRuntimeBridge();
   if (browserMockBrainDownScenario() === "updating") {
     // After the mock project has opened; that open clears transition errors.

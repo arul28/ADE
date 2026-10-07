@@ -167,9 +167,10 @@ it starts, before any request leaves the machine, until ADE is relaunched.
 
 When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
 Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
-configured feed (`updaterNetRecovery.ts`). If Node gets no answer either, the
-failure is a real outage: `network`, "ADE can't reach the update server". If
-Node gets through, the updater gets a fresh in-memory session
+configured feed (`updaterNetRecovery.ts`). If Node gets no success response
+either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
+unavailable: `network`, "ADE can't reach the update server". If Node gets a
+success response, the updater gets a fresh in-memory session
 (`electron-updater-recovered-<n>`) and the check runs once more. Each step logs
 `autoUpdate.net_wedge_detected`, then `autoUpdate.net_wedge_recovered` or
 `autoUpdate.net_wedge_unrecovered`, with the probe result. Still failing ends in

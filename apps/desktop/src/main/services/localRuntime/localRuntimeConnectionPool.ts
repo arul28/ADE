@@ -35,6 +35,7 @@ import type {
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import { isBackgroundItemBlocked } from "../../../shared/types/core";
+import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   SYSTEM_PROJECT_REGISTRATION,
@@ -1147,6 +1148,8 @@ export class LocalRuntimeConnectionPool {
   private ownedRuntimeChild: ChildProcess | null = null;
   private appFallback: LocalRuntimeStatus["appFallback"] = null;
   private appFallbackHandoverPending: LocalRuntimeStatus["appFallback"] = null;
+  /** Set while an install runs in place of the fallback it stopped. */
+  private appFallbackStoppedForInstall: AppFallbackReason | null = null;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
   private lastIsolatedServiceRepairMs = 0;
@@ -1460,9 +1463,13 @@ export class LocalRuntimeConnectionPool {
       // is that caller's to report, so failures do not skip the forced run.
       ? inFlight.catch(() => {}).then(() => this.runServiceInstallBestEffort(options))
       : this.runServiceInstallBestEffort(options)
-    ).finally(() => {
-      if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
-    });
+    )
+      // Awaited inside the install promise, so an install queued behind this
+      // one cannot start while the restored fallback is claiming the socket.
+      .finally(() => this.restoreAppFallbackAfterFailedInstall())
+      .finally(() => {
+        if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
+      });
     this.serviceInstallPromise = install;
     return install;
   }
@@ -1649,11 +1656,14 @@ export class LocalRuntimeConnectionPool {
       return;
     }
     if (this.appFallback) this.appFallbackHandoverPending = this.appFallback;
-    // systemd only reaps its supervised child. An app-owned fallback is not in
-    // that cgroup, so release its primary socket before systemd starts a brain.
-    if (process.platform === "linux" && this.appFallback) {
+    // No installer reaps the fallback: systemd only reaps its supervised child,
+    // and the launchd and Windows sweeps skip `--no-sync` brains. Release the
+    // primary socket before the service brain needs it.
+    if (this.appFallback) {
       const child = this.ownedRuntimeChild;
+      const reason = this.appFallback.reason;
       if (child && !await this.stopAppFallbackForServiceInstall(child)) return;
+      this.appFallbackStoppedForInstall = reason;
     }
     // The streak start, not this attempt's start: installs recur (connect
     // failures re-run them, isolated recovery re-runs them every 60s), and a
@@ -2297,14 +2307,16 @@ export class LocalRuntimeConnectionPool {
     }).catch(() => {});
   }
 
-  private async connect(): Promise<LocalRuntimeConnection> {
+  private async connect(
+    create: () => Promise<LocalRuntimeConnection> = () => this.createConnection(),
+  ): Promise<LocalRuntimeConnection> {
     this.assertNotDisposed();
     if (this.connection) {
       const entry = await this.connection;
       this.assertNotDisposed();
       return entry;
     }
-    const connection = this.createConnection().then((entry) => {
+    const connection = create().then((entry) => {
       if (this.connection === connection) {
         this.activeConnection = entry;
       }
@@ -2676,6 +2688,29 @@ export class LocalRuntimeConnectionPool {
     this.clearAppFallback("handed_over");
   }
 
+  /**
+   * A Fix it that stopped the fallback and then failed must not leave the
+   * person with less than they had: start the fallback again, without a
+   * second install attempt.
+   */
+  private async restoreAppFallbackAfterFailedInstall(): Promise<void> {
+    const reason = this.appFallbackStoppedForInstall;
+    this.appFallbackStoppedForInstall = null;
+    // "installed" includes a service brain that is still starting: it holds
+    // the socket, so the fallback must not reclaim it. Should that brain die,
+    // the next connect starts the fallback by itself.
+    if (!reason || this.disposed || this.serviceInstallStatus.state === "installed" || this.connection) return;
+    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+    try {
+      await this.connect(() => this.startAppFallback(socketPath, reason));
+    } catch (error) {
+      this.logger.warn("local_runtime.app_fallback_restore_failed", {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async stopAppFallbackForServiceInstall(child: ChildProcess): Promise<boolean> {
     const socketPath = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
     const exited = new Promise<boolean>((resolve) => {
@@ -2695,6 +2730,36 @@ export class LocalRuntimeConnectionPool {
       failureStep: "predecessor_exit",
     };
     return false;
+  }
+
+  /**
+   * Runs the brain as a desktop-owned child with sync off, on the primary
+   * socket the service could not take. Probes first: the installer may have
+   * lost a race with a late service start.
+   */
+  private async startAppFallback(socketPath: string, reason: AppFallbackReason): Promise<LocalRuntimeConnection> {
+    const lateService = await this.tryConnect(socketPath);
+    if (lateService) return lateService;
+    if (await probeSocketHasOwner(socketPath)) {
+      throw codedRecoveryError(
+        "ADE's background service still owns the runtime socket but is not responding.",
+        "socket_owned_by_other",
+      );
+    }
+    const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
+    try {
+      const client = await this.connectSpawnedRuntime(socketPath, child);
+      this.appFallbackHandoverPending = null;
+      this.appFallback = { reason, since: new Date().toISOString() };
+      this.logger.warn("local_runtime.app_fallback_started", {
+        socketPath, pid: child.pid ?? null, reason,
+      });
+      this.emitRuntimeStatusChange();
+      return { client, child, socketPath };
+    } catch (error) {
+      disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
+      throw error;
+    }
   }
 
   private async createConnection(): Promise<LocalRuntimeConnection> {
@@ -2732,42 +2797,18 @@ export class LocalRuntimeConnectionPool {
     if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
       const lastFailure = readLastFailure({ kind: "machine" });
       await this.refreshServiceHealth(0);
-      const recordedDbCodes = new Set<AdeRecoveryErrorCode>([
-        "disk_full", "insufficient_headroom", "db_integrity", "storage_read_failed",
-        "migration_incomplete", "migration_unknown_state",
-      ]);
-      const fallbackReason = this.serviceFallbackReason();
+      const fallbackReason = appFallbackReason({
+        serviceInstall: this.serviceInstallStatus,
+        serviceHealth: this.serviceHealthStatus,
+      });
       if (
         this.options.preferServiceRepair
         && fallbackReason
         && this.serviceHealthStatus.running !== true
         && !this.isUpdateWindowActive()
-        && !(lastFailure && recordedDbCodes.has(lastFailure.code))
+        && !(lastFailure && APP_FALLBACK_REFUSED_FAILURES.has(lastFailure.code))
       ) {
-        // The installer may have lost a race with a late service start. Probe
-        // again before claiming the primary socket for an app-owned child.
-        const lateService = await this.tryConnect(socketPath);
-        if (lateService) return lateService;
-        if (await probeSocketHasOwner(socketPath)) {
-          throw codedRecoveryError(
-            "ADE's background service still owns the runtime socket but is not responding.",
-            "socket_owned_by_other",
-          );
-        }
-        const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
-        try {
-          const client = await this.connectSpawnedRuntime(socketPath, child);
-          this.appFallbackHandoverPending = null;
-          this.appFallback = { reason: fallbackReason, since: new Date().toISOString() };
-          this.logger.warn("local_runtime.app_fallback_started", {
-            socketPath, pid: child.pid ?? null, reason: fallbackReason,
-          });
-          this.emitRuntimeStatusChange();
-          return { client, child, socketPath };
-        } catch (error) {
-          disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
-          throw error;
-        }
+        return this.startAppFallback(socketPath, fallbackReason);
       }
       const message = this.options.preferServiceRepair
         ? `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
@@ -2783,7 +2824,7 @@ export class LocalRuntimeConnectionPool {
         preferServiceRepair: this.options.preferServiceRepair === true,
       });
       let recoveryCode: AdeRecoveryErrorCode;
-      if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
+      if (lastFailure && APP_FALLBACK_REFUSED_FAILURES.has(lastFailure.code)) {
         recoveryCode = lastFailure.code;
       } else if (isBackgroundItemBlocked({
         serviceInstall: this.serviceInstallStatus,
@@ -2825,26 +2866,7 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  private serviceFallbackReason(): NonNullable<LocalRuntimeStatus["appFallback"]>["reason"] | null {
-    const install = this.serviceInstallStatus;
-    // The installer proved the predecessor is still alive. Keep its socket
-    // exclusive even if it has not answered a client yet.
-    if (install.failureStep === "predecessor_exit") return null;
-    switch (install.failureStep) {
-      case "replacement_pid":
-      case "replacement_responsive":
-      case "launchd_register":
-        return install.failureStep;
-    }
-    if (isBackgroundItemBlocked({
-      serviceInstall: install,
-      serviceHealth: this.serviceHealthStatus,
-    })) return "background_item_blocked";
-    if (this.serviceHealthStatus.state === "not_installed") return "service_not_registered";
-    if (install.state === "failed") return "service_install_failed";
-    if (install.state === "installed" && this.serviceHealthStatus.running === false) return "service_not_running";
-    return null;
-  }
+
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {

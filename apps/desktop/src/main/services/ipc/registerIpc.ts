@@ -13454,8 +13454,8 @@ export function registerIpc({
     getCtx().autoUpdateService?.dismissInstalledNotice();
   });
 
-  ipcMain.handle(IPC.updateRelaunchApp, (): boolean => {
-    return getCtx().autoUpdateService?.requestRelaunch() ?? false;
+  ipcMain.handle(IPC.updateRelaunchApp, async (): Promise<boolean> => {
+    return (await getCtx().autoUpdateService?.requestRelaunch()) ?? false;
   });
 
   return {

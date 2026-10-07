@@ -2,6 +2,7 @@ import React from "react";
 import { ArrowClockwise, ArrowSquareOut, ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AutoUpdatePhase, AutoUpdateSnapshot } from "../../../shared/types";
 import { Dialog, type DialogAction } from "../ui/dialog";
+import { TechnicalDetailsFold } from "./errorSurfaceKit";
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "Not available";
@@ -117,10 +118,6 @@ const DETAIL_LIST_STYLE: React.CSSProperties = {
   columnGap: 16,
   rowGap: 6,
   margin: 0,
-  padding: 12,
-  borderRadius: 10,
-  border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
-  background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
   fontSize: 12,
 };
 const DETAIL_TERM_STYLE: React.CSSProperties = { color: "var(--color-muted-fg)" };
@@ -226,10 +223,8 @@ export function AutoUpdateErrorDialog({
         {details?.volumePath ? (
           <DetailRow term="Affected path" mono>{details.volumePath}</DetailRow>
         ) : null}
-        {technicalDetail ? (
-          <DetailRow term="Technical detail" mono>{technicalDetail}</DetailRow>
-        ) : null}
       </dl>
+      {technicalDetail ? <TechnicalDetailsFold text={technicalDetail} className="mt-2.5" /> : null}
 
       <div style={{ marginTop: 14 }}>
         <p style={{ margin: 0, fontWeight: 600, color: "var(--color-fg)" }}>What to do</p>

@@ -159,6 +159,23 @@ function Rung({ control, hint, failed = false }: { control: ReactNode; hint: str
   );
 }
 
+/** The status tag in the card header. */
+function recoveryStatusLabel(state: {
+  isSuccess: boolean;
+  isRepairing: boolean;
+  starting: boolean;
+  backgroundBlocked: boolean;
+  isFailure: boolean;
+  canAutoRepair: boolean;
+}): string {
+  if (state.isSuccess) return "Fixed";
+  if (state.isRepairing) return "Fixing";
+  if (state.starting) return "Starting";
+  if (state.backgroundBlocked) return "Waiting for you";
+  if (state.isFailure) return "Still broken";
+  return state.canAutoRepair ? "Needs a fix" : "Needs you";
+}
+
 export function ProjectRecoveryScreen() {
   const navigate = useNavigate();
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
@@ -446,17 +463,7 @@ export function ProjectRecoveryScreen() {
   }
 
   const tone: ErrorSurfaceTone = isSuccess ? "success" : starting || isRepairing ? "neutral" : isFailure ? "error" : "warning";
-  const status = isSuccess
-    ? "Fixed"
-    : isRepairing
-      ? "Fixing"
-      : starting
-        ? "Starting"
-        : backgroundBlocked
-          ? "Waiting for you"
-          : isFailure
-            ? "Still broken"
-            : canAutoRepair ? "Needs a fix" : "Needs you";
+  const status = recoveryStatusLabel({ isSuccess, isRepairing, starting, backgroundBlocked, isFailure, canAutoRepair });
 
   return (
     <div

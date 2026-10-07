@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LocalRuntimeStatus } from "../../../shared/types";
-import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
 import { showToast } from "./toast/toastStore";
 
 /** A degraded but usable desktop while its background service cannot start. */
@@ -26,26 +26,40 @@ export function AppFallbackBanner(): null {
     };
   }, []);
 
+  const blocked = fallback?.reason === "background_item_blocked";
+  const openSettings = window.ade.recovery?.openBackgroundSettings;
+  const restart = window.ade.app?.restartBackgroundService;
+  const actions: NoticeAction[] = [];
+  // Reinstalling cannot flip "Allow in the Background"; only the person can.
+  if (blocked && openSettings) {
+    actions.push({ label: "Open System Settings", onClick: () => void openSettings().catch(() => undefined) });
+  }
+  if (restart) {
+    actions.push({
+      label: "Fix it",
+      onClick: () => {
+        void restart().catch(() => {
+          showToast({
+            tone: "warning",
+            title: "Phone sync is still off",
+            message: blocked
+              ? "Turn on ADE under Allow in the Background, then choose Fix it again."
+              : "ADE's background service still won't start. Try again, or restart ADE.",
+          });
+        });
+      },
+    });
+  }
+
   useAppBanner(
     fallback && {
       id: "app-fallback",
       tone: "warning",
       title: "Phone sync is off",
-      detail: "ADE's background service couldn't start, so ADE is running it itself. Your phone can't connect until it's fixed.",
-      actions: window.ade.app?.restartBackgroundService
-        ? [{
-            label: "Fix it",
-            onClick: () => {
-              void window.ade.app.restartBackgroundService?.().catch((error: unknown) => {
-                showToast({
-                  tone: "error",
-                  title: "Background service couldn't start",
-                  message: error instanceof Error ? error.message : String(error),
-                });
-              });
-            },
-          }]
-        : [],
+      detail: blocked
+        ? "macOS is blocking ADE's background service, so ADE is running it itself. Turn on ADE under Allow in the Background to reconnect your phone."
+        : "ADE's background service couldn't start, so ADE is running it itself. Your phone can't connect until it's fixed.",
+      actions,
       dismiss: { key: "app-fallback", fingerprint: `${fallback.reason}:${fallback.since}` },
     },
     { placement: "docked", priority: APP_BANNER_PRIORITY.app },

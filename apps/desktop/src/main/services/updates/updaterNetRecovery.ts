@@ -9,6 +9,10 @@
  */
 
 const FEED_PROBE_TIMEOUT_MS = 8_000;
+/** A channel file is a few hundred bytes; this only bounds a wrong answer. */
+const FEED_PROBE_MAX_CHARS = 64 * 1024;
+/** electron-builder channel files open with the release they describe. */
+const CHANNEL_FILE_PATTERN = /^version:\s*\S+/m;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown");
@@ -47,13 +51,32 @@ export function buildUpdateFeedProbeUrl(args: {
 }
 
 export type UpdateFeedProbeResult = {
-  /** Any HTTP response counts: the question is whether the server answers. */
+  /**
+   * The feed answered with a real channel file. A 404, a 5xx or a captive
+   * portal's sign-in page means the feed itself is unavailable, which a fresh
+   * Chromium session cannot fix, so none of them count.
+   */
   reachable: boolean;
   url: string;
   status: number | null;
   elapsedMs: number;
   error: string | null;
 };
+
+/** At most `maxChars` of the body, without buffering the rest of it. */
+async function readBounded(response: Response, maxChars: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  while (text.length < maxChars) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  void reader.cancel().catch(() => {});
+  return text.slice(0, maxChars);
+}
 
 /** Requests the feed with Node's fetch, never Chromium's. Never rejects. */
 export async function probeUpdateFeed(url: string): Promise<UpdateFeedProbeResult> {
@@ -64,8 +87,16 @@ export async function probeUpdateFeed(url: string): Promise<UpdateFeedProbeResul
       redirect: "follow",
       signal: AbortSignal.timeout(FEED_PROBE_TIMEOUT_MS),
     });
+    const body = response.ok ? await readBounded(response, FEED_PROBE_MAX_CHARS) : "";
     void response.body?.cancel().catch(() => {});
-    return { reachable: true, url, status: response.status, elapsedMs: Date.now() - startedAt, error: null };
+    const isChannelFile = CHANNEL_FILE_PATTERN.test(body);
+    return {
+      reachable: response.ok && isChannelFile,
+      url,
+      status: response.status,
+      elapsedMs: Date.now() - startedAt,
+      error: !response.ok ? `HTTP ${response.status}` : isChannelFile ? null : "not an update channel file",
+    };
   } catch (error) {
     return { reachable: false, url, status: null, elapsedMs: Date.now() - startedAt, error: errorMessage(error) };
   }

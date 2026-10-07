@@ -136,7 +136,8 @@ type CreateAutoUpdateServiceArgs = {
   beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
   /** Quits and reopens ADE, after the usual quit warnings. */
-  relaunchApp?: () => void;
+  /** Resolves true once the person agreed to restart; false when they kept ADE open. */
+  relaunchApp?: () => Promise<boolean>;
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
@@ -2013,14 +2014,13 @@ export function createAutoUpdateService({
    * The remedy for a `network_stuck` check: a relaunch has cleared it every
    * time. main.ts owns the quit warnings and the relaunch itself.
    */
-  function requestRelaunch(): boolean {
+  async function requestRelaunch(): Promise<boolean> {
     logger.info("autoUpdate.relaunch_requested", {
       status: snapshot.status,
       kind: snapshot.errorDetails?.kind ?? null,
     });
     if (!relaunchApp) return false;
-    relaunchApp();
-    return true;
+    return relaunchApp();
   }
 
   const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;

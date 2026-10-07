@@ -352,6 +352,53 @@ export function applyBrowserMockBrainDown(ade: {
   };
 }
 
+/**
+ * `?adeUpdateError=stuck|offline` puts a failed update check in the update
+ * snapshot (the top-bar pill and its dialog); `?adeRuntimeFallback=1` reports
+ * the desktop-owned no-sync brain ("Phone sync is off").
+ */
+export function applyBrowserMockUpdateAndFallback(ade: {
+  updateGetState: () => Promise<AutoUpdateSnapshot>;
+  app: { getInfo: () => Promise<AppInfo> };
+}): void {
+  const updateError = urlParam("adeUpdateError");
+  if (updateError === "stuck" || updateError === "offline") {
+    const baseGetState = ade.updateGetState;
+    ade.updateGetState = async () => ({
+      ...(await baseGetState()),
+      status: "error",
+      currentVersion: "1.2.92",
+      error: "net::ERR_FAILED",
+      errorDetails: {
+        kind: updateError === "stuck" ? "network_stuck" : "network",
+        phase: "check",
+        message: "net::ERR_FAILED",
+        availableBytes: null,
+        requiredBytes: null,
+        volumePath: null,
+        preservesDownload: false,
+      },
+    });
+  }
+  if (urlParam("adeRuntimeFallback") === "1") {
+    const baseGetInfo = ade.app.getInfo;
+    ade.app.getInfo = async () => {
+      const info = await baseGetInfo();
+      return info.localRuntime
+        ? {
+          ...info,
+          localRuntime: {
+            ...info.localRuntime,
+            connectionState: "connected",
+            runtimeMode: "app_fallback",
+            appFallback: { reason: "launchd_register", since: new Date().toISOString() },
+          },
+        }
+        : info;
+    };
+  }
+}
+
 /** Puts the "an update owns the service" project error up for `adeBrainDown=updating`. */
 export function showBrowserMockBrainDownPending(
   setError: (error: { message: string; retryRootPath: string }) => void,

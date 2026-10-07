@@ -8073,18 +8073,21 @@ app.whenReady().then(async () => {
   const requestQuitAfterWarnings = (
     ownerWindow: BrowserWindow | null | undefined,
     reason: "before_quit" | "window_close" | "relaunch",
-  ): void => {
-    if (shutdownRequested || quitConfirmationInFlight) return;
+  ): Promise<boolean> => {
+    if (shutdownRequested || quitConfirmationInFlight) return Promise.resolve(false);
     quitConfirmationInFlight = true;
-    void (async () => {
+    // Resolves whether the person agreed, so "Restart ADE" can tell a restart
+    // that is happening from one they cancelled.
+    return (async () => {
       try {
-        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
+        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
         const impact = await collectUpdateInstallImpactBounded();
-        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return;
+        if (!confirmQuitWarning(ownerWindow, impact, reason === "relaunch")) return false;
         // Registered only once the user has agreed, so a cancelled restart
         // cannot turn a later plain quit into a relaunch. app.exit honors it.
         if (reason === "relaunch") app.relaunch();
         requestAppShutdown({ reason, exitCode: 0 });
+        return true;
       } finally {
         quitConfirmationInFlight = false;
       }
@@ -8111,7 +8114,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
-    requestQuitAfterWarnings(win, "window_close");
+    void requestQuitAfterWarnings(win, "window_close");
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
@@ -9502,7 +9505,7 @@ app.whenReady().then(async () => {
     }
     event.preventDefault();
     if (shutdownRequested) return;
-    requestQuitAfterWarnings(null, "before_quit");
+    void requestQuitAfterWarnings(null, "before_quit");
   });
 });
 

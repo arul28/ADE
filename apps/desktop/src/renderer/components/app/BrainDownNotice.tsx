@@ -239,7 +239,7 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
     const blocked = cause === "background_blocked";
     // The ladder: Fix it, then Restart ADE, then Reset ADE. A fix that fails
     // again after a restart goes straight to Reset.
-    const lead = failedFixes === 0 && fixAvailable
+    const lead: LadderRung = failedFixes === 0 && fixAvailable
       ? "fix"
       : restartAvailable && !(failedFixes > 0 && restartedRecently)
         ? "restart"
@@ -275,17 +275,7 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
       }
     }
 
-    const detail = blocked
-      ? "Turn on ADE under \"Allow in the Background\" in System Settings. ADE continues by itself."
-      : fixing
-        ? "Starting ADE's background service. This can take a minute."
-        : lead === "fix"
-          ? "Fix it reinstalls it and starts it again. Your work is safe."
-          : lead === "restart"
-            ? (failedFixes > 0 ? "Fix it didn't work. Restart ADE next; it quits and reopens." : "Restart ADE to start it again. Your work is safe.")
-            : restartAvailable
-              ? "Restarting didn't help. Reset ADE sets it up fresh; your code stays."
-              : "Fix it didn't work. Reset ADE sets it up fresh; your code stays.";
+    const detail = brainDownDetail({ blocked, fixing, lead, failedFixes, restartAvailable });
 
     const technicalDetail = [
       `cause: ${cause}`,
@@ -338,4 +328,27 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
   useAppBanner(model, APP_BANNER);
 
   return resetOpen ? <ResetAdeDialog open={resetOpen} onOpenChange={setResetOpen} /> : null;
+}
+
+type LadderRung = "fix" | "restart" | "reset";
+
+/** The banner's one line under the title, for the rung the ladder is on. */
+function brainDownDetail(args: {
+  blocked: boolean;
+  fixing: boolean;
+  lead: LadderRung;
+  failedFixes: number;
+  restartAvailable: boolean;
+}): string {
+  if (args.blocked) return "Turn on ADE under \"Allow in the Background\" in System Settings. ADE continues by itself.";
+  if (args.fixing) return "Starting ADE's background service. This can take a minute.";
+  if (args.lead === "fix") return "Fix it reinstalls it and starts it again. Your work is safe.";
+  if (args.lead === "restart") {
+    return args.failedFixes > 0
+      ? "Fix it didn't work. Restart ADE next; it quits and reopens."
+      : "Restart ADE to start it again. Your work is safe.";
+  }
+  return args.restartAvailable
+    ? "Restarting didn't help. Reset ADE sets it up fresh; your code stays."
+    : "Fix it didn't work. Reset ADE sets it up fresh; your code stays.";
 }
