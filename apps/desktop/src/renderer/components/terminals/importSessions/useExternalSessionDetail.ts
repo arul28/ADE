@@ -81,10 +81,16 @@ export function useExternalSessionDetail(
     const start = async () => {
       if (cancelled) return;
       watching = localWatch != null;
+      const getOnce = () => api.getDetail?.({ provider: summary.provider, sessionId: summary.id }, runtimePin);
       try {
+        // A failed watch still leaves a plain read: no live updates, but the
+        // whole conversation instead of the list row's text samples.
         const loaded = localWatch
-          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId })
-          : await api.getDetail?.({ provider: summary.provider, sessionId: summary.id }, runtimePin);
+          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId }).catch(() => {
+            watching = false;
+            return getOnce();
+          })
+          : await getOnce();
         if (loaded) apply(loaded);
         else if (!cancelled) setError("Couldn't load this conversation.");
       } catch {

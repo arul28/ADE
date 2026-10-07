@@ -1,0 +1,257 @@
+/*
+ * Import session browser. Built on the surface kit (`styles/surfaceKit.css`):
+ * kit variables for every neutral, kit-seg / kit-btn / kit-tag for controls,
+ * kit-eyebrow for group labels. One control height (28px) across the
+ * toolbar, one (30px) across the action bar, one radius (--radius-md), so
+ * nothing sits a few pixels off its neighbour.
+ */
+
+.import-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+
+.import-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 12px 20px;
+  border-bottom: 1px solid var(--kit-rule);
+}
+
+.import-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 140px;
+  height: 28px;
+}
+.import-search > svg {
+  position: absolute;
+  left: 9px;
+  pointer-events: none;
+  color: var(--kit-text-3);
+}
+.import-search > input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px 0 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--kit-track);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 100ms ease, background-color 100ms ease;
+}
+.import-search > input::placeholder { color: var(--kit-text-3); }
+.import-search > input:focus {
+  border-color: color-mix(in srgb, var(--color-fg) 16%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+.import-toolbar .kit-icon-btn { width: 28px; height: 28px; flex: none; }
+
+/* ── Split view ────────────────────────────────────────────────────────── */
+
+.import-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.import-list-col {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  flex: none;
+  min-height: 0;
+  border-right: 1px solid var(--kit-rule);
+}
+
+.import-preview-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Provider filter: a summary that is also a filter. Scrolls sideways
+   rather than wrapping when many providers have sessions. */
+.import-providers {
+  flex: none;
+  padding: 10px 12px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.import-providers::-webkit-scrollbar { display: none; }
+.import-providers > .kit-seg > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.import-providers .kit-num { font-size: 10.5px; color: var(--kit-text-3); }
+.import-providers button[aria-pressed="true"] .kit-num { color: var(--kit-text-2); }
+
+/* ── Session list ──────────────────────────────────────────────────────── */
+
+.import-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 18px 6px;
+  background: var(--color-modal-bg, var(--color-card));
+}
+
+.import-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 75ms ease;
+}
+.import-row:hover, .import-row:focus-visible { background: var(--kit-hover); }
+.import-row[aria-selected="true"] { background: var(--kit-active); }
+.import-row-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.import-row[aria-selected="true"] .import-row-title { color: var(--color-fg); }
+.import-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.import-meta-sep { opacity: 0.5; }
+
+/* ── Preview ───────────────────────────────────────────────────────────── */
+
+.import-preview-head {
+  flex: none;
+  padding: 12px 18px 12px 20px;
+  border-bottom: 1px solid var(--kit-rule);
+}
+.import-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 26px;
+}
+.import-preview-title > h3 {
+  margin: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.import-preview-head .import-meta { margin-top: 4px; padding-left: 28px; flex-wrap: wrap; row-gap: 2px; }
+
+/* The real chat transcript, but on the dialog's own surface: the chat
+   canvas colour would draw a darker slab inside the panel. */
+.import-transcript .ade-chat-timeline-pane { background: transparent; }
+
+.import-transcript-skeleton > div {
+  border-radius: var(--radius-md);
+  background: var(--kit-track);
+  opacity: 0.6;
+}
+
+/* Live: a status, so it is the one green thing on the row. */
+.import-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--kit-ok);
+}
+.kit-tag.import-live { gap: 5px; font-family: var(--font-sans); letter-spacing: 0; }
+
+/* ── Action bar ────────────────────────────────────────────────────────── */
+
+.import-actions {
+  flex: none;
+  padding: 12px 18px 14px 20px;
+  border-top: 1px solid var(--kit-rule);
+}
+.import-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.import-actions .kit-seg > button { height: 26px; padding: 0 10px; }
+.import-actions-label { font-size: 11.5px; color: var(--kit-text-3); }
+.import-actions-end {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.import-actions-note { margin: 8px 0 0; font-size: 11.5px; color: var(--kit-text-3); }
+
+/* The confirm step of a live continue borrows the warning hue: it is a
+   status ("this session is still running"), not decoration. */
+.kit-btn-primary[data-tone="warn"] { background: var(--kit-warn); color: #1a1405; }
+.kit-btn-primary[data-tone="warn"]:hover:not(:disabled) { background: color-mix(in srgb, var(--kit-warn) 88%, white); }
+
+.import-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.import-center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.import-copy-btn { width: 26px; height: 26px; flex: none; background: transparent; }
+/* The model picker's own sizes are 24px and 32px; the bar is 30px. */
+.import-actions [data-model-picker-trigger] { height: 30px; font-size: 11.5px; }

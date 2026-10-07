@@ -45,7 +45,8 @@ import {
 import { ImportActionBar } from "./ImportActionBar";
 import { ImportSessionList, type SessionGroup } from "./ImportSessionList";
 import { ImportSessionPreview } from "./ImportSessionPreview";
-import { ImportTopBar } from "./ImportTopBar";
+import { ImportProviderFilter, ImportTopBar } from "./ImportTopBar";
+import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
 
 export { DEFAULT_FORK_MODEL } from "./importBrowserModel";
@@ -87,10 +88,10 @@ function CenterState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex h-full min-h-[160px] flex-1 flex-col items-center justify-center px-6 py-8 text-center">
-      {icon ? <div className="mb-2.5 text-muted-fg/60">{icon}</div> : null}
-      <div className="text-[12.5px] font-medium text-fg/90">{title}</div>
-      {detail ? <div className="mt-1 max-w-sm text-[11px] leading-relaxed text-muted-fg/60">{detail}</div> : null}
+    <div className="import-center h-full min-h-[160px]">
+      {icon ? <div className="mb-2.5 text-(--kit-text-3)">{icon}</div> : null}
+      <div className="text-[12.5px] font-medium text-fg">{title}</div>
+      {detail ? <div className="mt-1 max-w-sm text-[11.5px] leading-relaxed text-(--kit-text-3)">{detail}</div> : null}
       {action}
     </div>
   );
@@ -570,7 +571,7 @@ export function ImportSessionBrowser({
         <button
           type="button"
           onClick={() => setLaneFilterChoice(ALL_LANES_ID)}
-          className="mt-3 inline-flex h-7 items-center rounded-full border border-fg/[0.1] px-3 text-[11px] text-fg/85 transition-colors hover:bg-fg/[0.05]"
+          className="kit-btn mt-3"
         >
           {showAllLanesLabel}
         </button>
@@ -589,18 +590,11 @@ export function ImportSessionBrowser({
       width="min(1180px, calc(100vw - 4rem))"
       height="min(860px, calc(100dvh - 4rem))"
       scrollBody={false}
+      bodyPadding={false}
       busy={Boolean(importing)}
     >
-      {/* Bleeds past the shell's body padding so the split view runs edge to edge. */}
-      <div
-        className="-mx-4 -my-3 flex h-[calc(100%+1.5rem)] min-h-0 flex-col sm:-mx-5 sm:-my-4 sm:h-[calc(100%+2rem)]"
-        onKeyDown={onKeyDown}
-      >
+      <div className="import-browser" onKeyDown={onKeyDown}>
         <ImportTopBar
-          providerChips={providerChips}
-          totalCount={inLane.length}
-          providerFilter={effectiveProviderFilter}
-          onProviderFilterChange={setProviderFilter}
           laneOptions={laneOptions}
           laneFilter={laneFilter}
           onLaneFilterChange={setLaneFilterChoice}
@@ -617,7 +611,7 @@ export function ImportSessionBrowser({
         />
         {loadError && !sessions.length ? (
           <CenterState
-            icon={<Warning size={18} className="text-amber-400" />}
+            icon={<Warning size={18} className="text-(--kit-warn)" />}
             title="Sessions couldn't be loaded"
             detail={loadError}
             action={(
@@ -625,7 +619,7 @@ export function ImportSessionBrowser({
                 type="button"
                 onClick={() => void load()}
                 disabled={loading}
-                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full border border-fg/[0.1] px-3 text-[11px] text-fg hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                className="kit-btn mt-3"
               >
                 <ArrowClockwise size={12} className={loading ? "animate-spin" : undefined} /> Retry scan
               </button>
@@ -638,8 +632,14 @@ export function ImportSessionBrowser({
             detail={`Checked ${EXTERNAL_SESSION_PROVIDERS.map(importProviderLabel).join(", ")} on ${machineName}.`}
           />
         ) : (
-          <div className="flex min-h-0 flex-1">
-            <aside className="flex w-[360px] shrink-0 flex-col border-r border-fg/[0.06]">
+          <div className="import-split">
+            <aside className="import-list-col">
+              <ImportProviderFilter
+                providerChips={providerChips}
+                totalCount={inLane.length}
+                providerFilter={effectiveProviderFilter}
+                onProviderFilterChange={setProviderFilter}
+              />
               <ImportSessionList
                 groups={groups}
                 activeKey={activeKey}
@@ -651,7 +651,7 @@ export function ImportSessionBrowser({
                 notice={failedNotice}
               />
             </aside>
-            <section className="flex min-w-0 flex-1 flex-col" aria-label="Session preview">
+            <section className="import-preview-col" aria-label="Session preview">
               {active && activePlace && plan ? (
                 <>
                   <ImportSessionPreview
@@ -680,10 +680,10 @@ export function ImportSessionBrowser({
                   />
                 </>
               ) : loading ? (
-                <div className="flex flex-1 flex-col gap-4 px-6 py-6" aria-hidden="true">
-                  <div className="h-4 w-1/3 animate-pulse rounded bg-fg/[0.05]" />
-                  <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-fg/[0.04]" />
-                  <div className="h-4 w-3/5 animate-pulse rounded bg-fg/[0.035]" />
+                <div className="import-transcript-skeleton flex flex-1 flex-col gap-4 px-6 py-6" aria-hidden="true">
+                  <div className="h-4 w-1/3 animate-pulse" />
+                  <div className="ml-auto h-9 w-1/2 animate-pulse" />
+                  <div className="h-4 w-3/5 animate-pulse" />
                 </div>
               ) : null}
             </section>
