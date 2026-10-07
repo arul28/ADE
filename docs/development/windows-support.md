@@ -18,6 +18,12 @@ Every capability below behaves differently on Windows than on macOS. The list is
 exhaustive by intent: if a Windows user notices something missing or weaker and
 it is not named here, treat that as a bug, not a known gap.
 
+Running a dev app, profiling a running brain, or benchmarking anything on a
+Windows host: see **On Windows** in
+[local-development.md](local-development.md#on-windows). It carries the dev-app
+recipe, the `ade`-CLI-resolves-the-project-from-cwd trap, and which measurement
+techniques give wrong answers here.
+
 Three outcomes are possible, and they are not interchangeable. **Degraded** means
 the capability works with a stated cost. **Blocked** means the capability is
 absent and the surface says so. **Unavailable** means the OS offers no route at
