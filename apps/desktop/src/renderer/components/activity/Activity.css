@@ -390,6 +390,17 @@ button.activity-pane-freshness {
   white-space: nowrap;
 }
 
+/* The wide view has room to spare; stretched chips would read as a progress
+   bar rather than five choices. */
+.activity-panel[data-activity-panel="expanded"] .activity-chips {
+  display: inline-flex;
+  width: auto;
+}
+
+.activity-panel[data-activity-panel="expanded"] .activity-chips > button {
+  flex: none;
+}
+
 .activity-chip-glyph {
   display: inline-flex;
   color: var(--tone-color);
