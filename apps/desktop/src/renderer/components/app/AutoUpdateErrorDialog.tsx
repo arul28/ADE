@@ -228,7 +228,7 @@ export function AutoUpdateErrorDialog({
 
       <div style={{ marginTop: 14 }}>
         <p style={{ margin: 0, fontWeight: 600, color: "var(--color-fg)" }}>What to do</p>
-        <ol style={{ margin: "4px 0 0", paddingLeft: 18, display: "grid", gap: 3 }}>
+        <ol style={{ margin: "4px 0 0", paddingLeft: 18, display: "grid", gap: 3, listStyle: "decimal" }}>
           {recoverySteps(snapshot).map((step) => <li key={step}>{step}</li>)}
         </ol>
         {details?.preservesDownload ? (

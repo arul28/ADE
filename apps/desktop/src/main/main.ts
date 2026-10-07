@@ -2084,6 +2084,9 @@ app.whenReady().then(async () => {
     app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  // Set once the diagnostics service exists, which is created after the pool.
+  let reportAppFallback: ((reason: string) => void) | null = null;
+  let reportedAppFallbackSince: string | null = null;
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     // A dev app's brain must never compete for the machine-wide sync host
     // lease: on 2026-09-21 a lane dev brain on a custom socket took the lease
@@ -2094,6 +2097,13 @@ app.whenReady().then(async () => {
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
     onRuntimeStatusChange: (status) => {
       broadcast(IPC.appRuntimeStatusChanged, status);
+      // A service manager that refused the brain is the fleet failure nobody
+      // reports by hand: ADE keeps working, so nobody presses anything.
+      const fallback = status.appFallback;
+      if (fallback && fallback.since !== reportedAppFallbackSince) {
+        reportedAppFallbackSince = fallback.since;
+        reportAppFallback?.(fallback.reason);
+      }
     },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
@@ -3133,6 +3143,11 @@ app.whenReady().then(async () => {
         .catch(() => undefined);
     },
   });
+  reportAppFallback = (reason) => {
+    void autoDiagnosticsService
+      .report({ failureCode: `app_fallback_${reason}`, surface: "local_runtime" })
+      .catch(() => undefined);
+  };
 
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged

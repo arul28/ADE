@@ -745,20 +745,24 @@ deliberately untouched: no card asks this question yet.
 
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery
 screen, the renderer error boundary, the project transition alert, the update
-banner — records the existing `ade_feature_used` event at the IPC owner boundary
-(the `diagnostics.openIssue` handler, where the outcome is known) with
-`feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
-`opened` when the prefilled GitHub issue page was launched, `failed` when it
-could not be. That is the whole product question — whether the one control on a
-broken screen reaches GitHub — so nothing else crosses the boundary: not the
-surface it was pressed on, not the failure code or headline that put the screen
-there, not the report, the clipboard result, the report file path, or the
-install id the report carries. Those live in the local report file under
-`<userData>/diagnostic-reports/` and on the clipboard, which the person reads
-and pastes deliberately. A per-outcome one-hour deduplication key bounds a
-click-loop to at most 24 accepted events per outcome — 48 across both — per
-installation per UTC day, inside the existing `ade_feature_used` 140-per-day /
-30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+banner — sends the redacted report to ADE first, and records the existing
+`ade_feature_used` event at the IPC owner boundary where the outcome is known
+(the `diagnostics.sendManual` handler, only when it carries a surface context)
+with `feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
+`success` when ADE received the report, `failed` when it did not. Choosing the
+secondary **Open GitHub issue** link records the same action from the
+`diagnostics.openIssue` handler: `opened` when the prefilled GitHub issue page
+was launched, `failed` when it could not be. That is the whole product question
+— whether the one control on a broken screen gets the report to us — so nothing
+else crosses the boundary: not the surface it was pressed on, not the failure
+code or headline that put the screen there, not the report, its upload
+reference, the clipboard result, the report file path, or the install id the
+report carries. Settings' **Send a report to ADE** (no context) is not counted
+here. A per-outcome one-hour deduplication key bounds a click-loop to at most
+24 accepted events per outcome — 72 across `success`, `opened` and `failed` —
+per installation per UTC day, inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
+was raised.
 The dashboard spec is deliberately untouched: no card asks this question yet.
 
 When ADE hits a failure it already classified, it sends that same redacted

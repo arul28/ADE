@@ -6,6 +6,7 @@ import { showToast } from "./toast/toastStore";
 /** A degraded but usable desktop while its background service cannot start. */
 export function AppFallbackBanner(): null {
   const [fallback, setFallback] = useState<LocalRuntimeStatus["appFallback"]>(null);
+  const [fixing, setFixing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,9 +37,14 @@ export function AppFallbackBanner(): null {
   }
   if (restart) {
     actions.push({
-      label: "Fix it",
+      // A real restart waits for the service brain to answer, which can take
+      // minutes; the button says so instead of looking dead.
+      label: fixing ? "Fixing…" : "Fix it",
+      busy: fixing,
       onClick: () => {
-        void restart().catch(() => {
+        if (fixing) return;
+        setFixing(true);
+        void restart().finally(() => setFixing(false)).catch(() => {
           showToast({
             tone: "warning",
             title: "Phone sync is still off",

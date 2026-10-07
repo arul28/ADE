@@ -278,18 +278,25 @@ describe("collectMachineDiagnosticSources — service definition", () => {
       "utf8",
     );
 
-    const definition = collect({ home }).serviceDefinition;
+    const definition = collect({
+      home,
+      runCommand: (command, args) => command === "launchctl" && args[0] === "print-disabled"
+        ? { status: 0, stdout: '{ "com.ade.runtime" => disabled }\n' }
+        : null,
+    }).serviceDefinition;
 
-    expect(definition).toHaveLength(4);
-    // The plist first, then what launchd actually loaded, then whether macOS
-    // will run it at all ("Allow in the Background"), then launchd's own log
-    // of why it did or did not spawn the job.
+    expect(definition).toHaveLength(5);
+    // The definition and launchd's own state give the reader the reason a
+    // written plist is not running.
     expect(definition.map((entry) => entry.label)).toEqual([
       "launchd agent",
       "launchd job",
+      "launchd disabled list",
       "Background Items",
       "launchd spawn log",
     ]);
+    expect(definition.find((entry) => entry.label === "launchd disabled list")?.text)
+      .toContain('"com.ade.runtime" => disabled');
     // The whole reason this section exists: a plist written without it boots the
     // desktop app as the background service.
     expect(definition[0]?.text).toContain("ELECTRON_RUN_AS_NODE");

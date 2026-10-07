@@ -1437,6 +1437,50 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  // A check that fails inside Chromium's net stack is told apart from a real
+  // outage by asking Node for the channel file. Only a real channel file means
+  // the updater's own session is the broken part.
+  it.each([
+    { name: "a real channel file", respond: () => new Response("version: 1.2.93\nfiles: []\n", { status: 200 }), kind: "network_stuck" },
+    { name: "a captive portal page", respond: () => new Response("<html>Sign in to Wi-Fi</html>", { status: 200 }), kind: "network" },
+    { name: "a missing feed", respond: () => new Response("Not Found", { status: 404 }), kind: "network" },
+    { name: "no answer at all", respond: () => { throw new TypeError("fetch failed"); }, kind: "network" },
+  ])("classifies a net::ERR_FAILED check when Node's probe gets $name", async ({ respond, kind }) => {
+    const fetchMock = vi.fn(async () => respond());
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const updater = Object.assign(new FakeAutoUpdater(), { httpExecutor: { cachedSession: null } });
+      // electron-updater announces the check, then Chromium fails it at once.
+      updater.checkForUpdates.mockImplementation(async () => {
+        updater.emit("checking-for-update");
+        throw new Error("net::ERR_FAILED");
+      });
+      const service = createAutoUpdateService({
+        logger: makeLogger(),
+        currentVersion: "1.2.92",
+        globalStatePath: makeStatePath(),
+        updaterCacheDir: makeEmptyUpdaterCacheDir(),
+        autoCheckEnabled: false,
+        platform: "darwin",
+        updater,
+      });
+
+      await service.checkForUpdates({ userInitiated: true });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/latest-mac\.yml$/),
+        expect.anything(),
+      );
+      expect(service.getSnapshot()).toMatchObject({
+        status: "error",
+        errorDetails: { kind, phase: "check" },
+      });
+      service.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not install a ready update when latest-version verification fails", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();

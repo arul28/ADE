@@ -359,7 +359,7 @@ export function applyBrowserMockBrainDown(ade: {
  */
 export function applyBrowserMockUpdateAndFallback(ade: {
   updateGetState: () => Promise<AutoUpdateSnapshot>;
-  app: { getInfo: () => Promise<AppInfo> };
+  app: { getInfo: () => Promise<AppInfo>; restartBackgroundService?: () => Promise<void> };
 }): void {
   const updateError = urlParam("adeUpdateError");
   if (updateError === "stuck" || updateError === "offline") {
@@ -381,6 +381,11 @@ export function applyBrowserMockUpdateAndFallback(ade: {
     });
   }
   if (urlParam("adeRuntimeFallback") === "1") {
+    // The banner's Fix it is the desktop's service restart; the preview has
+    // no service, so it fails the way a still-refusing launchd would.
+    ade.app.restartBackgroundService = async () => {
+      throw new Error("Preview: the background service is still refusing to start.");
+    };
     const baseGetInfo = ade.app.getInfo;
     ade.app.getInfo = async () => {
       const info = await baseGetInfo();

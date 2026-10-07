@@ -5199,7 +5199,22 @@ export function registerIpc({
     IPC.diagnosticsSendManual,
     async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<DiagnosticsManualSendResult> => {
       const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
-      return (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
+      const result = (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
+      // "Report issue" sends here first now, so its one coarse fact moved with
+      // it: `success` is a report ADE received, next to `opened` for the GitHub
+      // path. Settings' send (no context) is not a Report issue press.
+      if (context) {
+        const outcome = result.ok ? "success" : "failed";
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "connections", action: "issue_report", outcome },
+          projectId: null,
+          dedupeKey: `issue_report:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      }
+      return result;
     },
   );
 
