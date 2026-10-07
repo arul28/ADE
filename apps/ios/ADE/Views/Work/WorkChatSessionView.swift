@@ -1066,7 +1066,7 @@ struct WorkChatSessionView: View {
     // their inline treatment in the timeline instead.
     //
     // When offline, we no longer stack "Reconnect to respond" banners here.
-    // The top-right ADEConnectionDot already signals "Offline" and the
+    // The top bar already signals "Offline" and the
     // pending cards themselves stay visible in the timeline in a read-only
     // state, so duplicating the reconnect nag at the top added noise
     // without new information.

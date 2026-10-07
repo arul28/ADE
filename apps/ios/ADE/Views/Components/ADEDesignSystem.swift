@@ -639,8 +639,7 @@ struct ADENoticeCard: View {
           .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(tint)
           .frame(width: 32, height: 32)
-          .background(tint.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .glassEffect(in: .rect(cornerRadius: 12))
+          .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
         VStack(alignment: .leading, spacing: 4) {
           Text(title)
@@ -657,12 +656,10 @@ struct ADENoticeCard: View {
 
       if let actionTitle, let action {
         Button(actionTitle, action: action)
-          .buttonStyle(.glassProminent)
-          .tint(tint == ADEColor.textSecondary ? ADEColor.accent : tint)
-          .controlSize(.small)
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
     }
-    .adeGlassCard()
+    .adeKitCard()
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(title). \(message)")
   }
@@ -794,7 +791,7 @@ struct ADEInstructionErrorCard: View {
           .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.warning)
           .frame(width: 32, height: 32)
-          .background(ADEColor.warning.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .background(ADEColor.warning.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         VStack(alignment: .leading, spacing: 4) {
           Text(title)
             .font(.headline)
@@ -823,13 +820,11 @@ struct ADEInstructionErrorCard: View {
       }
       if let retryTitle, let retry {
         Button(retryTitle, action: retry)
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.warning)
-          .controlSize(.small)
+          .buttonStyle(ADEKitButtonStyle(tone: .warn))
       }
       ADETechnicalDetailsFold(text: technicalDetail ?? "")
     }
-    .adeGlassCard()
+    .adeKitCard()
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(title). \(message)")
   }
@@ -873,157 +868,12 @@ struct ADEStatusPill: View {
   var body: some View {
     Text(text)
       .font(.system(.caption2, design: .monospaced).weight(.semibold))
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .background(tint.opacity(0.12), in: Capsule())
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
       .foregroundStyle(tint)
-      .glassEffect()
       .accessibilityLabel("Status: \(text)")
   }
-}
-
-/// Single source of truth for the "machine connection" presentation
-/// (status-dot tint, glow, accessibility label, truncated host name).
-///
-/// The view-model is computed from the same inputs the underlying views read
-/// directly from `SyncService` — `connectionHealth`, `connectionState`, and
-/// `hostName` — so its branching matches `switch health.transport` exactly
-/// and the existing semantics are preserved. Two callsites used to duplicate
-/// these computed-vars; both now instantiate this struct and read from it.
-struct ConnectionHealthPresentation {
-  let tint: Color
-  let showsConnectedGlow: Bool
-  let truncatedHostName: String?
-  let accessibilityLabel: String
-
-  init(
-    health: SyncConnectionHealth,
-    hostName: String?
-  ) {
-    let truncated = Self.truncate(hostName: hostName)
-    self.tint = Self.computeTint(health: health)
-    self.showsConnectedGlow = health.transport.isConnected
-    self.truncatedHostName = truncated
-    self.accessibilityLabel = Self.computeAccessibilityLabel(
-      health: health,
-      truncatedHostName: truncated
-    )
-  }
-
-  private static func computeTint(health: SyncConnectionHealth) -> Color {
-    switch health.transport {
-    case .connected:
-      return health.load == .strained ? ADEColor.warning : ADEColor.success
-    case .connecting:
-      return ADEColor.warning
-    case .unreachable:
-      return ADEColor.danger
-    case .disconnected:
-      return ADEColor.textMuted
-    }
-  }
-
-  private static func truncate(hostName: String?) -> String? {
-    guard let rawName = hostName else { return nil }
-    let cleaned = rawName
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleaned.isEmpty else { return nil }
-    if cleaned.count <= 10 { return cleaned }
-    return String(cleaned.prefix(9)) + "…"
-  }
-
-  private static func computeAccessibilityLabel(
-    health: SyncConnectionHealth,
-    truncatedHostName: String?
-  ) -> String {
-    let errorSuffix: String = {
-      guard health.transport == .unreachable,
-            let raw = health.lastFailureMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !raw.isEmpty
-      else {
-        return ""
-      }
-      let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-      let clipped = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
-      return ". \(clipped)"
-    }()
-
-    switch health.transport {
-    case .connected:
-      if let name = truncatedHostName {
-        if health.load == .strained {
-          return "Connected to \(name). Machine is responding slowly"
-        }
-        return "Connected to \(name)"
-      }
-      if health.load == .strained {
-        return "Connected. Machine is responding slowly"
-      }
-      return "Connected"
-    case .connecting:
-      return "Connecting to machine"
-    case .unreachable:
-      return "Connection error\(errorSuffix)"
-    case .disconnected:
-      return "Disconnected from machine"
-    }
-  }
-}
-
-struct ADEConnectionDot: View {
-  @EnvironmentObject private var syncService: SyncService
-
-  private var presentation: ConnectionHealthPresentation {
-    ConnectionHealthPresentation(
-      health: syncService.connectionHealth,
-      hostName: syncService.hostName
-    )
-  }
-
-  private var tint: Color { presentation.tint }
-  private var showsConnectedGlow: Bool { presentation.showsConnectedGlow }
-  private var accessibilityLabel: String { presentation.accessibilityLabel }
-
-  /// Standalone disc — retained for detail screens that still need the chip
-  /// form. The root top-bar uses `ADERootToolbarControls` which draws the
-  /// same affordance inside the shared liquid-glass capsule.
-  var body: some View {
-    Button(action: openSettings) {
-      Label {
-        Text("Machine connection")
-      } icon: {
-        PrsGlassDisc(tint: tint, isAlive: showsConnectedGlow) {
-          Image(systemName: "laptopcomputer")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(tint)
-        }
-      }
-      .labelStyle(.iconOnly)
-      .frame(minWidth: 44, minHeight: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Machine connection · \(accessibilityLabel)")
-    .accessibilityHint("Opens machine connection settings.")
-    .accessibilityShowsLargeContentViewer()
-    .adeInspectable(
-      "Root.Toolbar.ConnectionButton",
-      metadata: [
-        "label": "Machine connection · \(accessibilityLabel)",
-        "role": "button"
-      ]
-    )
-  }
-
-  fileprivate func openSettings() {
-    syncService.settingsPresented = true
-  }
-
-  fileprivate var iconTint: Color { tint }
-  fileprivate var isAlive: Bool { showsConnectedGlow }
-  fileprivate var a11yLabel: String { "Machine connection · \(accessibilityLabel)" }
 }
 
 private let projectIconImageCache = NSCache<NSString, UIImage>()
@@ -1065,61 +915,6 @@ extension Image {
   }
 }
 
-struct ADEProjectHubButton: View {
-  @EnvironmentObject private var syncService: SyncService
-
-  var body: some View {
-    Button(action: openProjectHub) {
-      Label {
-        Text("Projects")
-      } icon: {
-        PrsGlassDisc(tint: PrsGlass.glowPurple, isAlive: true) {
-          if let icon = projectIconImage(from: syncService.activeProject?.iconDataUrl) {
-            // Detected project logo replaces the generic grid glyph.
-            Image(uiImage: icon).projectIconStyle(size: 20, cornerRadius: 5)
-          } else {
-            Image(systemName: "square.grid.2x2.fill")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(PrsGlass.accentTop)
-          }
-        }
-      }
-      .labelStyle(.iconOnly)
-      .frame(minWidth: 44, minHeight: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Projects")
-    .accessibilityHint("Opens the ADE project menu.")
-    .accessibilityShowsLargeContentViewer()
-    .adeInspectable(
-      "Root.Toolbar.ProjectsButton",
-      metadata: [
-        "label": "Projects",
-        "role": "button"
-      ]
-    )
-  }
-
-  fileprivate func openProjectHub() {
-    syncService.showProjectHub()
-  }
-}
-
-/// Root toolbar control cluster: machine connection, project switching, and
-/// attention bell collapsed into one floating liquid-glass capsule so the PRs
-/// (and every root tab) top-bar reads as a single glass chip rather than three
-/// disjointed discs.
-///
-/// Visual spec mirrors the pencil: `.ultraThinMaterial` capsule (14pt radius),
-/// white α0.08 stroke, outer shadow, inner top highlight. The three icons are
-/// separated by 1pt white α0.08 vertical dividers. All tap targets, wiring and
-/// accessibility labels are preserved exactly.
-@available(iOS 17.0, *)
-/// Permanent "back to the hub" affordance shown at the leading edge of every
-/// in-project tab header: a left chevron + the active project's icon. Tapping it
-/// returns to the all-projects hub (`showProjectHub`) from any tab's main page.
-/// Replaces the old top-right "Projects" grid button.
 struct ADEHubBackButton: View {
   @EnvironmentObject private var syncService: SyncService
 
@@ -1130,7 +925,7 @@ struct ADEHubBackButton: View {
       HStack(spacing: 5) {
         Image(systemName: "chevron.left")
           .font(.system(size: 14, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(ADEColor.textSecondary)
         if let icon = projectIconImage(from: syncService.activeProject?.iconDataUrl) {
           Image(uiImage: icon).projectIconStyle(size: 24, cornerRadius: 6)
         } else {
@@ -1147,8 +942,9 @@ struct ADEHubBackButton: View {
       .padding(.vertical, 5)
       .padding(.leading, 8)
       .padding(.trailing, 6)
-      .background(ADEColor.glassBackground, in: Capsule())
-      .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+      // The kit's quiet round top-bar chrome, like `ADEKitCircleIcon`.
+      .background(ADEColor.cardBackground.opacity(0.72), in: Capsule())
+      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
@@ -1269,20 +1065,6 @@ struct ADERootToolbarControls: View {
   }
 }
 
-/// Compact leading cluster for detail screens that still need the controls
-/// beside the back affordance instead of the title-balancing root layout.
-@available(iOS 17.0, *)
-struct ADERootToolbarLeading: View {
-  var body: some View {
-    HStack(spacing: 10) {
-      ADEConnectionDot()
-      ADEProjectHubButton()
-      ActivityBellButton()
-    }
-    .fixedSize(horizontal: true, vertical: false)
-  }
-}
-
 @available(iOS 17.0, *)
 struct ADERootTopBar<Actions: View>: View {
   let title: String
@@ -1315,10 +1097,9 @@ struct ADERootTopBar<Actions: View>: View {
       if !title.isEmpty {
         Text(title)
           .font(.system(size: 22, weight: .heavy, design: .rounded))
-          .foregroundStyle(PrsGlass.textPrimary)
+          .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .padding(.leading, showsHubBackButton ? 0 : 4)
-          .shadow(color: Color.black.opacity(0.55), radius: 8, x: 0, y: 3)
           .accessibilityAddTraits(.isHeader)
       }
 
@@ -1361,29 +1142,6 @@ extension ADERootTopBar where Actions == EmptyView {
     self.showsHubBackButton = showsHubBackButton
     self.showsSettings = showsSettings
     self.actions = EmptyView()
-  }
-}
-
-/// Toolbar content variant for screens that need the root controls in the
-/// navigation bar. The explicit shared background opt-out keeps iOS 26's
-/// toolbar glass from joining settings and attention into one capsule.
-@available(iOS 17.0, *)
-struct ADERootToolbarLeadingItems: ToolbarContent {
-  var body: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      ADEConnectionDot()
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarLeading) {
-      ADEProjectHubButton()
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarLeading) {
-      ActivityBellButton()
-    }
-    .sharedBackgroundVisibility(.hidden)
   }
 }
 
@@ -1466,11 +1224,10 @@ struct ADEEmptyStateView<Actions: View>: View {
   var body: some View {
     VStack(spacing: 16) {
       Image(systemName: symbol)
-        .font(.system(size: 28, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-        .frame(width: 58, height: 58)
-        .background(ADEColor.surfaceBackground, in: Circle())
-        .glassEffect()
+        .font(.system(size: 24, weight: .regular))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 52, height: 52)
+        .background(ADEKit.track, in: Circle())
 
       VStack(spacing: 6) {
         Text(title)
@@ -1485,8 +1242,7 @@ struct ADEEmptyStateView<Actions: View>: View {
       actions
     }
     .frame(maxWidth: .infinity)
-    .padding(24)
-    .adeGlassCard(cornerRadius: 20, padding: 24)
+    .adeKitCard(padding: 24)
   }
 }
 
@@ -1541,25 +1297,7 @@ struct ADECardSkeleton: View {
         ADESkeletonView(width: index == rows - 1 ? 140 : nil, height: 12)
       }
     }
-    .adeGlassCard()
-  }
-}
-
-struct ADEGlassGroup<Content: View>: View {
-  let spacing: CGFloat
-  let content: Content
-
-  init(spacing: CGFloat = 10, @ViewBuilder content: () -> Content) {
-    self.spacing = spacing
-    self.content = content()
-  }
-
-  var body: some View {
-    GlassEffectContainer(spacing: spacing) {
-      HStack(spacing: spacing) {
-        content
-      }
-    }
+    .adeKitCard(padding: 16)
   }
 }
 
@@ -1705,7 +1443,7 @@ extension View {
     cornerRadius: CGFloat = ADEListRowMetrics.cornerRadius,
     padding: CGFloat = ADEListRowMetrics.padding
   ) -> some View {
-    adeGlassCard(cornerRadius: cornerRadius, padding: padding)
+    adeKitCard(padding: padding)
   }
 
   func adeMatchedGeometry(id: String?, in namespace: Namespace.ID?) -> some View {

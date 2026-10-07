@@ -350,12 +350,13 @@ struct ADEKitMenuLabel: View {
 }
 
 /// A capsule button. `prominent` fills it with the accent for the one primary
-/// action; otherwise it is a neutral pill. `wide` makes it a full-width,
-/// 44pt sheet footer button.
+/// action (or `brand`, for a provider's own sign-in); otherwise it is a
+/// neutral pill. `wide` makes it a full-width, 44pt sheet footer button.
 struct ADEKitButtonStyle: ButtonStyle {
   var prominent = false
   var tone: ADEKitTone = .neutral
   var wide = false
+  var brand: Color? = nil
 
   func makeBody(configuration: Configuration) -> some View {
     let tint = tone == .neutral ? ADEColor.textPrimary : tone.color
@@ -366,7 +367,7 @@ struct ADEKitButtonStyle: ButtonStyle {
       .padding(.horizontal, 12)
       .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 46 : 30)
       .background(
-        prominent ? ADEColor.accent : (tone == .neutral ? ADEKit.track : tone.color.opacity(0.12)),
+        prominent ? (brand ?? ADEColor.accent) : (tone == .neutral ? ADEKit.track : tone.color.opacity(0.12)),
         in: Capsule(style: .continuous)
       )
       .opacity(configuration.isPressed ? 0.7 : 1)
@@ -472,6 +473,24 @@ struct ADEKitCountSegments<Value: Hashable>: View {
     }
     .padding(2)
     .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+  }
+}
+
+/// A text field's well: the kit track, rounded, no glass.
+struct ADEKitFieldModifier: ViewModifier {
+  var padding: CGFloat = 12
+
+  func body(content: Content) -> some View {
+    content
+      .padding(padding)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+  }
+}
+
+extension View {
+  /// Puts a text field (or a small block of input) in the kit's field well.
+  func adeKitField(padding: CGFloat = 12) -> some View {
+    modifier(ADEKitFieldModifier(padding: padding))
   }
 }
 

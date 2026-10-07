@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// A titled section in one kit card: semibold title, at most one hint line,
+/// then the content. (Kept under its old name for the Work tool sheets.)
 struct ADEGlassSection<Content: View>: View {
   let title: String
   let subtitle: String?
@@ -13,19 +15,20 @@ struct ADEGlassSection<Content: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         if let subtitle {
           Text(subtitle)
-            .font(.caption)
+            .font(.system(size: 12))
             .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
         }
       }
       content
     }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
+    .adeKitCard()
   }
 }
 
