@@ -55,12 +55,9 @@ extension LanesTabView {
 
   @ViewBuilder
   var openLanesTray: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 8) {
       HStack {
-        Label("OPEN LANES", systemImage: "square.stack.3d.up.fill")
-          .font(.caption.weight(.semibold))
-          .tracking(0.6)
-          .foregroundStyle(ADEColor.textMuted)
+        ADEEyebrow("Open lanes")
         Spacer()
         Button {
           withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
@@ -68,13 +65,13 @@ extension LanesTabView {
           }
         } label: {
           Text("Clear")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textMuted)
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(ADEColor.textSecondary)
         }
         .accessibilityLabel("Clear open lanes")
       }
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
           ForEach(openLaneSnapshots) { snapshot in
             NavigationLink {
               LaneDetailScreen(
@@ -119,7 +116,7 @@ extension LanesTabView {
         }
       }
     }
-    .adeGlassCard(cornerRadius: 14, padding: 12)
+    .padding(.horizontal, 2)
   }
 
   var stackOrderedSnapshots: [LaneListSnapshot] {
@@ -283,6 +280,7 @@ extension LanesTabView {
         onSelectLane: { laneId in selectedLaneTransitionId = laneId },
         machineChips: laneMachineChips
       )
+      .adeKitCard(padding: nil)
     }
   }
 
@@ -330,6 +328,8 @@ extension LanesTabView {
         VStack(spacing: 10) {
           laneListHeader
 
+          // The focused machine's lanes: one kit panel, primary first.
+          VStack(spacing: 0) {
           if let primarySnapshot = normalStickyPrimarySnapshot {
             NavigationLink {
               LaneDetailScreen(
@@ -355,7 +355,7 @@ extension LanesTabView {
             .simultaneousGesture(TapGesture().onEnded {
               selectedLaneTransitionId = primarySnapshot.lane.id
             })
-            .buttonStyle(ADEScaleButtonStyle())
+            .buttonStyle(ADEKitRowButtonStyle())
             .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
               LanePeekPreview(
                 snapshot: primarySnapshot,
@@ -374,6 +374,12 @@ extension LanesTabView {
           }
 
           if !normalTreeSnapshots.isEmpty {
+            if normalStickyPrimarySnapshot != nil {
+              Rectangle()
+                .fill(ADEKit.rule)
+                .frame(height: 0.75)
+                .padding(.leading, ADEKit.inset)
+            }
             LaneTreeView(
               snapshots: normalTreeSnapshots,
               pinnedLaneIds: pinnedLaneIds,
@@ -389,6 +395,8 @@ extension LanesTabView {
               machineChips: laneMachineChips
             )
           }
+          }
+          .adeKitCard(padding: nil)
           remoteMachineLaneSections
         }
       }
@@ -396,12 +404,9 @@ extension LanesTabView {
   }
 
   var laneListHeader: some View {
-    Text("LANES")
-      .font(.caption.weight(.semibold))
-      .tracking(0.6)
-      .foregroundStyle(ADEColor.textMuted)
+    ADEEyebrow("Lanes")
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 2)
+      .padding(.horizontal, 4)
   }
 
   @ViewBuilder
@@ -713,10 +718,10 @@ struct LaneMachineFilterChip: View {
     Button(action: action) {
       HStack(spacing: 6) {
         Image(systemName: symbol)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
+          .font(.system(size: 11.5, weight: .medium))
+          .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
         Text(title)
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
           .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
           .lineLimit(1)
         if let liveDot {
@@ -726,16 +731,14 @@ struct LaneMachineFilterChip: View {
         }
       }
       .padding(.horizontal, 11)
-      .frame(height: 32)
-      .background(
-        Capsule(style: .continuous)
-          .fill(selected ? ADEColor.accent.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5))
-      )
-      .glassEffect(in: .capsule)
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.7)
-      )
+      .frame(height: 30)
+      // Kit segmented look: neutral track, the selected machine raised.
+      .background(selected ? ADEKit.surface : ADEKit.track, in: Capsule(style: .continuous))
+      .overlay {
+        if selected {
+          Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75)
+        }
+      }
     }
     .buttonStyle(.plain)
     .accessibilityLabel(liveDot == false ? "\(title), not live" : title)

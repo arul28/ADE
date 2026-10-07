@@ -4,8 +4,7 @@ private enum LaneTreeMetrics {
   static let indent: CGFloat = 20
   static let elbowWidth: CGFloat = 14
   static let elbowHeight: CGFloat = 22
-  static let rowSpacing: CGFloat = 8
-  static let strokeColor = ADEColor.glassBorder
+  static let strokeColor = ADEKit.rule
   static let strokeWidth: CGFloat = 1
 }
 
@@ -36,8 +35,15 @@ struct LaneTreeView: View {
   var machineChips: LaneMachineChips = .none
 
   var body: some View {
-    VStack(spacing: LaneTreeMetrics.rowSpacing) {
-      ForEach(snapshots) { snapshot in
+    // Rows of one kit panel (the caller draws the card), hairlines between.
+    VStack(spacing: 0) {
+      ForEach(Array(snapshots.enumerated()), id: \.element.id) { index, snapshot in
+        if index > 0 {
+          Rectangle()
+            .fill(ADEKit.rule)
+            .frame(height: 0.75)
+            .padding(.leading, ADEKit.inset)
+        }
         LaneTreeRow(
           snapshot: snapshot,
           depth: laneTreeDisplayDepth(for: snapshot.lane),
@@ -90,7 +96,8 @@ struct LaneTreeRow: View {
         LaneTreeElbowShape()
           .stroke(LaneTreeMetrics.strokeColor, lineWidth: LaneTreeMetrics.strokeWidth)
           .frame(width: LaneTreeMetrics.elbowWidth, height: LaneTreeMetrics.elbowHeight)
-          .padding(.top, 18)
+          .padding(.top, 12)
+          .padding(.leading, ADEKit.inset)
       }
       if machine?.isLive == false {
         // The last roster of a machine the phone has no live link to: shown,
@@ -111,7 +118,7 @@ struct LaneTreeRow: View {
         .simultaneousGesture(TapGesture().onEnded {
           onSelectLane(snapshot.lane.id)
         })
-        .buttonStyle(ADEScaleButtonStyle())
+        .buttonStyle(ADEKitRowButtonStyle())
         .contextMenu {
           onContextMenu(snapshot)
         } preview: {
@@ -197,10 +204,6 @@ struct LanePeekPreview: View {
     }
     .padding(16)
     .frame(width: 280)
-    .background(laneTint.background)
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(laneTint.border, lineWidth: 0.75)
-    )
+    .background(ADEKit.surface)
   }
 }

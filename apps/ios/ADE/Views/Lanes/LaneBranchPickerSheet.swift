@@ -106,7 +106,7 @@ struct LaneBranchPickerSheet: View {
   @ViewBuilder
   private var content: some View {
     ScrollView {
-      VStack(spacing: 14) {
+      VStack(alignment: .leading, spacing: 20) {
         currentBranchCard
         createBranchCard
         searchField
@@ -129,24 +129,21 @@ struct LaneBranchPickerSheet: View {
   private var currentBranchCard: some View {
     HStack(spacing: 10) {
       Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.tintLanes)
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
         .frame(width: 22)
         .accessibilityHidden(true)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("On this lane")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .textCase(.uppercase)
+      VStack(alignment: .leading, spacing: 3) {
+        ADEEyebrow("On this lane")
         Text(branchRef)
-          .font(.system(.body, design: .monospaced))
+          .font(.adeMono(14))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.middle)
       }
       Spacer(minLength: 8)
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Currently on \(branchRef)")
   }
@@ -161,7 +158,7 @@ struct LaneBranchPickerSheet: View {
         .textFieldStyle(.plain)
         .autocorrectionDisabled(true)
         .textInputAutocapitalization(.never)
-        .font(.system(.body, design: .monospaced))
+        .font(.adeMono(14))
       if !query.isEmpty {
         Button {
           query = ""
@@ -174,26 +171,30 @@ struct LaneBranchPickerSheet: View {
         .accessibilityLabel("Clear filter")
       }
     }
-    .adeInsetField(cornerRadius: 12, padding: 12)
+    .padding(.horizontal, 12)
+    .frame(minHeight: 40)
+    .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 
   private var createBranchCard: some View {
-    GlassSection(title: "New branch", subtitle: "Create a branch and switch this lane to it.") {
+    LaneFormSection(title: "New branch", subtitle: "Create a branch and switch this lane to it.") {
       VStack(alignment: .leading, spacing: 12) {
         HStack(spacing: 8) {
           Image(systemName: "plus")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.tintLanes)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
             .accessibilityHidden(true)
           TextField("feature/short-name", text: $createBranchName)
             .textFieldStyle(.plain)
             .autocorrectionDisabled(true)
             .textInputAutocapitalization(.never)
-            .font(.system(.body, design: .monospaced))
+            .font(.adeMono(14))
         }
-        .adeInsetField(cornerRadius: 12, padding: 12)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(branchNameValidationReason == nil ? Color.clear : ADEColor.danger.opacity(0.55), lineWidth: 0.75)
         )
 
@@ -213,7 +214,7 @@ struct LaneBranchPickerSheet: View {
         VStack(alignment: .leading, spacing: 10) {
           startPointPickerRow(
             title: "Start from",
-            subtitle: "The commit your new branch is forked from.",
+            subtitle: "The commit the branch forks from.",
             selection: Binding(
               get: { selectedCreateStartPoint },
               set: { createStartPoint = $0 }
@@ -221,7 +222,7 @@ struct LaneBranchPickerSheet: View {
           )
           baseRefPickerRow(
             title: "Rebase base",
-            subtitle: "What ADE compares this lane against for rebase and merge readiness.",
+            subtitle: "What rebase and merge readiness compare against.",
             selection: Binding(
               get: { selectedCreateBaseRef },
               set: { createBaseRef = $0 }
@@ -233,22 +234,9 @@ struct LaneBranchPickerSheet: View {
           guard !checkingOut, branchNameValidationReason == nil, !normalizedCreateName.isEmpty else { return }
           confirmingCreateBranch = true
         } label: {
-          HStack(spacing: 8) {
-            Image(systemName: "plus")
-              .font(.system(size: 12, weight: .semibold))
-            Text("Create in this lane")
-              .font(.subheadline.weight(.semibold))
-            Spacer()
-          }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
-          .background(ADEColor.tintLanes.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .stroke(ADEColor.tintLanes.opacity(0.24), lineWidth: 0.5)
-          )
+          Label("Create in this lane", systemImage: "plus")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
         .disabled(checkingOut || normalizedCreateName.isEmpty || branchNameValidationReason != nil)
         .opacity(canCreateBranch ? 1 : 0.5)
       }
@@ -256,24 +244,19 @@ struct LaneBranchPickerSheet: View {
   }
 
   private func startPointPickerRow(title: String, subtitle: String, selection: Binding<String>) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
+    VStack(alignment: .leading, spacing: 4) {
+      ADEEyebrow(title)
       Text(subtitle)
-        .font(.caption2)
+        .font(.system(size: 12))
         .foregroundStyle(ADEColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
       ScrollView {
-        LazyVStack(spacing: 8) {
-          ForEach(startPointOptions) { option in
-            LaneOptionButton(
-              title: option.label,
-              isSelected: option.value == selection.wrappedValue,
-              tint: ADEColor.accent
-            ) {
-              selection.wrappedValue = option.value
-            }
+        LaneChoiceList(items: startPointOptions) { option in
+          LaneChoiceRow(
+            title: option.label,
+            isSelected: option.value == selection.wrappedValue
+          ) {
+            selection.wrappedValue = option.value
           }
         }
       }
@@ -281,30 +264,25 @@ struct LaneBranchPickerSheet: View {
       .accessibilityLabel(title)
       .accessibilityValue(startPointDisplayLabel(for: selection.wrappedValue))
     }
-    .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-    .background(ADEColor.surfaceBackground.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
-    )
+    .padding(.top, 4)
   }
 
   private func baseRefPickerRow(title: String, subtitle: String, selection: Binding<String>) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
+    VStack(alignment: .leading, spacing: 4) {
+      ADEEyebrow(title)
       Text(subtitle)
-        .font(.caption2)
+        .font(.system(size: 12))
         .foregroundStyle(ADEColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
       ScrollView {
-        LazyVStack(spacing: 8) {
-          ForEach(baseRefOptions, id: \.self) { name in
-            LaneOptionButton(
+        LazyVStack(spacing: 0) {
+          ForEach(Array(baseRefOptions.enumerated()), id: \.element) { index, name in
+            if index > 0 {
+              Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+            }
+            LaneChoiceRow(
               title: name,
-              isSelected: name == selection.wrappedValue,
-              tint: ADEColor.accent
+              isSelected: name == selection.wrappedValue
             ) {
               selection.wrappedValue = name
             }
@@ -315,34 +293,7 @@ struct LaneBranchPickerSheet: View {
       .accessibilityLabel(title)
       .accessibilityValue(selection.wrappedValue)
     }
-    .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-    .background(ADEColor.surfaceBackground.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
-    )
-  }
-
-  private func branchMenuLabel(_ value: String) -> some View {
-    HStack(spacing: 8) {
-      Text(value)
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-      Spacer(minLength: 8)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .accessibilityHidden(true)
-    }
-    .padding(EdgeInsets(top: 9, leading: 10, bottom: 9, trailing: 10))
-    .frame(maxWidth: .infinity, minHeight: 40)
-    .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    .padding(.top, 4)
   }
 
   @ViewBuilder
@@ -364,20 +315,16 @@ struct LaneBranchPickerSheet: View {
         .padding(.vertical, 18)
     } else {
       if !filteredLocal.isEmpty {
-        GlassSection(title: "Local", subtitle: branchSectionSubtitle(filteredLocal.count)) {
-          VStack(alignment: .leading, spacing: 8) {
-            ForEach(filteredLocal) { branch in
-              branchRow(branch)
-            }
+        LaneFormSection(title: "Local", subtitle: branchSectionSubtitle(filteredLocal.count)) {
+          LaneChoiceList(items: filteredLocal) { branch in
+            branchRow(branch)
           }
         }
       }
       if !filteredRemote.isEmpty {
-        GlassSection(title: "Remote", subtitle: branchSectionSubtitle(filteredRemote.count)) {
-          VStack(alignment: .leading, spacing: 8) {
-            ForEach(filteredRemote) { branch in
-              branchRow(branch)
-            }
+        LaneFormSection(title: "Remote", subtitle: branchSectionSubtitle(filteredRemote.count)) {
+          LaneChoiceList(items: filteredRemote) { branch in
+            branchRow(branch)
           }
         }
       }
@@ -403,13 +350,13 @@ struct LaneBranchPickerSheet: View {
     } label: {
       HStack(spacing: 10) {
         Image(systemName: branch.isRemote ? "arrow.down.circle" : "arrow.triangle.branch")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(branch.isRemote ? ADEColor.info : ADEColor.tintLanes)
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textMuted)
           .frame(width: 22)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 2) {
           Text(branch.name)
-            .font(.system(.body, design: .monospaced))
+            .font(.adeMono(13.5))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -427,18 +374,18 @@ struct LaneBranchPickerSheet: View {
         }
         Spacer(minLength: 8)
         if current {
-          LaneMicroChip(icon: "checkmark", text: "Current", tint: ADEColor.success)
+          ADEKitTag(text: "Current", tone: .ok)
         } else if let owner {
-          LaneMicroChip(icon: "lock", text: owner, tint: ADEColor.warning)
+          LaneTypeBadge(text: owner, tint: ADEColor.warning)
         } else if branch.profiledInCurrentLane == true {
-          LaneMicroChip(icon: "clock", text: "Used here", tint: ADEColor.textMuted)
+          ADEKitTag(text: "Used here")
         }
       }
+      .padding(.vertical, 9)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(isDisabled)
-    .adeGlassCard(cornerRadius: 12, padding: 12)
     .opacity(current ? 0.7 : (isOwned ? 0.55 : 1.0))
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel(for: branch, owner: owner, current: current))
@@ -447,13 +394,14 @@ struct LaneBranchPickerSheet: View {
 
   private func errorCard(_ message: String) -> some View {
     HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 14, weight: .semibold))
+      Image(systemName: "exclamationmark.octagon.fill")
+        .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(ADEColor.danger)
+        .padding(.top, 2)
         .accessibilityHidden(true)
       Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textPrimary)
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textSecondary)
         .frame(maxWidth: .infinity, alignment: .leading)
       Button {
         errorMessage = nil
@@ -466,7 +414,7 @@ struct LaneBranchPickerSheet: View {
       .buttonStyle(.plain)
       .accessibilityLabel("Dismiss error")
     }
-    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .adeKitCard(padding: 12)
   }
 
   private func accessibilityLabel(for branch: GitBranchSummary, owner: String?, current: Bool) -> String {

@@ -1177,42 +1177,10 @@ struct ADERootToolbarControls: View {
   var body: some View {
     toolbarBody
       .animation(.snappy(duration: 0.2), value: drawer.unreadCount)
-      .padding(.vertical, 4)
-      .background {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(ADEColor.glassBackground)
-      }
-      .overlay {
-        // Soft vertical highlight (white 0.10 → 0).
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [Color.white.opacity(0.10), .clear],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-          )
-          .allowsHitTesting(false)
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(
-            LinearGradient(
-              colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-              startPoint: .top,
-              endPoint: .bottom
-            ),
-            lineWidth: 1
-          )
-          .allowsHitTesting(false)
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(Color.white.opacity(0.08), lineWidth: 0.75)
-          .allowsHitTesting(false)
-      }
-      .compositingGroup()
-      .shadow(color: Color.black.opacity(0.28), radius: 12, x: 0, y: 5)
+      // The kit's quiet round top-bar chrome (`ADEKitCircleIcon`), so the
+      // root tabs' bell matches the Hub's: calm fill, hairline, no glow.
+      .background(ADEColor.cardBackground.opacity(0.72), in: Capsule(style: .continuous))
+      .overlay(Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
       .fixedSize(horizontal: true, vertical: false)
   }
 
@@ -1225,7 +1193,7 @@ struct ADERootToolbarControls: View {
 
       if showsSettings {
         Rectangle()
-          .fill(Color.white.opacity(0.08))
+          .fill(ADEKit.rule)
           .frame(width: 1, height: 18)
 
         settingsButton
@@ -1235,8 +1203,8 @@ struct ADERootToolbarControls: View {
 
   private var attentionButton: some View {
     toolbarIconButton(
-      icon: "bell.fill",
-      tint: hasUnread ? ADESharedTheme.warningAmber : PrsGlass.textSecondary,
+      icon: "bell",
+      tint: hasUnread ? ADEColor.textPrimary : ADEColor.textSecondary,
       isAlive: hasUnread,
       accessibilityLabel: hasUnread ? "Activity, \(drawer.unreadCount) need you" : "Activity",
       action: { syncService.attentionDrawerPresented = true }
@@ -1246,7 +1214,7 @@ struct ADERootToolbarControls: View {
   private var settingsButton: some View {
     toolbarIconButton(
       icon: "gearshape",
-      tint: PrsGlass.textSecondary,
+      tint: ADEColor.textSecondary,
       isAlive: false,
       accessibilityLabel: "Settings",
       action: { syncService.settingsPresented = true }
@@ -1259,11 +1227,7 @@ struct ADERootToolbarControls: View {
       Circle()
         .fill(ADEColor.warning)
         .frame(width: 7, height: 7)
-        .overlay(
-          Circle().stroke(PrsGlass.ink, lineWidth: 1.25)
-        )
-        .shadow(color: ADEColor.warning.opacity(0.45), radius: 3, x: 0, y: 0)
-        .offset(x: -7, y: 6)
+        .offset(x: -8, y: 7)
         .transition(.scale.combined(with: .opacity))
         .accessibilityHidden(true)
     }
@@ -1280,23 +1244,16 @@ struct ADERootToolbarControls: View {
   ) -> some View {
     Button(action: action) {
       ZStack {
-        if isAlive {
-          Circle()
-            .fill(tint.opacity(0.18))
-            .frame(width: 24, height: 24)
-            .blur(radius: 3)
-        }
         if let iconImage {
           // Detected project logo replaces the generic grid glyph.
           Image(uiImage: iconImage).projectIconStyle(size: 22, cornerRadius: 5)
         } else {
           Image(systemName: icon)
-            .font(.system(size: 14, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(tint)
-            .shadow(color: isAlive ? tint.opacity(0.28) : .clear, radius: 2, x: 0, y: 0)
         }
       }
-      .frame(width: 44, height: 36)
+      .frame(width: 36, height: 36)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

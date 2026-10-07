@@ -146,23 +146,15 @@ struct LaneCreateSheet: View {
   @ViewBuilder
   private var formContent: some View {
       ScrollView {
-        VStack(spacing: 14) {
-          GlassSection(title: "Create lane", subtitle: createSubtitle) {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 24) {
+          LaneFormSection(title: "Create lane", subtitle: createSubtitle) {
+            VStack(alignment: .leading, spacing: 10) {
               LaneTextField("Lane name", text: $name)
               LaneTextField("Description", text: $description)
             }
           }
-          .adeBorderBeam(
-            cornerRadius: 16,
-            duration: 14,
-            strength: 0.55,
-            lineWidth: 1.25,
-            variant: .colorful,
-            active: true
-          )
 
-          GlassSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
+          LaneFormSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
             VStack(alignment: .leading, spacing: 12) {
               if showsModePicker {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
@@ -201,17 +193,13 @@ struct LaneCreateSheet: View {
                 }
               case .importBranch:
                 VStack(alignment: .leading, spacing: 12) {
-                  Text("Existing branch")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textSecondary)
+                  ADEEyebrow("Existing branch")
                   branchOptionList(
                     branches: branches,
                     emptyText: "No branches found.",
                     selection: $selectedImportBranch
                   )
-                  Text("Base branch")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textSecondary)
+                  ADEEyebrow("Base branch")
                   branchOptionList(
                     branches: branches.filter { !$0.isRemote },
                     emptyText: "No local base branches found.",
@@ -230,16 +218,12 @@ struct LaneCreateSheet: View {
             }
           }
 
-          GlassSection(title: "Color") {
+          LaneFormSection(title: "Color") {
             VStack(alignment: .leading, spacing: 8) {
               if let hex = selectedColorHex, let name = LaneColorPalette.name(forHex: hex) {
                 Text(name)
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textMuted)
-              } else {
-                Text("Pick a color to identify this lane.")
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textMuted)
+                  .font(.system(size: 12.5))
+                  .foregroundStyle(ADEColor.textSecondary)
               }
               LaneColorSwatchPicker(
                 selectedHex: selectedColorHex,
@@ -251,10 +235,11 @@ struct LaneCreateSheet: View {
           }
 
           if supportsTemplates {
-            GlassSection(title: "Template") {
-              VStack(spacing: 8) {
+            LaneFormSection(title: "Template") {
+              VStack(spacing: 0) {
                 templateRow(id: nil, name: "None", description: "Skip environment setup.")
                 ForEach(templates) { template in
+                  Rectangle().fill(ADEKit.rule).frame(height: 0.75)
                   templateRow(id: template.id, name: template.name, description: template.description)
                 }
               }
@@ -273,16 +258,7 @@ struct LaneCreateSheet: View {
           }
 
           if let errorMessage {
-            HStack(spacing: 10) {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(ADEColor.danger)
-              Text(errorMessage)
-                .font(.caption)
-                .foregroundStyle(ADEColor.danger)
-              Spacer()
-            }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            ADESettingsNotice(message: errorMessage, tone: .crit)
           }
         }
         .padding(16)
@@ -353,16 +329,14 @@ struct LaneCreateSheet: View {
     branches: [GitBranchSummary],
     selection: Binding<String>
   ) -> some View {
-    LazyVStack(spacing: 8) {
-      ForEach(branches) { branch in
-        LaneOptionButton(
-          title: branch.name,
-          subtitle: branch.isRemote ? "Remote branch" : (branch.isCurrent ? "Current local branch" : "Local branch"),
-          systemImage: branch.isRemote ? "cloud" : "arrow.triangle.branch",
-          isSelected: selection.wrappedValue == branch.name
-        ) {
-          selection.wrappedValue = branch.name
-        }
+    LaneChoiceList(items: branches) { branch in
+      LaneChoiceRow(
+        title: branch.name,
+        subtitle: branch.isCurrent ? "current" : nil,
+        systemImage: branch.isRemote ? "cloud" : "arrow.triangle.branch",
+        isSelected: selection.wrappedValue == branch.name
+      ) {
+        selection.wrappedValue = branch.name
       }
     }
   }
@@ -393,16 +367,14 @@ struct LaneCreateSheet: View {
     lanes: [LaneSummary],
     selection: Binding<String>
   ) -> some View {
-    LazyVStack(spacing: 8) {
-      ForEach(lanes) { lane in
-        LaneOptionButton(
-          title: lane.name,
-          subtitle: lane.branchRef,
-          systemImage: lane.laneType == "primary" ? "house.fill" : "arrow.triangle.branch",
-          isSelected: selection.wrappedValue == lane.id
-        ) {
-          selection.wrappedValue = lane.id
-        }
+    LaneChoiceList(items: lanes) { lane in
+      LaneChoiceRow(
+        title: lane.name,
+        subtitle: normalizedPrBranchName(lane.branchRef),
+        systemImage: lane.laneType == "primary" ? "house" : "arrow.triangle.branch",
+        isSelected: selection.wrappedValue == lane.id
+      ) {
+        selection.wrappedValue = lane.id
       }
     }
   }
@@ -416,14 +388,10 @@ struct LaneCreateSheet: View {
   }
 
   private var baseSourcePicker: some View {
-    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
-      ForEach(LaneBaseSource.allCases) { source in
-        LaneOptionButton(
-          title: source.title,
-          subtitle: source.subtitle,
-          systemImage: source == .remote ? "cloud" : "internaldrive",
-          isSelected: baseSource == source
-        ) {
+    ADEKitSegmented(
+      selection: Binding(
+        get: { baseSource },
+        set: { source in
           guard baseSource != source else { return }
           baseSource = source
           selectedBaseBranch = defaultBaseSelection(for: source)
@@ -431,8 +399,9 @@ struct LaneCreateSheet: View {
             Task { await refreshRemoteRefsIfNeeded() }
           }
         }
-      }
-    }
+      ),
+      options: LaneBaseSource.allCases.map { (value: $0, title: $0.title) }
+    )
   }
 
   /// Default ref per source: remote prefers the primary base branch's upstream,
@@ -636,30 +605,28 @@ struct LaneCreateSheet: View {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
           Text(name)
-            .font(.subheadline.weight(.semibold))
+            .font(.system(size: 14.5, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
           if let description, !description.isEmpty {
             Text(description)
-              .font(.caption)
+              .font(.system(size: 12.5))
               .foregroundStyle(ADEColor.textSecondary)
               .lineLimit(2)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
         Spacer(minLength: 8)
-        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(isSelected ? ADEColor.accent : ADEColor.textMuted)
-          .padding(.top, 1)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.top, 2)
+        }
       }
+      .padding(.vertical, 9)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .adeGlassCard(cornerRadius: 12, padding: 12)
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(isSelected ? ADEColor.accent.opacity(0.55) : Color.clear, lineWidth: 1)
-    )
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
   }

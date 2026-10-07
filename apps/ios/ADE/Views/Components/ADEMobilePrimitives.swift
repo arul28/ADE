@@ -34,13 +34,14 @@ struct ADEGlassStatusBadge: View {
   let tint: Color
 
   var body: some View {
+    // Flat, like the kit tag: a tinted label, no glass.
     Text(text)
-      .font(.caption2.weight(.semibold))
+      .font(.system(size: 11, weight: .semibold))
       .foregroundStyle(tint)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.12), in: Capsule())
-      .glassEffect()
+      .padding(.horizontal, 6)
+      .frame(minHeight: 18)
+      .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+      .lineLimit(1)
   }
 }
 
@@ -62,7 +63,6 @@ struct ADEGlassChip: View {
     .padding(.horizontal, 6)
     .padding(.vertical, 3)
     .background(tint.opacity(0.1), in: Capsule())
-    .glassEffect()
   }
 }
 
@@ -89,9 +89,10 @@ struct ADEGlassActionButton: View {
       }
       .foregroundStyle(tint)
       .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(tint.opacity(0.1), in: Capsule())
-      .glassEffect()
+      .frame(minHeight: 30)
+      // The kit pill: a neutral track, or a light wash of a meaningful tint.
+      .background(tint == ADEColor.textSecondary ? ADEKit.track : tint.opacity(0.12), in: Capsule())
+      .contentShape(Capsule())
     }
     .buttonStyle(.plain)
   }
@@ -139,13 +140,12 @@ struct ADEOptionButton: View {
       .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
       .background(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(isSelected ? tint.opacity(0.13) : ADEColor.surfaceBackground.opacity(0.10))
+          .fill(isSelected ? tint.opacity(0.08) : Color.clear)
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(isSelected ? tint.opacity(0.55) : ADEColor.glassBorder, lineWidth: isSelected ? 1 : 0.5)
+          .strokeBorder(isSelected ? tint.opacity(0.45) : ADEKit.edge, lineWidth: 0.75)
       )
-      .glassEffect(in: .rect(cornerRadius: 12))
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel(subtitle.map { "\(title). \($0)" } ?? title)
@@ -188,13 +188,8 @@ struct ADEGlassHoldActionButton: View {
     }
     .foregroundStyle(tint)
     .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background((isPressing ? tint.opacity(0.18) : tint.opacity(0.1)), in: Capsule())
-    .glassEffect()
-    .overlay(
-      Capsule()
-        .stroke(tint.opacity(isPressing ? 0.36 : 0.14), lineWidth: 0.5)
-    )
+    .frame(minHeight: 30)
+    .background((isPressing ? tint.opacity(0.2) : tint.opacity(0.12)), in: Capsule())
     .contentShape(Capsule())
     .onLongPressGesture(
       minimumDuration: minimumDuration,
@@ -207,56 +202,6 @@ struct ADEGlassHoldActionButton: View {
       perform: action
     )
     .accessibilityLabel("\(title). Hold to confirm.")
-  }
-}
-
-struct ADEQuickActionTile: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(spacing: 4) {
-        Image(systemName: symbol)
-          .font(.system(size: 16, weight: .medium))
-          .symbolRenderingMode(.hierarchical)
-        Text(title)
-          .font(.caption2.weight(.medium))
-      }
-      .foregroundStyle(tint)
-      .frame(width: 64, height: 54)
-      .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-  }
-}
-
-struct ADEGlassMenuLabel: View {
-  let title: String
-
-  var body: some View {
-    HStack(spacing: 4) {
-      Text(title)
-        .font(.caption.weight(.medium))
-      Image(systemName: "chevron.down")
-        .font(.system(size: 8, weight: .bold))
-    }
-    .foregroundStyle(ADEColor.textSecondary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
-    .glassEffect()
-    .overlay(
-      Capsule()
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-    )
   }
 }
 
@@ -301,5 +246,3 @@ typealias LaneTypeBadge = ADEGlassStatusBadge
 typealias LaneMicroChip = ADEGlassChip
 typealias LaneActionButton = ADEGlassActionButton
 typealias LaneHoldToConfirmButton = ADEGlassHoldActionButton
-typealias LaneQuickAction = ADEQuickActionTile
-typealias LaneMenuLabel = ADEGlassMenuLabel

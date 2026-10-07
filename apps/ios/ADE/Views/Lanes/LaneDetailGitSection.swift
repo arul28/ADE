@@ -31,7 +31,7 @@ extension LaneDetailScreen {
         Image(systemName: "exclamationmark.triangle.fill")
           .foregroundStyle(ADEColor.danger)
         Text(conflictState.kind == "merge" ? "Merge conflict" : "Rebase conflict")
-          .font(.subheadline.weight(.semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Spacer()
       }
@@ -62,13 +62,7 @@ extension LaneDetailScreen {
         }
       }
     }
-    .padding(14)
-    .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.danger.opacity(0.3), lineWidth: 1)
-    )
+    .adeKitCard(padding: 14)
   }
 
   @ViewBuilder
@@ -85,12 +79,8 @@ extension LaneDetailScreen {
       }
     } label: {
       Label("Continue", systemImage: "play.fill")
-        .font(.subheadline.weight(.semibold))
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
     }
-    .buttonStyle(.borderedProminent)
-    .tint(ADEColor.accent)
+    .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
     .disabled(!canRunLiveActions || !conflictState.canContinue)
   }
 
@@ -108,12 +98,8 @@ extension LaneDetailScreen {
       }
     } label: {
       Label("Abort", systemImage: "xmark.circle")
-        .font(.subheadline.weight(.semibold))
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
     }
-    .buttonStyle(.bordered)
-    .tint(ADEColor.danger)
+    .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
     .disabled(!canRunLiveActions || !conflictState.canAbort)
   }
 
