@@ -580,7 +580,10 @@ export function createAutoUpdateService({
   function preserveStagedUpdateOnCheckFailure(err: unknown): boolean {
     if (!readyCheckInProgress || snapshot.status !== "ready") return false;
     const message = formatErrorMessage(err);
-    const kind = checkFailureKind ?? classifyUpdateError(err, currentPhase).kind;
+    // network_stuck describes a Chromium net failure only; anything else the
+    // recovery's retries hit keeps its own classification.
+    const kind = (isChromiumNetError(err) ? checkFailureKind : null)
+      ?? classifyUpdateError(err, currentPhase).kind;
     logger.warn("autoUpdate.ready_check_failed", {
       message,
       kind,
@@ -1180,16 +1183,13 @@ export function createAutoUpdateService({
         logger.warn("autoUpdate.net_wedge_unrecovered", { partition, reason: "node_transport_unavailable", message });
         throw error;
       }
-      try {
-        const result = await updater.checkForUpdates();
-        checkFailureKind = null;
-        logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "node", probe });
-        return result;
-      } catch (nodeError) {
-        // Node reached the feed moments ago, so this is not the stuck session.
-        checkFailureKind = null;
-        throw nodeError;
-      }
+      // Node reached the feed moments ago, so a failure from here is not the
+      // stuck session. Cleared first: the updater's `error` event runs before
+      // the rejection and must not file it as network_stuck.
+      checkFailureKind = null;
+      const result = await updater.checkForUpdates();
+      logger.info("autoUpdate.net_wedge_recovered", { partition, transport: "node", probe });
+      return result;
     }
   }
 
