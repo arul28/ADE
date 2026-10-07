@@ -1206,32 +1206,37 @@ export type AcpProviderDiagnostics = {
   lastProbe: { state: "ready" | "auth-failed" | "runtime-failed"; message: string | null } | null;
   /** Present only when the vendor ships a `doctor` command and it was run. */
   doctor: { command: string; exitCode: number | null; output: string } | null;
-  /**
-   * Present for providers with a monitor (currently Grok). `null` means the
-   * update state was not checked; absent means the provider has no monitor.
-   */
+  /** Version standing and update state. `null` when no version was read. */
   update?: AcpProviderUpdateInfo | null;
   checkedAt: string;
 };
 
+/** Where an installed CLI version sits against the range ADE has tested. */
+export type AcpProviderVersionStanding = "below" | "tested" | "above" | "unknown";
+
 /**
- * How current an ACP provider CLI is, and whether ADE may update it.
+ * How an installed ACP provider CLI compares to the versions ADE has tested,
+ * and whether ADE may update it.
  *
- * The version is read from the vendor's own npm `latest` tag. ADE only offers a
- * one-click update when it could resolve the binary to a known installer, so an
- * unresolvable install stays manual with a note instead of a button that runs
- * the wrong thing.
+ * An update always installs `targetVersion`, the newest tested version, never
+ * npm `latest`. ADE only offers the button when it could resolve the binary to
+ * a known installer, so an unresolvable install stays manual with a note.
  */
 export type AcpProviderUpdateInfo = {
-  /** npm `latest` version, or null when the registry read failed or was skipped. */
-  latestVersion: string | null;
-  /** True only when both versions are known and `latest` is newer. */
+  /** The `x.y.z` read from `--version`, or null when it could not be parsed. */
+  installedVersion: string | null;
+  /** Inclusive range of versions checked against ADE. */
+  testedRange: { min: string; max: string };
+  standing: AcpProviderVersionStanding;
+  /** The version an update installs: the top of the tested range. */
+  targetVersion: string;
+  /** True when the installed version is older than `targetVersion` and not above the range. */
   updateAvailable: boolean;
   /** Which installer owns the binary, or null when ADE cannot tell. */
   installer: "native" | "npm" | null;
-  /** True when ADE may run `<resolved binary> update` for this install. */
+  /** True when ADE may run the update for this install. */
   canUpdate: boolean;
-  /** Why the button is absent or what to run by hand. */
+  /** What to run by hand when there is no button. */
   note: string | null;
 };
 

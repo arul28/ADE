@@ -876,33 +876,40 @@ From the internal audit (all file:line refs verified 2026-08-30):
    stopped.").
 
 Rejected: env-var provenance surfacing, authenticating pulse animation,
-update-available UI for providers other than Grok (only `@xai-official/grok`
-publishes a npm `latest` an ADE monitor reads, and Grok is the one ADE launches
-with `--no-auto-update`), picker overhaul beyond greying.
+picker overhaul beyond greying.
 
-## Grok version monitor and update
+## Provider versions and update
 
-Grok is launched with `--no-auto-update`, so without a monitor an outdated CLI
-shows nothing anywhere. When a Grok detail page opens, `grokUpdate.ts` resolves
-the binary's installer from the same resolution diagnostics uses (a native
-binary, or an npm `.cmd`/Node-shebang install), reads
-`https://registry.npmjs.org/@xai-official/grok/latest` (cached 30 minutes), and
-compares it to the `--version` line. `AcpProviderUpdateInfo` carries the verdict
-on `AcpProviderDiagnostics.update`. The registry round-trip is started before the
-`--version` spawn (`fetchGrokUpdateBaseline`) so a slow or offline registry
-overlaps the version probe instead of delaying it.
+Users install the ACP CLIs themselves, so ADE checks each one against a
+**tested range**: the oldest and newest versions someone checked ADE against.
+`ai/acpProviderUpdate.ts` holds one row per provider in
+`ACP_PROVIDER_VERSION_POLICY` (label, npm package or none, tested range, and
+whether the vendor's updater can install an exact version). The evidence for
+each range is in the dialect file. Raise a range only after a live check of
+the new version.
 
-One-click **Update now** appears only when the installer resolved
-(`canUpdate`). It runs `<resolved binary> update` with the instance
-environment, including `GROK_HOME`, so a custom home updates that home, then
-re-reads `--version` to confirm and refreshes the diagnostics. An unresolvable
-binary skips the registry read entirely and shows a manual note with no button —
-ADE never runs a guessed command. The updater spawns through
-`resolveCliSpawnInvocation`, so a Windows npm `.cmd` shim works. Its POSIX child
-is detached (its own process group) and the timeout kills the whole group on
-POSIX and the tree via `terminateProcessTree` on Windows, so installer
-grandchildren do not survive. There is no network call in the unit tests; the
-registry fetch and install-kind probes are injected.
+- **Below the range.** When an ACP chat is ready, the runtime reads the
+  binary's `--version` once per binary per run (`readAcpProviderLaunchStanding`,
+  cached) and, if it is below the range, adds a `system_notice` with status
+  `acp_provider_outdated` and `detail.providerUpdate`. The chat row shows an
+  **Update to <max>** button when the install is resolvable. The check runs
+  after the chat is ready and never delays it; a spawn override (a cloud
+  runtime) is skipped.
+- **Inside the range, not at the top.** The provider's Settings page offers
+  the update. **Above the range:** Settings says the version is newer than ADE
+  has tested. Users are never told to update past the range.
+- **The update installs `tested.max`, never npm `latest`.** A vendor-native
+  Grok runs `<binary> update --version <max>` with `GROK_HOME`. An npm install
+  runs `npm install -g --prefix <prefix> <pkg>@<max>`, where the prefix comes
+  from the binary's real path (`<prefix>/lib/node_modules/<pkg>` on POSIX,
+  the `.cmd` shim beside `<prefix>\node_modules\<pkg>` on Windows) and npm is
+  the one in that prefix when present. An install ADE cannot place (or Kimi
+  and Devin, which have no npm package or exact-version updater) shows a
+  manual note and no button.
+- The updater spawns through `resolveCliSpawnInvocation`, so a Windows `.cmd`
+  shim works. Its POSIX child is detached and the timeout kills the whole
+  process group; on Windows `terminateProcessTree` kills the tree. A successful
+  update clears the cached launch version.
 
 ## 7. Test contract
 

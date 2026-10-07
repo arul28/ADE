@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import { getErrorMessage } from "../../shared/utils";
+import { acpProviderOutdatedNotice, readAcpProviderLaunchStanding } from "../../ai/acpProviderDiagnostics";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
 import { AcpRpcError } from "./acpConnection";
 import {
@@ -130,6 +131,29 @@ export type CreateAcpRuntimeArgs<TSteer> = {
 };
 
 /** Identity used to decide whether a process-global model/effort changed. */
+/** Chats already warned this run, so a resumed runtime does not repeat the notice. */
+const outdatedNoticeSessions = new Set<string>();
+
+/**
+ * Warn in the chat when the CLI is older than the range ADE has tested. Runs
+ * after the chat is ready and never delays it; a spawn override (a cloud
+ * runtime) is not the local binary, so it is not checked.
+ */
+function warnWhenProviderOutdated<TSteer>(args: CreateAcpRuntimeArgs<TSteer>, runtime: AcpRuntimeState<TSteer>): void {
+  const sessionId = args.owner.session.id;
+  if (args.spawnOverride || outdatedNoticeSessions.has(sessionId)) return;
+  void readAcpProviderLaunchStanding({ provider: args.provider, cwd: args.spawnPlan.cwd, env: args.spawnPlan.env })
+    .then((info) => {
+      const notice = acpProviderOutdatedNotice(args.provider, info);
+      if (!notice || outdatedNoticeSessions.has(sessionId)) return;
+      outdatedNoticeSessions.add(sessionId);
+      args.callbacks.onEvents(runtime, [notice]);
+    })
+    .catch((error) => {
+      args.logger.warn("agent_chat.acp_version_check_failed", { sessionId, provider: args.provider, error: getErrorMessage(error) });
+    });
+}
+
 export function acpInvocationKey(plan: Pick<AcpSpawnPlan, "command" | "args">): string {
   return JSON.stringify([plan.command, plan.args]);
 }
@@ -567,6 +591,7 @@ export async function createAcpRuntime<TSteer>(
   }
 
   await args.callbacks.onReady(runtime);
+  warnWhenProviderOutdated(args, runtime);
   args.setResumeCommand(`chat:${args.provider}:${args.owner.session.id}`);
   args.logger.info("agent_chat.acp_runtime_ready", {
     sessionId: args.owner.session.id,

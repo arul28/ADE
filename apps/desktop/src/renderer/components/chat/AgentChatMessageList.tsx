@@ -387,6 +387,71 @@ function ResetCreditNoticeRow({
   );
 }
 
+/**
+ * An ACP provider CLI older than the range ADE has tested, with the way to fix
+ * it. The button installs the newest tested version, and is offered only when
+ * the host resolved the install and exposes the updater. The outcome replaces
+ * the button so a finished update cannot be started twice.
+ */
+function ProviderOutdatedNoticeRow({
+  message,
+  update,
+  className,
+  icon,
+  chipLabel,
+}: {
+  message: string;
+  update: NonNullable<AgentChatNoticeDetail["providerUpdate"]>;
+  className?: string;
+  icon: React.ReactNode;
+  chipLabel: string;
+}) {
+  const [updating, setUpdating] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const run = window.ade?.ai?.acpProviderUpdate;
+  const canUpdate = update.canUpdate && typeof run === "function" && !outcome;
+  const start = useCallback(async () => {
+    const call = window.ade?.ai?.acpProviderUpdate;
+    if (!call) return;
+    setUpdating(true);
+    try {
+      const result = await call({ provider: update.provider });
+      setOutcome(result.ok ? `${result.message} Start a new chat to use it.` : result.message);
+    } catch (error) {
+      setOutcome(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUpdating(false);
+    }
+  }, [update.provider]);
+  return (
+    <div className={cn(
+      "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+      className,
+    )}>
+      {icon}
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
+      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      {canUpdate ? (
+        <button
+          type="button"
+          disabled={updating}
+          onClick={() => { void start(); }}
+          data-testid="acp-provider-update"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+        >
+          {updating ? "Updating…" : `Update to ${update.targetVersion}`}
+        </button>
+      ) : null}
+      {!canUpdate && !outcome && update.note ? (
+        <span className="normal-case tracking-normal text-fg/42">{update.note}</span>
+      ) : null}
+      {outcome ? (
+        <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function CodexTurnRecoveryCard({
   event,
   sessionId,
@@ -3515,6 +3580,23 @@ function renderEvent(
           chipLabel={chipLabel}
         />
       );
+    }
+
+    if (event.status === "acp_provider_outdated") {
+      const providerUpdate = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
+        ? event.detail.providerUpdate
+        : undefined;
+      if (providerUpdate) {
+        return (
+          <ProviderOutdatedNoticeRow
+            message={event.message}
+            update={providerUpdate}
+            className={cn(style.border, style.bg, style.text)}
+            icon={<NoticeIcon size={11} weight="bold" />}
+            chipLabel="update"
+          />
+        );
+      }
     }
 
     // Warnings are one text-sized line, like the thread's other rows; the full
