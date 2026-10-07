@@ -19,6 +19,7 @@ import {
 import { verifyAttentionBearerToken } from "../src/attentionAuth";
 import {
   handleRequest,
+  pruneRelayState,
   resetSpendGuardsForTests,
   signPushRelayRequest,
   type PushRelayEnv,
@@ -7210,6 +7211,129 @@ describe("cross-machine project identity", () => {
     } finally {
       database.close();
       vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("custom notifications", () => {
+  async function apnsEnv(): Promise<Omit<Partial<AttentionRelayEnv>, "DB">> {
+    return {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "NOTIFYKEY1",
+      APNS_TEAM_ID: "NOTIFYTEAM",
+    };
+  }
+
+  function captureApns(): Array<{ token: string; payload: Record<string, unknown> }> {
+    const sent: Array<{ token: string; payload: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.startsWith("https://api.sandbox.push.apple.com/3/device/")) {
+        throw new Error(`Unexpected fetch: ${url}`);
+      }
+      sent.push({
+        token: url.slice(url.lastIndexOf("/") + 1),
+        payload: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      });
+      return new Response(null, { status: 200, headers: { "apns-id": `notify-${sent.length}` } });
+    }));
+    return sent;
+  }
+
+  it("sends exactly the caller's text to each phone that is not muted, off, or in quiet hours", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-notify";
+    try {
+      insertAttentionDevice(database, { userId, deviceId: "phone-on", apnsToken: "aa".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-off", apnsToken: "bb".repeat(32) });
+      insertAttentionDevice(database, { userId, deviceId: "phone-quiet", apnsToken: "cc".repeat(32) });
+      insertAttentionDevice(database, { userId: "someone-else", deviceId: "phone-other", apnsToken: "dd".repeat(32) });
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values (?, ?, '2026-07-28T08:00:00.000Z')
+      `).run(userId, JSON.stringify({
+        devices: {
+          "phone-off": { notificationsEnabled: false },
+          "phone-quiet": { quietHours: { enabled: true, start: "11:00", end: "13:00", timeZone: "UTC" } },
+        },
+        machines: { "muted-mac": { notificationsEnabled: false } },
+      }));
+      const env = await apnsEnv();
+
+      const response = await accountRoute(database, userId, "POST", "/attention/account/notify", {
+        title: "  Deploy finished  ",
+        body: "ADE 1.4.2 is live · 3 checks green",
+        deepLink: "ade://session/abc?accountMachineKey=m1",
+        machineKey: "studio-mac",
+      }, { env });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true, devices: 3, delivered: 1, skipped: 2, failed: 0 });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.token).toBe("aa".repeat(32));
+      expect(sent[0]?.payload).toMatchObject({
+        aps: { alert: { title: "Deploy finished", body: "ADE 1.4.2 is live · 3 checks green" } },
+        deepLink: "ade://session/abc?accountMachineKey=m1",
+      });
+
+      // A muted machine silences its notifications on every phone.
+      const muted = await accountRoute(database, userId, "POST", "/attention/account/notify", {
+        title: "From the muted Mac",
+        machineKey: "muted-mac",
+      }, { env });
+      expect(await muted.json()).toMatchObject({ ok: true, delivered: 0, skipped: 3 });
+      expect(sent).toHaveLength(1);
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses bad input and stops at the hourly cap with a retry hint", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-notify-cap";
+    try {
+      insertAttentionDevice(database, { userId, deviceId: "phone", apnsToken: "ee".repeat(32) });
+      const env = await apnsEnv();
+      const notify = (body: unknown) =>
+        accountRoute(database, userId, "POST", "/attention/account/notify", body, { env });
+
+      for (const bad of [
+        {},
+        { title: "x".repeat(65) },
+        { title: "ok", body: "y".repeat(161) },
+        { title: "ok", deepLink: "https://example.com/phish" },
+      ]) {
+        expect((await notify(bad)).status).toBe(400);
+      }
+      expect(sent).toHaveLength(0);
+
+      for (let index = 0; index < 60; index += 1) {
+        expect((await notify({ title: `Ping ${index}` })).status).toBe(200);
+      }
+      vi.setSystemTime(new Date("2026-07-28T12:20:00.000Z"));
+      const limited = await notify({ title: "One too many" });
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toBe(String(40 * 60));
+      expect(await limited.json()).toMatchObject({ ok: false, retryAfterSeconds: 40 * 60 });
+      expect(sent).toHaveLength(60);
+
+      // Pruning after a quiet spell must not reopen the hour early.
+      vi.setSystemTime(new Date("2026-07-28T12:40:00.000Z"));
+      await pruneRelayState(makeAttentionEnv(database) as unknown as PushRelayEnv);
+      expect((await notify({ title: "Still capped" })).status).toBe(429);
+      vi.setSystemTime(new Date("2026-07-28T13:00:01.000Z"));
+      expect((await notify({ title: "New hour" })).status).toBe(200);
+    } finally {
+      database.close();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 });

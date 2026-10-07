@@ -685,3 +685,50 @@ export function sanitizeAttentionPreview(value: string, maxLength = 160): string
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
+
+/**
+ * A custom notification — `ade notify`, an agent, or an automation's "Send
+ * notification" step. The relay sends the text exactly as written, to every
+ * phone on the account, and enforces the same limits
+ * (apps/push-relay/src/attention.ts keeps its own copy: it imports nothing).
+ */
+export const CUSTOM_NOTIFICATION_TITLE_MAX = 64;
+export const CUSTOM_NOTIFICATION_BODY_MAX = 160;
+export const CUSTOM_NOTIFICATION_HOURLY_LIMIT = 60;
+
+export type CustomNotificationInput = {
+  title: string;
+  body?: string | null;
+  /** Where a tap goes. ADE links only (`ade://…`). */
+  open?: string | null;
+};
+
+/**
+ * The reason a custom notification cannot be sent as written, in words a CLI
+ * user or an automation author can act on, or null when it is valid.
+ */
+export function customNotificationProblem(input: {
+  title?: unknown;
+  body?: unknown;
+  open?: unknown;
+}): string | null {
+  const title = typeof input.title === "string" ? input.title.trim() : "";
+  if (!title) return "A notification needs a title.";
+  if (title.length > CUSTOM_NOTIFICATION_TITLE_MAX) {
+    return `The title is ${title.length} characters; the limit is ${CUSTOM_NOTIFICATION_TITLE_MAX}.`;
+  }
+  if (input.body != null) {
+    if (typeof input.body !== "string") return "The body must be text.";
+    const body = input.body.trim();
+    if (body.length > CUSTOM_NOTIFICATION_BODY_MAX) {
+      return `The body is ${body.length} characters; the limit is ${CUSTOM_NOTIFICATION_BODY_MAX}.`;
+    }
+  }
+  if (input.open != null && input.open !== "") {
+    const open = typeof input.open === "string" ? input.open.trim() : "";
+    if (!/^ade:\/\/\S+$/i.test(open) || open.length > 1_024) {
+      return "The open link must be an ADE link that starts with ade://.";
+    }
+  }
+  return null;
+}

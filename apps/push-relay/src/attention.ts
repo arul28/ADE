@@ -32,6 +32,7 @@ import {
   type ParsedAttentionItem,
 } from "./attentionShared";
 import { deliverAccountLiveActivity } from "./liveActivity";
+import { ACCOUNT_NOTIFY_LIMIT_PER_HOUR, checkAccountNotifyQuota } from "./spendGuards";
 export {
   inspectAttentionAuthConfiguration,
   type AttentionAuthConfigurationStatus,
@@ -888,26 +889,44 @@ async function enforceActivityAccountItemCap(
   return { itemsTruncated: true, revision };
 }
 
-function resolveActivityDeliveryPreferences(
+/**
+ * One device's effective delivery preferences: the registration defaults, then
+ * the account, then the project and machine scopes, then an explicit device
+ * override. A scope that is absent (a custom notification has no project)
+ * contributes nothing.
+ */
+function resolveScopedDeliveryPreferences(
   device: AttentionDeviceRow,
-  item: ParsedAttentionItem,
+  scope: { projectId?: string | null; machineKey?: string | null },
   preferences: Record<string, unknown>,
 ): Record<string, unknown> {
   const registered = readPreferences(device.preferences_json);
   const account = isRecord(preferences.account) ? preferences.account : {};
   const projects = isRecord(preferences.projects) ? preferences.projects : {};
-  const project = isRecord(projects[item.project.projectId])
-    ? projects[item.project.projectId] as Record<string, unknown>
+  const project = scope.projectId && isRecord(projects[scope.projectId])
+    ? projects[scope.projectId] as Record<string, unknown>
     : {};
   const machines = isRecord(preferences.machines) ? preferences.machines : {};
-  const machine = isRecord(machines[item.machine.machineKey])
-    ? machines[item.machine.machineKey] as Record<string, unknown>
+  const machine = scope.machineKey && isRecord(machines[scope.machineKey])
+    ? machines[scope.machineKey] as Record<string, unknown>
     : {};
   const devices = isRecord(preferences.devices) ? preferences.devices : {};
   const explicitDevice = isRecord(devices[device.device_id])
     ? devices[device.device_id] as Record<string, unknown>
     : {};
   return { ...registered, ...account, ...project, ...machine, ...explicitDevice };
+}
+
+function resolveActivityDeliveryPreferences(
+  device: AttentionDeviceRow,
+  item: ParsedAttentionItem,
+  preferences: Record<string, unknown>,
+): Record<string, unknown> {
+  return resolveScopedDeliveryPreferences(
+    device,
+    { projectId: item.project.projectId, machineKey: item.machine.machineKey },
+    preferences,
+  );
 }
 
 function resolvedMutedSessionIds(
@@ -3191,6 +3210,192 @@ async function handleDevicePreferences(
   });
 }
 
+/** A custom notification's limits. The relay sends the text exactly as written. */
+export const CUSTOM_NOTIFICATION_TITLE_MAX = 64;
+export const CUSTOM_NOTIFICATION_BODY_MAX = 160;
+const CUSTOM_NOTIFICATION_LINK_MAX = 1_024;
+
+type CustomNotificationRequest = {
+  title: string;
+  body: string | null;
+  deepLink: string | null;
+  machineKey: string | null;
+};
+
+function parseCustomNotification(
+  payload: unknown,
+): CustomNotificationRequest | { error: string } {
+  if (!isRecord(payload)) return { error: "invalid notification" };
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  if (!title) return { error: "title is required" };
+  if (title.length > CUSTOM_NOTIFICATION_TITLE_MAX) {
+    return { error: `title is longer than ${CUSTOM_NOTIFICATION_TITLE_MAX} characters` };
+  }
+  let body: string | null = null;
+  if (payload.body !== undefined && payload.body !== null) {
+    if (typeof payload.body !== "string") return { error: "body must be text" };
+    body = payload.body.trim() || null;
+    if (body && body.length > CUSTOM_NOTIFICATION_BODY_MAX) {
+      return { error: `body is longer than ${CUSTOM_NOTIFICATION_BODY_MAX} characters` };
+    }
+  }
+  let deepLink: string | null = null;
+  if (payload.deepLink !== undefined && payload.deepLink !== null) {
+    const raw = typeof payload.deepLink === "string" ? payload.deepLink.trim() : "";
+    // Only ADE's own scheme: a tap must land inside ADE, never on a web page
+    // or another app the caller chose.
+    let parsed: URL | null = null;
+    try {
+      parsed = raw ? new URL(raw) : null;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.protocol !== "ade:" || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
+      return { error: "deepLink must be an ade:// link" };
+    }
+    deepLink = raw;
+  }
+  let machineKey: string | null = null;
+  if (payload.machineKey !== undefined && payload.machineKey !== null) {
+    machineKey = requiredString(payload.machineKey, 128);
+    if (!machineKey) return { error: "invalid machine key" };
+  }
+  return { title, body, deepLink, machineKey };
+}
+
+/**
+ * `POST /attention/account/notify` — a push the caller wrote: `ade notify`, an
+ * agent, or an automation's "Send notification" step.
+ *
+ * It goes to every phone on the account the way an urgent Activity alert does,
+ * and it respects the same switches: notifications off, quiet hours, and a
+ * muted machine (when the caller names its machine). The relay adds nothing to
+ * the text. At most `ACCOUNT_NOTIFY_LIMIT_PER_HOUR` are admitted per account
+ * per hour window; past that it answers 429 with `retryAfterSeconds`.
+ */
+async function handleCustomNotification(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  sendPush: typeof sendApnsPush = sendApnsPush,
+): Promise<Response> {
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  const parsed = parseCustomNotification(payload);
+  if ("error" in parsed) return json({ ok: false, error: parsed.error }, { status: 400 });
+  const config = apnsConfig(env);
+  if (!config) {
+    return json({ ok: false, error: "push notifications are not configured" }, { status: 503 });
+  }
+  // Counted before the fan-out, so a burst of parallel calls cannot all slip
+  // under the cap while the first one is still sending.
+  const quota = await checkAccountNotifyQuota(env, userId);
+  if (!quota.allowed) {
+    return json(
+      {
+        ok: false,
+        error: "rate limited",
+        limit: ACCOUNT_NOTIFY_LIMIT_PER_HOUR,
+        retryAfterSeconds: quota.retryAfterSeconds,
+      },
+      { status: 429, headers: { "retry-after": String(quota.retryAfterSeconds) } },
+    );
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const [devicesResult, preferencesRow] = await Promise.all([
+    env.DB.prepare(`
+      select device_id, apns_token, bundle_id, aps_environment, preferences_json
+      from attention_devices
+      where user_id = ? and apns_token is not null and lease_expires_at > ?
+      limit ?
+    `).bind(userId, nowIso, MAX_ATTENTION_DEVICES).all<AttentionDeviceRow>(),
+    env.DB
+      .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
+      .bind(userId)
+      .first<{ payload_json: string }>(),
+  ]);
+  const preferences = readPreferences(preferencesRow?.payload_json);
+  const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
+  const collapseId = `ade-notify-${crypto.randomUUID()}`;
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const device of devicesResult.results) {
+    if (!device.apns_token) continue;
+    const override = resolveScopedDeliveryPreferences(
+      device,
+      { machineKey: parsed.machineKey },
+      preferences,
+    );
+    const notificationsEnabled = preferenceBoolean(
+      override,
+      {},
+      "notificationsEnabled",
+      typeof override.enabled === "boolean" ? override.enabled : true,
+    );
+    if (!notificationsEnabled || quietHoursActive(override, accountPreferences, nowMs)) {
+      skipped += 1;
+      continue;
+    }
+    const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
+    let result: ApnsSendResult;
+    try {
+      result = await sendPush(config, {
+        environment: device.aps_environment as ApnsEnvironment,
+        deviceToken: device.apns_token,
+        topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
+        pushType: "alert",
+        priority: 10,
+        expiration: Math.floor(nowMs / 1_000) + 24 * 60 * 60,
+        collapseId,
+        payload: {
+          aps: {
+            alert: {
+              title: parsed.title,
+              ...(parsed.body ? { body: parsed.body } : {}),
+            },
+            ...(soundsEnabled ? { sound: "default" } : {}),
+            "thread-id": "ade-notify",
+            "interruption-level": "active",
+          },
+          customNotification: true,
+          ...(parsed.deepLink ? { deepLink: parsed.deepLink } : {}),
+        },
+      });
+    } catch (error) {
+      failed += 1;
+      logAttentionDeliveryError("notification", device.device_id, error);
+      continue;
+    }
+    if (result.ok) {
+      delivered += 1;
+      continue;
+    }
+    failed += 1;
+    if (result.tokenInvalid) {
+      await env.DB.prepare(`
+        update attention_devices
+        set apns_token = null, updated_at = ?
+        where user_id = ? and device_id = ? and apns_token = ?
+      `).bind(nowIso, userId, device.device_id, device.apns_token).run();
+    }
+  }
+  return json({
+    ok: true,
+    devices: devicesResult.results.length,
+    delivered,
+    skipped,
+    failed,
+    remaining: quota.remaining,
+  });
+}
+
 async function handleActivityMachinePreferences(
   request: Request,
   env: AttentionRelayEnv,
@@ -3826,6 +4031,9 @@ async function handleAuthorizedAttentionAccountRequest(
   }
   if (route.length === 1 && route[0] === "presence" && request.method === "POST") {
     return await handlePresence(request, env, userId);
+  }
+  if (route.length === 1 && route[0] === "notify" && request.method === "POST") {
+    return await handleCustomNotification(request, env, userId);
   }
   if (route.length === 1 && route[0] === "preferences" && (request.method === "GET" || request.method === "PUT")) {
     return await handlePreferences(request, env, userId);

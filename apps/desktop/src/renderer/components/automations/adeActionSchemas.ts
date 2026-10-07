@@ -57,6 +57,38 @@ const COMMIT_SHA_PARAM: AdeActionParam = {
 
 export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   // ---------------------------------------------------------------------------
+  // attention — notifications
+  // ---------------------------------------------------------------------------
+  {
+    domain: "attention",
+    action: "sendNotification",
+    label: "Send notification",
+    description:
+      "Push a notification you write to every phone on your ADE account. Phones with notifications off, in quiet hours, or muting this machine stay quiet. At most 60 an hour.",
+    params: [
+      {
+        name: "title",
+        type: "string",
+        required: true,
+        description: "Up to 64 characters.",
+        placeholder: "PR {{trigger.pr.number}} is ready to merge",
+      },
+      {
+        name: "body",
+        type: "string",
+        description: "Optional second line, up to 160 characters.",
+        placeholder: "{{trigger.pr.title}}",
+      },
+      {
+        name: "open",
+        type: "string",
+        description: "Optional ade:// link a tap opens.",
+        placeholder: "ade://pr/{{trigger.pr.number}}",
+      },
+    ],
+  },
+
+  // ---------------------------------------------------------------------------
   // lane
   // ---------------------------------------------------------------------------
   {

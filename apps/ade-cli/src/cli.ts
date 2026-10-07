@@ -93,6 +93,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import { USER_BROWSER_TARGET_PREFIX } from "../../desktop/src/shared/userBrowserLabels";
+import { customNotificationProblem } from "../../desktop/src/shared/types/attention";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -640,7 +641,8 @@ export type FormatterId =
   | "usage-prices"
   | "router-efficiency"
   | "router-shadow"
-  | "update-status";
+  | "update-status"
+  | "notify";
 
 type ChatWaitTarget =
   | "idle"
@@ -1107,6 +1109,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
+                                                    Send a push to the phones on your ADE account
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1337,6 +1341,29 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     The machine row is published by the running brain, not by this command, so
     the brain must stay running for the machine to remain reachable.
     Undo with "ade logout" and "ade runtime uninstall-service".
+`,
+  notify: `${ADE_BANNER}
+  Send a notification to your phone
+
+  Sends a push you write to every phone signed in to your ADE account. Use it
+  from a terminal, from an agent ("tell me when the deploy is done"), or from
+  an automation. The text arrives exactly as written; nothing is added.
+
+    $ ade notify --title "Deploy finished"
+    $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
+    $ ade notify --title "Review ready" --open "ade://pr/1514"
+
+  Flags:
+    --title <text>                 Required. Up to 64 characters.
+    --body <text>                  Optional second line. Up to 160 characters.
+    --open <ade link>              Optional. An ade:// link a tap opens
+                                   (make one with \`ade link\`).
+
+  Notes:
+    Needs a signed-in account (\`ade login\`) and the running brain.
+    Phones that turned notifications off, are in quiet hours, or muted this
+    machine stay quiet. An account can send 60 an hour; past that the command
+    exits non-zero and says when to try again.
 `,
   auth: `${ADE_BANNER}
   ADE Account
@@ -18535,6 +18562,28 @@ function buildCliPlan(
   if (primary === "sync") {
     return buildSyncPlan(args);
   }
+  if (primary === "notify") {
+    const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
+    const body = readValue(args, ["--body", "-b"]);
+    const open = readValue(args, ["--open", "--link"]);
+    const problem = customNotificationProblem({ title, body, open });
+    if (problem) {
+      throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
+    }
+    return {
+      kind: "execute",
+      label: "notify",
+      formatter: "notify",
+      needsLiveRuntime: "Notifications",
+      steps: [
+        actionStep("result", "attention", "sendNotification", {
+          title: title.trim(),
+          ...(body?.trim() ? { body: body.trim() } : {}),
+          ...(open?.trim() ? { open: open.trim() } : {}),
+        }),
+      ],
+    };
+  }
   if (primary === "status") {
     return {
       kind: "execute",
@@ -30542,6 +30591,24 @@ function formatTextOutput(
       return formatUpdateStatus(value);
     case "github-app-auth":
       return formatGithubAppUserAuth(value);
+    case "notify": {
+      const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+      if (!isRecord(result)) return "Notification sent.";
+      const devices = Number(result.devices) || 0;
+      const delivered = Number(result.delivered) || 0;
+      const skipped = Number(result.skipped) || 0;
+      if (devices === 0) {
+        return "No phone is signed in to this ADE account, so nothing was sent. Sign in on the ADE iPhone app to get notifications.";
+      }
+      if (delivered === 0) {
+        return skipped > 0
+          ? "Nothing was sent: every phone on the account has notifications off, is in quiet hours, or muted this machine."
+          : "ADE couldn't deliver the notification to any phone. Try again in a moment.";
+      }
+      const remaining = typeof result.remaining === "number" ? ` · ${result.remaining} left this hour` : "";
+      const quiet = skipped > 0 ? ` · ${skipped} quiet` : "";
+      return `Sent to ${delivered} phone${delivered === 1 ? "" : "s"}${quiet}${remaining}`;
+    }
     case "action-result":
     default:
       if (isRecord(value))

@@ -26,6 +26,15 @@ export const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
 // bursts and near-zero for a spammer trying to grow the machines table.
 export const DEFAULT_CLAIM_RATE_LIMIT_PER_MIN = 10;
 export const RATE_WINDOW_SECONDS = 60;
+// Custom notifications (`ade notify`, the automations "Send notification"
+// step). One push is one Worker request and one D1 row write, and APNs is
+// free, so the cap is about the phone, not the bill: 60 an hour is far past
+// what a person wants to read, and it stops a looping automation from
+// buzzing a phone all night. Counted per account in `rate_counters`
+// (bucket `notify:<account>`), kept past the short rate-window prune.
+export const ACCOUNT_NOTIFY_LIMIT_PER_HOUR = 60;
+export const ACCOUNT_NOTIFY_WINDOW_SECONDS = 60 * 60;
+export const ACCOUNT_NOTIFY_BUCKET_PREFIX = "notify:";
 
 export function positiveIntEnv(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
@@ -68,6 +77,29 @@ export async function checkRateLimit(
   // and already at the limit) ⇒ rejected, with no D1 write.
   if (!row) return { allowed: false, count: limit };
   return { allowed: true, count: row.count };
+}
+
+/**
+ * Admits one custom notification for an account, or says how long until the
+ * hour window reopens. A rejected call writes nothing (see `checkRateLimit`)
+ * and reads the window start once, for the retry hint.
+ */
+export async function checkAccountNotifyQuota(
+  env: SpendGuardEnv,
+  accountKey: string,
+): Promise<{ allowed: true; remaining: number } | { allowed: false; retryAfterSeconds: number }> {
+  const bucket = `${ACCOUNT_NOTIFY_BUCKET_PREFIX}${accountKey}`;
+  const gate = await checkRateLimit(env, bucket, ACCOUNT_NOTIFY_LIMIT_PER_HOUR, ACCOUNT_NOTIFY_WINDOW_SECONDS);
+  if (gate.allowed) {
+    return { allowed: true, remaining: Math.max(0, ACCOUNT_NOTIFY_LIMIT_PER_HOUR - gate.count) };
+  }
+  const row = await env.DB
+    .prepare("select window_start from rate_counters where bucket = ?")
+    .bind(bucket)
+    .first<{ window_start: number }>();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const reopensAt = Number(row?.window_start ?? nowSeconds) + ACCOUNT_NOTIFY_WINDOW_SECONDS;
+  return { allowed: false, retryAfterSeconds: Math.max(1, reopensAt - nowSeconds) };
 }
 
 // Per-isolate memory: once this isolate has seen the daily budget blown, reject

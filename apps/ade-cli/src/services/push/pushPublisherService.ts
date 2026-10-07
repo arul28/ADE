@@ -26,6 +26,7 @@ import type {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import type {
+  AccountNotificationResult,
   ActivityPublishResult,
   PushRelayAlertItem,
   PushRelayClient,
@@ -2658,6 +2659,21 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
       await deps.relayClient.reportAttentionPresence?.(presence);
+    },
+
+    /**
+     * A push the caller wrote (`ade notify`, an agent, an automation step),
+     * sent as this machine so a phone that muted this machine stays quiet.
+     */
+    async sendCustomNotification(notification: {
+      title: string;
+      body?: string | null;
+      deepLink?: string | null;
+    }): Promise<AccountNotificationResult> {
+      return await deps.relayClient.sendAccountNotification({
+        ...notification,
+        machineKey: deps.store.getOrCreateIdentity().machineKey,
+      });
     },
 
     async getAttentionPreferences(accountOwnerId: string): Promise<AttentionPreferences> {

@@ -13,6 +13,7 @@ import {
   sweepAttentionState,
 } from "./attention";
 import {
+  ACCOUNT_NOTIFY_WINDOW_SECONDS,
   budgetTrippedNow,
   checkIpRateInMemory,
   checkRateLimit,
@@ -577,8 +578,15 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   // never prune away the running daily count and silently reset the cap.
   const rateCutoff = new Date(Date.now() - RATE_COUNTER_RETENTION_MINUTES * 60 * 1000).toISOString();
   await env.DB
-    .prepare("delete from rate_counters where bucket not like 'budget:%' and updated_at < ?")
+    .prepare("delete from rate_counters where bucket not like 'budget:%' and bucket not like 'notify:%' and updated_at < ?")
     .bind(rateCutoff)
+    .run();
+  // The custom-notification quota is an hour window: pruning it after 15 quiet
+  // minutes would reopen the hour early.
+  const notifyCutoff = new Date(Date.now() - 2 * ACCOUNT_NOTIFY_WINDOW_SECONDS * 1000).toISOString();
+  await env.DB
+    .prepare("delete from rate_counters where bucket like 'notify:%' and updated_at < ?")
+    .bind(notifyCutoff)
     .run();
   const budgetCutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
   await env.DB
