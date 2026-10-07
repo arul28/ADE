@@ -34,6 +34,8 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 
 const UPDATE_TIMEOUT_MS = 180_000;
 const VERSION_TIMEOUT_MS = 6_000;
+/** The longest one update can run: the install, then the version re-read. */
+export const ACP_PROVIDER_UPDATE_RUN_BUDGET_MS = UPDATE_TIMEOUT_MS + VERSION_TIMEOUT_MS;
 const UPDATE_OUTPUT_LIMIT = 10_000;
 
 export type AcpProviderVersionPolicy = {

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  localRuntimeActionIpcTimeoutMs,
   localRuntimeActionTimeoutMs,
   longRunningLocalRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
+import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 
 describe("localRuntimeActionTimeoutMs", () => {
   it("gives Cursor Cloud open-chat the same long budget as handoff", () => {
@@ -32,6 +35,16 @@ describe("localRuntimeActionTimeoutMs", () => {
     for (const action of ["renderPreview", "renderCurrentPreview", "ensurePreviewWorkspace"]) {
       expect(localRuntimeActionTimeoutMs("ios_simulator", action)).toBe(10 * 60_000);
     }
+  });
+
+  it("lets a provider CLI update finish before any caller gives up on it", () => {
+    // The install plus the version re-read run inside one action. Each budget
+    // outward must be longer, or the renderer reports a failure (and offers
+    // "Try again") while the install is still running.
+    const action = localRuntimeActionTimeoutMs("ai", "acpProviderUpdate");
+    expect(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(ACP_PROVIDER_UPDATE_RUN_BUDGET_MS);
+    expect(action).toBeGreaterThan(ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS);
+    expect(localRuntimeActionIpcTimeoutMs("ai", "acpProviderUpdate")).toBeGreaterThan(action);
   });
 
   it("leaves cheap simulator actions on the default budget", () => {
