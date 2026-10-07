@@ -475,8 +475,19 @@ export function createAccountCacheStore<
     return entry.marks[kind] !== lastSyncedMark;
   };
 
+  /**
+   * Each listener runs behind its own boundary: one that throws must neither
+   * silence the rest nor escape a timer callback, where it would be uncaught.
+   */
   const notifySyncListeners = (status: AccountCacheSyncStatus): void => {
-    for (const listener of syncListeners) listener(status);
+    for (const listener of syncListeners) {
+      try {
+        listener(status);
+      } catch {
+        // Contained like the network tick's `.catch`: the listener owns its
+        // own reporting, and the cache has nothing to add.
+      }
+    }
   };
 
   async function runSync(): Promise<AccountCacheSyncStatus> {

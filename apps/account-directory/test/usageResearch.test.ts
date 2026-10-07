@@ -669,7 +669,10 @@ describe("usage research sweep", () => {
     await cleanupUsageResearch(env, FIXED_NOW);
     const third = await cleanupUsageResearch(env, FIXED_NOW);
     expect(third.reports).toBe(100);
+    // Once nothing is expired, a sweep (it runs every minute) writes nothing.
+    const totalsWritesBeforeIdleSweep = env.DB.usageResearchTotalsWrites;
     expect((await cleanupUsageResearch(env, FIXED_NOW)).reports).toBe(0);
+    expect(env.DB.usageResearchTotalsWrites).toBe(totalsWritesBeforeIdleSweep);
     expect(env.DB.usageResearchRows.size).toBe(100);
     expect(env.DB.usageResearchTotalBytes).toBe(storedBytes(env));
     // The four statements always travel as one transaction.

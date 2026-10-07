@@ -501,6 +501,34 @@ describe("account vault store", () => {
     }
   });
 
+  it("keeps ticking and notifying when a sync listener throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const user = "user_vault_throwing_listener";
+      accountUserId = user;
+      const store = makeStore();
+      const heard: string[] = [];
+      const stopThrowing = store.startPeriodicSync(30_000, () => {
+        throw new Error("listener bug");
+      });
+      const stopListening = store.startPeriodicSync(30_000, (status) => heard.push(status));
+      const mark = { settings: null, vault: "2026-10-07T16:00:00.000Z" };
+      recordAccountChangeMarks(user, mark);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let beat = 0; beat < 2; beat += 1) {
+        recordAccountChangeMarks(user, mark);
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      // The pull and both skipped ticks still reached the healthy listener.
+      expect(relay.getAccountVault).toHaveBeenCalledTimes(1);
+      expect(heard).toEqual(["ready", "ready", "ready"]);
+      stopThrowing();
+      stopListening();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing at all when signed out", async () => {
     accountUserId = null;
     await makeStore().sync();

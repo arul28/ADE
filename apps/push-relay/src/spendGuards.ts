@@ -10,7 +10,7 @@ export type SpendGuardEnv = {
 
 // Spend backstop. Cloudflare has no native hard billing cap, so we enforce one
 // in code. The guards themselves no longer write D1 per request (the IP gate is
-// in memory, the budget flushes one row per ~50 requests), so a request at the
+// in memory, the budget reserves 50 requests per D1 write), so a request at the
 // cap costs about its own fee plus CPU: ~$0.30/M requests over the account's
 // 10M included plus ~6 ms CPU ≈ $0.12/M. 750,000/day ≈ 22.5M/month, so a whole
 // month pinned at the cap adds about $7 — inside a ~$10 ceiling — while leaving
@@ -77,16 +77,18 @@ let budgetTrippedUntilMs = 0;
 // The per-IP gate and the daily budget run on every request, so they must not
 // write D1 per request: at 4 billed rows per request they were three quarters
 // of this relay's D1 writes. The IP gate is in-isolate memory; the budget is
-// counted in memory and flushed to its D1 row in batches.
+// reserved from its D1 row in blocks and spent from memory.
 const ipWindows = new Map<string, { windowStart: number; count: number }>();
 const MAX_TRACKED_IPS = 10_000;
 let ipWindowsSweptAtSecond = 0;
-const BUDGET_FLUSH_EVERY_REQUESTS = 50;
-const BUDGET_FLUSH_INTERVAL_MS = 30_000;
+const BUDGET_RESERVATION_SIZE = 50;
 let budgetDay = "";
-let budgetPending = 0;
-let budgetFlushedTotal = 0;
-let budgetLastFlushMs = 0;
+/** Requests left in this isolate's current reservation. */
+let budgetReservedRemaining = 0;
+/** The shared count right after this isolate's last reservation landed. */
+let budgetReservedThrough = 0;
+/** The reservation in flight, shared by every request waiting on it. */
+let budgetReservation: { day: string; promise: Promise<void> } | null = null;
 
 /** Cheap memory check — true when this isolate already saw today's budget blown. */
 export function budgetTrippedNow(): boolean {
@@ -99,9 +101,9 @@ export function resetSpendGuardsForTests(): void {
   ipWindows.clear();
   ipWindowsSweptAtSecond = 0;
   budgetDay = "";
-  budgetPending = 0;
-  budgetFlushedTotal = 0;
-  budgetLastFlushMs = 0;
+  budgetReservedRemaining = 0;
+  budgetReservedThrough = 0;
+  budgetReservation = null;
 }
 
 /**
@@ -153,15 +155,27 @@ async function flushBudgetCount(env: SpendGuardEnv, day: string, increment: numb
   return row?.count ?? 0;
 }
 
+async function reserveBudget(env: SpendGuardEnv, day: string, nowMs: number): Promise<void> {
+  const total = await flushBudgetCount(env, day, BUDGET_RESERVATION_SIZE, nowMs);
+  // A reservation that straddles UTC midnight belongs to a closed day.
+  if (budgetDay !== day) return;
+  budgetReservedThrough = total;
+  budgetReservedRemaining = BUDGET_RESERVATION_SIZE;
+}
+
 /**
  * Counts this request against the global daily budget and returns whether the
- * day is still under it. Requests are counted in isolate memory and flushed to
- * the shared `budget:<day>` row every `BUDGET_FLUSH_EVERY_REQUESTS` requests or
- * `BUDGET_FLUSH_INTERVAL_MS`, whichever comes first; the first request in an
- * isolate flushes at once so it learns the global count. The cap is a coarse
- * spend backstop: overshoot is bounded by one unflushed batch per isolate. On
- * the first over-budget request the isolate latches `budgetTrippedUntilMs` to
- * end-of-day so later checks short-circuit in memory.
+ * day is still under it.
+ *
+ * Each isolate reserves `BUDGET_RESERVATION_SIZE` requests from the shared
+ * `budget:<day>` row in one upsert and spends them from memory, so the row is
+ * written once per block instead of once per request. A request never runs
+ * ahead of its reservation: concurrent requests wait on the one in flight and
+ * are judged against the count it returns. An isolate that stops with unused
+ * reservation leaves the shared count high, never low, so the cap can trip a
+ * little early but spend can never slip past it. On the first over-budget
+ * request the isolate latches `budgetTrippedUntilMs` to end-of-day so later
+ * checks short-circuit in memory.
  */
 export async function recordDailyBudget(
   env: SpendGuardEnv,
@@ -170,38 +184,31 @@ export async function recordDailyBudget(
   const budget = positiveIntEnv(env.DAILY_REQUEST_BUDGET, DEFAULT_DAILY_REQUEST_BUDGET);
   const day = new Date(nowMs).toISOString().slice(0, 10);
   if (day !== budgetDay) {
-    const previousDay = budgetDay;
-    const carried = budgetPending;
     budgetDay = day;
-    budgetPending = 0;
-    budgetFlushedTotal = 0;
-    budgetLastFlushMs = 0;
-    if (previousDay && carried > 0) {
-      // Best effort: yesterday's tail only matters for its own (closed) cap.
-      await flushBudgetCount(env, previousDay, carried, nowMs).catch(() => undefined);
+    budgetReservedRemaining = 0;
+    budgetReservedThrough = 0;
+    budgetReservation = null;
+  }
+  for (;;) {
+    // The day rolled over while this request waited: it was yesterday's, and
+    // yesterday's cap is closed.
+    if (budgetDay !== day) return { allowed: true };
+    if (budgetReservedRemaining > 0) {
+      budgetReservedRemaining -= 1;
+      const count = budgetReservedThrough - budgetReservedRemaining;
+      if (count > budget) {
+        budgetTrippedUntilMs = Date.parse(`${day}T23:59:59.999Z`);
+        return { allowed: false, day, count, budget };
+      }
+      return { allowed: true };
     }
-  }
-  budgetPending += 1;
-  if (budgetPending >= BUDGET_FLUSH_EVERY_REQUESTS || nowMs - budgetLastFlushMs >= BUDGET_FLUSH_INTERVAL_MS) {
-    const increment = budgetPending;
-    budgetPending = 0;
-    budgetLastFlushMs = nowMs;
-    try {
-      const total = await flushBudgetCount(env, day, increment, nowMs);
-      // A flush that straddles UTC midnight returns yesterday's total; it must
-      // not become today's baseline (it could trip today's cap at 00:00).
-      if (budgetDay === day) budgetFlushedTotal = total;
-    } catch (error) {
-      // Keep the requests counted for the next flush, then fail as before.
-      if (budgetDay === day) budgetPending += increment;
-      budgetLastFlushMs = 0;
-      throw error;
+    if (!budgetReservation || budgetReservation.day !== day) {
+      const promise: Promise<void> = reserveBudget(env, day, nowMs).finally(() => {
+        if (budgetReservation?.promise === promise) budgetReservation = null;
+      });
+      budgetReservation = { day, promise };
     }
+    // A D1 failure rejects every waiter, as the per-request upsert did.
+    await budgetReservation.promise;
   }
-  const count = budgetFlushedTotal + budgetPending;
-  if (count > budget) {
-    budgetTrippedUntilMs = Date.parse(`${day}T23:59:59.999Z`);
-    return { allowed: false, day, count, budget };
-  }
-  return { allowed: true };
 }

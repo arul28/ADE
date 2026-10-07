@@ -1333,7 +1333,7 @@ describe("push relay", () => {
     expect(health.status).toBe(200);
   });
 
-  it("counts every request against the budget while writing its D1 row once per batch", async () => {
+  it("counts every request against the budget while writing its D1 row once per reserved block", async () => {
     const env: PushRelayEnv = {
       ...makeEnv(db, undefined),
       DAILY_REQUEST_BUDGET: "60",
@@ -1353,11 +1353,30 @@ describe("push relay", () => {
     // Exactly the 61st request is over a budget of 60, across distinct IPs.
     expect(statuses.slice(0, 60).every((status) => status !== 429)).toBe(true);
     expect(statuses[60]).toBe(429);
-    // 61 counted requests cost two counter writes (the first request and the
-    // 51st), not one per request.
+    // 61 counted requests cost two counter writes (one 50-request block, then
+    // the next), not one per request. The shared row holds what was reserved,
+    // so it can only run ahead of real traffic, never behind it.
     expect(flushes).toBe(2);
     const stored = [...db.rateCounters.entries()].find(([bucket]) => bucket.startsWith("budget:"));
-    expect(stored?.[1].count).toBe(51);
+    expect(stored?.[1].count).toBe(100);
+  });
+
+  it("judges a burst on a fresh isolate against the shared count, not against zero", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      DAILY_REQUEST_BUDGET: "100",
+      IP_RATE_LIMIT_PER_MIN: "1000",
+    };
+    // Other isolates already spent today's budget.
+    const today = new Date().toISOString().slice(0, 10);
+    db.rateCounters.set(`budget:${today}`, { window_start: 0, count: 100, updated_at: new Date().toISOString() });
+    const burst = await Promise.all(Array.from({ length: 20 }, (_, index) => handleRequest(
+      ipRequest(`/machines/${"d".repeat(40)}/devices`, `7.7.7.${index}`, { method: "GET" }),
+      env,
+    )));
+    expect(burst.map((response) => response.status)).toEqual(Array.from({ length: 20 }, () => 429));
+    // The whole burst waited on one reservation instead of each writing.
+    expect(db.rateCounters.get(`budget:${today}`)?.count).toBe(150);
   });
 
   it("does not carry yesterday's budget into today when a flush straddles UTC midnight", async () => {
