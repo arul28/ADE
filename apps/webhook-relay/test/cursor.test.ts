@@ -204,6 +204,16 @@ async function registerSecret(env: RelayEnv, secret = WEBHOOK_SECRET): Promise<R
   }), env);
 }
 
+// What a real client does: register, then poll. The poll marks the secret in
+// use, which is what lets it authenticate signed webhooks.
+async function connectClient(env: RelayEnv, secret = WEBHOOK_SECRET): Promise<void> {
+  expect((await registerSecret(env, secret)).status, "register").toBe(200);
+  const poll = await handleRequest(new Request("https://relay.test/cursor/events", {
+    headers: { authorization: `Bearer ${secret}` },
+  }), env);
+  expect(poll.status, "first poll").toBe(200);
+}
+
 async function cursorWebhookRequest(
   payload: Record<string, unknown>,
   args: { delivery?: string; secret?: string; signature?: string; contentLength?: string } = {},
@@ -272,6 +282,12 @@ describe("Cursor Cloud webhook relay", () => {
     const env = makeEnv();
     await registerSecret(env);
     const payload = cursorPayload();
+
+    // A registration no client has polled with cannot authenticate webhooks.
+    const beforePoll = await handleRequest(await cursorWebhookRequest(payload), env);
+    expect(beforePoll.status).toBe(401);
+    expect(env.DB.events).toHaveLength(0);
+    await connectClient(env);
 
     const first = await handleRequest(await cursorWebhookRequest(payload), env);
     const duplicate = await handleRequest(await cursorWebhookRequest(payload), env);
@@ -354,7 +370,7 @@ describe("Cursor Cloud webhook relay", () => {
 
   it("enforces read auth and pages by sequence oldest-first", async () => {
     const env = makeEnv();
-    await registerSecret(env);
+    await connectClient(env);
     for (let index = 1; index <= 3; index += 1) {
       await handleRequest(
         await cursorWebhookRequest(cursorPayload({ id: `bc-agent-${index}` }), { delivery: `delivery-${index}` }),
@@ -394,7 +410,7 @@ describe("Cursor Cloud webhook relay", () => {
 
   it("drains a backlog larger than one page without skipping events", async () => {
     const env = makeEnv();
-    await registerSecret(env);
+    await connectClient(env);
     for (let index = 1; index <= 3; index += 1) {
       await handleRequest(
         await cursorWebhookRequest(cursorPayload({ id: `bc-agent-${index}` }), { delivery: `delivery-${index}` }),
@@ -423,7 +439,7 @@ describe("Cursor Cloud webhook relay", () => {
   it("prunes Cursor events beyond the configured retention window after a write", async () => {
     const env = makeEnv();
     env.EVENT_RETENTION_DAYS = "1";
-    await registerSecret(env);
+    await connectClient(env);
     env.DB.events.push({
       event_seq: env.DB.nextEventSeq++,
       event_id: "delivery-old",
