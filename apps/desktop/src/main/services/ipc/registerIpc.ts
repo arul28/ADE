@@ -187,7 +187,7 @@ import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRunt
 import { parseAttentionItem } from "../attention/attentionItemRouting";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
-import { isTrustedAdeRendererUrl } from "./trustedRendererSender";
+import { isTrustedAdeRendererSender } from "./trustedRendererSender";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -2753,12 +2753,10 @@ export function registerIpc({
     }
   };
 
-  const isTrustedAppControlRendererUrl = isTrustedAdeRendererUrl;
-
   const assertTrustedAppControlSender = (event: IpcMainInvokeEvent, channel: string): void => {
+    if (isTrustedAdeRendererSender(event)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     const senderUrl = event.senderFrame?.url || event.sender.getURL();
-    if (win && !win.isDestroyed() && isTrustedAppControlRendererUrl(senderUrl)) return;
     getCtx().logger.warn("ipc.app_control.untrusted_sender", {
       channel,
       windowId: win?.id ?? null,
@@ -2809,9 +2807,9 @@ export function registerIpc({
   };
 
   const assertTrustedFilesSender = (event: IpcMainInvokeEvent, channel: string): void => {
+    if (isTrustedAdeRendererSender(event)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     const senderUrl = event.senderFrame?.url || event.sender.getURL();
-    if (win && !win.isDestroyed() && isTrustedAppControlRendererUrl(senderUrl)) return;
     getCtx().logger.warn("ipc.files.untrusted_sender", {
       channel,
       windowId: win?.id ?? null,
@@ -2863,8 +2861,8 @@ export function registerIpc({
     limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 60 },
   ): BrowserWindow => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    const senderUrl = event.senderFrame?.url || event.sender.getURL();
-    if (!win || win.isDestroyed() || !isTrustedAppControlRendererUrl(senderUrl)) {
+    if (!win || !isTrustedAdeRendererSender(event)) {
+      const senderUrl = event.senderFrame?.url || event.sender.getURL();
       getCtx().logger.warn("ipc.built_in_browser.untrusted_sender", {
         channel,
         windowId: win?.id ?? null,
