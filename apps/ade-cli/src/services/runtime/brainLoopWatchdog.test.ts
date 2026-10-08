@@ -13,6 +13,7 @@ import {
   readBrainLoopWatchdogLastWedge,
   recoverBrainLoopWatchdogBreadcrumb,
   classifyBrainLoopLag,
+  brainLoopWorkerPausedMs,
   DEFAULT_BRAIN_RSS_RESTART_BYTES,
   initialBrainMemoryPressureState,
   resolveBrainLoopWatchdogThresholdMs,
@@ -84,65 +85,207 @@ describe("brainLoopWatchdog", () => {
     });
   });
 
-  // The 2026-08-20 report: 17-minute heartbeat lags with `lastCommand: "idle"`,
-  // 2-5 seconds of CPU across the whole gap, and an event-loop histogram that
-  // sometimes read zero. Every one of those was logged as a near miss.
-  it("reads a suspended process as a suspension, not as a near miss", () => {
-    expect(classifyBrainLoopLag({
-      heartbeatLagMs: 1_048_563,
-      eventLoopDelayMaxMs: 0,
-      cpuDeltaMs: 4_000,
-      sleepObserved: true,
-    })).toEqual({
-      verdict: "suspended",
-      suspensionShaped: true,
-      observedLagMs: 1_048_563,
-    });
+  // The verdict for a lag, from what the main thread observed plus how long the
+  // worker thread was also late inside that lag.
+  it.each([
+    {
+      name: "a 17-minute suspension",
+      // The 2026-08-20 report: 17-minute heartbeat lags with `lastCommand: "idle"`,
+      // 2-5 seconds of CPU across the whole gap, and an event-loop histogram that
+      // sometimes read zero. Every one of those was logged as a near miss. The
+      // worker was late for almost all of the gap, so this is a suspension.
+      input: {
+        heartbeatLagMs: 1_048_563,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 4_000,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 1_048_000,
+      },
+      expected: { verdict: "suspended", suspensionShaped: true, observedLagMs: 1_048_563 },
+    },
+    {
+      name: "the same lag with the worker still ticking",
+      // Identical numbers, but the worker kept ticking through the gap. The main
+      // thread was blocked in a syscall, not suspended, and nothing else can tell
+      // a suspended process from that, so it stays a stall.
+      input: {
+        heartbeatLagMs: 1_048_563,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 4_000,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 0,
+      },
+      expected: { verdict: "stall", suspensionShaped: true, observedLagMs: 1_048_563 },
+    },
+    {
+      name: "a busy loop",
+      // The gap and the CPU it burned are the same length. CPU rules out a
+      // suspension even though the worker reports a pause across the whole gap.
+      input: {
+        heartbeatLagMs: 600_000,
+        eventLoopDelayMaxMs: 599_000,
+        cpuDeltaMs: 598_000,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 600_000,
+      },
+      expected: { verdict: "stall", suspensionShaped: false, observedLagMs: 600_000 },
+    },
+    {
+      name: "a short DarkWake sleep",
+      // A 4 s lag the worker was late for almost all of is a suspension. The old
+      // "never excuses a short stutter" expectation ruled this out by requiring a
+      // 60 s gap; that change is intentional.
+      input: {
+        heartbeatLagMs: 3_800,
+        eventLoopDelayMaxMs: 4_000,
+        cpuDeltaMs: 5,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 3_200,
+      },
+      expected: { verdict: "suspended", suspensionShaped: true, observedLagMs: 4_000 },
+    },
+    {
+      name: "the worst-case timer phase",
+      // The worker's lateness began a heartbeat into a 2 s pause, the most the
+      // timer phase can hide. Up to a heartbeat may go unexplained, so this is
+      // still a suspension.
+      input: {
+        heartbeatLagMs: 2_000,
+        eventLoopDelayMaxMs: 2_000,
+        cpuDeltaMs: 10,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 1_000,
+      },
+      expected: { verdict: "suspended", suspensionShaped: true, observedLagMs: 2_000 },
+    },
+    {
+      name: "an idle 2 s block with a 0.5 s worker hiccup",
+      // The main thread blocked on its own. The worker had one short scheduling
+      // hiccup inside the block, which must not turn the block into a suspension.
+      input: {
+        heartbeatLagMs: 2_000,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 10,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 500,
+      },
+      expected: { verdict: "stall", suspensionShaped: true, observedLagMs: 2_000 },
+    },
+    {
+      name: "an idle 4 s block with a 1.5 s worker hiccup",
+      // Same shape at a longer length: the worker was late for well under the
+      // part of the block it would need to explain.
+      input: {
+        heartbeatLagMs: 4_000,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 10,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 1_500,
+      },
+      expected: { verdict: "stall", suspensionShaped: true, observedLagMs: 4_000 },
+    },
+    {
+      name: "memory pressure with paging",
+      // The process is swapping its own memory back in. That is a real stall even
+      // though the worker was starved too, so the lag is not suspension-shaped.
+      input: {
+        heartbeatLagMs: 4_000,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 10,
+        majorPageFaultsDelta: 50,
+        workerPausedMs: 4_000,
+      },
+      expected: { verdict: "stall", suspensionShaped: false, observedLagMs: 4_000 },
+    },
+    {
+      name: "the same lag on Windows, where faults are not counted",
+      // The page-fault count is not meaningful on Windows, so the paging check is
+      // skipped and the worker's lateness decides.
+      input: {
+        heartbeatLagMs: 4_000,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 10,
+        majorPageFaultsDelta: null,
+        workerPausedMs: 4_000,
+      },
+      expected: { verdict: "suspended", suspensionShaped: true, observedLagMs: 4_000 },
+    },
+    {
+      name: "a long sleep that pages memory back in",
+      // Lags of a minute or more skip the paging check, because a machine waking
+      // from a long sleep may page memory back in.
+      input: {
+        heartbeatLagMs: 120_000,
+        eventLoopDelayMaxMs: 0,
+        cpuDeltaMs: 1_000,
+        majorPageFaultsDelta: 500,
+        workerPausedMs: 119_500,
+      },
+      expected: { verdict: "suspended", suspensionShaped: true, observedLagMs: 120_000 },
+    },
+    {
+      name: "an ordinary heartbeat",
+      // Below the near-miss threshold: nothing to report and no suspension shape.
+      input: {
+        heartbeatLagMs: 12,
+        eventLoopDelayMaxMs: 30,
+        cpuDeltaMs: 1,
+        majorPageFaultsDelta: 0,
+        workerPausedMs: 0,
+      },
+      expected: { verdict: "normal", suspensionShaped: false, observedLagMs: 30 },
+    },
+  ])("tells a suspended process from a stalled one: $name", ({ input, expected }) => {
+    expect(classifyBrainLoopLag(input)).toEqual(expected);
   });
 
-  it("holds the same lag as a stall until the worker confirms it slept", () => {
-    // Identical numbers, minus the worker's report. Nothing else can tell a
-    // suspended process from one blocked in a syscall, so it stays a stall.
-    expect(classifyBrainLoopLag({
-      heartbeatLagMs: 1_048_563,
-      eventLoopDelayMaxMs: 0,
-      cpuDeltaMs: 4_000,
-      sleepObserved: false,
-    })).toMatchObject({ verdict: "stall", suspensionShaped: true });
-  });
-
-  it("still warns about a genuine stall, however long it lasted", () => {
-    // A busy loop: the gap and the CPU it burned are the same length, and the
-    // worker kept ticking through it.
-    expect(classifyBrainLoopLag({
-      heartbeatLagMs: 600_000,
-      eventLoopDelayMaxMs: 599_000,
-      cpuDeltaMs: 598_000,
-      sleepObserved: true,
-    })).toEqual({
-      verdict: "stall",
-      suspensionShaped: false,
-      observedLagMs: 600_000,
-    });
-  });
-
-  it("never excuses a short stutter as sleep", () => {
-    expect(classifyBrainLoopLag({
-      heartbeatLagMs: 4_000,
-      eventLoopDelayMaxMs: 3_900,
-      cpuDeltaMs: 0,
-      sleepObserved: true,
-    })).toMatchObject({ verdict: "stall", suspensionShaped: false });
-  });
-
-  it("says nothing about an ordinary heartbeat", () => {
-    expect(classifyBrainLoopLag({
-      heartbeatLagMs: 12,
-      eventLoopDelayMaxMs: 24,
-      cpuDeltaMs: 30,
-      sleepObserved: false,
-    }).verdict).toBe("normal");
-  });
+  it.each([
+    {
+      name: "a pause fully inside the lag",
+      lagMs: 10_000,
+      pauses: [{ pausedMs: 4_000, resumedAtMonotonicMs: 98_000 }],
+      expectedMs: 4_000,
+    },
+    {
+      name: "a pause that began before the lag and ended inside it",
+      lagMs: 5_000,
+      pauses: [{ pausedMs: 8_000, resumedAtMonotonicMs: 99_000 }],
+      expectedMs: 4_000,
+    },
+    {
+      name: "a pause that ended before the lag began",
+      lagMs: 5_000,
+      pauses: [{ pausedMs: 2_000, resumedAtMonotonicMs: 90_000 }],
+      expectedMs: 0,
+    },
+    {
+      name: "two separate pauses",
+      lagMs: 10_000,
+      pauses: [
+        { pausedMs: 2_000, resumedAtMonotonicMs: 93_000 },
+        { pausedMs: 3_000, resumedAtMonotonicMs: 99_500 },
+      ],
+      expectedMs: 5_000,
+    },
+    {
+      name: "a pause longer than the lag",
+      lagMs: 2_000,
+      pauses: [{ pausedMs: 50_000, resumedAtMonotonicMs: 100_000 }],
+      expectedMs: 2_000,
+    },
+    {
+      name: "a zero-length lag",
+      lagMs: 0,
+      pauses: [{ pausedMs: 2_000, resumedAtMonotonicMs: 100_000 }],
+      expectedMs: 0,
+    },
+  ])(
+    "measures how much of a lag the worker was also late for: $name",
+    ({ lagMs, pauses, expectedMs }) => {
+      const pausedMs = brainLoopWorkerPausedMs({ lagMs, lagEndMonotonicMs: 100_000, pauses });
+      expect(pausedMs).toBe(expectedMs);
+    },
+  );
 
   it("only reports pressure after a full run of samples over the threshold", () => {
     const threshold = 1_000;
