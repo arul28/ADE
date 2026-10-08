@@ -9,6 +9,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { AgentChatPane, type AgentChatPaneComposerHandle } from "../chat/AgentChatPane";
 import { AgentChatApiProvider } from "../chat/agentChatApi";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
@@ -392,15 +393,24 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
           ) : null}
           <button type="button" onClick={() => setToolPanel((current) => current === "terminal" ? null : "terminal")} className={cn("flex h-7 w-7 items-center justify-center rounded-md border transition-colors", toolPanel === "terminal" ? "border-violet-300/25 bg-violet-500/10 text-violet-200" : "border-fg/[0.06] bg-fg/[0.025] text-muted-fg/45 hover:text-fg")} title="Terminal" aria-label="Toggle terminal"><TerminalWindow size={14} /></button>
         </div>
-        {error ? (
-          <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-rose-400/15 bg-rose-500/[0.06] px-3 py-1.5 font-sans text-[11px] text-rose-200/80">
-            <span className="min-w-0 flex-1 truncate">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="shrink-0 text-rose-200/60 hover:text-rose-100">Dismiss</button>
-          </div>
-        ) : null}
-        {providerUnavailable && !selectedSession ? (
-          <div className="shrink-0 border-b border-amber-400/15 bg-amber-500/[0.06] px-3 py-1.5 font-sans text-[11px] text-amber-200/80">
-            No connected agent is available right now. Sign in to a provider from Settings to start a chat.
+        {error || (providerUnavailable && !selectedSession) ? (
+          <div className="flex shrink-0 flex-col gap-1.5 px-3 pt-2">
+            {error ? (
+              <Banner
+                layout="inline"
+                model={{ id: "personal-chats-error", tone: "error", title: error, dismiss: { onDismiss: () => setError(null) } }}
+              />
+            ) : null}
+            {providerUnavailable && !selectedSession ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "personal-chats-no-provider",
+                  tone: "warning",
+                  title: "No connected agent is available right now. Sign in to a provider from Settings to start a chat.",
+                }}
+              />
+            ) : null}
           </div>
         ) : null}
         <div className="relative flex min-h-0 flex-1">

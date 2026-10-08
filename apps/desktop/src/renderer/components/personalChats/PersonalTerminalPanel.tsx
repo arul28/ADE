@@ -10,6 +10,7 @@ import {
   useAppStore,
 } from "../../state/appStore";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
+import { Banner } from "../ui/notice";
 
 type TerminalCreateResult = {
   ptyId: string;
@@ -244,7 +245,11 @@ export function PersonalTerminalPanel({
           <X size={12} />
         </button>
       </header>
-      {error ? <div role="alert" className="shrink-0 border-b border-rose-400/15 bg-rose-500/10 px-3 py-2 font-sans text-[10px] text-rose-200/75">{error}</div> : null}
+      {error ? (
+        <div className="shrink-0 px-2 pt-2">
+          <Banner layout="inline" model={{ id: "personal-terminal-error", tone: "error", title: error }} />
+        </div>
+      ) : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />
     </section>
   );

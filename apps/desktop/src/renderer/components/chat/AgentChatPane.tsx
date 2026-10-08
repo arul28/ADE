@@ -3830,6 +3830,9 @@ export function AgentChatPane({
   const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? window.ade?.agentChat);
   agentChatApiRef.current = chatScope?.agentChat ?? window.ade?.agentChat;
   const personalScope = chatScope?.kind === "personal" ? chatScope : null;
+  // The boolean the pane's hooks gate on: stable for the pane's life, so it
+  // joins a dependency list without re-running anything.
+  const isPersonalPane = personalScope != null;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   // The originating project's binding, captured per launch so detached draft
@@ -7184,7 +7187,7 @@ export function AgentChatPane({
   const resolveAiStatusRuntimeScope = useCallback(() => {
     // A personal pane's models come from the personal catalog its host passes
     // in (`availableModelIdsOverride`), never from a project's AI status.
-    if (personalScope) return null;
+    if (isPersonalPane) return null;
     const composerPin = selectedSessionIdRef.current
       ? (chatRuntimePinRef.current ?? projectBinding)
       : draftExecutionBindingRef.current;
@@ -7201,7 +7204,7 @@ export function AgentChatPane({
       runtimeProjectRoot: composerPin?.rootPath ?? projectRoot,
       boundRuntimeKey: projectBinding?.key ?? null,
     };
-  }, [projectBinding, projectRoot]);
+  }, [isPersonalPane, projectBinding, projectRoot]);
 
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
@@ -7599,7 +7602,7 @@ export function AgentChatPane({
 
     // A personal chat's computer-use owner lives in the machine scope, not
     // this project's runtime; asking the project would only miss.
-    if (personalScope) return;
+    if (isPersonalPane) return;
     let request: Promise<void> | null = null;
     request = (async () => {
       try {
@@ -7633,7 +7636,7 @@ export function AgentChatPane({
     } catch {
       // Errors are reflected by clearing the visible snapshot for the active session.
     }
-  }, []);
+  }, [isPersonalPane]);
 
   // Record (or remove, when null) the older-history pagination cursor for a
   // session in both the synchronous ref (read by loadOlderHistory) and the
@@ -7790,7 +7793,7 @@ export function AgentChatPane({
       } catch {
         usedSnapshotPath = false;
       }
-      if (!usedSnapshotPath && personalScope) {
+      if (!usedSnapshotPath && isPersonalPane) {
         // The terminal-session fallback below reads the project's runtime,
         // which has never heard of a personal chat.
         loadedHistoryRef.current.delete(sessionId);
@@ -7900,7 +7903,7 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
+  }, [isPersonalPane, applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
 
   /**
    * Resolves `true` once the backoff elapses, or `false` if the wait was
@@ -8886,7 +8889,7 @@ export function AgentChatPane({
   // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
     if (!isTileActive) { setSdkSlashCommands([]); return; }
-    if (personalScope) {
+    if (isPersonalPane) {
       // The personal scope answers for its own chats and its own workspace.
       let cancelledPersonal = false;
       agentChatApiRef.current.slashCommands(
@@ -8916,7 +8919,7 @@ export function AgentChatPane({
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
+  }, [isPersonalPane, isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
@@ -8927,7 +8930,7 @@ export function AgentChatPane({
   // on loading the transcript until the user actually runs a turn.
   useEffect(() => {
     // A personal chat has no lane, so no git diff to count.
-    if (!readableSessionId || !isTileActive || personalScope) { setSessionDelta(null); return; }
+    if (!readableSessionId || !isTileActive || isPersonalPane) { setSessionDelta(null); return; }
     const sameSession = sessionDeltaSessionIdRef.current === readableSessionId;
     const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
     sessionDeltaSessionIdRef.current = readableSessionId;
@@ -8958,7 +8961,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isRemoteChat, isTileActive, readableSessionId, turnActive]);
+  }, [isPersonalPane, isRemoteChat, isTileActive, readableSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -9403,7 +9406,7 @@ export function AgentChatPane({
 
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
-          (personalScope
+          (isPersonalPane
             ? agentChatApiRef.current.slashCommands({ sessionId: envelope.sessionId })
             : getAgentChatSlashCommandsCached(
               { sessionId: envelope.sessionId, projectRoot },
@@ -9418,7 +9421,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -9506,7 +9509,7 @@ export function AgentChatPane({
     }
 
     // No lane workspace to search for a chat with no project.
-    if (personalScope) return [];
+    if (isPersonalPane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
     const hits = await window.ade.files.quickOpen({
@@ -9525,12 +9528,12 @@ export function AgentChatPane({
       type: inferAttachmentType(hit.path),
       ...(hit.isDirectory ? { isDirectory: true as const } : {}),
     }));
-  }, [laneId, selectedSessionId, sessionProvider]);
+  }, [isPersonalPane, laneId, selectedSessionId, sessionProvider]);
 
   // `#` pull-request suggestions for the composer. Browse with an empty query,
   // filter by number when the query is digits, otherwise match the title.
   const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
-    if (personalScope) return [];
+    if (isPersonalPane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
     try {
@@ -9555,7 +9558,7 @@ export function AgentChatPane({
     } catch {
       return [];
     }
-  }, [selectedSessionId]);
+  }, [isPersonalPane, selectedSessionId]);
 
   // Entity @-mention suggestions (chats / lanes / terminals) for the active
   // project. Daemon-routed through the chat action domain; an unbound runtime
@@ -10579,7 +10582,7 @@ export function AgentChatPane({
     }
     // A personal chat has no lane: the adapter's `create` drops the lane and
     // the machine scope places the chat on its own.
-    if (!laneId && !personalScope) return null;
+    if (!laneId && !isPersonalPane) return null;
     if (constrainedModelSelectionError) {
       setError(constrainedModelSelectionError);
       throw new Error(constrainedModelSelectionError);
@@ -10594,7 +10597,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [constrainedModelSelectionError, createSessionForLane, laneId]);
+  }, [isPersonalPane, constrainedModelSelectionError, createSessionForLane, laneId]);
 
   const buildDraftLaunchSnapshotForCurrentState = useCallback((): DraftLaunchSnapshot | null => {
     const text = draft.trim();
@@ -12699,12 +12702,12 @@ export function AgentChatPane({
     if (forceDraft) return;
     // A personal chat is created by its first message, so opening "New chat"
     // never leaves an empty conversation in the rail.
-    if (personalScope) return;
+    if (isPersonalPane) return;
     eagerCreateFiredRef.current = true;
     void createSession().catch(() => {
       eagerCreateFiredRef.current = false;
     });
-  }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
+  }, [isPersonalPane, preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   /** The banner text a failed card answer raised, so its successful retry can clear it. */
   const approvalErrorRef = useRef<string | null>(null);
@@ -13301,7 +13304,7 @@ export function AgentChatPane({
         && !contextAttachmentsSnapshot.length
         && !(isWorkCliLaunchDraft && attachments.length)
         && !attachments.some((attachment) => attachment.type === "file"))
-      || (!laneId && !personalScope)
+      || (!laneId && !isPersonalPane)
     ) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
@@ -13539,7 +13542,7 @@ export function AgentChatPane({
           throw new Error("Unable to create chat session.");
         }
         justCreatedSession = true;
-        if (personalScope) {
+        if (isPersonalPane) {
           // The new chat now owns this text under its own key; the "new chat"
           // draft must not offer it again the next time New chat is opened.
           for (const key of composerDraftStorageKeys({
@@ -13691,7 +13694,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
-    attachments,
+    isPersonalPane, attachments,
     buildNativeControlPayload,
     busy,
     clearPromptSuggestionForSession,
