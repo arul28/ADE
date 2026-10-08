@@ -1,12 +1,13 @@
 import path from "node:path";
 
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 
 import { parseTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
 import { MUSIC_IPC, type MusicCommand, type MusicLibraryKind, type MusicSearchScope } from "../../../shared/types/music";
 import { createDeveloperTokenProvider } from "./musicDeveloperToken";
 import { resolveMusicHostExecutable } from "../native/nativeHelperPaths";
 import { getNowPlayingService } from "../home/registerHomeWidgetsIpc";
+import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
 import { createMusicService, type MusicService } from "./musicService";
 import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";
 
@@ -16,21 +17,6 @@ import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";
  * Only ADE's own renderer may call it: a page in the built-in browser or an
  * agent-authored scene frame must not drive the user's Apple Music account.
  */
-
-function isAdeRenderer(event: IpcMainInvokeEvent): boolean {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return false;
-  const raw = event.senderFrame?.url || event.sender.getURL();
-  try {
-    const url = new URL(raw);
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devServerUrl) return url.origin === new URL(devServerUrl).origin;
-    if (!app.isPackaged && url.origin === "http://localhost:5173") return true;
-    return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));
-  } catch {
-    return false;
-  }
-}
 
 const KINDS = new Set<MusicLibraryKind>(["playlists", "albums", "songs"]);
 
@@ -83,7 +69,7 @@ export function registerMusicIpc(args: {
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
-      if (!isAdeRenderer(event)) throw new Error("Music is only available to the ADE window.");
+      if (!isTrustedAdeRendererSender(event)) throw new Error("Music is only available to the ADE window.");
       return fn(...(rest as A));
     });
   };

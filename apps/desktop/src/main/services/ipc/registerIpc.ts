@@ -187,6 +187,7 @@ import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRunt
 import { parseAttentionItem } from "../attention/attentionItemRouting";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
+import { isTrustedAdeRendererUrl } from "./trustedRendererSender";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -2752,19 +2753,7 @@ export function registerIpc({
     }
   };
 
-  const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
-    if (!rawUrl) return false;
-    try {
-      const url = new URL(rawUrl);
-      const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-      if (devServerUrl) {
-        return url.origin === new URL(devServerUrl).origin;
-      }
-      return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));
-    } catch {
-      return false;
-    }
-  };
+  const isTrustedAppControlRendererUrl = isTrustedAdeRendererUrl;
 
   const assertTrustedAppControlSender = (event: IpcMainInvokeEvent, channel: string): void => {
     const win = BrowserWindow.fromWebContents(event.sender);
