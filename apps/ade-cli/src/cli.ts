@@ -20885,9 +20885,16 @@ Usage:
 
 function buildProjectsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
+  // The registry lives only in the machine brain, so these never fall back to
+  // a headless single-project runtime.
+  const base = {
+    kind: "execute" as const,
+    machineOnly: true,
+    machineAutoStart: true,
+  };
   if (sub === "list" || sub === "ls") {
     return {
-      kind: "execute",
+      ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
@@ -20900,7 +20907,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects add",
       formatter: "projects-list",
       steps: [{
@@ -20920,7 +20927,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects remove",
       steps: [
         { key: "result", method: "projects.remove", params: { projectId } },
@@ -20933,7 +20940,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "project id",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects touch",
       formatter: "projects-list",
       steps: [
@@ -20947,7 +20954,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
       "path",
     );
     return {
-      kind: "execute",
+      ...base,
       label: "projects inspect",
       steps: [
         {
@@ -31797,7 +31804,7 @@ async function executePlan(
         workspaceRoot: roots.workspaceRoot,
         socketPath,
         nextAction: plan.machineOnly
-          ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
+          ? "Start the machine-owned ADE brain with `ade brain start`, then retry."
           : options.requireSocket
             ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
