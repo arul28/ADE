@@ -10,17 +10,13 @@ import {
   GitPullRequest,
   GithubLogo,
   Stack,
-  Warning,
   XCircle,
 } from "@phosphor-icons/react";
 import type { GitHubPrListItem, GitHubPrStack, GitHubPrStackEntry, PrSummary } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog/confirm";
+import { Banner } from "../../ui/notice";
+import { prRouteCoordinatesMatch } from "../prsRouteState";
 import "./GitHubStackInspector.css";
-
-/** GitHub's own PR state colours (see docs/design/visual-language.md). */
-const GITHUB_OPEN = "#3fb950";
-const GITHUB_MERGED = "#a371f7";
-const GITHUB_CLOSED = "#f85149";
 
 const EXPANDED_KEY = "ade:prs:stackStrip:expanded:v1";
 
@@ -73,13 +69,13 @@ const LAYER_STATE_LABEL: Record<LayerState, string> = {
 function LayerStateIcon({ state, size = 13 }: { state: LayerState; size?: number }) {
   switch (state) {
     case "merged":
-      return <GitMerge size={size} weight="bold" style={{ color: GITHUB_MERGED }} aria-hidden />;
+      return <GitMerge size={size} weight="bold" style={{ color: "var(--pr-merged)" }} aria-hidden />;
     case "closed":
-      return <XCircle size={size} weight="fill" style={{ color: GITHUB_CLOSED }} aria-hidden />;
+      return <XCircle size={size} weight="fill" style={{ color: "var(--pr-closed)" }} aria-hidden />;
     case "draft":
-      return <Circle size={size} weight="bold" style={{ color: "var(--kit-text-3)" }} aria-hidden />;
+      return <Circle size={size} weight="bold" style={{ color: "var(--pr-draft)" }} aria-hidden />;
     default:
-      return <GitPullRequest size={size} weight="bold" style={{ color: GITHUB_OPEN }} aria-hidden />;
+      return <GitPullRequest size={size} weight="bold" style={{ color: "var(--pr-open)" }} aria-hidden />;
   }
 }
 
@@ -178,7 +174,7 @@ export function GitHubStackInspector({
   stack: GitHubPrStack;
   items: GitHubPrListItem[];
   /** ADE's PR rows, for each layer's checks and review state. */
-  prsById?: ReadonlyMap<string, PrSummary>;
+  prsById: ReadonlyMap<string, PrSummary>;
   selectedPrNumber: number;
   syncing: boolean;
   onSelectPr: (item: GitHubPrListItem) => void;
@@ -202,23 +198,24 @@ export function GitHubStackInspector({
     () => new Map(items.map((item) => [item.githubPrNumber, item] as const)),
     [items],
   );
-  // The list filter can hide a layer (a merged one under Open), so ADE's own
-  // rows are also found by number within the stack's repository.
+  // ADE's rows by number within the stack's repository. The list filter can
+  // hide a layer (a merged one under Open), so this does not go through it.
   const prByNumber = React.useMemo(() => {
-    const owner = stack.repoOwner.toLowerCase();
-    const name = stack.repoName.toLowerCase();
     const byNumber = new Map<number, PrSummary>();
-    for (const pr of prsById?.values() ?? []) {
-      if (pr.repoOwner.toLowerCase() === owner && pr.repoName.toLowerCase() === name) {
+    for (const pr of prsById.values()) {
+      if (prRouteCoordinatesMatch(
+        { prNumber: null, repoOwner: pr.repoOwner, repoName: pr.repoName },
+        { prNumber: null, repoOwner: stack.repoOwner, repoName: stack.repoName },
+      )) {
         byNumber.set(pr.githubPrNumber, pr);
       }
     }
     return byNumber;
   }, [prsById, stack.repoName, stack.repoOwner]);
-  const prFor = React.useCallback((entry: GitHubPrStackEntry): PrSummary | null => {
-    const linkedPrId = itemByPr.get(entry.githubPrNumber)?.linkedPrId;
-    return (linkedPrId ? prsById?.get(linkedPrId) : null) ?? prByNumber.get(entry.githubPrNumber) ?? null;
-  }, [itemByPr, prByNumber, prsById]);
+  const prFor = React.useCallback(
+    (entry: GitHubPrStackEntry): PrSummary | null => prByNumber.get(entry.githubPrNumber) ?? null,
+    [prByNumber],
+  );
   const bottomUp = React.useMemo(
     () => [...stack.entries].sort((a, b) => a.position - b.position),
     [stack.entries],
@@ -272,11 +269,12 @@ export function GitHubStackInspector({
 
   return (
     <section className="ade-stack-strip" aria-label={`GitHub Stack #${stack.number}`} data-testid="github-stack-strip">
+      <div className="ade-stack-strip-body">
       <div className="ade-stack-strip-row">
         <span className="ade-stack-strip-title">
           <Stack size={14} weight="fill" aria-hidden />
           Stack #{stack.number}
-          <span className="ade-stack-strip-count kit-num" style={{ color: "var(--kit-text-3)", fontWeight: 400 }}>
+          <span className="ade-stack-strip-count kit-num">
             {stack.entries.length} PRs
           </span>
         </span>
@@ -365,15 +363,20 @@ export function GitHubStackInspector({
       </div>
 
       <div className="ade-stack-strip-summary" data-testid="github-stack-summary">
-        {summary.tone ? <span className="kit-dot" data-state={summary.tone} aria-hidden /> : <span className="kit-dot" aria-hidden />}
+        <span className="kit-dot" data-state={summary.tone ?? undefined} aria-hidden />
         <span>{summary.text}</span>
       </div>
 
       {stack.lastError ? (
-        <div className="ade-stack-strip-note">
-          <Warning size={13} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} aria-hidden />
-          <span>Showing the last saved stack. {stack.lastError}</span>
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: `github-stack-stale:${stack.number}`,
+            tone: "warning",
+            title: "Showing the last saved stack.",
+            detail: stack.lastError,
+          }}
+        />
       ) : null}
 
       {expanded ? (
@@ -393,7 +396,7 @@ export function GitHubStackInspector({
               <button
                 key={entry.githubPrNumber}
                 type="button"
-                className="ade-stack-layer"
+                className="kit-row ade-stack-layer"
                 data-selected={selected || undefined}
                 disabled={!item}
                 onClick={() => selectEntry(entry)}
@@ -459,8 +462,12 @@ export function GitHubStackInspector({
       ) : null}
 
       {error ? (
-        <div role="alert" className="ade-stack-strip-error">{error}</div>
+        <Banner
+          layout="inline"
+          model={{ id: `github-stack-action:${stack.number}`, tone: "error", title: error, dismiss: { onDismiss: () => setError(null) } }}
+        />
       ) : null}
+      </div>
     </section>
   );
 }

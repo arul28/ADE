@@ -4,7 +4,7 @@ function normalizeBranch(value: string | null | undefined): string {
   return (value ?? "").replace(/^refs\/heads\//i, "").trim().toLowerCase();
 }
 
-function linkedSessionIds(pr: PrSummary): string[] {
+function linkedSessionIds(pr: Pick<PrSummary, "chatSessionIds">): string[] {
   return (pr.chatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
 }
 
@@ -13,7 +13,7 @@ function linkedSessionIds(pr: PrSummary): string[] {
  * chat except one on another lane. A stack coordinator links every layer from
  * its own lane; that is a reference, and the layer's own chats keep the PR.
  */
-function claimingSessionIds(pr: PrSummary): string[] {
+export function claimingSessionIds(pr: Pick<PrSummary, "chatSessionIds" | "crossLaneChatSessionIds">): string[] {
   const crossLane = new Set((pr.crossLaneChatSessionIds ?? []).map((id) => String(id ?? "").trim()));
   return linkedSessionIds(pr).filter((id) => !crossLane.has(id));
 }
@@ -24,7 +24,7 @@ export function prClaimedByOtherChat(pr: PrSummary, sessionId: string): boolean 
   return claimingSessionIds(pr).length > 0;
 }
 
-function dismissedSessionIds(pr: PrSummary): string[] {
+export function dismissedSessionIds(pr: Pick<PrSummary, "dismissedChatSessionIds">): string[] {
   return (pr.dismissedChatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
 }
 

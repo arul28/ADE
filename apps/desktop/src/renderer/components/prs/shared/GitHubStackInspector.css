@@ -1,20 +1,24 @@
 /*
- * The GitHub stack strip above a stacked PR's detail. It belongs to the detail
- * header, so it is flat with a hairline under it rather than a floating card.
- * Narrowing keys on the strip's own width: it also renders in the chat tools
- * panel, which can be 360px wide.
+ * The GitHub stack strip above a stacked PR's detail in the PRs tab. It belongs
+ * to the detail header, so it is flat with a hairline under it rather than a
+ * floating card. Narrowing keys on the strip's own width (the detail column
+ * shrinks with the list beside it): the section is the container, and the
+ * rules change its body, since a query never matches its own container.
  */
 
 .ade-stack-strip {
   container-type: inline-size;
   container-name: stack-strip;
   flex-shrink: 0;
+  border-bottom: 1px solid var(--kit-rule);
+  font-family: var(--font-sans);
+}
+
+.ade-stack-strip-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 18px 10px;
-  border-bottom: 1px solid var(--kit-rule);
-  font-family: var(--font-sans);
+  padding: 10px 18px;
 }
 
 .ade-stack-strip-row {
@@ -35,6 +39,11 @@
 }
 
 .ade-stack-strip-title > svg {
+  color: var(--kit-text-3);
+}
+
+.ade-stack-strip-count {
+  font-weight: 400;
   color: var(--kit-text-3);
 }
 
@@ -136,19 +145,6 @@
   white-space: nowrap;
 }
 
-.ade-stack-strip-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--kit-warn);
-}
-
-.ade-stack-strip-error {
-  font-size: 11px;
-  color: var(--kit-crit);
-}
-
 /* The layer list, top of the stack first, as GitHub draws it. */
 .ade-stack-layers {
   display: flex;
@@ -157,29 +153,21 @@
   margin: 2px -8px 0;
 }
 
-.ade-stack-layer {
+/* On `button.kit-row`, which brings the row padding, hover and reset. Doubled
+   class so the grid wins over `.kit-row`'s flex whatever the load order. */
+.kit-row.ade-stack-layer {
   display: grid;
   grid-template-columns: 18px 16px minmax(0, 1fr) auto;
-  align-items: center;
   gap: 8px;
-  width: 100%;
   min-height: 34px;
-  padding: 4px 8px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-fg);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 100ms ease;
-}
-
-.ade-stack-layer:hover:not(:disabled) {
-  background: var(--kit-hover);
 }
 
 .ade-stack-layer:disabled {
   cursor: default;
+}
+
+.ade-stack-layer:disabled:hover {
+  background: transparent;
 }
 
 .ade-stack-layer[data-selected="true"] {
@@ -271,7 +259,7 @@
 
 /* A narrow panel drops the title's count and the layer lane names. */
 @container stack-strip (max-width: 460px) {
-  .ade-stack-strip {
+  .ade-stack-strip-body {
     padding-inline: 12px;
   }
 

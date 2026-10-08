@@ -1,9 +1,9 @@
 import { githubApiFailure } from "../github/githubApiFailure";
 import { asString, getErrorMessage, isRecord } from "../shared/utils";
 import type { GitHubRepoRef } from "../../../shared/types/git";
-import type { GitHubPrStack, LandHeadChange, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";
+import type { GitHubPrStack, GitHubPrStackEntry, LandHeadChange, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";
 import { openStackEntriesThrough } from "./githubStackStore";
-import { formatMergeError } from "./resolverUtils";
+import { formatMergeError, isHeadModifiedMergeError } from "./resolverUtils";
 import { formatHeadChangeMessage, type PrHeadChangeDetector } from "./prHeadChange";
 
 /**
@@ -49,9 +49,26 @@ const LAYER_MERGE_WAIT_MS = 5 * 60_000;
 /** Start attempts per layer while GitHub is still restacking it. */
 const LAYER_START_ATTEMPTS = 6;
 const LAYER_RETRY_DELAY_MS = 5_000;
+/** A ref in a URL path: each segment encoded, the branch's own slashes kept. */
+function encodeRefPath(ref: string): string {
+  return ref.split("/").map(encodeURIComponent).join("/");
+}
+
+/** GitHub's compare API lists at most this many files; a full list proves nothing. */
+const COMPARE_FILE_CAP = 300;
+
+/**
+ * What each covered layer must still be when its turn comes: the stale-head
+ * guard of a single merge, carried through a layered run. The bottom layer is
+ * not restacked before it merges, so its head SHA is enough (`content` null).
+ * GitHub rewrites a higher layer's SHAs when it restacks it onto the base, so
+ * that layer is held to a fingerprint of its own changes instead: the same
+ * commits leaving the same files as when the merge was confirmed.
+ */
+type LayerGuard = { prNumber: number; headSha: string; content: string | null };
 
 /** GitHub refused the merge on branch rules (reviews, checks, protected ref). */
-const RULES_REFUSAL = /protected ref|approving review|required status|review is required|branch rules?/i;
+const RULES_REFUSAL = /protected ref|approving review|required status|review is required|branch rules?|branch protection/i;
 
 /** A rules refusal is the one an override fixes, so the message says where it is. */
 function withBypassHint(message: string, args: Pick<LandPrArgs, "bypassRules">): string {
@@ -67,7 +84,7 @@ function withBypassHint(message: string, args: Pick<LandPrArgs, "bypassRules">):
 function isRestackPendingFailure(message: string, status: number | null): boolean {
   if (RULES_REFUSAL.test(message) || /bypass|permission|not authorized/i.test(message)) return false;
   if (status === 409) return true;
-  return /not mergeable|mergeable state|base branch was modified|head branch was modified|being (re)?based|rebas(e|ing) in progress|try again/i.test(message);
+  return /not mergeable|mergeable state|base branch was modified|being (re)?based|rebas(e|ing) in progress|try again/i.test(message);
 }
 
 type PullRequestRowRef = { id: string; lane_id: string };
@@ -215,6 +232,12 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     }
   };
 
+  /** The PR's merge, read fresh from GitHub; null while it is not merged. */
+  const mergedOnGitHub = async (repo: GitHubRepoRef, prNumber: number): Promise<{ sha: string | null } | null> => {
+    const pull = await deps.fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+    return asString(pull?.merged_at) ? { sha: asString(pull?.merge_commit_sha) || null } : null;
+  };
+
   const pollMerge = async (
     repo: GitHubRepoRef,
     prNumber: number,
@@ -239,12 +262,18 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     if (current.status === "pending") {
       // Out of time, or GitHub dropped the result. The PR itself still says
       // whether the merge happened.
-      const pull = await deps.fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-      if (asString(pull?.merged_at)) {
-        return { ...current, status: "merged", sha: asString(pull?.merge_commit_sha) || null };
-      }
+      const merged = await mergedOnGitHub(repo, prNumber);
+      if (merged) return { ...current, status: "merged", sha: merged.sha };
     }
     return current;
+  };
+
+  /** Refresh these PRs' rows soon: the merge queue decides when they land. */
+  const markHotRows = (repo: GitHubRepoRef, prNumbers: number[]) => {
+    for (const number of prNumbers) {
+      const row = deps.getRowForRepoPr(repo.owner, repo.name, number);
+      if (row) deps.markHotRefresh([row.id]);
+    }
   };
 
   /**
@@ -281,29 +310,124 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     }
   };
 
-  /** Bypass-merge one layer that is already the bottom open PR. */
+  /**
+   * A fingerprint of a layer's own changes: the commits in `head` that `base`
+   * lacks, and the files they leave behind (name and content). `tooLarge` when
+   * GitHub's compare result is truncated and so proves nothing; null when
+   * GitHub cannot say.
+   */
+  const layerContentBetween = async (
+    repo: GitHubRepoRef,
+    base: string,
+    head: string,
+  ): Promise<string | "tooLarge" | null> => {
+    try {
+      const { data } = await githubService.apiRequest<unknown>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/compare/${encodeRefPath(base)}...${encodeRefPath(head)}`,
+      });
+      if (!isRecord(data) || !Array.isArray(data.commits) || !Array.isArray(data.files)) return null;
+      const totalCommits = Number(data.total_commits);
+      if (Number.isFinite(totalCommits) && totalCommits > data.commits.length) return "tooLarge";
+      if (data.files.length >= COMPARE_FILE_CAP) return "tooLarge";
+      return JSON.stringify({
+        messages: data.commits.map((commit) => asString(isRecord(commit) && isRecord(commit.commit) ? commit.commit.message : "").trim()),
+        files: data.files
+          .map((file) => (isRecord(file) ? `${asString(file.filename)}:${asString(file.status)}:${asString(file.sha)}` : ""))
+          .sort(),
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const snapshotLayerGuards = async (
+    repo: GitHubRepoRef,
+    entries: GitHubPrStackEntry[],
+  ): Promise<LayerGuard[] | { stop: string }> => {
+    const guards: LayerGuard[] = [];
+    let previousHeadSha: string | null = null;
+    for (const entry of entries) {
+      if (!entry.headSha) return { stop: `ADE could not read #${entry.githubPrNumber}'s head from GitHub.` };
+      let content: string | null = null;
+      if (previousHeadSha) {
+        const read = await layerContentBetween(repo, previousHeadSha, entry.headSha);
+        if (read === "tooLarge") {
+          return {
+            stop: `#${entry.githubPrNumber} is too large for GitHub to list its changes, so ADE cannot guard a bypass merge of it. Merge the stack one PR at a time from the bottom.`,
+          };
+        }
+        if (!read) return { stop: `ADE could not read #${entry.githubPrNumber}'s changes from GitHub to guard the merge.` };
+        content = read;
+      }
+      guards.push({ prNumber: entry.githubPrNumber, headSha: entry.headSha, content });
+      previousHeadSha = entry.headSha;
+    }
+    return guards;
+  };
+
+  /**
+   * The head to merge a layer at now, or why not. A restacked layer must hold
+   * exactly the changes it had when the merge was confirmed; anything pushed
+   * since would otherwise merge with the bypass.
+   */
+  const verifyLayerHead = async (repo: GitHubRepoRef, guard: LayerGuard): Promise<{ sha: string } | { stop: string }> => {
+    const expected = guard.content;
+    if (!expected) return { sha: guard.headSha };
+    const pull = await deps.fetchPr(repo, guard.prNumber, { fresh: true }).catch(() => null);
+    const headSha = asString(pull?.head?.sha).trim();
+    // The base branch's current tip, not `base.sha`, which can lag behind the
+    // squash merge of the layer below and add that commit to the comparison.
+    const base = asString(pull?.base?.ref).trim() || asString(pull?.base?.sha).trim();
+    if (!headSha || !base) return { stop: "ADE could not read its head from GitHub." };
+    if (headSha === guard.headSha) return { sha: headSha };
+    const current = await layerContentBetween(repo, base, headSha);
+    if (current === "tooLarge") return { stop: "it is now too large for GitHub to list its changes. Review it and merge again." };
+    if (!current) return { stop: "ADE could not read its changes from GitHub." };
+    return current === expected
+      ? { sha: headSha }
+      : { stop: "its changes moved after you confirmed the merge. Review them and merge again." };
+  };
+
+  /**
+   * Bypass-merge one layer that is already the bottom open PR. Each attempt
+   * re-checks the head: GitHub may still be restacking the layer, which
+   * rewrites its SHA ("Head branch was modified"). For the bottom layer, which
+   * is never restacked, a moved head is final. A refusal is checked against
+   * the PR itself first: another click, machine or agent may have merged it.
+   */
   const mergeLayer = async (
     repo: GitHubRepoRef,
-    prNumber: number,
+    guard: LayerGuard,
     method: MergeMethod,
   ): Promise<AsyncMergeResult> => {
-    const body = { merge_method: method, merge_action: "default", bypass_rules: true };
+    const prNumber = guard.prNumber;
+    const failed = (message: string): AsyncMergeResult => ({ status: "failed", uuid: null, sha: null, message });
     let lastMessage = "GitHub could not merge this PR.";
     for (let attempt = 1; attempt <= LAYER_START_ATTEMPTS; attempt += 1) {
+      const head = await verifyLayerHead(repo, guard);
+      if ("stop" in head) return failed(head.stop);
+      const body = { merge_method: method, merge_action: "default", bypass_rules: true, sha: head.sha };
       const start = await startMerge(repo, prNumber, body);
+      let status: number | null = null;
       if ("started" in start) {
         const final = await pollMerge(repo, prNumber, start.started, Date.now() + LAYER_MERGE_WAIT_MS);
         if (final.status !== "failed") return final;
         lastMessage = final.message ?? lastMessage;
-        if (!isRestackPendingFailure(lastMessage, null)) return final;
       } else {
         lastMessage = getErrorMessage(start.error);
-        const status = githubApiFailure(start.error)?.status ?? null;
-        if (!isRestackPendingFailure(lastMessage, status)) break;
+        status = githubApiFailure(start.error)?.status ?? null;
+      }
+      const merged = await mergedOnGitHub(repo, prNumber);
+      if (merged) return { status: "merged", uuid: null, sha: merged.sha, message: null };
+      if (isHeadModifiedMergeError(lastMessage)) {
+        if (!guard.content) return failed("its head changed after you confirmed the merge. Review it and merge again.");
+      } else if (!isRestackPendingFailure(lastMessage, status)) {
+        return failed(formatMergeError(lastMessage, null));
       }
       if (attempt < LAYER_START_ATTEMPTS) await deps.delay(LAYER_RETRY_DELAY_MS);
     }
-    return { status: "failed", uuid: null, sha: null, message: lastMessage };
+    return failed(formatMergeError(lastMessage, null));
   };
 
   /**
@@ -320,36 +444,46 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     args: LandPrArgs;
     stackNumber: number;
     stackPrNumbers: number[];
+    coveredEntries: GitHubPrStackEntry[];
     base: LandResult;
     finishOperation: (status: "succeeded" | "failed", metadataPatch: Record<string, unknown>) => void;
   }): Promise<LandResult> => {
-    const { repo, prNumber, args, stackNumber, stackPrNumbers, base, finishOperation } = run;
+    const { repo, prNumber, args, stackNumber, stackPrNumbers, coveredEntries, base, finishOperation } = run;
     const meta = { stackNumber, stackPrNumbers, layered: true };
     const list = (numbers: number[]) => numbers.map((number) => `#${number}`).join(", ");
 
     const sequence = async (): Promise<LandResult> => {
+      const guards = await snapshotLayerGuards(repo, coveredEntries);
+      if (!Array.isArray(guards)) {
+        finishOperation("failed", { ...meta, error: guards.stop });
+        return { ...base, error: guards.stop, stackPrNumbers };
+      }
       const merged: number[] = [];
       let lastSha: string | null = null;
+      // The layers that merged before the run stopped still get their cleanup.
+      const cleanUpMerged = async () => {
+        if (merged.length === 0) return;
+        await finishMerge(repo, stackNumber, merged, args, prNumber).catch((error) => {
+          logger.warn("prs.stack_layer_cleanup_failed", { stackNumber, error: getErrorMessage(error) });
+        });
+      };
       const stopAt = async (number: number, reason: string): Promise<LandResult> => {
-        if (merged.length > 0) {
-          await finishMerge(repo, stackNumber, merged, args, prNumber).catch((error) => {
-            logger.warn("prs.stack_layer_cleanup_failed", { stackNumber, error: getErrorMessage(error) });
-          });
-        }
+        await cleanUpMerged();
         const error = merged.length > 0
           ? `Merged ${list(merged)}. #${number} did not merge: ${reason}`
           : `#${number} did not merge: ${reason}`;
         finishOperation("failed", { ...meta, mergedPrNumbers: merged, error });
         return { ...base, error, stackPrNumbers };
       };
-      for (const number of stackPrNumbers) {
+      for (const guard of guards) {
+        const number = guard.prNumber;
         const ready = await waitUntilBottom(repo, stackNumber, number);
         if (ready === "merged") {
           merged.push(number);
           continue;
         }
         if (ready !== "ready") return await stopAt(number, ready.stop);
-        const outcome = await mergeLayer(repo, number, args.method);
+        const outcome = await mergeLayer(repo, guard, args.method);
         if (outcome.status === "merged") {
           merged.push(number);
           lastSha = outcome.sha;
@@ -358,6 +492,8 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
         if (outcome.status === "enqueued") {
           // The queue owns the order from here; ADE cannot merge the next
           // layer before this one lands.
+          await cleanUpMerged();
+          markHotRows(repo, stackPrNumbers.filter((candidate) => !merged.includes(candidate)));
           finishOperation("succeeded", { ...meta, mergedPrNumbers: merged, mergeStatus: "enqueued" });
           return {
             ...base,
@@ -370,7 +506,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
           number,
           outcome.status === "pending"
             ? "GitHub did not finish the merge in time."
-            : formatMergeError(outcome.message ?? "GitHub could not merge this PR.", null),
+            : outcome.message ?? "GitHub could not merge this PR.",
         );
       }
       const cleanup = await finishMerge(repo, stackNumber, merged, args, prNumber);
@@ -423,10 +559,11 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     // The stack decides which PRs this merge covers. Read it fresh, because a
     // lower layer may have merged already.
     let stackPrNumbers: number[] = [prNumber];
+    let coveredEntries: GitHubPrStackEntry[] = [];
     try {
       const stack = await deps.githubStackStore.reconcile(repo, stackNumber);
-      const covered = openStackEntriesThrough(stack, prNumber).map((entry) => entry.githubPrNumber);
-      if (covered.length > 0) stackPrNumbers = covered;
+      coveredEntries = openStackEntriesThrough(stack, prNumber);
+      if (coveredEntries.length > 0) stackPrNumbers = coveredEntries.map((entry) => entry.githubPrNumber);
     } catch (error) {
       logger.warn("prs.stack_reconcile_before_merge_failed", { stackNumber, error: getErrorMessage(error) });
     }
@@ -454,7 +591,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     // open PR. Above it, ADE merges the covered PRs one at a time from the
     // bottom, each with the bypass.
     if (args.bypassRules && stackPrNumbers.length > 1) {
-      return await landLayerByLayer({ repo, prNumber, args, stackNumber, stackPrNumbers, base, finishOperation });
+      return await landLayerByLayer({ repo, prNumber, args, stackNumber, stackPrNumbers, coveredEntries, base, finishOperation });
     }
 
     const body: Record<string, unknown> = { merge_method: args.method, merge_action: "default" };
@@ -470,7 +607,6 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       return { ...base, error: withBypassHint(formatMergeError(rawMsg, args.expectedHeadSha), args), stackPrNumbers };
     }
     const started = start.started;
-    const poll = (from: AsyncMergeResult, deadline: number) => pollMerge(repo, prNumber, from, deadline);
 
     const settle = async (final: AsyncMergeResult): Promise<LandResult> => {
       const meta = { stackNumber, stackPrNumbers, asyncMergeUuid: final.uuid };
@@ -489,10 +625,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       if (final.status === "enqueued") {
         // GitHub accepted the merge; the queue decides when it lands.
         finishOperation("succeeded", { ...meta, mergeStatus: "enqueued" });
-        for (const number of stackPrNumbers) {
-          const row = deps.getRowForRepoPr(repo.owner, repo.name, number);
-          if (row) deps.markHotRefresh([row.id]);
-        }
+        markHotRows(repo, stackPrNumbers);
         return { ...base, mergeStatus: "enqueued", stackPrNumbers, error: `GitHub added Stack #${stackNumber} to the merge queue.` };
       }
       return {
@@ -503,13 +636,13 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       };
     };
 
-    const first = await poll(started, Date.now() + FOREGROUND_WAIT_MS);
+    const first = await pollMerge(repo, prNumber, started, Date.now() + FOREGROUND_WAIT_MS);
     if (first.status !== "pending") return await settle(first);
 
     // Still running. Answer now, and keep polling so the cleanup still runs.
     // If the app quits first, the operation stays open and the PR poller shows
     // the merged state; only the optional lane and branch cleanup is lost.
-    void poll(first, Date.now() + BACKGROUND_WAIT_MS)
+    void pollMerge(repo, prNumber, first, Date.now() + BACKGROUND_WAIT_MS)
       .then(async (final) => {
         if (final.status !== "pending") {
           await settle(final);

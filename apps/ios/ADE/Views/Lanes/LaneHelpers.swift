@@ -542,6 +542,18 @@ private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
     .filter { !$0.isEmpty }
 }
 
+/// The linked chats that claim a PR away from the other chats on its lane:
+/// every linked chat except one on another lane (a stack coordinator), whose
+/// link is a reference. Mirrors desktop `claimingSessionIds`.
+func lanePrClaimingChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  let crossLane = Set(
+    (pr.crossLaneChatSessionIds ?? [])
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  )
+  return lanePrChatSessionIds(pr).filter { !crossLane.contains($0) }
+}
+
 /// Non-empty unlink tombstones for a PR, trimmed. A dismissed chat must not
 /// revive the PR through the branch fallback.
 private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String] {
@@ -613,12 +625,10 @@ func scopeLaneChatPrsByLinks(
   guard !trimmed.isEmpty else { return pullRequests }
   return pullRequests.filter { pr in
     if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
-    let linked = lanePrChatSessionIds(pr)
-    if linked.contains(trimmed) { return true }
+    if lanePrChatSessionIds(pr).contains(trimmed) { return true }
     // A link from a chat on another lane (a stack coordinator) is a reference,
     // not a claim, so the chats on the PR's own lane keep it.
-    let crossLane = Set(pr.crossLaneChatSessionIds ?? [])
-    return linked.allSatisfy { crossLane.contains($0) }
+    return lanePrClaimingChatSessionIds(pr).isEmpty
   }
 }
 

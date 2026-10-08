@@ -728,8 +728,9 @@ struct PrDetailView: View {
             }
           }
           // GitHub bypasses rules for a stack only from its bottom open PR; above
-          // it the host merges the covered PRs one at a time, each bypassing.
-          if step.mergeAnyway.visible && !step.mergeAnyway.blocked {
+          // it a current host merges the covered PRs one at a time, each bypassing.
+          if step.mergeAnyway.visible && !step.mergeAnyway.blocked
+            && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass) {
             Button(role: step.mergeAnyway.bypass ? .destructive : nil) {
               mergeAnywayConfirmationPresented = true
             } label: {

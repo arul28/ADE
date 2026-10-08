@@ -876,6 +876,12 @@ export type SyncFeatureFlags = {
    */
   openCodeInboxSteer?: true;
   /**
+   * A bypass merge from above the bottom of a GitHub stack merges layer by
+   * layer. Older hosts send one bypass merge GitHub refuses, so a client offers
+   * the override above the bottom only when this is present.
+   */
+  prsStackLayeredBypass?: true;
+  /**
    * The host serves `macDesktop.takeControl` and its siblings, so the hosted
    * web client may take the lane's input lease over the sync socket. Advertised
    * only when the control commands are registered, exactly like

@@ -654,18 +654,7 @@ html[data-scene="image"] .ade-home-line { color: color-mix(in srgb, var(--color-
 .ade-home-pr-stats > [data-tone="warn"] dd { color: var(--kit-warn); }
 .ade-home-pr-stats > [data-tone="ok"] dd { color: var(--kit-ok); }
 
-/* PR rows: GitHub's state colours, theme-aware. */
-.ade-home-prs {
-  --pr-open: #3fb950;
-  --pr-merged: #a371f7;
-  --pr-closed: #f85149;
-  --pr-draft: color-mix(in srgb, var(--color-fg) 45%, transparent);
-}
-[data-theme="light"] .ade-home-prs {
-  --pr-open: #1a7f37;
-  --pr-merged: #8250df;
-  --pr-closed: #cf222e;
-}
+/* PR rows use GitHub's state colours, `--pr-*` in surfaceKit.css. */
 .ade-home-pr-icon {
   flex: none;
   width: 26px;
