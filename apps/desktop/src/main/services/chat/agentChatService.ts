@@ -684,9 +684,13 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../../shared/chatTurnStatus";
 import {
+  LIVE_QUESTION_DECLINED_MODEL_MESSAGE,
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
+  QUESTION_DECLINED_MODEL_MESSAGE,
+  answerValuesForModel,
   flattenAnswerForSingleStringProvider,
   formatPendingInputAnswersAsMessage,
+  isNonBlockingPendingRequest,
   isSteeringPendingRequest,
   normalizePendingInputAnswers,
   ownQuestionValue,
@@ -11466,11 +11470,13 @@ export function createAgentChatService(args: {
     const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
     const mappedAnswers = Object.fromEntries(
       Object.entries(normalizedAnswers)
-        .map(([questionId, values]) => {
+        .map(([questionId, rawValues]) => {
           // Map internal question ID back to the original question text
           // so Claude's SDK receives answers keyed the way it expects.
-          const question = request.questions.find((q) => q.id === questionId);
+          const questionIndex = request.questions.findIndex((q) => q.id === questionId);
+          const question = questionIndex >= 0 ? request.questions[questionIndex] : undefined;
           const originalKey = question?.question ?? questionId;
+          const values = question ? answerValuesForModel(request, question, questionIndex, rawValues) : rawValues;
           // Preserve array structure for multi-select questions
           const answer: string | string[] = question?.multiSelect ? values : values.join(", ").trim();
           return [originalKey, answer] as const;
@@ -11814,7 +11820,7 @@ export function createAgentChatService(args: {
       if (response.decision === "cancel" || response.decision === "decline") {
         return {
           behavior: "deny",
-          message: "The user declined to answer the questions.",
+          message: QUESTION_DECLINED_MODEL_MESSAGE,
         };
       }
 
@@ -46722,7 +46728,7 @@ export function createAgentChatService(args: {
           runtime,
           accepted
             ? `The user answered the Cursor planning question:\n${answerText}\n\nContinue from this answer.`
-            : "The user declined the Cursor planning question. Continue with reasonable assumptions or ask a narrower question.",
+            : QUESTION_DECLINED_MODEL_MESSAGE,
         );
       },
     });
@@ -57760,12 +57766,24 @@ export function createAgentChatService(args: {
         return;
       }
       if (pending.kind === "structured_question") {
+        const questions = pending.request?.questions ?? [];
         if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
-          // Native Codex request_user_input only accepts an answers map.
-          // Empty answers represent a declined/cancelled prompt without
-          // interrupting the surrounding turn.
+          // Native Codex request_user_input only accepts an answers map, and an
+          // empty map reads to the model as "no preference" — it then picks for
+          // the user. Each question carries the decline instead. A blocking
+          // question tells the model to stop and ask in plain text; a live
+          // (non-blocking) one never paused the turn, so it is told to keep
+          // working. The receipt is built from the user's own (empty) answers,
+          // not this payload.
+          const declineText = isNonBlockingPendingRequest(pending.request)
+            ? LIVE_QUESTION_DECLINED_MODEL_MESSAGE
+            : QUESTION_DECLINED_MODEL_MESSAGE;
           ensureWritable();
-          runtime.sendResponse(pending.requestId, { answers: {} });
+          runtime.sendResponse(pending.requestId, {
+            answers: Object.fromEntries(
+              questions.map((question) => [question.id, { answers: [declineText] }]),
+            ),
+          });
           completeCodexPendingInput();
           return;
         }
@@ -57773,7 +57791,13 @@ export function createAgentChatService(args: {
         ensureWritable();
         runtime.sendResponse(pending.requestId, {
           answers: Object.fromEntries(
-            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+            Object.entries(normalizedAnswers).map(([questionId, values]) => {
+              const questionIndex = questions.findIndex((question) => question.id === questionId);
+              const question = questionIndex >= 0 ? questions[questionIndex] : undefined;
+              return [questionId, {
+                answers: question ? answerValuesForModel(pending.request, question, questionIndex, values) : values,
+              }];
+            }),
           ),
         });
         completeCodexPendingInput();

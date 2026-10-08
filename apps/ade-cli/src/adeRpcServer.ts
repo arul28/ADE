@@ -6,6 +6,7 @@ import {
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
@@ -6752,7 +6753,7 @@ async function runTool(args: {
       if (trimmed.length) return trimmed;
       if (answered) return null;
       if (decision === "cancel") return "The user cancelled the question.";
-      if (decision === "decline") return "The user declined to answer the question.";
+      if (decision === "decline") return QUESTION_DECLINED_MODEL_MESSAGE;
       if (decision === "timeout") return "The question timed out before the user answered.";
       return "The user did not answer the question.";
     };
