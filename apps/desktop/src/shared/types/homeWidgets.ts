@@ -14,6 +14,7 @@ export const HOME_WIDGETS_IPC = {
   clipboardRemove: "ade.home.clipboard.remove",
   clipboardCopy: "ade.home.clipboard.copy",
   clipboardChanged: "ade.home.clipboard.changed",
+  clipboardPresence: "ade.home.clipboard.presence",
   machineHealth: "ade.home.machine.health",
   machineListeners: "ade.home.machine.listeners",
   machineKill: "ade.home.machine.kill",
@@ -228,6 +229,8 @@ export type HomeWidgetsBridge = {
     clear: () => Promise<HomeClipboardState>;
     remove: (id: string) => Promise<HomeClipboardState>;
     copy: (id: string) => Promise<boolean>;
+    /** This window's grid has the Clipboard widget on screen, hidden for lack of room, or not at all (null). */
+    setPresence: (view: "shown" | "hidden" | null) => Promise<void>;
     onChanged: (cb: (state: HomeClipboardState) => void) => () => void;
   };
   machine: {

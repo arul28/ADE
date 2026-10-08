@@ -397,8 +397,10 @@ want it).**
   the active layout and has room to show (not paused, not hidden by the
   packer), whether or not the home page is open. The watch resumes a few
   seconds after launch when it was on; the app (`useHomeAppEffects`) turns it
-  off when the layout has no Clipboard widget, and the grid turns it off while
-  the widget is hidden. Copies a password manager marks (nspasteboard.org
+  off when the layout has no Clipboard widget. Each window's grid tells main
+  whether it shows the widget or hides it for lack of room; main pauses the
+  watch while some window hides it and no window shows it, and a window that
+  closes or reloads drops its say. Copies a password manager marks (nspasteboard.org
   markers on macOS; `ExcludeClipboardContentFromMonitorProcessing`, KeePass'
   "Clipboard Viewer Ignore", or `CanIncludeInClipboardHistory` = 0 on
   Windows) and copies that look like secrets are never kept. "Keep after

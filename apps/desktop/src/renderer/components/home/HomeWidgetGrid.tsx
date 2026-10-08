@@ -21,7 +21,6 @@ import {
   type HomeLayoutItem,
   type HomeWidgetType,
 } from "./homeLayout";
-import { stopClipboardWatch } from "./useHomeAppEffects";
 import { HOME_CLASS_LABEL, HOME_WIDGET_CATALOG, widgetShape } from "./homeWidgetCatalog";
 import {
   classSpan,
@@ -323,14 +322,20 @@ export function HomeWidgetGrid({
     : `repeat(${columns}, minmax(0, 1fr))`;
   const hidden = packed?.hidden ?? [];
   const remove = useHomeLayoutStore((s) => s.remove);
-  // A Clipboard widget the layout had no room for does not record: the watch
-  // stops while it is hidden, and the widget turns it back on when it shows.
-  const clipboardHidden = !single && packed != null
-    && cells.some((cell) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard"))
-    && !packed.placed.some(({ cell }) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard"));
+  // This window's view of the Clipboard widget, told to main: a widget the
+  // layout had no room for does not record unless another window shows it.
+  const hasClipboardCell = (cell: HomeLayoutCell) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard");
+  const clipboardView: "shown" | "hidden" | null = single || packed == null || !cells.some(hasClipboardCell)
+    ? null
+    : packed.placed.some(({ cell }) => hasClipboardCell(cell)) ? "shown" : "hidden";
   useEffect(() => {
-    if (clipboardHidden) stopClipboardWatch();
-  }, [clipboardHidden]);
+    const bridge = window.ade?.home?.clipboard;
+    if (!bridge?.setPresence || clipboardView == null) return undefined;
+    void bridge.setPresence(clipboardView).catch(() => {});
+    return () => {
+      void bridge.setPresence(null).catch(() => {});
+    };
+  }, [clipboardView]);
   const shown: Array<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number; cls?: HomeSizeClass }> = single
     ? cells.map((cell) => ({ cell, x: 0, y: 0, w: 1, h: 1 }))
     : packed?.placed ?? [];

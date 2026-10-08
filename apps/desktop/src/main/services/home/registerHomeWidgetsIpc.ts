@@ -123,6 +123,27 @@ export function registerHomeWidgetsIpc(args: {
   handle(HOME_WIDGETS_IPC.clipboardClear, () => service.clipboard.clear());
   handle(HOME_WIDGETS_IPC.clipboardRemove, (id: string) => service.clipboard.remove(String(id)));
   handle(HOME_WIDGETS_IPC.clipboardCopy, (id: string) => service.clipboard.copy(String(id)));
+  // Each window's view of the Clipboard widget (shown, or hidden for lack of
+  // room). A window that closes or reloads lets go of its view.
+  const clipboardViews = new Set<number>();
+  ipcMain.handle(HOME_WIDGETS_IPC.clipboardPresence, async (event, view: unknown) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    const sender = event.sender;
+    const id = sender.id;
+    const next = view === "shown" || view === "hidden" ? view : null;
+    if (next && !clipboardViews.has(id)) {
+      clipboardViews.add(id);
+      const release = () => {
+        sender.removeListener("destroyed", release);
+        sender.removeListener("did-navigate", release);
+        clipboardViews.delete(id);
+        void service.clipboard.setPresence(id, null).catch(() => {});
+      };
+      sender.on("destroyed", release);
+      sender.on("did-navigate", release);
+    }
+    await service.clipboard.setPresence(id, next);
+  });
   handle(HOME_WIDGETS_IPC.machineHealth, (input?: { detail?: boolean }) => service.machine.health({ detail: input?.detail === true }));
   handle(HOME_WIDGETS_IPC.machineListeners, () => service.machine.listeners());
   handle(HOME_WIDGETS_IPC.machineKill, (pid: number) => service.machine.kill(Number(pid)));

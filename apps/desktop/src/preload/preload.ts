@@ -13492,6 +13492,7 @@ const adeBridge = {
       clear: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardClear),
       remove: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardRemove, id),
       copy: (id: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardCopy, id),
+      setPresence: (view: "shown" | "hidden" | null) => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardPresence, view),
       onChanged: (cb: (state: HomeClipboardState) => void) => {
         const listener = (_event: Electron.IpcRendererEvent, state: HomeClipboardState) => cb(state);
         ipcRenderer.on(HOME_WIDGETS_IPC.clipboardChanged, listener);

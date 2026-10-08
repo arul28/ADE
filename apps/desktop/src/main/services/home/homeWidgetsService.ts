@@ -58,6 +58,7 @@ export function createHomeWidgetsService(deps: HomeWidgetsServiceDeps) {
       clear: clipboard.clear,
       remove: clipboard.remove,
       copy: clipboard.copy,
+      setPresence: clipboard.setPresence,
     },
     machine,
     weather,

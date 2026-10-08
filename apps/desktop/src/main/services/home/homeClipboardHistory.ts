@@ -482,6 +482,24 @@ export function createClipboardHistory(deps: {
     lastSeen = null;
   };
 
+  /**
+   * Where each window's grid has the Clipboard widget: on screen, or hidden
+   * for lack of room. A window with no opinion (no home page, no Clipboard
+   * widget) is absent. The watch runs while the saved switch is on and some
+   * window shows the widget, or no window hides it (the home page is not open
+   * anywhere): one window that hides it cannot stop another's.
+   */
+  const presence = new Map<number, "shown" | "hidden">();
+  const shouldPoll = () => {
+    if (!clipboardEnabled) return false;
+    const views = [...presence.values()];
+    return views.includes("shown") || !views.includes("hidden");
+  };
+  const syncPolling = () => {
+    if (shouldPoll()) startPolling();
+    else stopPolling();
+  };
+
   const validImage = (value: unknown): value is HomeClipboardImage => {
     const image = value as HomeClipboardImage | null;
     return image != null && typeof image.thumb === "string" && image.thumb.startsWith("data:image/")
@@ -517,7 +535,7 @@ export function createClipboardHistory(deps: {
         // Not kept: a history left by a crash (or an older build) does not stay on disk.
         await removeHistoryFiles().catch((error: unknown) => deps.logger?.warn("home.clipboard.persist_failed", { error: String(error) }));
       }
-      if (clipboardEnabled) startPolling();
+      syncPolling();
     })();
     return loaded;
   };
@@ -532,8 +550,7 @@ export function createClipboardHistory(deps: {
       await load();
       if (typeof args?.enabled === "boolean" && args.enabled !== clipboardEnabled) {
         clipboardEnabled = args.enabled;
-        if (clipboardEnabled) startPolling();
-        else stopPolling();
+        syncPolling();
       }
       if (typeof args?.persist === "boolean" && args.persist !== clipboardPersist) {
         clipboardPersist = args.persist;
@@ -543,6 +560,13 @@ export function createClipboardHistory(deps: {
       await saveSettings().catch((error: unknown) => deps.logger?.warn("home.clipboard.settings_failed", { error: String(error) }));
       announce();
       return state();
+    },
+    /** One window's view of the widget; null when it has none (closed, reloaded, no widget). */
+    setPresence: async (windowId: number, view: "shown" | "hidden" | null) => {
+      await load();
+      if (view) presence.set(windowId, view);
+      else presence.delete(windowId);
+      syncPolling();
     },
     clear: async () => {
       await load();

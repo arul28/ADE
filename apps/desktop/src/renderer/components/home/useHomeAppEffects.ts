@@ -16,8 +16,9 @@ import {
  *   active layout. Removing it, a reset or switching to a layout without one
  *   stops the watch; so does finding none a few seconds after launch, which
  *   covers a layout lost outside the store (cleared storage, another
- *   profile). The grid also stops it while the widget is hidden for lack of
- *   room (`HomeWidgetGrid`); the widget turns it back on when it shows.
+ *   profile). Each window's grid also tells main whether it shows the widget
+ *   or hides it for lack of room (`HomeWidgetGrid`): main pauses the watch
+ *   while some window hides it and none shows it.
  */
 export function useHomeAppEffects(): void {
   useEffect(() => {
