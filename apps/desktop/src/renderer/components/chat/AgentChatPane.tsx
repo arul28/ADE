@@ -1108,7 +1108,8 @@ function buildDraftChatMessageArgs(
 ): Omit<AgentChatSendArgs, "sessionId"> {
   return {
     text: prepared.finalText,
-    displayText: prepared.finalDisplayText || "Selected visual app context",
+    displayText: prepared.finalDisplayText
+      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
     attachments: prepared.selectedAttachments,
     contextAttachments: prepared.selectedContextAttachments,
     reasoningEffort: prepared.reasoningEffort,
@@ -13467,7 +13468,9 @@ export function AgentChatPane({
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
-            displayText: finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
+            displayText: hasPastedPrompt
+              ? finalDisplayText
+              : finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
             ...threadCommentSendFields,
             attachments: selectedAttachments,
             contextAttachments: selectedContextAttachments,

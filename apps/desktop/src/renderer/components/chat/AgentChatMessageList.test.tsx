@@ -1674,9 +1674,10 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-04-28T10:00:00.000Z",
         event: {
           type: "user_message",
-          text: "See file",
+          text: "Attached file contents:\n\nprivate pasted source body",
+          displayText: "",
           deliveryState: "delivered",
-          attachments: [{ path: "/tmp/doc.txt", type: "file" }],
+          attachments: [{ path: "/tmp/doc.txt", type: "file", intent: "user_prompt" }],
         },
       },
     ]);
@@ -1685,6 +1686,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(screen.getByTestId("user-message-attachment-analyzed")).toBeTruthy();
     });
     expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
+    expect(screen.getByText("doc.txt")).toBeTruthy();
+    expect(screen.queryByText(/private pasted source body/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
   });
 
   it("surfaces the model attribution on an interrupted end-of-turn divider", () => {

@@ -2659,6 +2659,12 @@ function renderEvent(
     const hasPastedTextPromptAttachment = event.attachments?.some(
       (attachment) => attachment.type === "file" && attachment.intent === "user_prompt",
     ) === true;
+    const copyText = event.displayText?.trim() || (
+      event.metadata?.hideFullPrompt === true
+      || (hasPastedTextPromptAttachment && event.displayText !== undefined)
+        ? ""
+        : event.text
+    );
     const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
       ? event.metadata.kind
       : null;
@@ -2716,14 +2722,9 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton
-              value={event.displayText?.trim() || (
-                event.metadata?.hideFullPrompt === true
-                || (hasPastedTextPromptAttachment && event.displayText !== undefined)
-                  ? ""
-                  : event.text
-              )}
-            />
+            {copyText.trim() || event.metadata?.hideFullPrompt === true
+              ? <MessageCopyButton value={copyText} />
+              : null}
           </div>
           {(() => {
             const displayText = event.displayText?.trim();

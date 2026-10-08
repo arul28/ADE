@@ -1211,12 +1211,13 @@ describe("createAgentChatService", () => {
         attachments: [{ path: pastedPromptPath, type: "file", intent: "user_prompt" }],
       }, { routeActiveToSteer: true });
       expect(pastedPromptResult).toMatchObject({ queued: true, steerId: expect.any(String) });
-      expect(events.some((event) =>
+      const queuedPastedMessage = events.find((event) =>
         event.event.type === "user_message"
-        && event.event.text === pastedPrompt
         && event.event.deliveryState === "queued"
-        && !event.event.attachments?.some((attachment) => attachment.path === pastedPromptPath),
-      )).toBe(true);
+        && event.event.text.includes(pastedPrompt)
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPromptPath),
+      );
+      expect(queuedPastedMessage?.event).toMatchObject({ displayText: "" });
 
       finishActiveTurn();
       await activeTurn;
@@ -1228,6 +1229,11 @@ describe("createAgentChatService", () => {
           JSON.stringify(payload).includes(pastedPrompt),
         )).toBe(true);
       });
+      const deliveredPastedPayloads = send.mock.calls
+        .map(([payload]) => JSON.stringify(payload))
+        .filter((payload) => payload.includes(pastedPrompt));
+      expect(deliveredPastedPayloads).toHaveLength(1);
+      expect(deliveredPastedPayloads[0].split(pastedPrompt)).toHaveLength(2);
       // Claude's persistent streaming-input query consumes the queued steer
       // without creating a replacement SDK stream.
       expect(streamCall).toBe(2);
@@ -2259,6 +2265,9 @@ describe("createAgentChatService", () => {
       });
       const sessionId = "restored-staged-claude";
       const steerId = "restored-steer";
+      const pastedPath = path.join(tmpRoot, "restored-pasted-text.txt");
+      const pastedBody = "Read this pasted file once.";
+      fs.writeFileSync(pastedPath, pastedBody);
       sessionService.create({
         sessionId,
         laneId: "lane-1",
@@ -2273,7 +2282,12 @@ describe("createAgentChatService", () => {
         provider: "claude",
         model: "sonnet",
         sdkSessionId: "sdk-restored",
-        pendingSteers: [{ steerId, text: "Handle this restored message" }],
+        pendingSteers: [{
+          steerId,
+          text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
+          displayText: "",
+          attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+        }],
         updatedAt: "2026-07-10T12:00:00.000Z",
       });
       await service.resumeSession({ sessionId });
@@ -2288,7 +2302,95 @@ describe("createAgentChatService", () => {
         && (event.event as any).steerId === steerId
         && /delivering/i.test((event.event as any).message)
       )).toBe(true);
+      const deliveredPastedMessage = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
+      );
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "" });
       expect(readPersistedChatState(sessionId).pendingSteers).toBeUndefined();
+    });
+
+    it("auto-delivers a restored pasted-file queue once after the active turn and keeps transcript text hidden", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      let streamCall = 0;
+      const handle = {
+        send,
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-restored-auto-queue", slash_commands: [] };
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await turnGate;
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-restored-auto-queue",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
+
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const sessionId = "restored-pasted-auto-queue";
+      const steerId = "restored-pasted-auto-steer";
+      const pastedPath = path.join(tmpRoot, "restored-auto-queued-paste.txt");
+      const pastedBody = "Auto-queued pasted content should arrive once.";
+      fs.writeFileSync(pastedPath, pastedBody);
+      sessionService.create({
+        sessionId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Restored queued paste",
+        startedAt: "2026-07-10T12:00:00.000Z",
+      });
+      writePersistedChatState(sessionId, {
+        version: 2,
+        sessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        sdkSessionId: "sdk-restored-auto-queue",
+        pendingSteers: [{
+          steerId,
+          text: `Attached file contents:\n\n${pastedBody}\n\nHandle this restored message`,
+          displayText: "",
+          attachments: [{ path: pastedPath, type: "file", intent: "user_prompt" }],
+        }],
+        updatedAt: "2026-07-10T12:00:00.000Z",
+      });
+      await service.resumeSession({ sessionId });
+
+      const activeTurn = service.runSessionTurn({ sessionId, text: "Finish the foreground work", timeoutMs: 15_000 });
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+      releaseTurn();
+      await activeTurn;
+
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([payload]) => JSON.stringify(payload).includes(pastedBody))).toBe(true);
+      });
+      const pastedPayloads = send.mock.calls
+        .map(([payload]) => JSON.stringify(payload))
+        .filter((payload) => payload.includes(pastedBody));
+      expect(pastedPayloads).toHaveLength(1);
+      expect(pastedPayloads[0].split(pastedBody)).toHaveLength(2);
+      const deliveredPastedMessage = events.find((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === steerId
+        && event.event.attachments?.some((attachment) => attachment.path === pastedPath),
+      );
+      expect(deliveredPastedMessage?.event).toMatchObject({ displayText: "" });
+      service.forceDisposeAll();
     });
 
     it("dispatchSteer rejects interrupt on Codex sessions but accepts inline", async () => {

@@ -7357,6 +7357,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "",
+        displayText: "",
         attachments: [{
           path: "/tmp/project-under-test/.ade/attachments/pasted-text.txt",
           type: "file",
@@ -7364,10 +7365,10 @@ describe("AgentChatPane submit recovery", () => {
         }],
       }), null);
     });
-    const promptLabel = await screen.findByText("Pasted text prompt");
-    const messageCard = promptLabel.closest("[data-chat-user-message-card]");
-    expect(messageCard).toBeInstanceOf(HTMLElement);
-    expect(within(messageCard as HTMLElement).queryByTestId("chat-file-attachment-chip")).toBeNull();
+    const messageCard = await screen.findByTestId("chat-file-attachment-chip");
+    const userMessage = messageCard.closest("[data-chat-user-message-card]");
+    expect(userMessage).toBeInstanceOf(HTMLElement);
+    expect(within(userMessage as HTMLElement).queryByText("Pasted text prompt")).toBeNull();
     await act(async () => resolveSend());
   });
 

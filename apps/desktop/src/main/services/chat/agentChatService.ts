@@ -31097,7 +31097,7 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     setSessionActive(managed);
     const attachments = args.attachments ?? [];
-    const displayText = args.displayText?.trim() || args.promptText;
+    const displayText = args.displayText != null ? args.displayText.trim() : args.promptText;
     emitPreparedUserMessage(managed, {
       text: args.userText?.trim() || displayText,
       displayText,
@@ -39688,7 +39688,7 @@ export function createAgentChatService(args: {
       // to protect and would otherwise add a second continuation prompt.
       void cancelPendingUpdateResume(sessionId);
     }
-    const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
+    const displayText = extra?.displayText != null ? extra.displayText.trim() : text;
     const uuid = randomUUID();
     runtime.pendingSteers.push({
       steerId,
@@ -48458,7 +48458,7 @@ export function createAgentChatService(args: {
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -49255,7 +49255,7 @@ export function createAgentChatService(args: {
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -50783,7 +50783,7 @@ export function createAgentChatService(args: {
     runtime.activeTurnId = turnId;
     setSessionActive(managed);
 
-    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const displayText = args.displayText.trim();
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticDroidTurnStart) {
       emitPreparedUserMessage(managed, {
@@ -51562,6 +51562,7 @@ export function createAgentChatService(args: {
     preparedMessage?: PreparedSendMessage;
     automaticRecovery?: boolean;
     routeActiveToSteer?: boolean;
+    pastedPromptAlreadyMaterialized?: boolean;
     rerunToken?: symbol;
   };
 
@@ -51652,6 +51653,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer: true;
+      pastedPromptAlreadyMaterialized?: boolean;
       rerunToken?: symbol;
     },
   ): Promise<void | AgentChatSteerResult>;
@@ -51664,6 +51666,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer?: false;
+      pastedPromptAlreadyMaterialized?: boolean;
       /** `rerunLastTurn`'s token: lets its own resend past its lock. */
       rerunToken?: symbol;
     },
@@ -51697,7 +51700,7 @@ export function createAgentChatService(args: {
     const expandedArgs = mentionsExpandedHere
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
-    const args = await materializePastedTextPrompt(expandedArgs);
+    let args = expandedArgs;
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -51753,6 +51756,9 @@ export function createAgentChatService(args: {
       return steerUserMessage(
         mentionsExpandedHere ? markChatMentionsExpanded(rerouted) : rerouted,
       );
+    }
+    if (!options?.pastedPromptAlreadyMaterialized) {
+      args = await materializePastedTextPrompt(args);
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     await refreshCtoLiveStateForTurn(args.sessionId);
@@ -52864,7 +52870,7 @@ export function createAgentChatService(args: {
     };
     await sendMessage(
       args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
-      { awaitDispatch: false },
+      { awaitDispatch: false, pastedPromptAlreadyMaterialized: true },
     );
   };
 
@@ -53743,7 +53749,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "user_message",
             text: steer.text,
-            ...(steer.displayText && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+            ...(steer.displayText != null && steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
             ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
             ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
             ...(steer.metadata ? { metadata: steer.metadata } : {}),
