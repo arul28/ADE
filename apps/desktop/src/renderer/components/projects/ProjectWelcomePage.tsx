@@ -9,7 +9,6 @@ import {
   ArrowCounterClockwise,
   ChatCircleDots,
   FolderOpen,
-  FolderSimple,
   GitMerge,
   Globe,
   MusicNotes,
@@ -41,14 +40,9 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
-import {
-  RecentProjectRow,
-  type WebRowChrome,
-} from "./ProjectWelcomeWebRows";
-import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
+import { ProjectsCard } from "./ProjectWelcomeProjectsCard";
 import { HomeAction, WelcomeHero, useMachineRows } from "./ProjectWelcomeHome";
 import { HomeWidgetGrid } from "../home/HomeWidgetGrid";
-import { FitList } from "../home/HomeFitList";
 import { gridMetrics } from "../home/homeGridPack";
 import { HomeDataContext, HomeRenderWidgetContext } from "../home/homeData";
 import { useHomeLayoutStore } from "../home/homeLayout";
@@ -619,7 +613,6 @@ export function ProjectWelcomePage() {
     focusRowButton(next);
   }, [focusRowButton]);
 
-  const hasProjects = visibleProjectGroups.length > 0;
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
   const showSide = !webMode || webMachines.length > 0;
@@ -639,104 +632,34 @@ export function ProjectWelcomePage() {
     return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
   }, [homeAppearance.cardBlur, homeAppearance.cardOpacity]);
   // Memoized, so the widget renderer (and the gallery's previews) stay stable between page renders.
-  const projectsCard = useCallback((preview: boolean) => {
-    const projectRow = ({ group, rp, key }: (typeof rows)[number]) => {
-          const primary = group.primary;
-          const isRemote = rp.kind === "remote" && Boolean(rp.remote);
-          const targetId = rp.remote?.targetId;
-          const baseState = isRemote && targetId
-            ? (connectionByTarget.get(targetId) ?? "idle")
-            : null;
-          const connectionState: RemoteRuntimeConnectionState | null =
-            connectingKeys.has(key) ? "connecting" : baseState;
-          const isOpenLocal =
-            !isRemote && project?.rootPath === rp.rootPath;
-          const isOpenRemote =
-            isRemote
-            && projectBinding?.kind === "remote"
-            && projectBinding.targetId === rp.remote?.targetId
-            && projectBinding.projectId === rp.remote?.projectId;
-          const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
-          const machine = webMode && targetId ? webMachineByKey.get(targetId) ?? null : null;
-          // The connect/open stages belong to the row that was clicked.
-          // Every other row on the same machine sees the same machine-level
-          // "connecting", so it has to be suppressed there explicitly —
-          // otherwise one click spins the whole list.
-          const isOpeningRow = openingRowKey === key;
-          const web: WebRowChrome | null = machine
-            ? {
-                status: isOpeningRow
-                  ? "connecting"
-                  : machine.status === "connecting"
-                    ? "available"
-                    : machine.status,
-                connectStage: isOpeningRow
-                  ? machine.connectStage ?? "Dialing relay…"
-                  : null,
-                stale: machine.stale,
-              }
-            : null;
-          return (
-            <RecentProjectRow
-              key={group.id}
-              rp={rp}
-              connectionState={connectionState}
-              isOpen={isOpenLocal || isOpenRemote}
-              isForgetting={pendingForgetKeys.has(group.id)}
-              busy={openingRowKey != null && !isOpeningRow}
-              onOpen={() => handleOpen(rp)}
-              onTogglePin={() => void handleTogglePin(group)}
-              onForget={() => handleForget(group)}
-              onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setRowMenu({ x: event.clientX, y: event.clientY, key });
-              }}
-              primary={primary}
-              locations={group.locations}
-              onSelectMachine={(location) => handleOpen(location.summary)}
-              lastActiveAt={group.lastOpenedAt}
-              web={web}
-            />
-          );
-    };
-    return (
-      <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
-        <WelcomeCardHead
-          icon={FolderSimple}
-          title="Projects"
-          count={hasProjects ? visibleProjectGroups.length : null}
-        />
-        {hasProjects ? (
-          <div
-            id="ade-welcome-project-list"
-            ref={preview ? undefined : listRef}
-            className="kit-card-body ade-welcome-list"
-            data-flush="true"
-            onKeyDown={handleListKeyDown}
-          >
-          <FitList more={preview ? null : { dialog: { title: "Projects", render: () => rows.map(projectRow) } }}>
-            {rows.map(projectRow)}
-          </FitList>
-          </div>
-        ) : (
-          <div className="ade-welcome-empty">
-            <strong>No projects yet</strong>
-            {webMode
-              ? "Projects you open on your machines show up here."
-              : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
-          </div>
-        )}
-      </section>
-    );
-  }, [
+  const projectsCard = useCallback((preview: boolean) => (
+    <ProjectsCard
+      preview={preview}
+      rows={rows}
+      count={visibleProjectGroups.length}
+      webMode={webMode}
+      listRef={listRef}
+      onListKeyDown={handleListKeyDown}
+      connectionByTarget={connectionByTarget}
+      connectingKeys={connectingKeys}
+      pendingForgetKeys={pendingForgetKeys}
+      openingRowKey={openingRowKey}
+      openRootPath={project?.rootPath ?? null}
+      projectBinding={projectBinding}
+      webMachineByKey={webMachineByKey}
+      onOpen={handleOpen}
+      onTogglePin={handleTogglePin}
+      onForget={handleForget}
+      onMerge={setMergeTarget}
+      onRowMenu={setRowMenu}
+    />
+  ), [
     connectingKeys,
     connectionByTarget,
     handleForget,
     handleListKeyDown,
     handleOpen,
     handleTogglePin,
-    hasProjects,
     openingRowKey,
     pendingForgetKeys,
     project?.rootPath,
