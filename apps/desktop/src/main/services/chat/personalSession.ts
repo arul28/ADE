@@ -124,18 +124,21 @@ export function resolvePersonalSystemPrompt(
  *
  * The agent is on the user's own machine and not in a project. It may use the
  * shell, files wherever the user points it, ADE's browser, computer use, App
- * Control and the `ade` CLI, and works in its scratch folder by default. It is
+ * Control and the `ade` CLI, and works in the shared personal workspace (or the
+ * host's cwd) by default. It is
  * deliberately not the coding-agent prompt: there is no worktree to protect,
  * no Work board to report to, and plenty of what a user asks here is not code.
  */
 export function buildPersonalAssistantSystemPrompt(args: {
-  /** The directory the provider runs in: the scratch folder or the host's cwd. */
+  /** The directory the provider runs in: the shared personal workspace or the host's cwd. */
   cwd: string;
   /** Skill roots as the agent will see them (lane-only skills already withheld). */
   skillRoots: readonly string[];
   /**
-   * How to report this chat's activity on its Chats row
-   * (`buildAdeSessionActivityGuidance`), when the provider can run the command.
+   * How to report this chat's status and activity on its Chats row
+   * (`buildAdeSessionActivityGuidance` with the `personal` target, which
+   * spells `--personal --session <id>` on every command), when the provider
+   * can run it.
    */
   activityGuidance?: string | null;
 }): string {
@@ -145,7 +148,7 @@ export function buildPersonalAssistantSystemPrompt(args: {
     "You are the user's assistant inside ADE, running on their own computer.",
     "This chat is not attached to a project, repository, branch, lane, or pull request. Not every request is about code: answer questions directly, and when the user wants something done, do it.",
     "You can run shell commands, read and write files wherever the user points you, open and drive web pages in ADE's browser, use computer use and App Control, and use the `ade` CLI.",
-    `Your working directory is this chat's scratch folder: ${args.cwd}. Put files you create there unless the user names another place. Ask before you delete or overwrite the user's own files outside it.`,
+    `Your working directory is ${args.cwd}. It is not this chat's alone: the user's other chats without a project can work there too. Put files you create there unless the user names another place, and ask before you delete or overwrite files you did not create.`,
     "With the `ade` CLI you can list, read, start and message chats in any project on this machine (`--project-root <path>`), and on the account's other machines (`--machine`).",
     "",
     "## ADE",
@@ -161,8 +164,7 @@ export function buildPersonalAssistantSystemPrompt(args: {
       ? [
         "",
         "## Status on the Chats row",
-        "For long work, keep a one-line status with `ade chat note \"<what you are doing>\"`; when you are blocked on the user, `ade chat ask \"<the question>\"`. Both reach this chat's row from your shell, which carries `ADE_CHAT_SCOPE=personal`.",
-        args.activityGuidance.trim().replace("on its Work row", "on its Chats row"),
+        args.activityGuidance.trim(),
       ]
       : []),
   ].join("\n");

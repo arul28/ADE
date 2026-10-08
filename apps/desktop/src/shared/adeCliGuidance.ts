@@ -81,8 +81,10 @@ export type AdeSessionActivityTarget =
   | { type: "inline"; runtimeSocketPath: string }
   /**
    * A personal (project-less) chat. Its runtime has no socket of its own, so
-   * the command names the personal scope and reaches it through the brain the
-   * CLI shim already targets. Works from any shell, OpenCode's included.
+   * every command names the personal scope and the session
+   * (`--personal --session <id>`) and reaches it through the brain the CLI shim
+   * already targets. Works from any shell, OpenCode's shared server included.
+   * Adds the `note` / `ask` lines, and calls the row the Chats row.
    */
   | { type: "personal" };
 
@@ -139,14 +141,23 @@ export function buildAdeSessionActivityGuidance(args: {
   } else {
     cliCommand = args.shell === "powershell" ? '& "$env:ADE_CLI_PATH"' : '"$ADE_CLI_PATH"';
   }
+  const personal = target.type === "personal";
+  const scopeFlag = personal ? " --personal" : "";
   const command = (activity: "debugging" | "clear"): string => {
-    const scopeFlag = target.type === "personal" ? " --personal" : "";
     const invoke = `${cliCommand} chat activity ${activity}${scopeFlag} --session ${safeSessionId}`;
     if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
     return `${runtimeTargetAssignments}${invoke}`;
   };
+  const row = personal ? "Chats row" : "Work row";
   return [
-    "- ADE shows this chat's activity on its Work row, detected from your tool calls. You do not need to report it.",
+    // A personal chat's status lines spell the scope and session too: an
+    // OpenCode shell (one shared server) has no ADE_CHAT_SCOPE to route by.
+    ...(personal
+      ? [
+        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`.`,
+      ]
+      : []),
+    `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,
     `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\` (replace debugging with the real value); clear it with \`${command("clear")}\`.`,
     `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
   ].join("\n");
