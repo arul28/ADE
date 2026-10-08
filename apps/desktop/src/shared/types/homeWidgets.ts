@@ -74,6 +74,8 @@ export type HomeNowPlayingState = {
    * Artwork is left out here; `session` carries it.
    */
   sessions?: HomeNowPlayingSession[];
+  /** `session` is the one the user picked (or last pressed a button on), not the best one. */
+  picked?: boolean;
   source: "windows-smtc" | "macos-mediaremote" | "macos-music" | "ade-music" | "ade-browser" | null;
   error?: string;
 };

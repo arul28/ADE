@@ -433,6 +433,7 @@ export function createNowPlayingService(args: {
       session: selected,
       // The switcher needs names and icons, not every cover.
       sessions: order.map((session) => ({ ...session, artwork: null })),
+      picked: Boolean(pinnedId && selected?.id === pinnedId),
       source: sourceOf(selected),
       ...(selected || os.available ? {} : { error: os.error }),
     };
@@ -512,6 +513,9 @@ export function createNowPlayingService(args: {
     async command(command: HomeNowPlayingCommand, sessionId?: string | null) {
       const target = find(sessionId);
       if (!target) return;
+      // The card stays on what the user just pressed, even once it is paused
+      // and something else is still playing.
+      pinnedId = target.id;
       if (target.kind === "ade-music") {
         await override?.command(command);
       } else if (target.kind === "browser") {

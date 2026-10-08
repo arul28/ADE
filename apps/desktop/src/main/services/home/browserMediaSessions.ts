@@ -82,26 +82,35 @@ const READ_SCRIPT = `(() => {
   };
 })()`;
 
-/** Presses a control in the page; resolves to whether this frame had anything to press. */
+/**
+ * Presses a control in the page; resolves to whether this frame had anything
+ * to press. Play and pause go to the media element when the page has one
+ * (YouTube's own media session "play" does nothing during an ad, for one);
+ * next and previous, and play or pause on a page with no element, press the
+ * page's media session handlers.
+ */
 function commandScript(command: "play" | "pause" | "next" | "previous"): string {
   const action = command === "next" ? "nexttrack" : command === "previous" ? "previoustrack" : command;
   return `(() => {
   const q = {};
   try { window.dispatchEvent(new CustomEvent("__ade_media_query", { detail: q })); } catch {}
   const press = (action) => {
+    if (!Array.isArray(q.actions) || !q.actions.includes(action)) return false;
     const d = { action };
     try { window.dispatchEvent(new CustomEvent("__ade_media_action", { detail: d })); } catch {}
     return d.handled === true;
   };
   const action = ${JSON.stringify(action)};
-  if (Array.isArray(q.actions) && q.actions.includes(action) && press(action)) return true;
-  if (action !== "play" && action !== "pause") return false;
+  if (action !== "play" && action !== "pause") return press(action);
   const list = Array.from(document.querySelectorAll("video, audio"));
   if (q.element && !list.includes(q.element)) list.unshift(q.element);
-  const playing = list.filter((c) => !c.paused && !c.ended);
-  if (action === "pause") { playing.forEach((c) => c.pause()); return playing.length > 0; }
+  if (action === "pause") {
+    const playing = list.filter((c) => !c.paused && !c.ended);
+    playing.forEach((c) => c.pause());
+    return playing.length > 0 || press("pause");
+  }
   const target = q.element || list.find((c) => c.currentTime > 0) || list[0];
-  if (!target) return false;
+  if (!target) return press("play");
   const p = target.play();
   if (p && typeof p.catch === "function") p.catch(() => {});
   return true;
