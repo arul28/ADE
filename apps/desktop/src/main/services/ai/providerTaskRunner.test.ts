@@ -104,6 +104,13 @@ function launchArgvValueAfter(argv: unknown, flag: string): string | null {
   return match?.[1] ?? null;
 }
 
+/** `values` appear as consecutive arguments, in order (e.g. `-c service_tier=default`). */
+function launchArgvContainsRun(argv: unknown, values: string[]): boolean {
+  const args = Array.isArray(argv) ? (argv as string[]) : [];
+  if (isWindowsLaunch) return args.join(" ").includes(values.map(quoteWindowsCmdArg).join(" "));
+  return args.some((_, start) => values.every((value, offset) => args[start + offset] === value));
+}
+
 type MockSpawnProcess = EventEmitter & {
   stdout: EventEmitter;
   stderr: EventEmitter;
@@ -372,6 +379,52 @@ describe("runProviderTask", () => {
       mkdtempSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    { label: "a background utility call", backgroundUtility: true },
+    { label: "an ordinary read-only call", backgroundUtility: false },
+  ])("launches Claude for $label", async ({ backgroundUtility }) => {
+    spawnMock.mockReturnValueOnce(createMockProcess({ stdout: '{"result":"{\\"title\\":\\"Fix\\"}"}' }));
+
+    await runProviderTask({
+      cwd: process.cwd(),
+      descriptor: { family: "anthropic", isCliWrapped: true, providerModelId: "claude-haiku-5-5" } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      jsonSchema: { type: "object", properties: { title: { type: "string" } } },
+      backgroundUtility,
+      projectConfig: {} as any,
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, argv] = spawnMock.mock.calls[0]!;
+    // A background call loads no tools or MCP servers and skips plan mode and
+    // the structured-output tool (the schema is asked for in the prompt). An
+    // empty `--tools` must be ONE argument to survive the Windows cmd wrapper.
+    expect(launchArgvValueAfter(argv, "--permission-mode")).toBe(backgroundUtility ? "default" : "plan");
+    expect(launchArgvContains(argv, "--tools=")).toBe(backgroundUtility);
+    expect(launchArgvContains(argv, "--strict-mcp-config")).toBe(backgroundUtility);
+    expect(launchArgvContains(argv, "--json-schema")).toBe(!backgroundUtility);
+  });
+
+  it.each([true, false])("pins Codex to standard speed only for a background utility call (%s)", async (backgroundUtility) => {
+    spawnMock.mockReturnValueOnce(createMockProcess());
+
+    await runProviderTask({
+      cwd: process.cwd(),
+      descriptor: { family: "openai", isCliWrapped: true, providerModelId: "gpt-6-luna" } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      backgroundUtility,
+      projectConfig: {} as any,
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, argv] = spawnMock.mock.calls[0]!;
+    expect(launchArgvContains(argv, "exec")).toBe(true);
+    // Unpinned, the account's config.toml service tier (Fast) applies.
+    expect(launchArgvContainsRun(argv, ["-c", "service_tier=default"])).toBe(backgroundUtility);
   });
 
   it("runs Copilot metadata prompts with the selected model and no tools", async () => {

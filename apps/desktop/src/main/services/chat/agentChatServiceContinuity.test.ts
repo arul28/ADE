@@ -223,7 +223,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
     expect(result).toBe("auto-create-lane-fix");
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
       taskType: "session_title",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
@@ -512,7 +512,7 @@ describe("suggestLaneNameFromPrompt", () => {
       source: "ai",
     });
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4",
@@ -538,7 +538,7 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
     }));
   });
 

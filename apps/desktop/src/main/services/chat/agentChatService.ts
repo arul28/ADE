@@ -378,6 +378,7 @@ import {
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
+import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import {
   exceedsProviderInlineLimit,
   inlineAttachmentHintPart,
@@ -601,6 +602,7 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
   CursorCloudServiceTier,
+  SessionAttentionSource,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
@@ -9959,6 +9961,16 @@ export function createAgentChatService(args: {
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
+   * The host's `ade chat ask` path (marker, tracked-CLI state, phone push).
+   * Absent in tests and bare hosts, where the turn-end question check writes
+   * the same marker through `sessionService.requestAttention` alone.
+   */
+  requestSessionAttention?: (args: {
+    sessionId: string;
+    message: string;
+    source: SessionAttentionSource;
+  }) => boolean;
+  /**
    * The machine-local per-turn usage ledger. It watches the event stream and
    * writes one row per finished turn; it never changes a turn. Absent in tests
    * and in hosts that do not keep one.
@@ -10103,6 +10115,8 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    requestSessionAttention = (request) =>
+      sessionService.requestAttention(request.sessionId, request.message, request.source),
     turnUsageLedger,
     modelRouter,
     onClaudeHooksIgnored,
@@ -11100,6 +11114,16 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  // Declared before `notifyChatSessionEnded` for the same reason as `autoResume`.
+  const turnEndQuestion = createTurnEndQuestionCheck({
+    logger,
+    readHandState: (sessionId) => ({
+      hasPendingInput: hasLivePendingInput(managedSessions.get(sessionId)),
+      attentionRequestedAt: sessionService.get(sessionId)?.attentionRequestedAt,
+    }),
+    runPrompt: (prompt) => runSessionIntelligencePrompt({ ...prompt, taskType: "session_summary" }),
+    requestAttention: requestSessionAttention,
+  });
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -11135,6 +11159,7 @@ export function createAgentChatService(args: {
     // Covers archive and delete both. Auto-resume state outlives nothing here:
     // the chat is over, so a streak counter for it is pure retention.
     autoResume.forgetSession(sessionId);
+    turnEndQuestion.forget(sessionId);
     for (const listener of chatSessionEndedListeners) {
       try {
         listener(sessionId);
@@ -19868,6 +19893,26 @@ export function createAgentChatService(args: {
       });
     }
     warnIfServedModelDiffers(managed, event);
+    try {
+      const entries = managed.recentConversationEntries;
+      const lastUser = [...entries].reverse().find((entry) => entry.role === "user");
+      turnEndQuestion.onTurnDone({
+        sessionId: managed.session.id,
+        turnId: event.turnId,
+        completed: event.status === "completed",
+        isSubagentWithParent: managed.session.spawnKind === "subagent"
+          && Boolean(managed.session.orchestrationParentSessionId?.trim()),
+        backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
+        provider: managed.session.provider,
+        lastUserMessage: lastUser ? lastUser.displayText ?? lastUser.text : null,
+        isStillCurrent: () => !managed.deleted && managedSessions.get(managed.session.id) === managed,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.turn_end_question_check_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (managed.runtime?.kind === "claude") {
       void refreshClaudeContextUsageSnapshot(
         managed,
@@ -20196,6 +20241,7 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    turnEndQuestion.onEvent(managed.session.id, normalizedEvent);
     if (
       (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
       || normalizedEvent.type === "done"

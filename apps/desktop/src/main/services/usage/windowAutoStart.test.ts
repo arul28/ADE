@@ -5,6 +5,7 @@ import type { Logger } from "../logging/logger";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { UsageSnapshot } from "../../../shared/types/usage";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
+import { quoteWindowsCmdArg } from "../shared/processExecution";
 
 const NOW = Date.parse("2026-09-18T12:00:00.000Z");
 
@@ -66,6 +67,22 @@ function childProcess(): ChildProcess {
     kill: vi.fn(() => true),
     unref: vi.fn(),
   }) as unknown as ChildProcess;
+}
+
+/**
+ * The CLI was launched with exactly this argv. On Windows an extensionless
+ * launcher goes through `cmd.exe /d /s /c "<quoted line>"`, so the same
+ * command line is asserted inside the wrapper's one folded argument.
+ */
+function expectLaunched(spawn: ReturnType<typeof vi.fn>, executable: string, argv: string[]): void {
+  expect(spawn).toHaveBeenCalledTimes(1);
+  const [command, args] = spawn.mock.calls[0] as [string, string[]];
+  if (process.platform === "win32") {
+    expect(args.join(" ")).toContain([executable, ...argv].map(quoteWindowsCmdArg).join(" "));
+  } else {
+    expect(command).toBe(executable);
+    expect(args).toEqual(argv);
+  }
 }
 
 function logger(): Pick<Logger, "info" | "warn"> {
@@ -186,9 +203,15 @@ describe("window auto-start", () => {
     child.emit("close", 0);
     await vi.runAllTimersAsync();
 
+    // The cheapest request that opens a window: low effort, no tools or MCP
+    // servers, nothing saved to the session list.
+    expectLaunched(spawn, "/bin/claude", [
+      "-p", "Reply with OK.", "--model", "claude-haiku-5-5", "--effort", "low", "--output-format", "text",
+      "--tools=", "--strict-mcp-config", "--no-session-persistence",
+    ]);
     expect(spawn).toHaveBeenCalledWith(
-      "/bin/claude",
-      ["-p", "Reply with OK.", "--model", "claude-haiku-5-5", "--effort", "low", "--output-format", "text"],
+      expect.any(String),
+      expect.any(Array),
       expect.objectContaining({
         cwd: expect.any(String),
         windowsHide: true,
@@ -225,9 +248,15 @@ describe("window auto-start", () => {
     child.emit("close", 0);
     await vi.runAllTimersAsync();
 
+    // Low effort and standard speed pinned on the command line, so the
+    // account's config.toml (Fast, high effort) cannot make the ping costly.
+    expectLaunched(spawn, "/bin/codex", [
+      "exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=low", "-c", "service_tier=default",
+      "--ephemeral", "--skip-git-repo-check", "Reply with OK.",
+    ]);
     expect(spawn).toHaveBeenCalledWith(
-      "/bin/codex",
-      ["exec", "-m", "gpt-5.6-luna", "--skip-git-repo-check", "Reply with OK."],
+      expect.any(String),
+      expect.any(Array),
       expect.objectContaining({
         cwd: expect.any(String),
         windowsHide: true,

@@ -519,7 +519,8 @@ describe("deriveTurnFolds — a short postscript does not hide the answer", () =
 
   it.each([
     ["a long answer before a short postscript", [history("tool"), long("answer"), short("ps")], "answer"],
-    ["a postscript too long to be one (>280)", [history("tool"), long("answer"), prose("ps", "P".repeat(300))], "ps"],
+    ["a long postscript under a third of the answer", [history("tool"), prose("answer", "A".repeat(1_000)), prose("ps", "P".repeat(300))], "answer"],
+    ["a postscript over a third of the answer", [history("tool"), long("answer"), prose("ps", "P".repeat(300))], "ps"],
     ["an earlier text too short (<400)", [history("tool"), prose("answer", "A".repeat(350)), short("ps")], "ps"],
     ["an earlier text long enough but under 3x", [history("tool"), prose("answer", "A".repeat(450)), prose("ps", "P".repeat(200))], "ps"],
     ["three work rows between answer and postscript", [history("h1"), long("answer"), history("h2"), history("h3"), history("h4"), short("ps")], "answer"],
@@ -527,9 +528,10 @@ describe("deriveTurnFolds — a short postscript does not hide the answer", () =
     ["a commentary text between answer and postscript", [history("tool"), long("answer"), prose("c", "C".repeat(500), "t1", "commentary"), short("ps")], "ps"],
     ["an empty text row stepped over", [history("tool"), long("answer"), prose("blank", "   "), short("ps")], "answer"],
     ["a text row from another turn stepped over", [history("tool"), long("answer"), prose("stray", "S".repeat(50), "t0"), short("ps")], "answer"],
-    // 150 emoji are 300 UTF-16 code units: long enough to be a full answer, so
-    // the earlier text is not the answer. iOS matches this unit (`.utf16.count`).
-    ["an emoji postscript capped in UTF-16 code units", [history("tool"), long("answer"), prose("ps", "\u{1F600}".repeat(150))], "ps"],
+    // 150 emoji are 300 UTF-16 code units (150 graphemes): over a third of the
+    // 500-character answer, so the earlier text is not the answer. iOS matches
+    // this unit (`.utf16.count`).
+    ["an emoji postscript measured in UTF-16 code units", [history("tool"), long("answer"), prose("ps", "\u{1F600}".repeat(150))], "ps"],
     ["no prose supplied at all", [history("tool"), text("a"), text("b")], "b"],
   ] as const)("%s", (_name, rows, expected) => {
     const [fold] = deriveTurnFolds([user("u"), ...rows, done("d")], snapshots());
@@ -537,11 +539,16 @@ describe("deriveTurnFolds — a short postscript does not hide the answer", () =
   });
 
   it("lets a final_answer label win without consulting the postscript rule", () => {
+    // Unlabelled, the 500-character text would be the answer and the short one
+    // its postscript. The label makes the short row the answer; the long text
+    // before it is substantive prose and stays visible under the fold.
     const [fold] = deriveTurnFolds(
-      [user("u"), long("long-unlabelled"), prose("labelled", "L".repeat(20), "t1", "final_answer"), short("ps"), done("d")],
+      [user("u"), history("tool"), long("long-unlabelled"), prose("labelled", "L".repeat(20), "t1", "final_answer"), done("d")],
       snapshots(),
     );
     expect(fold!.answerKey).toBe("labelled");
+    expect([...fold!.hiddenKeys]).toEqual(["tool"]);
+    expect(fold!.keptKeys).toEqual(["long-unlabelled"]);
   });
 
   it("never hides a real answer when the earlier text is only short narration", () => {
@@ -553,5 +560,50 @@ describe("deriveTurnFolds — a short postscript does not hide the answer", () =
     );
     expect(fold!.answerKey).toBe("answer");
     expect([...fold!.hiddenKeys]).toEqual(["narration", "tool"]);
+  });
+});
+
+describe("deriveTurnFolds — non-answer prose", () => {
+  // The answer is 450 characters: long enough that a word-for-word copy would
+  // stay visible as substantive prose, and no candidate below reaches 3x of
+  // it, so the postscript rule never moves the answer.
+  const ANSWER = "Z".repeat(450);
+  const prose = (key: string, value: string, phase: TurnFoldRow["phase"] = null): TurnFoldRow => ({
+    key,
+    role: "text",
+    turnId: "t1",
+    phase,
+    text: value,
+  });
+
+  it.each([
+    ["short narration", "hidden", prose("x", "Now I'll scroll to the DRM section.")],
+    ["plain prose one short of 400 characters", "hidden", prose("x", "N".repeat(399))],
+    ["plain prose of 400 characters", "kept", prose("x", "N".repeat(400))],
+    // 200 emoji are 400 UTF-16 code units but 200 graphemes: kept only when
+    // length is counted in UTF-16 units. iOS counts `.utf16.count` to match.
+    ["200 emoji (400 UTF-16 code units)", "kept", prose("x", "\u{1F600}".repeat(200))],
+    ["a short bullet list", "kept", prose("x", "Two ways forward:\n- rebase onto main\n- merge main in")],
+    ["a short heading", "kept", prose("x", "## Findings\nThe cache is stale.")],
+    ["a short proof image", "kept", prose("x", "Here it is: ![shot](ade-proof://artifact-1)")],
+    ["long commentary", "hidden", prose("x", "C".repeat(600), "commentary")],
+    ["commentary embedding proof", "kept", prose("x", "Captured ![shot](ade-proof://artifact-1)", "commentary")],
+    ["a long word-for-word copy of the answer", "duplicate", prose("x", `\n${ANSWER}  `)],
+  ] as const)("%s is %s", (_name, expected, row) => {
+    const [fold] = deriveTurnFolds(
+      [user("u"), history("tool"), row, history("tool2"), prose("answer", ANSWER), done("d")],
+      snapshots(),
+    );
+    expect(fold!.answerKey).toBe("answer");
+    expect(fold!.hiddenKeys.has("x")).toBe(expected !== "kept");
+    expect(fold!.keptKeys.includes("x")).toBe(expected === "kept");
+    expect(fold!.duplicateAnswerKeys.has("x")).toBe(expected === "duplicate");
+  });
+
+  it("draws no fold when the only prose in the span stays visible", () => {
+    expect(deriveTurnFolds(
+      [user("u"), prose("reply", "R".repeat(450)), prose("answer", ANSWER), done("d")],
+      snapshots(),
+    )).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
-import type { LinearIssueCreateInput } from "../../../../desktop/src/shared/types";
+import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
@@ -4124,7 +4124,7 @@ function sessionStatusBucket(argsIn: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
-  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+  attentionSource?: SessionAttentionSource | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:

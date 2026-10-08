@@ -269,8 +269,8 @@ sessions. Running a removed command fails with that explanation.
 
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
-row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
-Update the note along the way as the state changes; do not wait until the end.
+row. If your reply asks the user anything, `ade chat ask "<question>"` raises
+the row's hand. Update the note along the way as the state changes; do not wait until the end.
 
 Lane and chat names are yours to keep accurate. When the work changes
 direction or moves to a new branch, rename the lane or the chat without asking.
@@ -297,8 +297,14 @@ They are two separate signals on the row the user is looking at:
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
   a note alone never changes the phase, an idle row with only a note can read as
-  **Done** — when you are genuinely blocked on the user, call `note` for the
-  context and then `ask` for the exact question.
+  **Done** — whenever your reply asks the user a question or for a decision,
+  call `note` for the context and then `ask` for the exact question.
+- **Ask even while background work runs.** A chat whose subagents or monitors
+  are still running reads as **Working**, so a question at the end of your turn
+  is invisible unless you `ask`. "Ship this, or keep building?" and "Want me to
+  run the test now?" are asks; "Both agents are running, I'll report when they
+  land" is not, so do not `ask` for progress updates. If you forget, ADE may
+  raise the hand itself when it reads a question at the end of your turn.
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
@@ -342,8 +348,8 @@ them. The host derives the column; you never write it directly.
 Two rules follow from that:
 
 - **The column is derived, so keep the inputs true.** Call `ade chat note` when
-  the state changes, and call `ade chat ask` the moment you are actually blocked
-  on the user. A stale note makes a correct column read as the wrong work.
+  the state changes, and call `ade chat ask` whenever you need an answer or a
+  decision from the user, even while background work keeps running. A stale note makes a correct column read as the wrong work.
 - **Never claim a column.** There is no command that moves your own row. Do not
   say a row is Done; end the turn and leave a note.
 

@@ -1792,9 +1792,17 @@ the session, not from a Settings picker and not from the model's
 registry family:
 
 - Claude → Haiku 5.5 (`low`), then this session's model, then a deterministic slug
-- Codex → GPT-5.6 Luna (`low`), then this session's model, then a slug
-- Cursor → Composer 2.5, then this session's model, then a slug
+- Codex → GPT-6 Luna (`low`), then this session's model, then a slug
+- Cursor → Composer 2.5 (standard speed; it has no effort control), then this session's model, then a slug
 - OpenCode, Droid, Pi, ACP, local → this session's model, then a slug
+
+These helper calls go through `summarizeTerminal`, which always runs as a
+background utility task (`ProviderTaskRunnerArgs.backgroundUtility`): every
+input is in the prompt, so Claude runs with no tools and no MCP servers
+(`--tools= --strict-mcp-config`, default permission mode rather than plan
+mode, JSON asked for in the prompt instead of `--json-schema`), and Codex and
+Cursor are pinned to standard speed so a global Fast setting never applies.
+The models, efforts and flags live in `shared/backgroundUtilityModel.ts`.
 
 OpenCode wrapping Anthropic does not spawn `claude -p` Haiku. Cursor
 Cloud names stay on Cursor; ADE never overlays them. ADE chats wait

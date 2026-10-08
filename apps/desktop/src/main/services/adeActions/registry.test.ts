@@ -1634,7 +1634,8 @@ describe("runtime session actions", () => {
       sessionId: "session-1",
       message: "Which account should I use?",
     })).toEqual({ ok: true, sessionId: "session-1" });
-    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?");
+    // No source: sessionService defaults it to `agent_explicit`.
+    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?", undefined);
     expect(markSessionAttentionRequested).toHaveBeenCalledWith("session-1");
     expect(setSessionRuntimeState).toHaveBeenCalledWith("session-1", "waiting-input");
     expect(handleSessionAttentionRequested).toHaveBeenCalledWith("project-1", {
