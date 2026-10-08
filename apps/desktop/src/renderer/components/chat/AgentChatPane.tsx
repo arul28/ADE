@@ -12701,13 +12701,26 @@ export function AgentChatPane({
     const pin = destination?.binding ?? null;
     const routesPinned = pin != null;
     // Unpinned goes to the tab's own machine, so it must be the destination:
-    // never the machine this chat runs on (the source), and a remote tab
-    // must carry the destination's name. A local tab has no account name
-    // ("This computer"), so not being the source is what identifies it.
+    // never the machine this chat runs on (the source). A remote tab carries
+    // the destination's name; a local tab has no account name ("This
+    // computer"), so this computer's account key must be the destination's.
     const activeIsSource = machineIdForBinding(projectBinding)
       === machineIdForBinding(chatEffectiveBinding ?? projectBinding);
-    const activeIsDestination = !activeIsSource
-      && (projectBinding?.kind !== "remote" || machineNameForBinding(projectBinding) === continuation.targetMachineName);
+    let activeIsDestination = false;
+    if (!activeIsSource && laneOnActiveBinding && !routesPinned) {
+      if (projectBinding?.kind === "remote") {
+        activeIsDestination = machineNameForBinding(projectBinding) === continuation.targetMachineName;
+      } else {
+        // Unknown (no account, ADE Web) is not the destination: hand it over.
+        let localMachineKey: string | null = null;
+        try {
+          localMachineKey = (await window.ade?.account?.getLocalMachineIdentity?.())?.machineKey?.trim() || null;
+        } catch {
+          localMachineKey = null;
+        }
+        activeIsDestination = localMachineKey != null && localMachineKey === continuation.targetMachineKey;
+      }
+    }
     const routesUnpinned = !routesPinned && laneOnActiveBinding && activeIsDestination;
     const routable = routesPinned || routesUnpinned;
     /**
