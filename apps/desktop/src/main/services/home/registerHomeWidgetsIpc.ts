@@ -1,9 +1,10 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, powerMonitor, webContents, type IpcMainInvokeEvent, type WebContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, powerMonitor, webContents, type WebContents } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 import { HOME_WIDGETS_IPC, type HomeShareResult } from "../../../shared/types/homeWidgets";
 import { createHomeWidgetsService, type HomeWidgetsService } from "./homeWidgetsService";
+import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
 import {
   allowBuiltInBrowserBackgroundAudio,
   isBuiltInBrowserWebContents,
@@ -56,24 +57,10 @@ export function connectBrowserToNowPlaying(args: { browserTabIdFor: (wc: WebCont
  * Only ADE's own renderer may ask: the clipboard history and the kill action
  * are not for a page in the built-in browser or an agent-authored scene frame.
  */
-
-function isAdeRenderer(event: IpcMainInvokeEvent): boolean {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return false;
-  const raw = event.senderFrame?.url || event.sender.getURL();
-  try {
-    const url = new URL(raw);
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devServerUrl) return url.origin === new URL(devServerUrl).origin;
-    if (!app.isPackaged && url.origin === "http://localhost:5173") return true;
-    return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));
-  } catch {
-    return false;
-  }
-}
-
 export function registerHomeWidgetsIpc(args: {
   logger?: { warn: (event: string, data?: Record<string, unknown>) => void };
+  /** Pids of ADE's background runtime (the brain), which the kill action refuses. */
+  runtimePids?: () => Array<number | null | undefined>;
 }): HomeWidgetsService {
   const service = createHomeWidgetsService({
     userDataDir: app.getPath("userData"),
@@ -81,6 +68,7 @@ export function registerHomeWidgetsIpc(args: {
       readText: () => clipboard.readText(),
       writeText: (text) => clipboard.writeText(text),
       readBuffer: (format) => clipboard.readBuffer(format),
+      has: (format) => clipboard.has(format),
       availableFormats: () => clipboard.availableFormats(),
       readImage: () => {
         const image = clipboard.readImage();
@@ -111,6 +99,9 @@ export function registerHomeWidgetsIpc(args: {
       },
     },
     ownPids: () => app.getAppMetrics().map((metric) => metric.pid),
+    runtimePids: args.runtimePids,
+    // Electron's fetch follows the system proxy; Node's does not.
+    fetch: (url, init) => net.fetch(url, init),
     onBatteryPower: () => powerMonitor.isOnBatteryPower(),
     broadcast: (channel, payload) => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -122,7 +113,7 @@ export function registerHomeWidgetsIpc(args: {
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
-      if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+      if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
       return fn(...(rest as A));
     });
   };
@@ -158,25 +149,38 @@ export function registerHomeWidgetsIpc(args: {
     },
   });
   nowPlaying = playing;
-  const watched = new Set<number>();
+  // Subscriptions per window, counted: one window can show the widget twice
+  // (the page and a gallery preview), and closing the preview must not stop
+  // the page's widget.
+  const watched = new Map<number, { count: number; release: () => void }>();
   ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingSubscribe, async (event) => {
-    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
     const id = event.sender.id;
-    if (!watched.has(id)) {
-      watched.add(id);
+    const current = watched.get(id);
+    if (current) {
+      current.count += 1;
+    } else {
       // A window that closes or reloads without unsubscribing still lets go.
+      const sender = event.sender;
       const release = () => {
+        sender.removeListener("destroyed", release);
+        sender.removeListener("did-navigate", release);
+        if (watched.get(id)?.release !== release) return;
         watched.delete(id);
         playing.unsubscribe(id);
       };
-      event.sender.once("destroyed", release);
-      event.sender.once("did-navigate", release);
+      sender.on("destroyed", release);
+      sender.on("did-navigate", release);
+      watched.set(id, { count: 1, release });
     }
     return playing.subscribe(id);
   });
   ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingUnsubscribe, async (event) => {
-    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
-    playing.unsubscribe(event.sender.id);
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    const current = watched.get(event.sender.id);
+    if (!current) return;
+    current.count -= 1;
+    if (current.count <= 0) current.release();
   });
   handle(HOME_WIDGETS_IPC.nowPlayingCommand, async (command: string, sessionId?: unknown) => {
     const target = typeof sessionId === "string" && sessionId.length <= 512 ? sessionId : null;
@@ -203,7 +207,7 @@ export function registerHomeWidgetsIpc(args: {
     return { ok: true };
   });
   ipcMain.handle(HOME_WIDGETS_IPC.shareSaveImage, async (event, input: { pngDataUrl?: string; fileName?: string }): Promise<HomeShareResult> => {
-    if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
     const bytes = decodePng(input?.pngDataUrl);
     if (!bytes) return { ok: false, error: "Not a PNG image." };
     const safeName = String(input?.fileName ?? "ade-shipped.png").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 120) || "ade-shipped.png";
@@ -219,9 +223,11 @@ export function registerHomeWidgetsIpc(args: {
     return { ok: true, path: choice.filePath };
   });
 
-  // Clipboard capture resumes on launch when the widget was left on, without
-  // waiting for the home page to mount. Off the boot path: a few seconds in,
-  // and only a small file read.
+  // Clipboard capture resumes on launch when the watch was left on (a Clipboard
+  // widget in the active home layout), without waiting for the home page to
+  // mount; the renderer turns it off when the layout has none
+  // (`useClipboardWatchRule`). Off the boot path: a few seconds in, and only
+  // a small file read.
   const resume = setTimeout(() => {
     void service.load().catch(() => {});
   }, 4_000);

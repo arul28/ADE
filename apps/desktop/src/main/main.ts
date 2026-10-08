@@ -9156,7 +9156,11 @@ app.whenReady().then(async () => {
   });
 
   // The home page's clipboard, machine-health and weather widgets.
-  registerHomeWidgetsIpc({ logger: getMachineMainLogger() });
+  registerHomeWidgetsIpc({
+    logger: getMachineMainLogger(),
+    // The brain: the ports widget never offers to stop it.
+    runtimePids: () => [localRuntimePool.getStatus().pid],
+  });
   // Now Playing also hears the built-in browser's tabs.
   connectBrowserToNowPlaying({
     browserTabIdFor: (wc) => {
