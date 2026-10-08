@@ -11,6 +11,7 @@ import {
   type PreparedGlossary,
 } from "./dictationCleanup";
 import {
+  DEFAULT_SPEECH_MODEL_BYTES,
   type DownloadProgress,
   type SpeechModelSource,
   downloadSpeechModel,
@@ -76,14 +77,22 @@ export class TranscriptionError extends Error {
   }
 }
 
+/**
+ * Download progress plus the step after it. `warmup` is a silent transcription
+ * that loads the fresh model once, so the user's first dictation is not the one
+ * that pays for it (measured: ~28 s cold, under 2 s after).
+ */
+export type ModelInstallProgress = DownloadProgress & { stage?: "download" | "warmup" };
+
 export type TranscriptionService = {
   transcribe: (pcm: Int16Array | Float32Array, options?: { sampleRate?: number }) => Promise<TranscriptionResult>;
   getStatus: () => TranscriptionStatus;
   /**
    * Download the speech model into the runtime model dir (idempotent + single-
-   * flight). Resolves when the model is installed; rejects on download failure.
+   * flight). Resolves when the model is installed and warmed up; rejects on
+   * download failure. A failed warm-up does not fail the install.
    */
-  downloadModel: (onProgress?: (p: DownloadProgress) => void) => Promise<void>;
+  downloadModel: (onProgress?: (p: ModelInstallProgress) => void) => Promise<void>;
   dispose: () => void;
 };
 
@@ -97,6 +106,7 @@ const TARGET_SAMPLE_RATE = 16_000;
 const MIN_SAMPLE_RATE = 8_000;
 const MAX_SAMPLE_RATE = 48_000;
 const DEFAULT_TRANSCRIBE_PROCESS_TIMEOUT_MS = 5 * 60_000;
+const WARMUP_AUDIO_SECONDS = 0.5;
 
 function transcribeBinaryPath(engineDir: string): string {
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
@@ -307,7 +317,7 @@ export function createTranscriptionService({
     };
   };
 
-  const downloadModel = (onProgress?: (p: DownloadProgress) => void): Promise<void> => {
+  const downloadModel = (onProgress?: (p: ModelInstallProgress) => void): Promise<void> => {
     if (resolveModel()) return Promise.resolve();
     // Single-flight: concurrent callers (UI button + auto-trigger) share one download.
     if (!modelDownloadPromise) {
@@ -318,10 +328,11 @@ export function createTranscriptionService({
         source: modelSource,
         onProgress,
       })
-        .then(() => {
+        .then(async () => {
           logger.info("transcription.model_download_done", {
             durationMs: Date.now() - startedAt,
           });
+          await warmUp(onProgress);
         })
         .catch((error: unknown) => {
           logger.warn("transcription.model_download_failed", {
@@ -481,6 +492,25 @@ export function createTranscriptionService({
       return { raw, cleaned };
     } finally {
       cleanupTempFile(wavPath);
+    }
+  };
+
+  // Runs inside the download's single-flight promise, so `downloading` stays
+  // true and the UI keeps showing setup until the model is warm.
+  const warmUp = async (onProgress?: (p: ModelInstallProgress) => void): Promise<void> => {
+    const totalBytes = modelSource?.expectedBytes ?? DEFAULT_SPEECH_MODEL_BYTES;
+    onProgress?.({ receivedBytes: totalBytes, totalBytes, stage: "warmup" });
+    const startedAt = Date.now();
+    try {
+      await transcribe(new Int16Array(Math.round(TARGET_SAMPLE_RATE * WARMUP_AUDIO_SECONDS)));
+      logger.info("transcription.warmup_done", { durationMs: Date.now() - startedAt });
+    } catch (error) {
+      // Silence may legitimately transcribe to nothing or fail; the model is
+      // installed either way, and the first real dictation just runs cold.
+      logger.warn("transcription.warmup_failed", {
+        durationMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 

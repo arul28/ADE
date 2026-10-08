@@ -38,6 +38,7 @@ export function DictationSection() {
       : null;
 
   const isDownloading = install.phase === "downloading";
+  const isWarmingUp = isDownloading && install.warmingUp;
   const alreadyInstalled = install.modelInstalled && !isDownloading;
   const needsDownload = !isDownloading && !alreadyInstalled;
 
@@ -75,20 +76,28 @@ export function DictationSection() {
           {voiceInputEnabled && isDownloading ? (
             <div style={detailPanelStyle}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span className="kit-eyebrow">Downloading speech model</span>
-                <span className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
-                  {percent != null ? `${percent}%` : "Starting"}
-                </span>
+                <span className="kit-eyebrow">{isWarmingUp ? "Finishing setup" : "Downloading speech model"}</span>
+                {isWarmingUp ? null : (
+                  <span className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
+                    {percent != null ? `${percent}%` : "Starting"}
+                  </span>
+                )}
               </div>
               <div className="kit-meter" role="progressbar" aria-label="Speech model download" aria-valuenow={percent ?? undefined} aria-valuemin={0} aria-valuemax={100}>
                 <span style={{ width: percent != null ? `${percent}%` : "35%" }} />
               </div>
+              {isWarmingUp ? (
+                <div style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
+                  Loading the model once so your first dictation is fast. This can take up to a minute.
+                </div>
+              ) : (
               <div className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
                 {percent != null
                   ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
                   : `Downloaded ${formatMb(install.receivedBytes)} so far`}
                 <span style={{ fontFamily: "var(--font-sans)" }}>{" · keeps going if you leave Settings"}</span>
               </div>
+              )}
             </div>
           ) : voiceInputEnabled && needsDownload ? (
             <div style={{ ...detailPanelStyle, flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>

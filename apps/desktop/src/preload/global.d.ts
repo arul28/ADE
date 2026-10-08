@@ -1637,7 +1637,7 @@ declare global {
           modelPath: string | null;
         }>;
         onModelDownloadProgress: (
-          handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+          handler: (progress: { receivedBytes: number; totalBytes: number | null; stage?: "download" | "warmup" }) => void,
         ) => () => void;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";

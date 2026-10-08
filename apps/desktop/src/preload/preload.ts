@@ -5789,11 +5789,11 @@ const adeBridge = {
       modelPath: string | null;
     }> => ipcRenderer.invoke(IPC.transcriptionDownloadModel),
     onModelDownloadProgress: (
-      handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+      handler: (progress: { receivedBytes: number; totalBytes: number | null; stage?: "download" | "warmup" }) => void,
     ): (() => void) => {
       const listener = (
         _event: unknown,
-        progress: { receivedBytes: number; totalBytes: number | null },
+        progress: { receivedBytes: number; totalBytes: number | null; stage?: "download" | "warmup" },
       ) => handler(progress);
       ipcRenderer.on(IPC.transcriptionModelDownloadProgress, listener);
       return () => ipcRenderer.removeListener(IPC.transcriptionModelDownloadProgress, listener);

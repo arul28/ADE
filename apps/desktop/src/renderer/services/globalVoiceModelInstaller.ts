@@ -27,6 +27,8 @@ export interface VoiceModelInstallState {
   receivedBytes: number;
   totalBytes: number | null;
   error: string | null;
+  /** Download finished; main is loading the model once so the first dictation is fast. */
+  warmingUp: boolean;
   /** True once we've probed the main process at least once (else state is unknown). */
   probed: boolean;
 }
@@ -49,6 +51,7 @@ class VoiceModelInstaller {
     receivedBytes: 0,
     totalBytes: null,
     error: null,
+    warmingUp: false,
     probed: false,
   };
 
@@ -137,6 +140,7 @@ class VoiceModelInstaller {
     this.set({
       phase: "downloading",
       error: null,
+      warmingUp: false,
       receivedBytes: 0,
       totalBytes: VOICE_MODEL_BYTES,
     });
@@ -149,12 +153,25 @@ class VoiceModelInstaller {
         this.set({
           receivedBytes: progress.receivedBytes,
           totalBytes: progress.totalBytes ?? this.state.totalBytes,
+          warmingUp: progress.stage === "warmup",
         });
       }) ?? null;
 
     this.inFlight = (async () => {
       try {
-        const next = await api.downloadModel();
+        let next: Awaited<ReturnType<typeof api.downloadModel>>;
+        for (;;) {
+          try {
+            next = await api.downloadModel();
+            break;
+          } catch (error) {
+            // The call can fail while the main process is still downloading
+            // (an IPC timeout, for one). Main is single-flight, so calling
+            // again joins that same download instead of starting over.
+            const status = await api.status?.().catch(() => null);
+            if (!status?.downloading) throw error;
+          }
+        }
         // Main resolves the model on every call, and every mic subscribes here,
         // so this push enables voice input live — no restart.
         this.set({
@@ -170,6 +187,7 @@ class VoiceModelInstaller {
           error: error instanceof Error && error.message ? error.message : DEFAULT_DOWNLOAD_ERROR,
         });
       } finally {
+        this.set({ warmingUp: false });
         this.progressUnsub?.();
         this.progressUnsub = null;
         this.inFlight = null;
