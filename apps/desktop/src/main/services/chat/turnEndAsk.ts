@@ -12,13 +12,10 @@
  * providers that have one.
  */
 
-export type TurnEndAskVerdict = "ask" | "not_ask" | "unsure";
-
-export type TurnEndAskClassification = {
-  verdict: TurnEndAskVerdict;
-  /** The question to show on the row. Set only for `ask`. */
-  question: string | null;
-};
+export type TurnEndAskClassification =
+  /** `question` is the sentence to show on the row. */
+  | { verdict: "ask"; question: string }
+  | { verdict: "not_ask" | "unsure" };
 
 /** A question mark, or a direct request for an answer or decision. */
 const STRONG_ASK = new RegExp(
@@ -125,38 +122,66 @@ function questionFrom(...blocks: Array<string | null>): string {
   return clipQuestion(asking ?? all[all.length - 1] ?? "");
 }
 
-function hasStrongAsk(block: string): boolean {
-  return block.includes("?") || STRONG_ASK.test(block);
+/** Quoted or reported text ("The FAQ says “Why did it fail?”") asks nobody. */
+function withoutQuotes(block: string): string {
+  return block.replace(/“[^”]*”|"[^"\n]*"/g, " ");
 }
+
+/**
+ * How firmly a block asks. `strong`: a direct request anywhere, or a question
+ * in its last sentence. `weak`: a question mark only earlier in the block,
+ * which is usually rhetorical ("Root cause? A stale cache.").
+ */
+function askStrength(block: string | null): "strong" | "weak" | "none" {
+  if (!block) return "none";
+  const unquoted = withoutQuotes(block);
+  if (STRONG_ASK.test(unquoted)) return "strong";
+  if (!unquoted.includes("?")) return "none";
+  const all = sentences(unquoted);
+  return all[all.length - 1]?.includes("?") ? "strong" : "weak";
+}
+
+/** A question mark that only appears inside quotes: a guess either way. */
+function hasQuotedQuestionOnly(block: string | null): boolean {
+  return Boolean(block?.includes("?") && !withoutQuotes(block).includes("?"));
+}
+
+const UNSURE: TurnEndAskClassification = { verdict: "unsure" };
+const NOT_ASK: TurnEndAskClassification = { verdict: "not_ask" };
 
 export function classifyTurnEndAsk(replyText: string | null | undefined): TurnEndAskClassification {
   const blocks = paragraphs(String(replyText ?? ""));
-  if (!blocks.length) return { verdict: "not_ask", question: null };
+  if (!blocks.length) return NOT_ASK;
   const { closing, before } = closingBlock(blocks);
   const progress = PROGRESS_NOTE.test(closing);
+  const closingAsk = askStrength(closing);
+  const beforeAsk = askStrength(before);
 
-  if (hasStrongAsk(closing)) return { verdict: "ask", question: questionFrom(closing) };
+  if (closingAsk === "strong") return { verdict: "ask", question: questionFrom(closing) };
+  if (closingAsk === "weak") return UNSURE;
   if (SOFT_ASK.test(closing)) {
-    // "If you're happy with this, I'll…" usually closes a question asked just above.
-    return progress
-      ? { verdict: "unsure", question: null }
-      : { verdict: "ask", question: questionFrom(before, closing) };
+    // "If you're happy with this, I'll…" usually closes a question asked just
+    // above. On its own ("Let me know if anything breaks.") it is often a
+    // sign-off, and with a progress note it is a guess either way.
+    return !progress && beforeAsk === "strong"
+      ? { verdict: "ask", question: questionFrom(before, closing) }
+      : UNSURE;
   }
   // A question followed by a one-line status ("…, or a placeholder?\n\nBoth
   // agents are still working.") still ended the turn on that question.
-  if (before && before.includes("?")) {
-    return progress
-      ? { verdict: "ask", question: questionFrom(before) }
-      : { verdict: "unsure", question: null };
+  // The same holds for a direct request ("Tell me which branch to target.").
+  if (beforeAsk === "strong" && before) {
+    return progress ? { verdict: "ask", question: questionFrom(before) } : UNSURE;
   }
-  if (progress) return { verdict: "not_ask", question: null };
-  return { verdict: "unsure", question: null };
+  if (beforeAsk === "weak") return UNSURE;
+  if (hasQuotedQuestionOnly(closing) || hasQuotedQuestionOnly(before)) return UNSURE;
+  return progress ? NOT_ASK : UNSURE;
 }
 
 // ── Cheap-model tiebreaker ──────────────────────────────────────────────────
 
-export const TURN_END_ASK_USER_MESSAGE_CHARS = 600;
-export const TURN_END_ASK_REPLY_TAIL_CHARS = 1_500;
+const TURN_END_ASK_USER_MESSAGE_CHARS = 600;
+const TURN_END_ASK_REPLY_TAIL_CHARS = 1_500;
 
 export const TURN_END_ASK_SYSTEM_PROMPT = [
   "You read the end of an AI coding agent's reply to its user.",
@@ -208,7 +233,7 @@ export function parseTurnEndAskDecision(structured: unknown, text: string | null
 }
 
 /** The hand-raise message for an ask the model found but the rules could not quote. */
-export function fallbackTurnEndQuestion(replyText: string): string {
+export function turnEndQuestionText(replyText: string): string {
   const blocks = paragraphs(replyText);
   const { closing, before } = closingBlock(blocks);
   return questionFrom(before, closing || replyText);

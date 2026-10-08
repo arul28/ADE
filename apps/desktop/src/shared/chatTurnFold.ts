@@ -549,7 +549,7 @@ const TURN_FOLD_POSTSCRIPT_MAX_WORK_ROWS = 3;
  */
 const TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS = TURN_FOLD_ANSWER_MIN_CHARS;
 /** A markdown image, inline proof (`ade-proof://`) or otherwise. */
-const PROSE_IMAGE_PATTERN = /!\[[^\]\n]*\]\([^)\s]+[^)]*\)/;
+const PROSE_IMAGE_PATTERN = /!\[[^\]\n]*\]\([^)\s][^)]*\)/;
 /** Any reference to a proof artifact, image or link. */
 const PROSE_PROOF_PATTERN = /ade-proof:\/\//i;
 /**

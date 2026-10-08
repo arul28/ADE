@@ -1535,10 +1535,7 @@ export function requestSessionAttentionForRuntime(
   const sessionService = runtime.sessionService;
   if (!sessionService) return false;
   const { sessionId, message } = args;
-  const written = args.source
-    ? sessionService.requestAttention(sessionId, message, args.source)
-    : sessionService.requestAttention(sessionId, message);
-  if (!written) return false;
+  if (!sessionService.requestAttention(sessionId, message, args.source)) return false;
   const session = sessionService.get(sessionId);
   const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
   if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {

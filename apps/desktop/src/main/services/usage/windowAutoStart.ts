@@ -15,6 +15,14 @@ import {
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import {
+  BACKGROUND_UTILITY_CLAUDE_CLI_MODEL,
+  BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT,
+  BACKGROUND_UTILITY_CODEX_CLI_MODEL,
+  BACKGROUND_UTILITY_CODEX_REASONING_EFFORT,
+  claudeBackgroundUtilityFlags,
+  codexStandardSpeedFlags,
+} from "../../../shared/backgroundUtilityModel";
 import { usageAccountId } from "./usageAccountId";
 
 const AUTOSTART_DELAY_MS = 5_000;
@@ -113,7 +121,7 @@ export function createWindowAutoStartScheduler({
     });
   };
 
-  const runRequest = async (state: AutoStartTimer): Promise<boolean> => {
+  const runRequest = async (state: AutoStartTimer, model: string): Promise<boolean> => {
     const env = {
       ...process.env,
       ...providerInstanceEnvPatch({
@@ -122,7 +130,6 @@ export function createWindowAutoStartScheduler({
         configHome: state.configHome,
       }),
     };
-    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-6-luna";
     try {
       const resolved = state.provider === "claude"
         ? resolveClaudeExecutable({ env })
@@ -131,10 +138,10 @@ export function createWindowAutoStartScheduler({
       // speed, no tools or MCP setup, nothing saved. Unpinned, Codex runs at
       // config.toml's effort and service tier.
       const args = state.provider === "claude"
-        ? ["-p", "Reply with OK.", "--model", model, "--effort", "low", "--output-format", "text",
-          "--tools=", "--strict-mcp-config", "--no-session-persistence"]
-        : ["exec", "-m", model, "-c", "model_reasoning_effort=low", "-c", "service_tier=default",
-          "--ephemeral", "--skip-git-repo-check", "Reply with OK."];
+        ? ["-p", "Reply with OK.", "--model", model, "--effort", BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT,
+          "--output-format", "text", ...claudeBackgroundUtilityFlags(), "--no-session-persistence"]
+        : ["exec", "-m", model, "-c", `model_reasoning_effort=${BACKGROUND_UTILITY_CODEX_REASONING_EFFORT}`,
+          ...codexStandardSpeedFlags(), "--ephemeral", "--skip-git-repo-check", "Reply with OK."];
       const invocation = resolveCliSpawnInvocation(resolved.path, args, env);
       const options: SpawnOptions = {
         env,
@@ -184,13 +191,13 @@ export function createWindowAutoStartScheduler({
       return;
     }
 
+    const model = state.provider === "claude" ? BACKGROUND_UTILITY_CLAUDE_CLI_MODEL : BACKGROUND_UTILITY_CODEX_CLI_MODEL;
     const startedAt = nowMs();
     const runState = instance.configHome === state.configHome
       ? state
       : { ...state, configHome: instance.configHome };
-    const ok = await runRequest(runState);
+    const ok = await runRequest(runState, model);
     const durationMs = Math.max(0, nowMs() - startedAt);
-    const model = state.provider === "claude" ? "claude-haiku-5-5" : "gpt-6-luna";
     logger.info("usage.window_autostart", {
       provider: state.provider,
       instanceId: state.instanceId,

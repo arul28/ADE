@@ -2437,7 +2437,7 @@ private let workTurnFoldPostscriptMaxWorkRows = 3
 /// visible (desktop `TURN_FOLD_SUBSTANTIVE_PROSE_MIN_CHARS`).
 private let workTurnFoldSubstantiveProseMinChars = workTurnFoldAnswerMinChars
 /// Desktop `PROSE_IMAGE_PATTERN`: a markdown image.
-private let workTurnFoldProseImagePattern = #"!\[[^\]\n]*\]\([^)\s]+[^)]*\)"#
+private let workTurnFoldProseImagePattern = #"!\[[^\]\n]*\]\([^)\s][^)]*\)"#
 /// Desktop `PROSE_PROOF_PATTERN`: any proof artifact reference.
 private let workTurnFoldProseProofPattern = #"(?i)ade-proof://"#
 /// Desktop `PROSE_STRUCTURE_PATTERN`: a list item, heading, fence or table separator.

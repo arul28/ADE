@@ -499,7 +499,7 @@ export type TerminalSessionSummary = {
  * `linear`: a Linear inbox item (mention, comment, assignment) about the lane's issue.
  * `turn_end_question`: ADE read a question at the end of a turn the agent closed
  * while background work kept running, and raised the hand the agent did not
- * (`shared/turnEndAsk.ts`). It behaves exactly like `agent_explicit`.
+ * (`main/services/chat/turnEndAsk.ts`). It behaves exactly like `agent_explicit`.
  */
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question";
 
