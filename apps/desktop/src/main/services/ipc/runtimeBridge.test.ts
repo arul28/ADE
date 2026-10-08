@@ -1090,50 +1090,48 @@ describe("registerRuntimeBridge", () => {
       expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
     });
 
-    it("releases both replay variants a remote pinned pump accumulated", async () => {
+    it("keeps one remote push stream once a pinned pump is caught up, and reopens it after it ends", async () => {
       remoteRegistryGetMock.mockReturnValue(target);
-      const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+      const subscriptions: Array<{ cleanup: ReturnType<typeof vi.fn>; end: () => void }> = [];
       remoteSubscribeEventsForTargetMock.mockImplementation(
         async (
           _target: unknown,
           _projectId: string,
           _request: unknown,
           _onEvent: unknown,
-          _onEnded: unknown,
+          onEnded: () => void,
           onSubscribed?: (result: Record<string, unknown>) => void,
         ) => {
           const cleanup = vi.fn();
           onSubscribed?.({ nextCursor: 0, hasMore: false });
-          cleanups.push(cleanup);
+          subscriptions.push({ cleanup, end: onEnded });
           return cleanup;
         },
       );
+      remoteStreamEventsForTargetMock.mockResolvedValue({ events: [], nextCursor: 5, hasMore: false });
       const { pool } = recordingLocalRuntimePool();
       registerWithPool(pool);
       const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
       const release = ipcHandlers.get(IPC.runtimeEventsRelease)!;
       const active = destroyableSender(216);
+      const poll = (request: Record<string, unknown>) =>
+        streamRemote(eventForSender(active.webContents), { id: target.id, projectId: "project-1", request });
+      const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-      // A pinned pump suppresses replay on its first poll and stops suppressing
-      // once caught up, so it owns both request-key variants over its life.
-      await streamRemote(eventForSender(active.webContents), {
-        id: target.id,
-        projectId: "project-1",
-        request: { cursor: 0, limit: 200, category: "pty", replay: false },
-      });
-      remoteStreamEventsForTargetMock.mockResolvedValue({
-        events: [],
-        nextCursor: 5,
-        hasMore: false,
-      });
-      await streamRemote(eventForSender(active.webContents), {
-        id: target.id,
-        projectId: "project-1",
-        request: { cursor: 5, limit: 200, category: "pty" },
-      });
-      // The replay-bearing path subscribes fire-and-forget alongside its poll.
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(cleanups).toHaveLength(2);
+      // A pinned pump suppresses replay on its first poll, then polls caught up.
+      // Every event crosses the wire once per subscription, so the caught-up
+      // polls must not open a second, replaying one.
+      await poll({ cursor: 0, limit: 200, category: "pty", replay: false });
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await settle();
+      expect(subscriptions).toHaveLength(1);
+
+      // When that stream ends (a dropped connection), the next poll opens one.
+      subscriptions[0].end();
+      await poll({ cursor: 5, limit: 200, category: "pty" });
+      await settle();
+      expect(subscriptions).toHaveLength(2);
 
       await expect(
         release(eventForSender(active.webContents), {
@@ -1141,9 +1139,8 @@ describe("registerRuntimeBridge", () => {
           projectId: "project-1",
           category: "pty",
         }),
-      ).resolves.toEqual({ released: 2 });
-      expect(cleanups[0]).toHaveBeenCalledTimes(1);
-      expect(cleanups[1]).toHaveBeenCalledTimes(1);
+      ).resolves.toEqual({ released: 1 });
+      expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
     });
 
     it("stops the idle sweeper when an ended subscription empties the registry", async () => {
