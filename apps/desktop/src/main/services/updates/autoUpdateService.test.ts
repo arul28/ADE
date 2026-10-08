@@ -3305,14 +3305,16 @@ describe("Windows update window files", () => {
   const DEAD_PID = 2 ** 30;
 
   it.each([
-    { label: "the old copy, opened mid-install", defers: true, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: now() } },
-    { label: "the new version the installer opened", defers: false, beat: { pid: process.pid, targetVersion: "1.2.94", phase: "opening", updatedAt: now() } },
-    { label: "after the window reported a failure", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "failed", updatedAt: now() } },
-    { label: "a heartbeat that stopped beating", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: ago(9_000) } },
-    { label: "a heartbeat dated in the future", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing", updatedAt: ago(-60_000) } },
-    { label: "a window process that is gone", defers: false, beat: { pid: DEAD_PID, targetVersion: "1.2.95", phase: "installing", updatedAt: now() } },
-  ])("hand-launch guard, $label: defers $defers", ({ beat, defers }) => {
-    const heartbeat = writeHeartbeat(null, beat);
+    { label: "the old copy, opened mid-install", defers: true, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: 0 },
+    { label: "the new version the installer opened", defers: false, beat: { pid: process.pid, targetVersion: "1.2.94", phase: "opening" }, ageMs: 0 },
+    { label: "after the window reported a failure", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "failed" }, ageMs: 0 },
+    { label: "a heartbeat that stopped beating", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: 9_000 },
+    { label: "a heartbeat dated in the future", defers: false, beat: { pid: process.pid, targetVersion: "1.2.95", phase: "installing" }, ageMs: -60_000 },
+    { label: "a window process that is gone", defers: false, beat: { pid: DEAD_PID, targetVersion: "1.2.95", phase: "installing" }, ageMs: 0 },
+  ])("hand-launch guard, $label: defers $defers", ({ beat, ageMs, defers }) => {
+    // Dated here, not in the table: the table is built at collection, and on a
+    // loaded runner a beat dated then is already stale when its row runs.
+    const heartbeat = writeHeartbeat(null, { ...beat, updatedAt: ago(ageMs) });
 
     expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(defers);
     // Deferring is only half of it: the window has to be asked to come forward.

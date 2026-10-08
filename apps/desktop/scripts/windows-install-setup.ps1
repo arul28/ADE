@@ -11,7 +11,9 @@ param(
   # app's job on its first launch after an update (`runUpdateTransaction`
   # reinstalls, restarts and verifies it), so reading its status and starting it
   # here as well cost 27s of every update (measured: service_status_read 9.1s,
-  # brain_start 18.2s) before ADE could reopen, only to be redone.
+  # brain_start 18.2s) before ADE could reopen, only to be redone. A failure in
+  # an update is logged and rolled back but never fails the installer: see the
+  # end of the catch block below.
   [switch]$Updating
 )
 
@@ -245,8 +247,41 @@ try {
   } catch {
     $rollbackErrors.Add("could not restore the previous user PATH: $($_.Exception.Message)")
   }
+  $failureMessage = if ($rollbackErrors.Count -gt 0) {
+    "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+  } else {
+    $setupError.Exception.Message
+  }
+  # An update must not abort here. The new files are already in place and the
+  # update flow has already stopped and removed the background service, so an
+  # abort leaves no brain and no ADE window: the installer does not relaunch
+  # the app after Abort. Exiting 0 lets it relaunch, and the relaunched app's
+  # update transaction reinstalls the service. The terminal command was rolled
+  # back above; the reason is logged for the next diagnostic report.
+  if ($Updating) {
+    # The previous shim could not be put back either, so the command may be
+    # half-written. The relaunched app rewrites it when this request exists
+    # (adeCliAutoInstall.ts), even on a machine whose one-time install already
+    # ran; it removes the request once the rewrite succeeds.
+    if ($rollbackErrors.Count -gt 0) {
+      try {
+        # The relaunched app inherits the updater's environment, so it looks
+        # under a custom ADE_HOME when one was set; this script replaced that
+        # value with the channel default above.
+        $repairHome = if (-not [string]::IsNullOrWhiteSpace($saved.ADE_HOME.Value)) { $saved.ADE_HOME.Value } else { $env:ADE_HOME }
+        $repairDir = Join-Path $repairHome "runtime"
+        New-Item -ItemType Directory -Path $repairDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $repairDir "cli-shim-repair-request") -Value $failureMessage -Encoding UTF8
+      } catch {
+        $failureMessage = "$failureMessage; could not request a repair: $($_.Exception.Message)"
+      }
+    }
+    Write-AdeInstallStep "update_continues" 0 "terminal command not refreshed: $failureMessage"
+    Write-Warning "ADE could not refresh its terminal command during the update; continuing so ADE can reopen. $failureMessage"
+    exit 0
+  }
   if ($rollbackErrors.Count -gt 0) {
-    throw "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+    throw $failureMessage
   }
   throw $setupError
 } finally {

@@ -112,7 +112,7 @@ import {
   type WebhookSetupGuide,
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
-import type { AutomationWebhookListEntry } from "../../../shared/types";
+import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
 import {
   buildPrAiResolutionContextKey,
   isTrackedAgentCliToolType,
@@ -1515,6 +1515,54 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
   };
 }
 
+/**
+ * Raise a session's hand: the one path behind `ade chat ask`. Writes the
+ * attention marker, flips a live tracked CLI to waiting-input, and pushes the
+ * question to paired phones. ADE's own turn-end question check
+ * (`turn_end_question`) comes through here too, so its hand reads and
+ * notifies exactly like one the agent raised. False when the session is gone.
+ */
+export function requestSessionAttentionForRuntime(
+  runtime: AdeRuntime,
+  args: {
+    sessionId: string;
+    message: string;
+    source?: SessionAttentionSource;
+    alertTitle?: string | null;
+    alertBody?: string | null;
+  },
+): boolean {
+  const sessionService = runtime.sessionService;
+  if (!sessionService) return false;
+  const { sessionId, message } = args;
+  if (!sessionService.requestAttention(sessionId, message, args.source)) return false;
+  const session = sessionService.get(sessionId);
+  const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
+  if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
+    runtime.ptyService.markSessionAttentionRequested(sessionId);
+    runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
+  }
+  try {
+    runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
+      sessionId,
+      kind: isTrackedCli ? "cli" : "chat",
+      title: session?.title ?? "ADE session",
+      message,
+      laneId: session?.laneId ?? null,
+      // Only asks whose headline is the ask itself set these — today that is
+      // `ade browser handoff`, which pushes "Sign in for me" / the reason.
+      alertTitle: args.alertTitle,
+      alertBody: args.alertBody,
+    });
+  } catch (error) {
+    runtime.logger.warn("session.attention_notification_failed", {
+      sessionId,
+      error: getErrorMessage(error),
+    });
+  }
+  return true;
+}
+
 function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   const sessionService = runtime.sessionService;
   if (!sessionService) return null;
@@ -1559,32 +1607,14 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.requestSessionAttention");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const message = requireNonEmptyString(record.message, "message");
-      if (!sessionService.requestAttention(sessionId, message)) {
+      const raised = requestSessionAttentionForRuntime(runtime, {
+        sessionId,
+        message,
+        alertTitle: optionalNonEmptyString(record.alertTitle),
+        alertBody: optionalNonEmptyString(record.alertBody),
+      });
+      if (!raised) {
         throw new Error(`Session '${sessionId}' was not found.`);
-      }
-      const session = sessionService.get(sessionId);
-      const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
-      if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
-        runtime.ptyService.markSessionAttentionRequested(sessionId);
-        runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
-      }
-      try {
-        runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
-          sessionId,
-          kind: isTrackedCli ? "cli" : "chat",
-          title: session?.title ?? "ADE session",
-          message,
-          laneId: session?.laneId ?? null,
-          // Only asks whose headline is the ask itself set these — today that is
-          // `ade browser handoff`, which pushes "Sign in for me" / the reason.
-          alertTitle: optionalNonEmptyString(record.alertTitle),
-          alertBody: optionalNonEmptyString(record.alertBody),
-        });
-      } catch (error) {
-        runtime.logger.warn("session.attention_notification_failed", {
-          sessionId,
-          error: getErrorMessage(error),
-        });
       }
       return { ok: true, sessionId };
     },

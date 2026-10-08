@@ -1781,6 +1781,7 @@ describe("adeRpcServer", () => {
           assert: () => expect(runtime.sessionService.requestAttention).toHaveBeenCalledWith(
             "chat-1",
             "Choose a release channel.",
+            undefined,
           ),
         },
         {
@@ -5359,6 +5360,7 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.sessionService.requestAttention).toHaveBeenCalledWith(
       "chat-1",
       "Which account should I use?",
+      undefined,
     );
 
     const deniedAttentionRequest = await callTool(handler, "run_ade_action", {
@@ -5367,10 +5369,9 @@ describe("adeRpcServer", () => {
       args: { sessionId: "chat-2", message: "Cross-session question" },
     });
     expect(deniedAttentionRequest.isError).toBe(true);
-    expect(fixture.runtime.sessionService.requestAttention).not.toHaveBeenCalledWith(
-      "chat-2",
-      "Cross-session question",
-    );
+    expect(
+      vi.mocked(fixture.runtime.sessionService.requestAttention).mock.calls.some((call: unknown[]) => call[0] === "chat-2"),
+    ).toBe(false);
 
     const ownScheduledWorkCreate = await callTool(handler, "run_ade_action", {
       domain: "chat",

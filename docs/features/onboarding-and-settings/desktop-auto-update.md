@@ -104,8 +104,15 @@ An in-place update does only what an update needs. The old uninstaller runs with
 service without starting ADE.exe, and leaves the terminal shim, the user PATH
 entry, `ade://`, file associations and the firewall rule in place.
 `customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
-refreshes only the shim. The relaunched app reinstalls, restarts and verifies
-the service itself (`runUpdateTransaction`). Every `--updated` install comes
+refreshes only the shim. If that refresh fails, the script puts the previous
+shim back, logs `update_continues`, and still exits 0: the update flow has
+already removed the service, and NSIS does not relaunch ADE after an abort, so
+failing here used to leave no brain and no ADE window. When the previous shim
+cannot be put back either, the script also writes
+`runtime/cli-shim-repair-request` in the channel's ADE home, and the relaunched
+app rewrites the shim even though its one-time `ade` install already ran,
+removing the request once that succeeds. The relaunched app
+reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). Every `--updated` install comes
 from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
 pending install that makes that launch run the transaction. The trade: if the
 new ADE does not open at all, the brain stays down, and the machine is

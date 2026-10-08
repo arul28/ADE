@@ -24,6 +24,20 @@ describe("prChatScope", () => {
     expect(selectPrsForChatInLane(prs, "lane-1", "chat-2").map((p) => p.id)).toEqual([]);
   });
 
+  it("keeps a PR linked only from another lane with its own lane's chats; a same-lane link still claims it", () => {
+    // A stack coordinator on lane-2 linked lane-1's layer; a sibling chat on
+    // lane-1 claimed the other PR.
+    const prs = [
+      pr({ id: "layer", chatSessionIds: ["coordinator"], crossLaneChatSessionIds: ["coordinator"] }),
+      pr({ id: "claimed-on-lane", chatSessionIds: ["sibling"] }),
+    ];
+
+    expect(selectPrsForChatInLane(prs, "lane-1", "lane-chat").map((p) => p.id)).toEqual(["layer"]);
+    expect(selectPrsForChat(prs, "lane-chat").map((p) => p.id)).toEqual(["layer"]);
+    // The coordinator keeps the layer it linked.
+    expect(selectPrsForChatInLane(prs, "lane-2", "coordinator").map((p) => p.id)).toEqual(["layer"]);
+  });
+
   it("lets an edges-first chat fall back to unedged current-branch PRs only", () => {
     const prs = [
       pr({ id: "edged", chatSessionIds: ["chat-1"] }),

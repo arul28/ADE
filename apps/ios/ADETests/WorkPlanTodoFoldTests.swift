@@ -160,27 +160,32 @@ final class WorkPlanTodoFoldTests: XCTestCase {
     XCTAssertTrue(closed.contains { $0.id == "message:postscript-1" })
   }
 
-  func testPostscriptLengthUsesUTF16CodeUnitsLikeDesktop() {
-    // 150 emoji are 300 UTF-16 code units: too long to be a postscript, so the
-    // last text is the answer and the earlier long text folds. Counting grapheme
-    // clusters would read 150 and pick the earlier text instead.
+  func testSubstantiveProseLengthUsesUTF16CodeUnitsLikeDesktop() {
+    // Non-answer prose of 400+ characters stays visible under the fold. 200
+    // emoji are 400 UTF-16 code units (desktop `String.length`) but only 200
+    // grapheme clusters: counted in graphemes, the reply would fold away.
+    // Mirrors "200 emoji (400 UTF-16 code units)" in desktop chatTurnFold.test.ts.
     let user = WorkChatMessage(id: "user-1", role: "user", markdown: "Fix the issue", timestamp: "2026-09-24T00:20:00.000Z", turnId: "turn-1", itemId: nil)
     let research = WorkToolCardModel(id: "tool-research", toolName: "Read", status: .completed, startedAt: "2026-09-24T00:20:00.500Z", completedAt: "2026-09-24T00:20:00.900Z", argsText: nil, resultText: nil, turnId: "turn-1")
-    let answer = WorkChatMessage(id: "answer-1", role: "assistant", markdown: String(repeating: "A", count: 500), timestamp: "2026-09-24T00:20:01.000Z", turnId: "turn-1", itemId: "text-1")
-    let emoji = WorkChatMessage(id: "emoji-1", role: "assistant", markdown: String(repeating: "😀", count: 150), timestamp: "2026-09-24T00:20:02.000Z", turnId: "turn-1", itemId: "text-2")
+    let emoji = WorkChatMessage(id: "emoji-1", role: "assistant", markdown: String(repeating: "😀", count: 200), timestamp: "2026-09-24T00:20:01.000Z", turnId: "turn-1", itemId: "text-1")
+    let cleanup = WorkToolCardModel(id: "tool-cleanup", toolName: "Bash", status: .completed, startedAt: "2026-09-24T00:20:01.500Z", completedAt: "2026-09-24T00:20:01.900Z", argsText: nil, resultText: nil, turnId: "turn-1")
+    // 450 characters: the emoji text is under 3x of it, so it is not the answer.
+    let answer = WorkChatMessage(id: "answer-1", role: "assistant", markdown: String(repeating: "Z", count: 450), timestamp: "2026-09-24T00:20:02.000Z", turnId: "turn-1", itemId: "text-2")
     let marker = WorkTurnEndMarker(turnId: "turn-1", time: "2026-09-24T00:20:03.000Z", workedDurationLabel: "3s", status: "completed", terminalReasonLabel: nil, provider: "claude", modelLabel: "Claude", modelId: nil, sourceCount: 0)
     let timeline = [
       WorkTimelineEntry(id: "user:user-1", timestamp: user.timestamp, rank: 0, payload: .message(user), turnId: "turn-1"),
       WorkTimelineEntry(id: "tool:tool-research", timestamp: research.startedAt, rank: 1, payload: .toolCard(research), turnId: "turn-1"),
-      WorkTimelineEntry(id: "message:answer-1", timestamp: answer.timestamp, rank: 2, payload: .message(answer), turnId: "turn-1"),
-      WorkTimelineEntry(id: "message:emoji-1", timestamp: emoji.timestamp, rank: 3, payload: .message(emoji), turnId: "turn-1"),
-      WorkTimelineEntry(id: "turn-end:turn-1", timestamp: marker.time, rank: 4, payload: .turnEndMarker(marker), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:emoji-1", timestamp: emoji.timestamp, rank: 2, payload: .message(emoji), turnId: "turn-1"),
+      WorkTimelineEntry(id: "tool:tool-cleanup", timestamp: cleanup.startedAt, rank: 3, payload: .toolCard(cleanup), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:answer-1", timestamp: answer.timestamp, rank: 4, payload: .message(answer), turnId: "turn-1"),
+      WorkTimelineEntry(id: "turn-end:turn-1", timestamp: marker.time, rank: 5, payload: .turnEndMarker(marker), turnId: "turn-1"),
     ]
 
     let closed = workApplyingTurnFolds(timeline)
     XCTAssertTrue(closed.contains { if case .turnFold = $0.payload { return true }; return false })
-    XCTAssertFalse(closed.contains { $0.id == "message:answer-1" })
+    XCTAssertFalse(closed.contains { $0.id == "tool:tool-research" })
     XCTAssertTrue(closed.contains { $0.id == "message:emoji-1" })
+    XCTAssertTrue(closed.contains { $0.id == "message:answer-1" })
   }
 
   func testBackgroundJobThatWasLiveAtTurnEndStaysBelowTheFold() {

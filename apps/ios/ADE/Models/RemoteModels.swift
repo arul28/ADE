@@ -5575,6 +5575,10 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var chatSessionIds: [String]? = nil
   /// Chats that unlinked this PR. Fallback display must not revive these.
   var dismissedChatSessionIds: [String]? = nil
+  /// The linked chats that live on another lane. Mirrors
+  /// `PrSummary.crossLaneChatSessionIds`: a stack coordinator's link does not
+  /// take the PR away from the chats on its own lane.
+  var crossLaneChatSessionIds: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {

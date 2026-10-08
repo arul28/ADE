@@ -116,7 +116,7 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
       </button>
     </EmptyState>
   ) : (
-    <GitHubTabDetail chrome={chrome} detail={detail} />
+    <GitHubTabDetail chrome={chrome} detail={detail} prsByIdMap={list.prsByIdMap} />
   );
   const listColumn = connectNeeded ? null : <GitHubTabListColumn chrome={chrome} list={list} />;
 
@@ -419,9 +419,11 @@ function GitHubTabListColumn({
 function GitHubTabDetail({
   chrome,
   detail,
+  prsByIdMap,
 }: {
   chrome: GitHubTabViewChrome;
   detail: GitHubTabViewDetail;
+  prsByIdMap: Map<string, PrSummary>;
 }) {
   const selectedItem = detail.selectedItem;
   const selectedStack = detail.selectedStack;
@@ -463,6 +465,7 @@ function GitHubTabDetail({
               { prNumber: null, repoOwner: selectedStack.repoOwner, repoName: selectedStack.repoName },
             ),
           )}
+          prsById={prsByIdMap}
           selectedPrNumber={selectedItem.githubPrNumber}
           syncing={chrome.syncing}
           onSelectPr={detail.onSelect}

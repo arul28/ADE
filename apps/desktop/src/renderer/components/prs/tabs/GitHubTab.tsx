@@ -14,6 +14,7 @@ import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../s
 import type { UnmappedAffordance } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import {
+  prRouteCoordinatesMatch,
   type PrDetailRouteTab,
   type PrRouteSelectionTarget,
 } from "../prsRouteState";
@@ -571,12 +572,23 @@ export function GitHubTab({
   );
 
   const selectedStack = React.useMemo(() => {
-    const membership = selectedItem?.stack;
-    if (!membership) return null;
-    return snapshot?.stacks?.find(
-      (stack) => stack.id === membership.id || stack.number === membership.number,
-    ) ?? null;
-  }, [selectedItem?.stack, snapshot?.stacks]);
+    if (!selectedItem) return null;
+    const membership = selectedItem.stack;
+    if (membership) {
+      return snapshot?.stacks?.find(
+        (stack) => stack.id === membership.id || stack.number === membership.number,
+      ) ?? null;
+    }
+    // A merged PR from closed history carries no membership, yet its finished
+    // stack is still history worth showing: find it by member number.
+    return snapshot?.stacks?.find((stack) => (
+      prRouteCoordinatesMatch(
+        { prNumber: null, repoOwner: stack.repoOwner, repoName: stack.repoName },
+        { prNumber: null, repoOwner: selectedItem.repoOwner, repoName: selectedItem.repoName },
+      )
+      && stack.entries.some((entry) => entry.githubPrNumber === selectedItem.githubPrNumber)
+    )) ?? null;
+  }, [selectedItem, snapshot?.stacks]);
 
   const handleSync = React.useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
     setSyncing(true);

@@ -1,0 +1,26 @@
+---
+title: "v1.2.96"
+description: "Release notes for ADE v1.2.96 - October 8, 2026"
+---
+
+ADE 1.2.96 overhauls Activity into one four-state model with a desktop Activity panel, adds a native issue viewer, lets you move chats between machines from anywhere, and makes Windows updates and Remote Desktop sessions work reliably.
+
+## Activity
+
+- One four-state activity model, short pushes, and a single Live Activity; the notch is gone (#1524).
+- iOS shows the four states, a four-tile Live Activity, and push taps that land on the right chat (#1525).
+- A desktop Activity panel and `ade notify` (#1526).
+
+## Work
+
+- Native issue viewer: open, edit and create Linear and GitHub issues where you are (#1528).
+- Move chats to another machine from agents, the CLI, or your phone, with live state on the chat (#1509).
+- Answers stay out of the turn fold, questions surface behind background work, and background utility models work again (#1531).
+- Pasted files stay attached to messages (#1530).
+- Stacked PRs keep chat badges, allow merge override on any layer, show a cleaner stack strip, and the PR pane loads on other machines (#1535).
+- `ade projects` uses the machine brain instead of a headless fallback (#1532).
+
+## Windows
+
+- Updates are fast, visible, and survive a reopen (#1516).
+- The brain starts when you're connected over Remote Desktop (#1534).

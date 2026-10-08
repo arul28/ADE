@@ -266,6 +266,7 @@ import { createAutomationPlannerService } from "../../desktop/src/main/services/
 import {
   createAutomationAdeActionLookup,
   getAdeActionDomainServices,
+  requestSessionAttentionForRuntime,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, LaneWorktreeLockedError, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import {
@@ -2359,6 +2360,11 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        // The `ade chat ask` path, once the runtime exists; before that the
+        // chat service writes the same marker without the phone push.
+        requestSessionAttention: (request) => runtimeForCtoActions
+          ? requestSessionAttentionForRuntime(runtimeForCtoActions, request)
+          : sessionService.requestAttention(request.sessionId, request.message, request.source),
         turnUsageLedger,
         modelRouter,
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({

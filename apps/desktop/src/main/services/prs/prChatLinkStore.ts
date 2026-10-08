@@ -34,59 +34,87 @@ export function createPrChatLinkStore(args: {
 }) {
   const { db, projectId, logger, knownStackNumberForPr } = args;
 
-  type EdgeRow = { pr_id: string; session_id: string };
+  /** `cross_lane` is 1 when the linked chat lives on another lane than the PR. */
+  type EdgeRow = { pr_id: string; session_id: string; cross_lane?: number | null };
 
   /** Stay well under SQLite's bound-variable limit on a large project. */
   const EDGE_ID_CHUNK_SIZE = 900;
 
-  const sessionIdsForTable = (table: string, prIds: string[], failureEvent: string): Map<string, string[]> => {
+  const readEdges = (
+    prIds: string[],
+    failureEvent: string,
+    sqlFor: (placeholders: string) => string,
+  ): EdgeRow[] => {
     const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
-    const result = new Map<string, string[]>();
-    if (ids.length === 0) return result;
+    const rows: EdgeRow[] = [];
     try {
       for (let offset = 0; offset < ids.length; offset += EDGE_ID_CHUNK_SIZE) {
         const chunk = ids.slice(offset, offset + EDGE_ID_CHUNK_SIZE);
-        const placeholders = chunk.map(() => "?").join(", ");
-        const rows = db.all<EdgeRow>(
-          `
-            select pr_id, session_id
-              from ${table}
-             where project_id = ?
-               and pr_id in (${placeholders})
-             order by created_at asc, id asc
-          `,
-          [projectId, ...chunk],
-        );
-        for (const row of rows) {
-          const sessionId = String(row.session_id ?? "").trim();
-          if (!sessionId) continue;
-          const current = result.get(row.pr_id) ?? [];
-          if (!current.includes(sessionId)) current.push(sessionId);
-          result.set(row.pr_id, current);
-        }
+        rows.push(...db.all<EdgeRow>(sqlFor(chunk.map(() => "?").join(", ")), [projectId, ...chunk]));
       }
     } catch (error) {
       logger.warn(failureEvent, { error: getErrorMessage(error) });
     }
+    return rows;
+  };
+
+  const groupSessionIds = (rows: EdgeRow[], include: (row: EdgeRow) => boolean = () => true): Map<string, string[]> => {
+    const result = new Map<string, string[]>();
+    for (const row of rows) {
+      const sessionId = String(row.session_id ?? "").trim();
+      if (!sessionId || !include(row)) continue;
+      const current = result.get(row.pr_id) ?? [];
+      if (!current.includes(sessionId)) current.push(sessionId);
+      result.set(row.pr_id, current);
+    }
     return result;
   };
 
-  const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> =>
-    sessionIdsForTable("pull_request_chat_sessions", prIds, "prs.chat_session_links_read_failed");
+  /**
+   * Chat links, each marked when the chat lives on a lane other than the PR's
+   * own. The edge's `lane_id` is the PR's lane, so the chat's lane comes from
+   * its session row; a chat whose lane is unknown is not marked and keeps
+   * counting as a claim.
+   */
+  const readLinkEdges = (prIds: string[]): EdgeRow[] =>
+    readEdges(prIds, "prs.chat_session_links_read_failed", (placeholders) => `
+      select pcs.pr_id, pcs.session_id,
+             (ts.lane_id is not null and pr.lane_id is not null and ts.lane_id <> pr.lane_id) as cross_lane
+        from pull_request_chat_sessions pcs
+        left join pull_requests pr
+          on pr.id = pcs.pr_id and pr.project_id = pcs.project_id
+        left join terminal_sessions ts
+          on ts.id = pcs.session_id
+       where pcs.project_id = ?
+         and pcs.pr_id in (${placeholders})
+       order by pcs.created_at asc, pcs.id asc
+    `);
+
+  const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => groupSessionIds(readLinkEdges(prIds));
 
   const dismissedChatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> =>
-    sessionIdsForTable("pull_request_chat_session_dismissals", prIds, "prs.chat_session_dismissals_read_failed");
+    groupSessionIds(readEdges(prIds, "prs.chat_session_dismissals_read_failed", (placeholders) => `
+      select pr_id, session_id
+        from pull_request_chat_session_dismissals
+       where project_id = ?
+         and pr_id in (${placeholders})
+       order by created_at asc, id asc
+    `));
 
   const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
     const prIds = summaries.map((summary) => summary.id);
-    const links = chatSessionIdsByPrId(prIds);
+    const linkEdges = readLinkEdges(prIds);
+    const links = groupSessionIds(linkEdges);
+    const crossLane = groupSessionIds(linkEdges, (row) => Boolean(row.cross_lane));
     const dismissals = dismissedChatSessionIdsByPrId(prIds);
     return summaries.map((summary) => {
       const sessionIds = links.get(summary.id);
+      const crossLaneIds = crossLane.get(summary.id);
       const dismissed = dismissals.get(summary.id);
       return {
         ...summary,
         ...(sessionIds?.length ? { chatSessionIds: sessionIds } : {}),
+        ...(crossLaneIds?.length ? { crossLaneChatSessionIds: crossLaneIds } : {}),
         ...(dismissed?.length ? { dismissedChatSessionIds: dismissed } : {}),
       };
     });

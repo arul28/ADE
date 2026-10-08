@@ -22,6 +22,8 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
+import { resolveCursorSdkModelSelectionParams } from "../chat/cursorModelSelection";
+import { claudeBackgroundUtilityFlags, codexStandardSpeedFlags } from "../../../shared/backgroundUtilityModel";
 import {
   claudeRuntimeEffortFlags,
   codexReasoningEffortFlags,
@@ -47,6 +49,17 @@ export type ProviderTaskRunnerArgs = {
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   imagePaths?: string[];
   reasoningEffort?: string | null;
+  /**
+   * A background text-in, text-out task (names, status lines, summaries) that
+   * needs no tools: everything it reads is in the prompt.
+   * - Claude: drops every tool and MCP server, runs outside plan mode (plan
+   *   mode loads a ~47k-token setup), and asks for JSON in the prompt rather
+   *   than through the structured-output tool, which costs extra model turns.
+   *   Measured on Haiku 5.5: ~1.7s and ~4k tokens instead of ~4.7s and ~96k.
+   * - Codex and Cursor: pinned to standard speed, so a user's global Fast
+   *   setting never bills a chat name at Fast rates.
+   */
+  backgroundUtility?: boolean;
 };
 
 export type ProviderTaskRunnerResult = {
@@ -260,19 +273,22 @@ function extractClaudeText(stdout: string): string {
 async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const sessionId = args.sessionId?.trim() || null;
+  const backgroundUtility = args.backgroundUtility === true;
   const cliArgs = [
     "--model",
     resolveClaudeCliModel(args.descriptor.providerModelId),
     "--output-format",
     args.jsonSchema ? "json" : "text",
     "--permission-mode",
-    buildClaudePermissionMode(args.permissionMode),
+    // With no tools there is nothing to permit; plan mode would only swap models.
+    backgroundUtility ? "default" : buildClaudePermissionMode(args.permissionMode),
   ];
+  if (backgroundUtility) cliArgs.push(...claudeBackgroundUtilityFlags());
 
   if (args.system?.trim()) {
     cliArgs.push("--system-prompt", args.system.trim());
   }
-  if (args.jsonSchema) {
+  if (args.jsonSchema && !backgroundUtility) {
     cliArgs.push("--json-schema", JSON.stringify(args.jsonSchema));
   }
   if (args.descriptor.capabilities?.reasoning !== false) {
@@ -329,6 +345,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     cliArgs.push("--model", codexModel);
   }
   cliArgs.push(...codexReasoningEffortFlags(resolveTaskReasoningEffort(args)));
+  if (args.backgroundUtility) cliArgs.push(...codexStandardSpeedFlags());
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");
@@ -404,11 +421,21 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   // The pool forks a worker before it can report an unsupported platform, so
   // keep the win32-arm64 blocker on the near side of the fork.
   assertCursorSdkSupportedOnThisPlatform();
+  // Standard speed for background tasks. The in-memory catalog maps it to the
+  // model's own speed parameter; a model without one (or no catalog loaded
+  // yet) sends nothing, and a chat name never waits on a catalog fetch.
+  const modelParams = args.backgroundUtility
+    ? resolveCursorSdkModelSelectionParams({
+      modelSdkId: args.descriptor.providerModelId,
+      serviceTier: "standard",
+    })
+    : undefined;
   const result = await runCursorSdkLocalPrompt({
     projectRoot: args.cwd,
     workspacePath: args.cwd,
     apiKey,
     modelSdkId: args.descriptor.providerModelId,
+    ...(modelParams?.length ? { modelParams } : {}),
     promptText: combinedPrompt,
     feature: args.feature,
     timeoutMs: args.timeoutMs ?? 120_000,

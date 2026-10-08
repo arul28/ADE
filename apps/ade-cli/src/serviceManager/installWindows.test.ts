@@ -1601,7 +1601,142 @@ describe("Windows runtime supervisor", () => {
     },
     60_000,
   );
+
+  // The cross-session guards run against the real session API here. A Windows
+  // CI runner works in session 0 and a developer may be on Remote Desktop, so
+  // neither is the console session: exactly where the launcher used to refuse
+  // to start any brain.
+  (process.platform === "win32" ? it : it.skip)(
+    "starts its brain in whatever session it runs in, and a second supervisor leaves the owner alone",
+    async () => {
+      const dir = makeTempHome("ade-windows-supervisor-guard-");
+      const launcherPath = path.join(dir, "brain-service.ps1");
+      const pidPath = `${launcherPath}.pid.json`;
+      const brainMarker = path.join(dir, "brains.txt");
+      fs.writeFileSync(launcherPath, `﻿${renderWindowsServiceLauncher({
+        command: process.execPath,
+        args: ["-e", "require('node:fs').appendFileSync(process.env.ADE_TEST_BRAIN_MARKER, process.pid + '\\n'); setInterval(() => {}, 1000)"],
+        env: { ADE_TEST_BRAIN_MARKER: brainMarker },
+      }, {
+        pidPath,
+        logPath: `${launcherPath}.log`,
+        adeDir: dir,
+        mutexName: `Global\\ade-supervisor-test-${process.pid}-${path.basename(dir)}`,
+      })}`, "utf8");
+      const startSupervisor = () => spawn(windowsPowerShellCommand(), [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcherPath,
+      ], { stdio: "ignore", windowsHide: true });
+      const owner = startSupervisor();
+      try {
+        const deadline = Date.now() + 45_000;
+        while (!fs.existsSync(brainMarker) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const supervisorLog = () => fs.existsSync(`${launcherPath}.log`) ? fs.readFileSync(`${launcherPath}.log`, "utf8") : "";
+        expect(fs.existsSync(brainMarker), supervisorLog()).toBe(true);
+        const [brainPid] = fs.readFileSync(brainMarker, "utf8").trim().split("\n").map(Number);
+        expect(readWindowsServicePidRecord({ pidPath })).toMatchObject({
+          supervisorPid: owner.pid,
+          runtimePid: brainPid,
+        });
+
+        const second = startSupervisor();
+        const secondExit = await new Promise<number | null | "running">((resolve) => {
+          const timer = setTimeout(() => resolve("running"), 30_000);
+          second.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code);
+          });
+        });
+        if (secondExit === "running" && second.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(second.pid), "/T", "/F"], { encoding: "utf8", windowsHide: true });
+        }
+        expect(secondExit).toBe(0);
+        expect(supervisorLog()).toContain("another ADE supervisor already owns");
+        expect(fs.readFileSync(brainMarker, "utf8").trim().split("\n")).toEqual([String(brainPid)]);
+        expect(readWindowsServicePidRecord({ pidPath })?.supervisorPid).toBe(owner.pid);
+      } finally {
+        if (owner.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(owner.pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+        }
+      }
+    },
+    90_000,
+  );
+
+  (process.platform === "win32" && windowsTestRunsOutsideConsoleSession() ? it : it.skip)(
+    "outside the console session, a usable Windows Desktop launch request starts only the driver, even with no brain running",
+    async () => {
+      const dir = makeTempHome("ade-windows-supervisor-child-");
+      const launcherPath = path.join(dir, "brain-service.ps1");
+      const pidPath = `${launcherPath}.pid.json`;
+      const brainMarker = path.join(dir, "brain.txt");
+      const driverMarker = path.join(dir, "driver.txt");
+      const driverPath = path.join(dir, "ade-desktop-driver.exe");
+      fs.copyFileSync(process.execPath, driverPath);
+      fs.mkdirSync(path.join(dir, "windows-desktop"));
+      fs.writeFileSync(path.join(dir, "windows-desktop", "child-launch.json"), JSON.stringify({
+        driverPath,
+        // Start-Process joins these with spaces and no quoting, so no spaces.
+        args: ["-e", "require('node:fs').writeFileSync(process.env.ADE_TEST_DRIVER_MARKER,'driver')"],
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      }));
+      fs.writeFileSync(launcherPath, `﻿${renderWindowsServiceLauncher({
+        command: process.execPath,
+        args: ["-e", "require('node:fs').writeFileSync(process.env.ADE_TEST_BRAIN_MARKER, 'brain'); setInterval(() => {}, 1000)"],
+        env: { ADE_TEST_BRAIN_MARKER: brainMarker },
+      }, {
+        pidPath,
+        adeDir: dir,
+        mutexName: `Global\\ade-supervisor-test-${process.pid}-${path.basename(dir)}`,
+      })}`, "utf8");
+      const supervisor = spawn(windowsPowerShellCommand(), [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcherPath,
+      ], { stdio: "ignore", windowsHide: true, env: { ...process.env, ADE_TEST_DRIVER_MARKER: driverMarker } });
+      try {
+        // Bounded, so a supervisor that wrongly goes on to run a brain fails
+        // here and the finally below still stops it.
+        const exitCode = await new Promise<number | null | "running">((resolve) => {
+          const timer = setTimeout(() => resolve("running"), 30_000);
+          supervisor.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code);
+          });
+        });
+        expect(exitCode).toBe(0);
+        const deadline = Date.now() + 30_000;
+        while (!fs.existsSync(driverMarker) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(fs.readFileSync(driverMarker, "utf8")).toBe("driver");
+        expect(fs.existsSync(brainMarker)).toBe(false);
+        expect(fs.existsSync(pidPath)).toBe(false);
+      } finally {
+        if (supervisor.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+        }
+      }
+    },
+    90_000,
+  );
 });
+
+/** Whether this test process runs outside the active console session (CI's session 0, Remote Desktop). */
+function windowsTestRunsOutsideConsoleSession(): boolean {
+  const probe = spawnSync(windowsPowerShellCommand(), [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "Add-Type -Namespace AdeTest -Name SessionApi -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern uint WTSGetActiveConsoleSessionId();'; [Console]::Out.Write([AdeTest.SessionApi]::WTSGetActiveConsoleSessionId() -ne [uint32][System.Diagnostics.Process]::GetCurrentProcess().SessionId)",
+  ], { encoding: "utf8", windowsHide: true });
+  return probe.status === 0 && probe.stdout.trim() === "True";
+}
 
 describe("windows supervisor wedge guard", () => {
   const command = {

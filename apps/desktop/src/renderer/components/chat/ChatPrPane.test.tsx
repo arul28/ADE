@@ -267,7 +267,8 @@ describe("ChatPrPane", () => {
     renderPane();
 
     expect(await screen.findByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
-    expect(screen.getByText(/Review rebases and merge the stack on GitHub/)).toBeTruthy();
+    // A stacked PR explains its stack instead of claiming a single-PR merge.
+    expect(screen.getByText(/belongs to GitHub Stack #\d+/)).toBeTruthy();
     expect(screen.queryByText("Ready to merge")).toBeNull();
   });
 

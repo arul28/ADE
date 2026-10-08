@@ -30,12 +30,20 @@
      quieter plane than `.kit-card`, which floats frosted over the window. */
   --kit-panel-edge: color-mix(in srgb, var(--color-fg) 8%, transparent);
   --kit-panel-bg: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  /* GitHub's own PR state colours, theme-aware. */
+  --pr-open: #3fb950;
+  --pr-merged: #a371f7;
+  --pr-closed: #f85149;
+  --pr-draft: color-mix(in srgb, var(--color-fg) 45%, transparent);
 }
 
 [data-theme="light"] {
   --kit-card-bg: color-mix(in srgb, var(--color-bg) 72%, transparent);
   --kit-card-edge: color-mix(in srgb, var(--color-fg) 10%, transparent);
   --kit-text-2: color-mix(in srgb, var(--color-fg) 76%, var(--color-muted-fg));
+  --pr-open: #1a7f37;
+  --pr-merged: #8250df;
+  --pr-closed: #cf222e;
 }
 
 html[data-scene="image"] {

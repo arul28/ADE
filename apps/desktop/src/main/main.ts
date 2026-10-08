@@ -344,6 +344,7 @@ import {
   createAutomationAdeActionLookup,
   flushStagedBoardMoves,
   getAdeActionDomainServices,
+  requestSessionAttentionForRuntime,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -629,6 +630,7 @@ function installAdeCliForTerminalInBackground(
       logger,
       readState: () => readGlobalState(globalStatePath),
       writeState: (state) => writeGlobalState(globalStatePath, state),
+      repairRequestPath: path.join(resolveMachineAdeLayout().runtimeDir, "cli-shim-repair-request"),
     }).catch((error) => {
       logger.warn("ade_cli.auto_install_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -4465,6 +4467,8 @@ app.whenReady().then(async () => {
         projectId,
         event,
       }),
+      requestSessionAttention: (request) =>
+        requestSessionAttentionForRuntime(buildAdeActionRuntimeForAutomations(), request),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,

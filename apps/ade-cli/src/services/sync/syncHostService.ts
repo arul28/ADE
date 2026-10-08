@@ -1705,6 +1705,7 @@ export function buildSyncHostHelloOkPayload(args: {
           }
         : {}),
       openCodeInboxSteer: true as const,
+      prsStackLayeredBypass: true as const,
       ...(args.macDesktopStreamEnabled
         ? {
             macDesktopStream: true as const,

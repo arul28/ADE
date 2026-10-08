@@ -30,7 +30,7 @@ import {
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChatInLane } from "../../../shared/prChatScope";
+import { prClaimedByOtherChat, selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { requestChatPrSelection } from "./chatPrPaneRequests";
 import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";
@@ -252,7 +252,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           if (!refreshed) return pr;
           const enriched = refreshed.chatSessionIds || !pr.chatSessionIds
             ? refreshed
-            : { ...refreshed, chatSessionIds: pr.chatSessionIds };
+            : {
+                ...refreshed,
+                chatSessionIds: pr.chatSessionIds,
+                crossLaneChatSessionIds: pr.crossLaneChatSessionIds,
+              };
           setLinkedPrs((current) => current.map((candidate) => candidate.id === enriched.id ? enriched : candidate));
           setLinkedPr(enriched);
           return enriched;
@@ -340,11 +344,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       }
       if (event.type !== "prs-updated") return;
       const eventIncludesLanePr = event.prs.some((pr) => (
-        pr.laneId === laneId && (
-          !sessionId
-          || !pr.chatSessionIds?.length
-          || pr.chatSessionIds.includes(sessionId)
-        )
+        pr.laneId === laneId && (!sessionId || !prClaimedByOtherChat(pr, sessionId))
       ));
       const eventIncludesLinkedPr = current ? event.prs.some((pr) => pr.id === current.id) : false;
       if (eventIncludesLanePr || eventIncludesLinkedPr) {
