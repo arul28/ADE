@@ -704,7 +704,8 @@ snapshot refresh — foreground polling remains the guaranteed path, not this.
 `ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` sends a push the
 caller wrote to every phone on the account. Agents use it when the user asked to
 be told ("tell me when the deploy is done"), and automations use it through the
-**Send notification** step (an ADE-action step for `attention.sendNotification`).
+**Send notification to mobile app** step (an ADE-action step for
+`attention.sendNotification`).
 
 The path is CLI or automation → `attention.sendNotification` on the brain → the
 account relay client → `POST /attention/account/notify` with the account's
@@ -715,8 +716,20 @@ relay machine key, so a phone that muted this machine stays quiet.
 | --- | --- |
 | `title` | required, up to 64 characters |
 | `body` | optional, up to 160 characters |
-| `deepLink` | optional, `ade://` links only |
+| `deepLink` | optional, `ade://` links only (the brain converts an `https://ade-app.dev/open` link) |
 | `machineKey` | optional, the sending machine |
+
+A link is only worth sending if the phone can open it, so
+`normalizeCustomNotificationLink` (`shared/customNotificationLink.ts`) accepts
+what ADE opens — a chat, a pull request (`ade://pr/<number>` included),
+Activity with an optional `state=<column>`, `ade://workspace`, a Linear issue,
+and the lane, file, commit, branch and proof links the phone hands to the
+computer — and refuses the rest, such as `ade://pr/` or `ade://prs`. `ade
+notify` refuses a bad link; an automation whose link resolves badly at run time
+sends without it and reports `linkSkipped`. Before sending, the sender stamps
+its account machine key and the canonical project id onto a chat or pull
+request link that names no machine (`stampCustomNotificationLinkOwner`), so the
+phone opens it on the machine that owns it rather than the one in front.
 
 The relay sends the text exactly as written: no agent text, no state suffix.
 Each phone gets the alert unless its notifications are off, it is in quiet

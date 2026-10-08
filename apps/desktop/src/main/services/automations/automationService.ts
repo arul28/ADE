@@ -680,6 +680,12 @@ export function readTriggerPath(trigger: TriggerContext, pathExpr: string): unkn
   const raw = pathExpr.trim();
   if (!raw) return undefined;
   const segments = (raw.startsWith("trigger.") ? raw.slice("trigger.".length) : raw).split(".").filter(Boolean);
+  // `trigger.lane.*` is what the variable menu offers, but the context carries
+  // the run's lane flat (`laneId`, `laneName`); read it through that shape.
+  if (segments[0] === "lane" && !("lane" in trigger)) {
+    const lane: Record<string, unknown> = { id: trigger.laneId, name: trigger.laneName };
+    return segments.length === 1 ? lane : lane[segments[1] ?? ""];
+  }
   let cursor: unknown = trigger.webhook && WEBHOOK_REQUEST_FIELDS.has(segments[0] ?? "")
     ? trigger.webhook
     : trigger as unknown;
@@ -719,6 +725,20 @@ export function resolvePlaceholders(node: unknown, trigger: TriggerContext): unk
       out[key] = resolvePlaceholders(value, trigger);
     }
     return out;
+  }
+  if (typeof node === "string" && /\{\{\s*(?:date|time)\s*\}\}/.test(node)) {
+    // `{{date}}` and `{{time}}` are offered for every trigger; they read the
+    // scheduled time when there is one, else now, like lane names do.
+    const scheduledAt = trigger.scheduledAt ? new Date(trigger.scheduledAt) : null;
+    const clock = formatLaneTemplateClock(
+      scheduledAt && Number.isFinite(scheduledAt.getTime()) ? scheduledAt : new Date(),
+    );
+    return resolvePlaceholders(
+      node
+        .replace(/\{\{\s*date\s*\}\}/g, clock.date)
+        .replace(/\{\{\s*time\s*\}\}/g, clock.time),
+      trigger,
+    );
   }
   if (typeof node === "string") {
     const wholeMatch = /^\{\{\s*(trigger\.[^}\s]+)\s*\}\}$/.exec(node);

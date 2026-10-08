@@ -48,6 +48,24 @@ import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
+import { customNotificationProblem } from "../../../shared/types/attention";
+
+/**
+ * What is wrong with a "Send notification to mobile app" step, checked when
+ * the rule is saved. Text and links that use `{{…}}` values are only checked
+ * for what can be known now; the rest is checked when the run fills them in.
+ */
+function sendNotificationStepProblem(args: unknown): string | null {
+  const record = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const hasValue = (value: unknown) => typeof value === "string" && /\{\{[^}]*\}\}/.test(value);
+  const title = typeof record.title === "string" ? record.title : "";
+  if (!title.trim()) return "Send notification needs a title.";
+  return customNotificationProblem({
+    title: hasValue(title) ? "x" : title,
+    body: hasValue(record.body) ? null : record.body,
+    open: hasValue(record.open) ? null : record.open,
+  });
+}
 
 /** How a handoff step's lane target reads in the simulation list. */
 function handoffLaneSummary(action: AutomationAction): string {
@@ -855,6 +873,10 @@ function normalizeDraft(args: {
       if (!domain || !actionName) {
         issues.push({ level: "error", path: `actions[${idx}].adeAction`, message: "ade-action requires domain and action." });
         continue;
+      }
+      if (domain === "attention" && actionName === "sendNotification") {
+        const problem = sendNotificationStepProblem(adeAction?.args);
+        if (problem) issues.push({ level: "error", path: `actions[${idx}].adeAction.args`, message: problem });
       }
       normalizedActions.push({
         ...(base as AutomationAction),

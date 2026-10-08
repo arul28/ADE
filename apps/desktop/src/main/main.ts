@@ -363,6 +363,8 @@ import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
+import { getOrCreateLocalAccountMachineIdentity } from "./services/account/localMachineIdentity";
+import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLink";
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
@@ -5936,8 +5938,20 @@ app.whenReady().then(async () => {
         });
         automationNotifyRelay = { client, store };
       }
+      const { projectId, ...rest } = notification;
+      let accountMachineKey: string | null = null;
+      try {
+        accountMachineKey = getOrCreateLocalAccountMachineIdentity({
+          secretsDir: machineAdeLayout.secretsDir,
+        }).machineKey;
+      } catch {
+        // No machine identity: the link goes out as written.
+      }
       return await automationNotifyRelay.client.sendAccountNotification({
-        ...notification,
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
+          : null,
         machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
       });
     };

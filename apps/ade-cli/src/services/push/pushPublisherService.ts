@@ -31,6 +31,7 @@ import type {
   PushRelayAlertItem,
   PushRelayClient,
 } from "./pushRelayClient";
+import { stampCustomNotificationLinkOwner } from "../../../../desktop/src/shared/customNotificationLink";
 import { PushRelayMachineRevokedError, PushRelayRequestError } from "./pushRelayClient";
 import {
   activityPublishFingerprint,
@@ -2669,9 +2670,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       title: string;
       body?: string | null;
       deepLink?: string | null;
+      /** The canonical project a chat or PR link belongs to. */
+      projectId?: string | null;
     }): Promise<AccountNotificationResult> {
+      const { projectId, ...rest } = notification;
       return await deps.relayClient.sendAccountNotification({
-        ...notification,
+        ...rest,
+        deepLink: rest.deepLink
+          ? stampCustomNotificationLinkOwner(rest.deepLink, {
+            accountMachineKey: deps.getAccountMachineIdentity?.()?.machineKey,
+            projectId,
+          })
+          : null,
         machineKey: deps.store.getOrCreateIdentity().machineKey,
       });
     },

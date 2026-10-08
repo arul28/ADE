@@ -69,6 +69,8 @@ import {
   type AttentionPreferences,
   type AttentionPresence,
 } from "../../../shared/types/attention";
+import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
+import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -1356,8 +1358,14 @@ function buildSendNotificationAction(
   send: NonNullable<AdeRuntime["sendCustomNotification"]>,
 ) {
   return async (args?: { title?: unknown; body?: unknown; open?: unknown }) => {
-    const problem = customNotificationProblem(args ?? {});
+    // The link is checked apart from the text: an automation whose trigger
+    // left a link value empty still sends its notification, opening ADE, and
+    // says why the link was left off. `ade notify` refuses a bad link itself.
+    const problem = customNotificationProblem({ title: args?.title, body: args?.body });
     if (problem) throw new Error(problem);
+    if (args?.open != null && typeof args.open !== "string") {
+      throw new Error("The open link must be text.");
+    }
     // A process without the account service (desktop automations) learns the
     // sign-in state from the relay's 401 below instead.
     if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
@@ -1366,14 +1374,22 @@ function buildSendNotificationAction(
       );
     }
     const body = typeof args?.body === "string" ? args.body.trim() : "";
-    const open = typeof args?.open === "string" ? args.open.trim() : "";
+    const rawOpen = typeof args?.open === "string" ? args.open.trim() : "";
+    const link = rawOpen ? normalizeCustomNotificationLink(rawOpen) : null;
     try {
       const result = await send({
         title: String(args?.title).trim(),
         body: body || null,
-        deepLink: open || null,
+        deepLink: link?.ok ? link.link : null,
+        // The sender stamps its machine onto a chat or PR link; the project
+        // is this one, by the id every machine derives the same way.
+        projectId: runtime.projectRoot ? deriveProjectId(runtime.projectRoot) : null,
       });
-      return { sent: result.delivered > 0, ...result };
+      return {
+        sent: result.delivered > 0,
+        ...result,
+        ...(link && !link.ok ? { linkSkipped: link.problem } : {}),
+      };
     } catch (error) {
       if (error instanceof PushRelayNotifyRateLimitedError) {
         const minutes = error.retryAfterSeconds ? Math.max(1, Math.ceil(error.retryAfterSeconds / 60)) : null;

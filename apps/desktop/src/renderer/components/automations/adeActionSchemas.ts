@@ -62,9 +62,9 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   {
     domain: "attention",
     action: "sendNotification",
-    label: "Send notification",
+    label: "Send notification to mobile app",
     description:
-      "Push a notification you write to every phone on your ADE account. Phones with notifications off, in quiet hours, or muting this machine stay quiet. At most 60 an hour.",
+      "Push a message to the ADE app on your phone. A tap can open a chat, a pull request, Activity and more. Phones with notifications off, in quiet hours, or muting this machine stay quiet. At most 60 an hour.",
     params: [
       {
         name: "title",

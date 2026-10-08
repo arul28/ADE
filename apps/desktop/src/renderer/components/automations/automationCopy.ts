@@ -137,6 +137,7 @@ const ADE_ACTION_PHRASES: Record<string, string> = {
   "issue.close": "close the issue",
   "issue.addComment": "comment on the issue",
   "linear_sync.runSyncNow": "sync Linear",
+  "attention.sendNotification": "notify your phone",
 };
 
 function adeActionPhrase(action: AutomationAction): string {

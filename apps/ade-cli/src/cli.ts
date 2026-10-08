@@ -1356,8 +1356,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --title <text>                 Required. Up to 64 characters.
     --body <text>                  Optional second line. Up to 160 characters.
-    --open <ade link>              Optional. An ade:// link a tap opens
-                                   (make one with \`ade link\`).
+    --open <ade link>              Optional. What a tap opens: an ade:// or
+                                   https://ade-app.dev/open link for a chat,
+                                   PR, lane, file, commit, branch or Linear
+                                   issue (make one with \`ade link\`), or
+                                   ade://activity[?state=needs_you].
 
   Notes:
     Needs a signed-in account (\`ade login\`) and the running brain.

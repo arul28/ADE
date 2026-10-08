@@ -1792,6 +1792,24 @@ declare global {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       attention: {
+        /**
+         * Sends a notification to the phones on the ADE account through the
+         * project's runtime (`attention.sendNotification`). The automation
+         * editor's "Send a test" uses it. Absent where no runtime can send.
+         */
+        sendNotification?: (args: {
+          title: string;
+          body?: string | null;
+          open?: string | null;
+        }) => Promise<{
+          sent: boolean;
+          devices: number;
+          delivered: number;
+          skipped: number;
+          failed: number;
+          remaining: number | null;
+          linkSkipped?: string;
+        }>;
         getSnapshot: (
           since?: number,
           streamId?: string | null,

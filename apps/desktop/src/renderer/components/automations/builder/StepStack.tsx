@@ -3,7 +3,7 @@ import { Broom, CaretDown, Plus } from "@phosphor-icons/react";
 import type { TestSuiteDefinition } from "../../../../shared/types";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
-import { ADD_STEP_ORDER, stepDef, type StepKind } from "../actionCatalog";
+import { ADD_STEP_ORDER, NOTIFY_STEP, stepDef, type StepKind } from "../actionCatalog";
 import { blankStep, type WorkflowStep } from "./draftBridge";
 import { StepCard } from "./StepCard";
 
@@ -12,8 +12,29 @@ function newKey(): string {
   return c?.randomUUID?.() ?? `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// Steps offered in the add menu — cleanup (delete-lane) has its own zone.
-const ADDABLE_KINDS = ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane");
+/**
+ * What the add menu offers: every step kind except cleanup (delete-lane has its
+ * own zone), plus "Send notification to mobile app", which is an ADE-action
+ * step that starts out set to `attention.sendNotification`.
+ */
+type StepChoice = StepKind | typeof NOTIFY_STEP.id;
+
+const ADDABLE_CHOICES: readonly StepChoice[] = [
+  ...ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane").slice(0, 1),
+  NOTIFY_STEP.id,
+  ...ADD_STEP_ORDER.filter((kind) => kind !== "delete-lane").slice(1),
+];
+
+function choiceDef(choice: StepChoice) {
+  return choice === NOTIFY_STEP.id ? NOTIFY_STEP : stepDef(choice);
+}
+
+function newStepFor(choice: StepChoice, defaultSuiteId?: string): WorkflowStep {
+  if (choice === NOTIFY_STEP.id) {
+    return { kind: "ade-action", adeAction: { domain: "attention", action: "sendNotification", args: { title: "" } } };
+  }
+  return blankStep(choice, defaultSuiteId);
+}
 
 function isCleanupStep(step: WorkflowStep): boolean {
   return step.kind === "delete-lane";
@@ -43,12 +64,12 @@ export function StepStack({
   const cleanupIndex = hasTrailingCleanup ? steps.length - 1 : -1;
   const normalCount = hasTrailingCleanup ? steps.length - 1 : steps.length;
 
-  const insertStep = (at: number, kind: StepKind) => {
+  const insertStep = (at: number, kind: StepChoice) => {
     const keys = [...keysRef.current];
     keys.splice(at, 0, newKey());
     keysRef.current = keys;
     const next = [...steps];
-    next.splice(at, 0, blankStep(kind, suites[0]?.id));
+    next.splice(at, 0, newStepFor(kind, suites[0]?.id));
     onChange(next);
   };
 
@@ -136,7 +157,7 @@ export function StepStack({
   );
 }
 
-function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function StepInserter({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -168,7 +189,7 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   );
 }
 
-function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function AddStepButton({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -213,7 +234,7 @@ function StepMenu({
   open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
   onClose: () => void;
-  onPick: (kind: StepKind) => void;
+  onPick: (kind: StepChoice) => void;
 }) {
   return (
     <AnchoredMenu
@@ -223,8 +244,8 @@ function StepMenu({
       className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
       role="menu"
     >
-      {ADDABLE_KINDS.map((kind) => {
-        const def = stepDef(kind);
+      {ADDABLE_CHOICES.map((kind) => {
+        const def = choiceDef(kind);
         const Icon = def.icon;
         return (
           <button
@@ -248,13 +269,13 @@ function StepMenu({
   );
 }
 
-function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepKind) => void }) {
+function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
   return (
     <div className="rounded-xl border border-dashed border-fg/[0.1] bg-fg/[0.02] p-3">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">Pick a first step</div>
       <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {ADDABLE_KINDS.map((kind) => {
-          const def = stepDef(kind);
+        {ADDABLE_CHOICES.map((kind) => {
+          const def = choiceDef(kind);
           const Icon = def.icon;
           return (
             <button

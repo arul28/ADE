@@ -1,4 +1,5 @@
 import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+import { normalizeCustomNotificationLink } from "../customNotificationLink";
 import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
@@ -725,10 +726,9 @@ export function customNotificationProblem(input: {
     }
   }
   if (input.open != null && input.open !== "") {
-    const open = typeof input.open === "string" ? input.open.trim() : "";
-    if (!/^ade:\/\/\S+$/i.test(open) || open.length > 1_024) {
-      return "The open link must be an ADE link that starts with ade://.";
-    }
+    if (typeof input.open !== "string") return "The open link must be text.";
+    const link = normalizeCustomNotificationLink(input.open);
+    if (!link.ok) return link.problem;
   }
   return null;
 }
