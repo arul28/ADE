@@ -3,7 +3,13 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatThreadComment } from "../../../shared/threadComments";
-import { refreshThreadComments, setThreadComments, useThreadComments } from "./threadCommentsStore";
+import {
+  addLocalThreadComment,
+  countCommentsForNextSend,
+  refreshThreadComments,
+  setThreadComments,
+  useThreadComments,
+} from "./threadCommentsStore";
 
 afterEach(() => {
   delete (window as { ade?: unknown }).ade;
@@ -64,5 +70,58 @@ describe("threadCommentsStore.refreshThreadComments", () => {
 
   it("ignores a refresh when this client has no comment API", async () => {
     await expect(refreshThreadComments("store-no-api-session", null)).resolves.toBeUndefined();
+  });
+});
+
+describe("threadCommentsStore.addLocalThreadComment", () => {
+  const fields = (quote: string) => ({
+    messageKey: "message:1",
+    messageExcerpt: "reply",
+    anchor: { kind: "text" as const, quote, prefix: "", suffix: "" },
+    body: quote,
+  });
+
+  it("shows a comment at once, keeps it through host lists, and confirms it once", async () => {
+    const sessionId = "store-local-success";
+    installList(vi.fn(async () => []));
+    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    await waitFor(() => expect(result.current).toEqual([]));
+
+    let settle!: ReturnType<typeof addLocalThreadComment>;
+    act(() => { settle = addLocalThreadComment(sessionId, fields("new")); });
+    expect(result.current.map((entry) => entry.body)).toEqual(["new"]);
+    expect(countCommentsForNextSend(result.current)).toBe(1);
+
+    // A host list from before the save (another comment's event) replaces the
+    // host half of the store; the comment still being saved stays visible.
+    act(() => setThreadComments(sessionId, [comment("other", sessionId)]));
+    expect(result.current.map((entry) => entry.body)).toEqual(["other", "new"]);
+
+    // The host's change event lands before the save call answers.
+    const saved = { ...comment("saved-1", sessionId), body: "new" };
+    act(() => setThreadComments(sessionId, [comment("other", sessionId), saved]));
+    act(() => settle(saved));
+    expect(result.current.map((entry) => entry.id)).toEqual(["other", "saved-1"]);
+  });
+
+  it("joins the saved comment when its answer beats the host event, and drops a failed one", async () => {
+    const sessionId = "store-local-settle";
+    installList(vi.fn(async () => []));
+    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    await waitFor(() => expect(result.current).toEqual([]));
+
+    let settleSaved!: ReturnType<typeof addLocalThreadComment>;
+    let settleFailed!: ReturnType<typeof addLocalThreadComment>;
+    act(() => {
+      settleSaved = addLocalThreadComment(sessionId, fields("kept"));
+      settleFailed = addLocalThreadComment(sessionId, fields("refused"));
+    });
+    expect(result.current.map((entry) => entry.body)).toEqual(["kept", "refused"]);
+
+    const saved = { ...comment("saved-2", sessionId), body: "kept" };
+    act(() => settleSaved(saved));
+    act(() => settleFailed(null));
+    expect(result.current.map((entry) => entry.id)).toEqual(["saved-2"]);
+    expect(countCommentsForNextSend(result.current)).toBe(1);
   });
 });

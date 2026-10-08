@@ -8936,6 +8936,76 @@ describe("per-chat runtime routing", () => {
       vi.useRealTimers();
     }
   });
+
+  it("delivers a remote pinned chat's pushed events at once, once, and re-polls on a restarted runtime's push", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge();
+      const envelope = (text: string) => ({
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:00:00.000Z",
+        event: { type: "text", text },
+      });
+      const pushed = envelope("pushed");
+      const streamRequests: Array<{ request: Record<string, unknown> }> = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push(arg as { request: Record<string, unknown> });
+        if (streamRequests.length === 1) {
+          return { events: [], nextCursor: 6, hasMore: false, eventEpoch: "epoch-a" };
+        }
+        if (streamRequests.length === 2) {
+          // The poll returns the event the push already delivered.
+          return {
+            events: [{ id: 7, timestamp: pushed.timestamp, category: "runtime", payload: pushed }],
+            nextCursor: 7,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        return { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch-b" };
+      });
+
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+      const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+
+      // Pushed while the pump idles: delivered now, not at the next poll.
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-a",
+        event: { id: 7, timestamp: pushed.timestamp, category: "runtime", payload: pushed },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(pushed);
+
+      // The next poll brings the same event; it is not delivered twice.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(streamRequests).toHaveLength(2);
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      // A push from a restarted runtime is not dispatched; the pump re-polls
+      // at once to re-anchor instead of waiting out its idle delay.
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-b",
+        event: { id: 1, timestamp: pushed.timestamp, category: "runtime", payload: envelope("after restart") },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests.length).toBeGreaterThanOrEqual(3);
+      expect(streamRequests[2].request).toEqual({ cursor: 7, limit: 200 });
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("preload built-in browser loopback tunneling", () => {

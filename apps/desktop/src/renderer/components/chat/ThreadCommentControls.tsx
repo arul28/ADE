@@ -9,7 +9,14 @@ import { cssZoomOf } from "../../lib/webZoom";
 import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { countCommentsForNextSend, refreshThreadComments, setThreadComments, threadCommentsApi } from "./threadCommentsStore";
+import {
+  countCommentsForNextSend,
+  isLocalThreadComment,
+  patchThreadComment,
+  refreshThreadComments,
+  removeThreadCommentLocally,
+  threadCommentsApi,
+} from "./threadCommentsStore";
 
 /** An error from a comment write, without Electron's IPC wrapper text. */
 export function threadCommentErrorText(error: unknown): string {
@@ -17,15 +24,14 @@ export function threadCommentErrorText(error: unknown): string {
 }
 
 /**
- * Comment writes for one chat, plus the one comment being edited. Each write
- * returns the host's answer; the list itself refreshes from the host's change
- * event, so nothing is patched here except a delete, which also removes the
- * row at once. `itemProps` wires a `ThreadCommentListItem` to all of it.
+ * Comment writes for one chat, plus the one comment being edited. Every write
+ * shows at once and the host's change event then confirms it; a write the host
+ * refuses re-reads the host's list. `itemProps` wires a `ThreadCommentListItem`
+ * to all of it.
  */
 export function useThreadCommentActions(
   sessionId: string | null | undefined,
   pin: OpenProjectBinding | null | undefined,
-  comments: readonly ChatThreadComment[],
 ) {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -40,11 +46,18 @@ export function useThreadCommentActions(
       return null;
     }
   };
-  const update = (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) =>
-    run(() => (sessionId ? threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null) : undefined));
+  const update = async (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) => {
+    // A comment still being created has no host id yet.
+    if (!sessionId || isLocalThreadComment(commentId)) return null;
+    // The change shows at once; if the host refuses it, show the host's list again.
+    patchThreadComment(sessionId, commentId, patch);
+    const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null));
+    if (!result) void refreshThreadComments(sessionId, pin);
+    return result;
+  };
   const remove = async (commentId: string) => {
-    if (!sessionId) return null;
-    setThreadComments(sessionId, comments.filter((comment) => comment.id !== commentId));
+    if (!sessionId || isLocalThreadComment(commentId)) return null;
+    removeThreadCommentLocally(sessionId, commentId);
     const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null));
     // The row went early; if the host kept it, show the host's list again.
     if (!result) void refreshThreadComments(sessionId, pin);
@@ -263,7 +276,7 @@ export function ComposerThreadCommentsButton({
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const actions = useThreadCommentActions(sessionId, pin, comments);
+  const actions = useThreadCommentActions(sessionId, pin);
   const sendCount = countCommentsForNextSend(comments);
 
   useEffect(() => {
