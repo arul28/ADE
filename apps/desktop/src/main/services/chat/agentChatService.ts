@@ -30631,7 +30631,7 @@ export function createAgentChatService(args: {
         projectRoot,
         laneWorktreePath: managed.laneWorktreePath,
         env: agentSkillRootEnvFor(managed),
-        personalSession: isEmbeddedPersonalSession(managed.session),
+        personalSession: adeSkillCatalogFor(managed.session) === "none",
       })
       : null;
     if (qwenSkillDefaults) {
@@ -38709,7 +38709,7 @@ export function createAgentChatService(args: {
       ? undefined
       : "medium";
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
-    const pluginPaths = personalSession
+    const pluginPaths = adeSkillCatalogFor(managed.session) === "none"
       ? []
       : [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(managed.laneWorktreePath)])];
     // ADE ships one plugin directory per agent-skill root; on Windows the
