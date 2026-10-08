@@ -91,12 +91,12 @@ export function DictationSection() {
                   Loading the model once so your first dictation is fast. This can take up to a minute.
                 </div>
               ) : (
-              <div className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
-                {percent != null
-                  ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
-                  : `Downloaded ${formatMb(install.receivedBytes)} so far`}
-                <span style={{ fontFamily: "var(--font-sans)" }}>{" · keeps going if you leave Settings"}</span>
-              </div>
+                <div className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
+                  {percent != null
+                    ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
+                    : `Downloaded ${formatMb(install.receivedBytes)} so far`}
+                  <span style={{ fontFamily: "var(--font-sans)" }}>{" · keeps going if you leave Settings"}</span>
+                </div>
               )}
             </div>
           ) : voiceInputEnabled && needsDownload ? (

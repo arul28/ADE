@@ -281,9 +281,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // answering it later still reset ADE after the window reported a failure.
     case IPC.machineResetStart:
       return 30 * 60_000;
-    // Save dialog, then streams a proof video that can run to hundreds of MB.
-    case IPC.computerUseSaveMediaAs:
-      return 30 * 60_000;
     // Stopping renders the demo video; see DEMO_RECORDING_STOP_TIMEOUT_MS,
     // which promises every transport carrying a stop waits at least this long.
     // The runtime-action path already does; these are the direct channels.

@@ -101,14 +101,12 @@ export function GitHubIssueBrowser({
     } finally {
       setBusy(false);
     }
-    // selectedIssueId: re-merge when the selection changes, not on every new
-    // object with the same id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notifyRepoChange, selectedIssueId, setBusy, stateFilter]);
+  }, [notifyRepoChange, setBusy, stateFilter]);
 
+  // Reload when the selection changes, not on every new object with the same id.
   useEffect(() => {
     void load();
-  }, [load, refreshKey]);
+  }, [load, refreshKey, selectedIssueId]);
 
   useEffect(() => {
     setFocusedIssueId(selectedIssue?.id ?? null);

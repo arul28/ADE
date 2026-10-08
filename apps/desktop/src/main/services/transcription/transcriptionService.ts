@@ -82,7 +82,7 @@ export class TranscriptionError extends Error {
  * that loads the fresh model once, so the user's first dictation is not the one
  * that pays for it (measured: ~28 s cold, under 2 s after).
  */
-export type ModelInstallProgress = DownloadProgress & { stage?: "download" | "warmup" };
+export type ModelInstallProgress = DownloadProgress & { stage?: "warmup" };
 
 export type TranscriptionService = {
   transcribe: (pcm: Int16Array | Float32Array, options?: { sampleRate?: number }) => Promise<TranscriptionResult>;
