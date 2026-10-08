@@ -79,7 +79,7 @@
 }
 .ade-home-line { margin: 0; font-size: 13px; color: var(--kit-text-2); }
 .ade-home-line[data-tone="attention"] { color: var(--color-fg); }
-.ade-home-eyebrow { color: var(--kit-text-2); }
+.ade-home-eyebrow { color: var(--kit-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Over a picture the greeting sits on a soft scrim: a feathered pool of the
    theme's background behind the text block (static, no backdrop-filter), plus

@@ -194,13 +194,14 @@ function OwnModes({ which }: { which: "shuffle" | "repeat" }) {
   const repeat = useMusicState((s) => s?.playback.repeat ?? 0);
   if (which === "shuffle") {
     return (
-      <PlayerIconButton label={shuffle ? "Shuffle on" : "Shuffle"} on={shuffle} onClick={() => void musicActions.setShuffle(!shuffle)}>
+      <PlayerIconButton className="ade-np2-mode" label={shuffle ? "Shuffle on" : "Shuffle"} on={shuffle} onClick={() => void musicActions.setShuffle(!shuffle)}>
         <Shuffle size={16} weight={shuffle ? "bold" : "regular"} />
       </PlayerIconButton>
     );
   }
   return (
     <PlayerIconButton
+      className="ade-np2-mode"
       label={repeat === 1 ? "Repeat one" : repeat === 2 ? "Repeat all" : "Repeat"}
       on={repeat !== 0}
       onClick={() => void musicActions.setRepeat(NEXT_REPEAT[repeat])}

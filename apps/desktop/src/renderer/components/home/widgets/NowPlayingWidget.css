@@ -231,7 +231,12 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
     grid-template-columns: auto minmax(0, 1fr);
     column-gap: 18px;
   }
-  .ade-np2-cover { height: 100%; max-width: 54cqw; aspect-ratio: var(--np2-ratio); }
+  /* The art's own shape, as tall as the card allows, centred: no bands inside the frame. */
+  .ade-np2-cover { --np2-cover-max: 54cqw; align-self: center; width: min(var(--np2-cover-max), calc((100cqh - 24px) * var(--np2-ratio))); height: auto; aspect-ratio: var(--np2-ratio); }
+  /* A video is wider than the column it gets: it keeps the card's full height
+     and sits whole on its own blurred fill, so no empty band opens above or
+     below it. */
+  .ade-np2[data-art="wide"] .ade-np2-cover { align-self: stretch; width: var(--np2-cover-max); height: 100%; aspect-ratio: auto; }
   .ade-np2-meta { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 10px; }
   .ade-np2-main { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; justify-content: center; gap: 10px; }
   .ade-np2-info { align-items: flex-start; text-align: left; gap: 4px; }
@@ -250,9 +255,15 @@ html:not([data-theme="light"]) .ade-np2 { background: color-mix(in srgb, #111 60
   .ade-np2-idle-art { width: 84px; height: 84px; border-radius: 20px; }
   .ade-np2-idle-text { align-items: flex-start; }
 }
-/* A video beside its controls: give the meta column more room. */
+/* A smaller sideways card: a narrower cover, so the controls keep room. */
 @container np2 (min-aspect-ratio: 13/10) and (max-width: 640px) {
-  .ade-np2[data-art="wide"] .ade-np2-cover { max-width: 48cqw; }
+  .ade-np2-cover { --np2-cover-max: 44cqw; }
+  .ade-np2-player { column-gap: 14px; }
+  .ade-np2-meta { container: np2meta / inline-size; }
+}
+/* Too tight for five buttons: shuffle and repeat step aside (the Music tab has them). */
+@container np2meta (max-width: 250px) {
+  .ade-np2 .ade-np2-mode { display: none; }
 }
 @container np2 (max-height: 190px) {
   .ade-np2-title { font-size: 13.5px; }
