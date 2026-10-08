@@ -23,14 +23,28 @@ export const HOME_WIDGETS_IPC = {
   nowPlayingSubscribe: "ade.home.nowPlaying.subscribe",
   nowPlayingUnsubscribe: "ade.home.nowPlaying.unsubscribe",
   nowPlayingCommand: "ade.home.nowPlaying.command",
+  nowPlayingSelect: "ade.home.nowPlaying.select",
   nowPlayingChanged: "ade.home.nowPlaying.changed",
 } as const;
 
 export type HomeNowPlayingCommand = "play" | "pause" | "toggle" | "next" | "previous";
 
+/**
+ * Where a Now Playing session comes from:
+ * - `ade-music`: ADE's own Apple Music player (the Music tab).
+ * - `browser`: a tab in ADE's built-in browser playing media.
+ * - `app`: another app on this computer, through the OS media session.
+ */
+export type HomeNowPlayingSourceKind = "ade-music" | "browser" | "app";
+
 export type HomeNowPlayingSession = {
-  /** The player, in words ("Spotify", "Microsoft Edge"), when the OS names it. */
+  /** Stable while the source lives: "ade-music", "tab:<id>" or "app:<OS session id>". */
+  id: string;
+  kind: HomeNowPlayingSourceKind;
+  /** The player or site, in words ("Spotify", "YouTube Music"), when it is known. */
   app: string | null;
+  /** The source's own icon as a data URL: the app's icon, or the site's largest favicon. */
+  appIcon: string | null;
   title: string;
   artist: string;
   album: string;
@@ -43,15 +57,24 @@ export type HomeNowPlayingSession = {
   canPause: boolean;
   canNext: boolean;
   canPrevious: boolean;
-  /** Album art as a data URL, when the player shares one. */
+  /** Album art as a data URL (or an https URL for ADE's own player), when the player shares one. */
   artwork: string | null;
+  /** A tab of the Browser top tab: the widget can bring it to the front. */
+  browserTabId?: string | null;
 };
 
 export type HomeNowPlayingState = {
-  /** False when this system has no source (or the helper is missing). */
+  /** False when nothing can be read here (no OS source and nothing in ADE). */
   available: boolean;
+  /** The session the widget shows: the best one, or the one the user picked. */
   session: HomeNowPlayingSession | null;
-  source: "windows-smtc" | "macos-mediaremote" | "macos-music" | "ade-music" | null;
+  /**
+   * Every source with something loaded, best first (ADE's player, then a
+   * playing browser tab, then a playing app, then the most recent paused).
+   * Artwork is left out here; `session` carries it.
+   */
+  sessions?: HomeNowPlayingSession[];
+  source: "windows-smtc" | "macos-mediaremote" | "macos-music" | "ade-music" | "ade-browser" | null;
   error?: string;
 };
 
@@ -159,7 +182,10 @@ export type HomeWidgetsBridge = {
     /** The widget is on screen: start the source (if needed) and get the state now. */
     subscribe: () => Promise<HomeNowPlayingState>;
     unsubscribe: () => Promise<void>;
-    command: (command: HomeNowPlayingCommand) => Promise<void>;
+    /** Sends to `sessionId`, or to the session shown when it is omitted. */
+    command: (command: HomeNowPlayingCommand, sessionId?: string) => Promise<void>;
+    /** Show this session instead of the best one (null: back to the best one). */
+    select: (sessionId: string | null) => Promise<void>;
     onChanged: (cb: (state: HomeNowPlayingState) => void) => () => void;
   };
   share: {

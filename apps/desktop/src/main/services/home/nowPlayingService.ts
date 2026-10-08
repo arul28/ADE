@@ -2,26 +2,34 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child
 import fs from "node:fs";
 import path from "node:path";
 
-import type { HomeNowPlayingCommand, HomeNowPlayingState } from "../../../shared/types/homeWidgets";
+import type { HomeNowPlayingCommand, HomeNowPlayingSession, HomeNowPlayingState } from "../../../shared/types/homeWidgets";
+import type { BrowserMediaSessions } from "./browserMediaSessions";
+import { appSourceName } from "./nowPlayingSources";
 
 /**
- * What the computer is playing, from any player, for the home page's Now
- * Playing widget.
+ * Now Playing for the home page's widget: one list of everything playing,
+ * merged from three sources, best first.
  *
- * - Windows: `ade-now-playing.exe` (native/ADENowPlayingWin), a long-lived
- *   helper that streams the Global System Media Transport Controls as NDJSON
- *   and takes play/pause/next/previous on stdin. Spawned async; nothing here
- *   ever blocks the main thread.
- * - macOS (unverified on this build machine): `mediaremote-adapter`
- *   (github.com/ungive/mediaremote-adapter) through /usr/bin/perl when its
- *   script and framework are bundled in resources/native/mediaremote-adapter;
- *   otherwise Music.app over AppleScript, polled every 2 s.
- * - Elsewhere: unavailable.
+ * 1. ADE's own Apple Music player (the Music tab), through `setOverride`.
+ * 2. ADE's built-in browser tabs playing media (`browserMediaSessions.ts`).
+ * 3. Other apps on this computer, from the OS media session:
+ *    - Windows: `ade-now-playing.exe` (native/ADENowPlayingWin), a long-lived
+ *      helper that streams every Global System Media Transport Controls
+ *      session as NDJSON (with each app's icon) and takes commands on stdin.
+ *      Spawned async; nothing here ever blocks the main thread.
+ *    - macOS (unverified on this build machine): `mediaremote-adapter`
+ *      (github.com/ungive/mediaremote-adapter) through /usr/bin/perl when its
+ *      script and framework are bundled in resources/native/mediaremote-adapter;
+ *      otherwise Music.app over AppleScript, polled every 2 s.
+ *    ADE's own sessions are skipped there: its browser tabs and its Apple
+ *    Music player already come from 1 and 2.
  *
- * The source runs only while at least one widget is subscribed (on screen);
- * the last unsubscribe stops it. A future in-app player (the Music tab) can
- * take over with `setOverride`: while set, its state is what the widget sees
- * and its controls are what the buttons press.
+ * Order: a playing ADE player, a playing browser tab, a playing app, then
+ * ADE's paused player, then the most recently paused anything. The widget
+ * shows the first one unless the user picked another with `select`.
+ *
+ * The OS source and the browser's position polling run only while at least
+ * one widget is subscribed (on screen); the last unsubscribe stops them.
  */
 
 export type NowPlayingOverride = {
@@ -32,9 +40,12 @@ export type NowPlayingOverride = {
 
 type Logger = { warn: (event: string, data?: Record<string, unknown>) => void };
 
-type Source = { stop: () => void; command: (command: HomeNowPlayingCommand) => void };
+type OsSourceKind = "windows-smtc" | "macos-mediaremote" | "macos-music";
 
-const EMPTY: HomeNowPlayingState = { available: true, session: null, source: null };
+/** What the OS source reports: every session it can see. */
+type OsSnapshot = { available: boolean; error?: string; sessions: HomeNowPlayingSession[] };
+
+type OsSource = { stop: () => void; command: (command: HomeNowPlayingCommand, rawId: string | null) => void };
 
 function resolveHelper(input: { isPackaged: boolean; resourcesPath: string; appPath: string }, name: string): string | null {
   const candidates = input.isPackaged
@@ -44,7 +55,9 @@ function resolveHelper(input: { isPackaged: boolean; resourcesPath: string; appP
 }
 
 type RawSession = {
+  id?: string;
   app?: string;
+  name?: string | null;
   title?: string;
   artist?: string;
   album?: string;
@@ -57,45 +70,32 @@ type RawSession = {
   canNext?: boolean;
   canPrevious?: boolean;
   artwork?: string | null;
+  icon?: string | null;
 };
 
-function friendlyApp(id: string | undefined): string | null {
-  if (!id) return null;
-  const lower = id.toLowerCase();
-  if (lower.includes("spotify")) return "Spotify";
-  if (lower.includes("applemusic") || lower.includes("apple.music") || lower.includes("appleinc.applemusic")) return "Apple Music";
-  if (lower.includes("zunemusic") || lower.includes("media.player")) return "Media Player";
-  if (lower.includes("msedge")) return "Microsoft Edge";
-  if (lower.includes("chrome")) return "Chrome";
-  if (lower.includes("firefox")) return "Firefox";
-  if (lower.includes("vlc")) return "VLC";
-  if (lower.includes("com.apple.music")) return "Music";
-  // "Publisher.App_hash!App" or "app.exe": the readable middle.
-  const base = id.split("!")[0]!.split("_")[0]!.replace(/\.exe$/i, "");
-  return base.split(".").at(-1) || base;
-}
+const dataImage = (value: unknown): string | null =>
+  typeof value === "string" && value.startsWith("data:image/") ? value : null;
 
-function toState(raw: RawSession | null, source: HomeNowPlayingState["source"]): HomeNowPlayingState {
-  if (!raw || (!raw.title && !raw.artist)) return { available: true, session: null, source };
+function toSession(raw: RawSession, rawId: string): HomeNowPlayingSession | null {
+  if (!raw.title && !raw.artist) return null;
   const status = raw.status === "playing" || raw.status === "paused" || raw.status === "stopped" ? raw.status : raw.status === "changing" ? "playing" : "stopped";
   return {
-    available: true,
-    source,
-    session: {
-      app: friendlyApp(raw.app),
-      title: raw.title ?? "",
-      artist: raw.artist ?? "",
-      album: raw.album ?? "",
-      status,
-      positionMs: Math.max(0, Number(raw.positionMs) || 0),
-      durationMs: Math.max(0, Number(raw.durationMs) || 0),
-      updatedAt: Number(raw.updatedAtMs) > 0 ? Number(raw.updatedAtMs) : Date.now(),
-      canPlay: raw.canPlay !== false,
-      canPause: raw.canPause !== false,
-      canNext: raw.canNext !== false,
-      canPrevious: raw.canPrevious !== false,
-      artwork: typeof raw.artwork === "string" && raw.artwork.startsWith("data:image/") ? raw.artwork : null,
-    },
+    id: `app:${rawId}`,
+    kind: "app",
+    app: appSourceName(raw.app, raw.name),
+    appIcon: dataImage(raw.icon),
+    title: raw.title ?? "",
+    artist: raw.artist ?? "",
+    album: raw.album ?? "",
+    status,
+    positionMs: Math.max(0, Number(raw.positionMs) || 0),
+    durationMs: Math.max(0, Number(raw.durationMs) || 0),
+    updatedAt: Number(raw.updatedAtMs) > 0 ? Number(raw.updatedAtMs) : Date.now(),
+    canPlay: raw.canPlay !== false,
+    canPause: raw.canPause !== false,
+    canNext: raw.canNext !== false,
+    canPrevious: raw.canPrevious !== false,
+    artwork: dataImage(raw.artwork),
   };
 }
 
@@ -113,32 +113,61 @@ function onLines(stream: NodeJS.ReadableStream, handle: (line: string) => void) 
       index = buffer.indexOf("\n");
     }
     // A runaway line (a giant artwork) never grows without bound.
-    if (buffer.length > 16 * 1024 * 1024) buffer = "";
+    if (buffer.length > 32 * 1024 * 1024) buffer = "";
   });
 }
 
-function startWindows(helper: string, emit: (state: HomeNowPlayingState) => void, logger?: Logger): Source {
-  let lastArtwork: string | null = null;
+function startWindows(helper: string, isOwn: (appId: string) => boolean, emit: (snapshot: OsSnapshot) => void, logger?: Logger): OsSource {
+  // The helper sends artwork, icon and name only when they change; keep the last ones per session.
+  const kept = new Map<string, { artwork: string | null; icon: string | null; name: string | null }>();
   let child: ChildProcessWithoutNullStreams | null = spawn(helper, [], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   child.on("error", (error) => {
     logger?.warn("home.now_playing.helper_error", { error: error.message });
-    emit({ available: false, session: null, source: "windows-smtc", error: "The Now Playing helper could not start." });
+    emit({ available: false, sessions: [], error: "The Now Playing helper could not start." });
   });
   child.on("exit", (code) => {
     if (child) logger?.warn("home.now_playing.helper_exit", { code });
     child = null;
   });
+  const remember = (rawId: string, raw: RawSession) => {
+    const previous = kept.get(rawId) ?? { artwork: null, icon: null, name: null };
+    const next = {
+      artwork: raw.artwork === undefined ? previous.artwork : raw.artwork,
+      icon: raw.icon === undefined ? previous.icon : raw.icon,
+      name: raw.name === undefined ? previous.name : raw.name,
+    };
+    kept.set(rawId, next);
+    return { ...raw, ...next };
+  };
   onLines(child.stdout, (line) => {
     try {
-      const message = JSON.parse(line) as { type?: string; session?: RawSession | null; message?: string };
-      if (message.type === "state") {
+      const message = JSON.parse(line) as { type?: string; sessions?: RawSession[]; session?: RawSession | null; current?: string | null; message?: string };
+      if (message.type === "sessions" && Array.isArray(message.sessions)) {
+        const seen = new Set<string>();
+        const sessions: HomeNowPlayingSession[] = [];
+        for (const raw of message.sessions) {
+          const rawId = String(raw.id ?? raw.app ?? "");
+          if (!rawId) continue;
+          seen.add(rawId);
+          const full = remember(rawId, raw);
+          if (isOwn(String(raw.app ?? rawId))) continue;
+          const session = toSession(full, rawId);
+          if (session) sessions.push(session);
+        }
+        for (const rawId of kept.keys()) if (!seen.has(rawId)) kept.delete(rawId);
+        // Windows' own idea of the current session goes first among equals.
+        const current = message.current ? `app:${message.current}` : null;
+        sessions.sort((a, b) => Number(b.id === current) - Number(a.id === current));
+        emit({ available: true, sessions });
+      } else if (message.type === "state") {
+        // An older helper: just the current session.
         const raw = message.session ?? null;
-        // The helper sends artwork only when it changes; keep the last one.
-        if (raw && raw.artwork === undefined) raw.artwork = lastArtwork;
-        lastArtwork = raw?.artwork ?? null;
-        emit(toState(raw, "windows-smtc"));
+        const full = raw ? remember("current", raw) : null;
+        const session = full && !isOwn(String(full.app ?? "")) ? toSession(full, "current") : null;
+        emit({ available: true, sessions: session ? [session] : [] });
+      } else if (message.type === "error") {
+        logger?.warn("home.now_playing.helper_message", { message: message.message });
       }
-      else if (message.type === "error") logger?.warn("home.now_playing.helper_message", { message: message.message });
     } catch {
       // A partial or foreign line: skip it.
     }
@@ -159,9 +188,9 @@ function startWindows(helper: string, emit: (state: HomeNowPlayingState) => void
         if (running.exitCode == null) running.kill();
       }, 1500).unref?.();
     },
-    command: (command) => {
+    command: (command, rawId) => {
       try {
-        child?.stdin.write(`${command}\n`);
+        child?.stdin.write(rawId && rawId !== "current" ? `${command} ${rawId}\n` : `${command}\n`);
       } catch {
         // The helper exited; the next subscribe restarts it.
       }
@@ -171,10 +200,36 @@ function startWindows(helper: string, emit: (state: HomeNowPlayingState) => void
 
 const MAC_SEND_IDS: Record<HomeNowPlayingCommand, number> = { play: 0, pause: 1, toggle: 2, next: 4, previous: 5 };
 
-function startMacAdapter(dir: string, emit: (state: HomeNowPlayingState) => void, logger?: Logger): Source {
+/** The app's icon on macOS (unverified): its bundle found by Spotlight, drawn by Electron. */
+function macAppIcon(bundleId: string, getAppIcon: ((appPath: string) => Promise<string | null>) | undefined): Promise<string | null> {
+  if (!getAppIcon || !/^[A-Za-z0-9.-]+$/.test(bundleId)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${bundleId}'`], { timeout: 4000 }, (error, stdout) => {
+      const appPath = error ? null : String(stdout).split("\n").find((line) => line.endsWith(".app")) ?? null;
+      if (!appPath) {
+        resolve(null);
+        return;
+      }
+      getAppIcon(appPath).then(resolve, () => resolve(null));
+    });
+  });
+}
+
+function startMacAdapter(
+  dir: string,
+  isOwn: (appId: string) => boolean,
+  emit: (snapshot: OsSnapshot) => void,
+  getAppIcon: ((appPath: string) => Promise<string | null>) | undefined,
+  logger?: Logger,
+): OsSource {
   const script = path.join(dir, "mediaremote-adapter.pl");
   const framework = path.join(dir, "MediaRemoteAdapter.framework");
+  const icons = new Map<string, string | null>();
   let latest: RawSession | null = null;
+  const publish = () => {
+    const session = latest && !isOwn(String(latest.app ?? "")) ? toSession({ ...latest, icon: icons.get(String(latest.app)) ?? null }, String(latest.app ?? "current")) : null;
+    emit({ available: true, sessions: session ? [session] : [] });
+  };
   let child: ChildProcessWithoutNullStreams | null = spawn("/usr/bin/perl", [script, framework, "stream", "--no-diff", "--debounce=150"], { stdio: ["pipe", "pipe", "pipe"] });
   child.on("error", (error) => logger?.warn("home.now_playing.adapter_error", { error: error.message }));
   child.on("exit", () => {
@@ -187,12 +242,13 @@ function startMacAdapter(dir: string, emit: (state: HomeNowPlayingState) => void
       const payload = message.payload ?? {};
       if (!payload.title && !payload.artist) {
         latest = null;
-        emit(toState(null, "macos-mediaremote"));
+        publish();
         return;
       }
       const mime = typeof payload.artworkMimeType === "string" ? payload.artworkMimeType : "image/jpeg";
+      const bundleId = typeof payload.bundleIdentifier === "string" ? payload.bundleIdentifier : undefined;
       latest = {
-        app: typeof payload.bundleIdentifier === "string" ? payload.bundleIdentifier : undefined,
+        app: bundleId,
         title: String(payload.title ?? ""),
         artist: String(payload.artist ?? ""),
         album: String(payload.album ?? ""),
@@ -203,7 +259,14 @@ function startMacAdapter(dir: string, emit: (state: HomeNowPlayingState) => void
         updatedAtMs: typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : Date.now(),
         artwork: typeof payload.artworkData === "string" ? `data:${mime};base64,${payload.artworkData}` : null,
       };
-      emit(toState(latest, "macos-mediaremote"));
+      if (bundleId && !icons.has(bundleId)) {
+        icons.set(bundleId, null);
+        void macAppIcon(bundleId, getAppIcon).then((icon) => {
+          icons.set(bundleId, icon);
+          if (icon && latest?.app === bundleId) publish();
+        });
+      }
+      publish();
     } catch {
       // Skip a malformed line.
     }
@@ -231,7 +294,7 @@ else
   return "closed"
 end if`;
 
-function startMacMusicApp(emit: (state: HomeNowPlayingState) => void): Source {
+function startMacMusicApp(emit: (snapshot: OsSnapshot) => void): OsSource {
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
   const poll = () => {
@@ -239,8 +302,8 @@ function startMacMusicApp(emit: (state: HomeNowPlayingState) => void): Source {
       if (stopped) return;
       if (!error) {
         const [state, title, artist, album, position, duration] = String(stdout).trim().split("\t");
-        if (state === "playing" || state === "paused") {
-          emit(toState({
+        const session = state === "playing" || state === "paused"
+          ? toSession({
             app: "com.apple.Music",
             title,
             artist,
@@ -249,10 +312,9 @@ function startMacMusicApp(emit: (state: HomeNowPlayingState) => void): Source {
             positionMs: Math.round(Number(position) * 1000),
             durationMs: Math.round(Number(duration) * 1000),
             updatedAtMs: Date.now(),
-          }, "macos-music"));
-        } else {
-          emit(toState(null, "macos-music"));
-        }
+          }, "com.apple.Music")
+          : null;
+        emit({ available: true, sessions: session ? [session] : [] });
       }
       timer = setTimeout(poll, 2000);
     });
@@ -275,93 +337,217 @@ function startMacMusicApp(emit: (state: HomeNowPlayingState) => void): Source {
   };
 }
 
+/** Lower is better. */
+function rank(session: HomeNowPlayingSession): number {
+  if (session.status === "playing") return session.kind === "ade-music" ? 0 : session.kind === "browser" ? 1 : 2;
+  return session.kind === "ade-music" ? 3 : 4;
+}
+
 export function createNowPlayingService(args: {
   isPackaged: boolean;
   resourcesPath: string;
   appPath: string;
   platform?: NodeJS.Platform;
+  /**
+   * OS media sessions that are ADE itself (its AppUserModelId, its bundle id,
+   * the Music tab's player host): skipped, since ADE reports those directly.
+   */
+  isOwnApp?: (appId: string) => boolean;
+  /** macOS: an app bundle's icon as a data URL (Electron's `app.getFileIcon`). */
+  getAppIcon?: (appPath: string) => Promise<string | null>;
   /** Sends a state to every subscribed renderer. */
   broadcast: (state: HomeNowPlayingState) => void;
   logger?: Logger;
 }) {
   const platform = args.platform ?? process.platform;
+  const isOwn = args.isOwnApp ?? (() => false);
   const subscribers = new Set<number>();
-  let source: Source | null = null;
-  let state: HomeNowPlayingState = EMPTY;
+  let osSource: OsSource | null = null;
+  let osKind: OsSourceKind | null = null;
+  let os: OsSnapshot = { available: true, sessions: [] };
   let override: NowPlayingOverride | null = null;
+  let browser: BrowserMediaSessions | null = null;
+  let pinnedId: string | null = null;
+  /** When each session started playing (orders the playing ones) and was last seen playing (the paused ones). */
+  const startedAt = new Map<string, number>();
+  const lastPlaying = new Map<string, number>();
+  let state: HomeNowPlayingState = { available: true, session: null, sessions: [], source: null };
+  let lastSignature = "";
+  let scheduled = false;
 
-  const publish = (next: HomeNowPlayingState) => {
-    state = next;
-    if (!override && subscribers.size > 0) args.broadcast(next);
+  const merged = (): HomeNowPlayingSession[] => {
+    const list: HomeNowPlayingSession[] = [];
+    const own = override?.getState().session;
+    if (own) list.push({ ...own, id: "ade-music", kind: "ade-music" });
+    if (browser) {
+      for (const { lastPlayingAt: _ignored, ...session } of browser.sessions()) list.push(session);
+    }
+    list.push(...os.sessions);
+    return list;
   };
 
-  const startSource = () => {
-    if (source || override) return;
+  const sourceOf = (session: HomeNowPlayingSession | null): HomeNowPlayingState["source"] => {
+    if (!session) return osKind;
+    if (session.kind === "ade-music") return "ade-music";
+    if (session.kind === "browser") return "ade-browser";
+    return osKind;
+  };
+
+  const recompute = () => {
+    scheduled = false;
+    const now = Date.now();
+    const list = merged();
+    const ids = new Set(list.map((session) => session.id));
+    let startedOther = false;
+    for (const session of list) {
+      if (session.status === "playing") {
+        lastPlaying.set(session.id, now);
+        if (!startedAt.has(session.id)) {
+          startedAt.set(session.id, now);
+          if (session.id !== pinnedId) startedOther = true;
+        }
+      } else {
+        startedAt.delete(session.id);
+      }
+    }
+    for (const id of lastPlaying.keys()) {
+      if (!ids.has(id)) {
+        lastPlaying.delete(id);
+        startedAt.delete(id);
+      }
+    }
+    const recency = (session: HomeNowPlayingSession) =>
+      (session.status === "playing" ? startedAt.get(session.id) : lastPlaying.get(session.id)) ?? 0;
+    // A pick lasts until its source goes away or something else starts playing.
+    if (pinnedId && (!ids.has(pinnedId) || startedOther)) pinnedId = null;
+    const order = list
+      .map((session, index) => ({ session, index }))
+      .sort((a, b) => rank(a.session) - rank(b.session)
+        || recency(b.session) - recency(a.session)
+        || a.index - b.index)
+      .map(({ session }) => session);
+    const selected = (pinnedId ? order.find((session) => session.id === pinnedId) : null) ?? order[0] ?? null;
+    const anySource = os.available || Boolean(override) || Boolean(browser);
+    state = {
+      available: anySource,
+      session: selected,
+      // The switcher needs names and icons, not every cover.
+      sessions: order.map((session) => ({ ...session, artwork: null })),
+      source: sourceOf(selected),
+      ...(selected || os.available ? {} : { error: os.error }),
+    };
+    browser?.setPollTarget(subscribers.size > 0 && selected?.kind === "browser" && selected.status === "playing" ? selected.id : null);
+    if (subscribers.size === 0) return;
+    const signature = JSON.stringify(state);
+    if (signature === lastSignature) return;
+    lastSignature = signature;
+    args.broadcast(state);
+  };
+
+  /** Coalesces a burst of source updates into one broadcast. */
+  const changed = () => {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(recompute, 16);
+  };
+
+  const publishOs = (snapshot: OsSnapshot) => {
+    os = snapshot;
+    changed();
+  };
+
+  const startOs = () => {
+    if (osSource) return;
     if (platform === "win32") {
+      osKind = "windows-smtc";
       const helper = resolveHelper(args, "ade-now-playing.exe");
       if (!helper) {
-        publish({ available: false, session: null, source: "windows-smtc", error: "The Now Playing helper is missing from this build." });
+        publishOs({ available: false, sessions: [], error: "The Now Playing helper is missing from this build." });
         return;
       }
-      source = startWindows(helper, publish, args.logger);
+      osSource = startWindows(helper, isOwn, publishOs, args.logger);
     } else if (platform === "darwin") {
       const adapterDir = path.join(args.isPackaged ? path.join(args.resourcesPath, "native") : path.join(args.appPath, "resources", "native"), "mediaremote-adapter");
-      source = fs.existsSync(path.join(adapterDir, "mediaremote-adapter.pl"))
-        ? startMacAdapter(adapterDir, publish, args.logger)
-        : startMacMusicApp(publish);
+      if (fs.existsSync(path.join(adapterDir, "mediaremote-adapter.pl"))) {
+        osKind = "macos-mediaremote";
+        osSource = startMacAdapter(adapterDir, isOwn, publishOs, args.getAppIcon, args.logger);
+      } else {
+        osKind = "macos-music";
+        osSource = startMacMusicApp(publishOs);
+      }
     } else {
-      publish({ available: false, session: null, source: null, error: "Now Playing is not available on this system yet." });
+      publishOs({ available: false, sessions: [], error: "Now Playing is not available on this system yet." });
     }
   };
 
-  const stopSource = () => {
-    source?.stop();
-    source = null;
-    state = EMPTY;
+  const stopOs = () => {
+    osSource?.stop();
+    osSource = null;
+    os = { available: true, sessions: [] };
+  };
+
+  const find = (sessionId: string | null | undefined): HomeNowPlayingSession | null => {
+    if (!sessionId) return state.session;
+    return merged().find((session) => session.id === sessionId) ?? null;
   };
 
   return {
     /** A renderer's widget came on screen. Returns the current state at once. */
     subscribe(id: number): HomeNowPlayingState {
       subscribers.add(id);
-      if (override) return override.getState();
-      startSource();
+      startOs();
+      lastSignature = "";
+      recompute();
+      lastSignature = JSON.stringify(state);
       return state;
     },
-    /** The widget left the screen, or its window closed. The last one stops the source. */
+    /** The widget left the screen, or its window closed. The last one stops the OS source and polling. */
     unsubscribe(id: number) {
       subscribers.delete(id);
-      if (subscribers.size === 0) stopSource();
-    },
-    async command(command: HomeNowPlayingCommand) {
-      if (override) {
-        await override.command(command);
-        return;
+      if (subscribers.size === 0) {
+        stopOs();
+        browser?.setPollTarget(null);
       }
-      source?.command(command);
+    },
+    async command(command: HomeNowPlayingCommand, sessionId?: string | null) {
+      const target = find(sessionId);
+      if (!target) return;
+      if (target.kind === "ade-music") {
+        await override?.command(command);
+      } else if (target.kind === "browser") {
+        await browser?.command(target.id, command);
+      } else {
+        osSource?.command(command, target.id.replace(/^app:/, ""));
+      }
+    },
+    /** Show this session instead of the best one; null goes back to the best one. */
+    select(sessionId: string | null) {
+      pinnedId = sessionId && merged().some((session) => session.id === sessionId) ? sessionId : null;
+      recompute();
     },
     /**
-     * Hook for an in-app player (the future Music tab): while set, it is the
-     * widget's source and the OS source is stopped. Returns the function the
-     * player calls to push its state; pass null to hand back to the OS.
+     * Hook for ADE's own player (the Music tab): while set, its session joins
+     * the list (first while it plays). Returns the function the player calls
+     * to push its state; pass null when the player has nothing loaded.
      */
     setOverride(next: NowPlayingOverride | null): (state: HomeNowPlayingState) => void {
       override = next;
-      if (next) {
-        source?.stop();
-        source = null;
-        if (subscribers.size > 0) args.broadcast(next.getState());
-      } else if (subscribers.size > 0) {
-        startSource();
-        args.broadcast(state);
-      }
-      return (pushed) => {
-        if (override === next && subscribers.size > 0) args.broadcast(pushed);
+      changed();
+      return () => {
+        if (override === next) changed();
       };
     },
+    /** The built-in browser's media tabs. */
+    setBrowserSource(next: BrowserMediaSessions | null) {
+      browser = next;
+      changed();
+    },
+    /** A source changed outside the calls above (the browser's tabs). */
+    notifyChanged: changed,
     dispose() {
       subscribers.clear();
-      stopSource();
+      stopOs();
+      browser?.dispose();
     },
   };
 }

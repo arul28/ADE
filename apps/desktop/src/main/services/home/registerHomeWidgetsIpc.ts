@@ -1,12 +1,24 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, webContents, type IpcMainInvokeEvent, type WebContents } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 import { HOME_WIDGETS_IPC, type HomeShareResult } from "../../../shared/types/homeWidgets";
 import { createHomeWidgetsService, type HomeWidgetsService } from "./homeWidgetsService";
+import {
+  allowBuiltInBrowserBackgroundAudio,
+  isBuiltInBrowserWebContents,
+  onBuiltInBrowserWebContents,
+} from "../builtInBrowser/builtInBrowserService";
+import { createBrowserMediaSessions } from "./browserMediaSessions";
 import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
 
 let nowPlaying: NowPlayingService | null = null;
+
+/**
+ * ADE in an OS media session: its AppUserModelId and bundle id
+ * (`ADE_WINDOWS_APP_USER_MODEL_ID`, any channel) and the Music tab's player host.
+ */
+const OWN_MEDIA_APP_PATTERN = /^com\.ade\.desktop(\.|$)|ade-music-host/i;
 
 /**
  * The Now Playing source, for an in-app player (the Music tab) to take over
@@ -14,6 +26,28 @@ let nowPlaying: NowPlayingService | null = null;
  */
 export function getNowPlayingService(): NowPlayingService | null {
   return nowPlaying;
+}
+
+/**
+ * Adds the built-in browser's tabs to Now Playing: a tab playing media
+ * (YouTube, SoundCloud, Spotify…) becomes a source. `browserTabIdFor` names a
+ * tab of the Browser top tab, which the widget can jump to; other tabs (a
+ * project's browser panel) show without the jump.
+ */
+export function connectBrowserToNowPlaying(args: { browserTabIdFor: (wc: WebContents) => string | null }): void {
+  const service = nowPlaying;
+  if (!service) return;
+  const media = createBrowserMediaSessions({
+    browserTabIdFor: args.browserTabIdFor,
+    allowBackgroundAudio: allowBuiltInBrowserBackgroundAudio,
+    onChange: () => service.notifyChanged(),
+  });
+  onBuiltInBrowserWebContents((wc) => media.watch(wc));
+  // Tabs restored before this ran.
+  for (const wc of webContents.getAllWebContents()) {
+    if (isBuiltInBrowserWebContents(wc)) media.watch(wc);
+  }
+  service.setBrowserSource(media);
 }
 
 /**
@@ -81,6 +115,13 @@ export function registerHomeWidgetsIpc(args: {
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
     logger: args.logger,
+    // ADE's own media sessions (its windows' browser tabs and the Music tab's
+    // player host) come in directly; the OS copies of them are skipped.
+    isOwnApp: (appId) => OWN_MEDIA_APP_PATTERN.test(appId),
+    getAppIcon: async (appPath) => {
+      const icon = await app.getFileIcon(appPath, { size: "large" });
+      return icon.isEmpty() ? null : icon.toDataURL();
+    },
     broadcast: (state) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(HOME_WIDGETS_IPC.nowPlayingChanged, state);
@@ -108,8 +149,12 @@ export function registerHomeWidgetsIpc(args: {
     if (!isAdeRenderer(event)) throw new Error("Home widgets are only available to the ADE window.");
     playing.unsubscribe(event.sender.id);
   });
-  handle(HOME_WIDGETS_IPC.nowPlayingCommand, async (command: string) => {
-    if (command === "play" || command === "pause" || command === "toggle" || command === "next" || command === "previous") await playing.command(command);
+  handle(HOME_WIDGETS_IPC.nowPlayingCommand, async (command: string, sessionId?: unknown) => {
+    const target = typeof sessionId === "string" && sessionId.length <= 512 ? sessionId : null;
+    if (command === "play" || command === "pause" || command === "toggle" || command === "next" || command === "previous") await playing.command(command, target);
+  });
+  handle(HOME_WIDGETS_IPC.nowPlayingSelect, async (sessionId: unknown) => {
+    playing.select(typeof sessionId === "string" && sessionId.length <= 512 ? sessionId : null);
   });
 
   // Share cards: the renderer draws the PNG; main only copies or saves it.

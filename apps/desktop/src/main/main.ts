@@ -65,7 +65,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
-import { registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
@@ -9289,6 +9289,13 @@ app.whenReady().then(async () => {
 
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({ logger: getMachineMainLogger() });
+  // Now Playing also hears the built-in browser's tabs.
+  connectBrowserToNowPlaying({
+    browserTabIdFor: (wc) => {
+      const found = builtInBrowserService.locateWebContents(wc);
+      return found?.collection === "personal" ? found.tabId : null;
+    },
+  });
 
   // The Music tab: Apple Music through an on-demand player host. The user's
   // Music-User-Token stays in this app's own user data (see musicTokenStore).

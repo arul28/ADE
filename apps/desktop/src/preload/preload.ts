@@ -13391,7 +13391,8 @@ const adeBridge = {
     nowPlaying: {
       subscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSubscribe),
       unsubscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingUnsubscribe),
-      command: (command: HomeNowPlayingCommand) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingCommand, command),
+      command: (command: HomeNowPlayingCommand, sessionId?: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingCommand, command, sessionId),
+      select: (sessionId: string | null) => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSelect, sessionId),
       onChanged: (cb: (state: HomeNowPlayingState) => void) => {
         const listener = (_event: Electron.IpcRendererEvent, state: HomeNowPlayingState) => cb(state);
         ipcRenderer.on(HOME_WIDGETS_IPC.nowPlayingChanged, listener);

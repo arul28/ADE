@@ -250,6 +250,54 @@ const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
+
+/**
+ * Tabs that keep their sound while hidden. A hidden tab is muted, except one a
+ * person was listening to: media that started while the tab was on screen
+ * (unmuted), or that someone pressed play on from Now Playing. Cleared when
+ * the tab loads a new document.
+ */
+const BACKGROUND_AUDIO_WEB_CONTENTS = new WeakSet<WebContents>();
+const browserWebContentsListeners = new Set<(wc: WebContents) => void>();
+
+/** Hears every browser tab's `WebContents` as it is set up (Now Playing listens for media). */
+export function onBuiltInBrowserWebContents(listener: (wc: WebContents) => void): () => void {
+  browserWebContentsListeners.add(listener);
+  return () => browserWebContentsListeners.delete(listener);
+}
+
+/** One of the built-in browser's tabs (not ADE's own UI, not a popup it does not manage). */
+export function isBuiltInBrowserWebContents(wc: WebContents | null | undefined): boolean {
+  return Boolean(wc && MANAGED_BROWSER_WEB_CONTENTS.has(wc));
+}
+
+/** Let a hidden tab play out loud: a person asked for it (Now Playing's play button). */
+export function allowBuiltInBrowserBackgroundAudio(wc: WebContents): void {
+  if (wc.isDestroyed() || !MANAGED_BROWSER_WEB_CONTENTS.has(wc)) return;
+  BACKGROUND_AUDIO_WEB_CONTENTS.add(wc);
+  try {
+    if (wc.isAudioMuted()) wc.setAudioMuted(false);
+  } catch {
+    // ignore optional platform support differences
+  }
+}
+
+/**
+ * The browser-media preload (`preload/browserMedia.ts`) on a tab session, once:
+ * it lets Now Playing press the page's own media session buttons.
+ */
+const BROWSER_MEDIA_PRELOAD_SESSIONS = new WeakSet<Electron.Session>();
+function registerBrowserMediaPreload(browserSession: Electron.Session, logger: () => Logger | null): void {
+  if (BROWSER_MEDIA_PRELOAD_SESSIONS.has(browserSession)) return;
+  BROWSER_MEDIA_PRELOAD_SESSIONS.add(browserSession);
+  const filePath = path.join(__dirname, "..", "preload", "browserMedia.cjs");
+  if (!existsSync(filePath) || typeof browserSession.registerPreloadScript !== "function") return;
+  try {
+    browserSession.registerPreloadScript({ type: "frame", id: "ade-browser-media", filePath });
+  } catch (error) {
+    logger()?.warn("built_in_browser.media_preload_failed", { err: errorMessage(error) });
+  }
+}
 type BrowserCollection = {
   key: string;
   projectRoot: string | null;
@@ -1415,6 +1463,24 @@ export function createBuiltInBrowserService(args: {
 
   return {
     flushStorage,
+    /**
+     * Which tab a `WebContents` is, and whose: `personal` is the Browser top
+     * tab's collection. Null for anything that is not a live browser tab.
+     */
+    locateWebContents(wc: WebContents): { tabId: string; collection: "personal" | "window" | "project"; projectRoot: string | null } | null {
+      if (!MANAGED_BROWSER_WEB_CONTENTS.has(wc)) return null;
+      const candidates: Array<{ service: WindowBrowserService; collection: BrowserCollection }> = [
+        ...windowServices.values(),
+        ...Array.from(fallbackServices, ([kind, service]) => ({ service, collection: collectionForProjectRoot(null, kind) })),
+      ];
+      for (const { service, collection } of candidates) {
+        const tabId = service.tabIdForWebContents(wc);
+        if (!tabId) continue;
+        const kind = collection.key === "personal" ? "personal" : collection.projectRoot ? "project" : "window";
+        return { tabId, collection: kind, projectRoot: collection.projectRoot };
+      }
+      return null;
+    },
     /** Stops the dev-server subscription; used when a test disposes a service. */
     stopDevServerWatch(): void {
       unsubscribeDevServers();
@@ -3055,6 +3121,23 @@ function createBuiltInBrowserWindowService(args: {
     wc.once("destroyed", () => {
       MANAGED_BROWSER_WEB_CONTENTS.delete(wc);
     });
+    // Media that starts while the tab is heard (on screen, so unmuted) keeps
+    // playing when the person leaves the tab; a new document starts over.
+    wc.on("media-started-playing", () => {
+      if (!wc.isDestroyed() && !wc.isAudioMuted()) BACKGROUND_AUDIO_WEB_CONTENTS.add(wc);
+    });
+    wc.on("did-navigate", () => {
+      if (!BACKGROUND_AUDIO_WEB_CONTENTS.delete(wc)) return;
+      const tab = tabForWebContents(wc);
+      if (tab && !(visible && tab.id === activeTabId)) applyTabLifecycle(tab, false);
+    });
+    for (const listener of browserWebContentsListeners) {
+      try {
+        listener(wc);
+      } catch {
+        // A listener's failure is its own.
+      }
+    }
     configureBuiltInBrowserAuthentication({
       webContents: wc,
       resolveParentWindow: () => (win && !win.isDestroyed() ? win : null),
@@ -3826,7 +3909,7 @@ function createBuiltInBrowserWindowService(args: {
     const wc = tab.webContents;
     if (wc.isDestroyed()) return;
     try {
-      wc.setAudioMuted(!active);
+      wc.setAudioMuted(!active && !BACKGROUND_AUDIO_WEB_CONTENTS.has(wc));
     } catch {
       // ignore optional platform support differences
     }
@@ -3855,6 +3938,7 @@ function createBuiltInBrowserWindowService(args: {
   /** Session setup every tab's profile gets, shared or isolated. */
   const configureTabSession = (browserSession: Electron.Session): void => {
     configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+    registerBrowserMediaPreload(browserSession, logger);
     args.permissionController.configureSession(browserSession);
     args.networkRouter.configureSession(browserSession);
   };
@@ -6262,6 +6346,8 @@ function createBuiltInBrowserWindowService(args: {
      * destroyed and the last moment their ids are knowable.
      */
     listTabIds: (): string[] => tabs.map((tab) => tab.id),
+    /** This collection's tab id for a `WebContents`, or null. */
+    tabIdForWebContents: (wc: WebContents): string | null => tabForWebContents(wc)?.id ?? null,
     requestOriginAccess,
     claim,
     startHandoff,

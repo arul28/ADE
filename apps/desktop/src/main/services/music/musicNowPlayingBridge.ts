@@ -3,11 +3,12 @@ import { musicArtworkUrl, type MusicCommand, type MusicState } from "../../../sh
 import type { NowPlayingService } from "../home/nowPlayingService";
 
 /**
- * Lets the Music tab take over the home page's Now Playing widget.
+ * Puts the Music tab's player in the home page's Now Playing list.
  *
- * While ADE's own player has a track loaded, the widget shows it and its
- * buttons drive it; when the player has nothing loaded (signed out, unloaded
- * with no track, never started) the widget goes back to the OS media source.
+ * While ADE's own player has a track loaded it is a Now Playing source (the
+ * first one while it plays) and the widget's buttons drive it; when it has
+ * nothing loaded (signed out, unloaded with no track, never started) it leaves
+ * the list to the browser tabs and other apps.
  */
 export function createMusicNowPlayingBridge(args: {
   nowPlaying: () => NowPlayingService | null;
@@ -32,7 +33,10 @@ export function createMusicNowPlayingBridge(args: {
       available: true,
       source: "ade-music",
       session: {
+        id: "ade-music",
+        kind: "ade-music",
         app: "Apple Music",
+        appIcon: null,
         title: track.title,
         artist: track.artist,
         album: track.album,
