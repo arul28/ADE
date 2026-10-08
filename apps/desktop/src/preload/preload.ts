@@ -555,6 +555,7 @@ import type {
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatAcknowledgeCrossMachineHandoffArgs,
   AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatCrossMachineHandoffOptionsResult,
@@ -7792,7 +7793,7 @@ const adeBridge = {
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     retryCrossMachineHandoff: async (
-      args: AgentChatCrossMachineHandoffSessionArgs,
+      args: AgentChatRetryCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCrossMachineHandoffRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>

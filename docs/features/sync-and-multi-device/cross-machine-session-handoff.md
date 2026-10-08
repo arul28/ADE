@@ -99,6 +99,14 @@ it `cancelled` ("You dismissed the move."), deletes its outbox and keeps
 move continues, is cancelled, fails before acceptance, or the chat is deleted;
 a failure or lost answer after acceptance keeps it for the retry.
 
+A fork that fails while it is packed (for example, its history is too large)
+sent nothing. Its banner offers **Send as brief instead**:
+`retryCrossMachineHandoff { asBrief: true }` reruns the saved request under the
+same `handoffId` with only the mode changed, so the machine, model, effort,
+permissions, prompt and clone consent stay as the person chose them. The brain
+refuses it for any other move ("Only a fork that failed before it was sent can
+continue as a brief.").
+
 On startup the brain sweeps the `kv` prefix: a `sending` move resumes (the
 destination transaction is idempotent by `handoffId`), and a `pending` move
 whose turn already ended starts. Only a brain with a transport sweeps (an

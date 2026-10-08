@@ -260,6 +260,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatAcknowledgeCrossMachineHandoffArgs,
   AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatCrossMachineHandoffOptionsResult,
@@ -2287,7 +2288,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         retryCrossMachineHandoff: (
-          args: AgentChatCrossMachineHandoffSessionArgs,
+          args: AgentChatRetryCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
         resolveCrossMachineHandoffApproval: (

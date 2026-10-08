@@ -5060,6 +5060,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.retryCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
+      ...(payload.asBrief === true ? { asBrief: true } : {}),
     }));
   register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({

@@ -91,7 +91,6 @@ export function CrossMachineHandoffBanner({
   sessionId,
   record,
   runtimePin,
-  continuationPrompt,
   onRecord,
   style,
 }: {
@@ -99,8 +98,6 @@ export function CrossMachineHandoffBanner({
   record: AgentChatCrossMachineHandoffRecord | null | undefined;
   /** The machine the chat runs on; every call goes to that brain. */
   runtimePin: OpenProjectBinding | null;
-  /** Kept by the pane after setup so a failed fork can be retried as a brief. */
-  continuationPrompt?: string | null;
   /** The brain's answer, applied before the live event arrives. */
   onRecord: (next: AgentChatCrossMachineHandoffRecord | null) => void;
   style?: CSSProperties;
@@ -135,14 +132,8 @@ export function CrossMachineHandoffBanner({
           { ...session, handoffId: record.handoffId, approve: false },
           runtimePin,
         ),
-        brief: () => api.startCrossMachineHandoff({
-          sourceSessionId: sessionId,
-          machine: record.targetMachineKey,
-          targetModelId: record.targetModelId,
-          mode: "brief",
-          continuationPrompt: continuationPrompt ?? null,
-          ...(record.includeChanges ? { includeChanges: true } : {}),
-        }, runtimePin),
+        // The brain reuses the failed fork's saved choices; only the mode changes.
+        brief: () => api.retryCrossMachineHandoff({ ...session, asBrief: true }, runtimePin),
       };
       const next = await calls[action]();
       onRecord(next);

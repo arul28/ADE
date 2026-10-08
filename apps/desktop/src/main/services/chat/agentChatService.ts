@@ -490,6 +490,7 @@ import type {
   AgentChatAcknowledgeCrossMachineHandoffArgs,
   AgentChatCrossMachineHandoffRecord,
   AgentChatCrossMachineHandoffSessionArgs,
+  AgentChatRetryCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
@@ -63442,8 +63443,8 @@ export function createAgentChatService(args: {
     },
     cancelCrossMachineHandoff: async (cancelArgs: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().cancel(cancelArgs.sourceSessionId),
-    retryCrossMachineHandoff: async (retryArgs: AgentChatCrossMachineHandoffSessionArgs) =>
-      requireCrossMachineHandoff().retry(retryArgs.sourceSessionId),
+    retryCrossMachineHandoff: async (retryArgs: AgentChatRetryCrossMachineHandoffArgs) =>
+      requireCrossMachineHandoff().retry(retryArgs.sourceSessionId, { asBrief: retryArgs.asBrief === true }),
     resolveCrossMachineHandoffApproval: async (approvalArgs: AgentChatResolveCrossMachineHandoffApprovalArgs) =>
       requireCrossMachineHandoff().resolveApproval(
         approvalArgs.sourceSessionId,

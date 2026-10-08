@@ -4433,6 +4433,14 @@ export type AgentChatCrossMachineHandoffSessionArgs = {
   sourceSessionId: string;
 };
 
+export type AgentChatRetryCrossMachineHandoffArgs = AgentChatCrossMachineHandoffSessionArgs & {
+  /**
+   * Retry a fork that failed before it was packed as a brief: the same saved
+   * choices (machine, model, permissions, prompt, clone), only the mode changes.
+   */
+  asBrief?: boolean;
+};
+
 export type AgentChatCrossMachineHandoffOptionsResult = {
   machines: AgentChatCrossMachineHandoffMachineOption[];
   blockers: AgentChatCrossMachineHandoffBlocker[];

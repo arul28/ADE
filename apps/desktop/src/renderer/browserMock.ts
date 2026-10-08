@@ -80,6 +80,7 @@ import {
   type AgentChatPrepareCrossMachineHandoffArgs,
   type AgentChatCrossMachineHandoffRecord,
   type AgentChatCrossMachineHandoffSessionArgs,
+  type AgentChatRetryCrossMachineHandoffArgs,
   type AgentChatPreviewCrossMachineHandoffArgs,
   type AgentChatStartCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
@@ -6597,10 +6598,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         browserMockCrossMachineMoves.set(args.sourceSessionId, next);
         return next;
       },
-      retryCrossMachineHandoff: async (args: AgentChatCrossMachineHandoffSessionArgs) => {
+      retryCrossMachineHandoff: async (args: AgentChatRetryCrossMachineHandoffArgs) => {
         const current = browserMockCrossMachineMoves.get(args.sourceSessionId);
         if (!current) throw new Error("There is no move to retry.");
-        const next = { ...current, state: "sending" as const, reason: null, updatedAt: new Date().toISOString() };
+        const next = {
+          ...current,
+          ...(args.asBrief ? { mode: "brief" as const } : {}),
+          state: "sending" as const,
+          reason: null,
+          updatedAt: new Date().toISOString(),
+        };
         browserMockCrossMachineMoves.set(args.sourceSessionId, next);
         return next;
       },

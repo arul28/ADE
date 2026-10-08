@@ -115,6 +115,7 @@ import {
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
+  machineIdForBinding,
   machineNameForBinding,
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
@@ -4487,11 +4488,6 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
-  const [crossMachineHandoffFallback, setCrossMachineHandoffFallback] = useState<{
-    sessionId: string;
-    handoffId: string;
-    continuationPrompt: string | null;
-  } | null>(null);
   /** Machine the session menu's "Choose in full setup…" picked, if any. */
   const [crossMachinePreselectedMachine, setCrossMachinePreselectedMachine] = useState<string | null>(null);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
@@ -12683,7 +12679,8 @@ export function AgentChatPane({
       + appControlContextItems.length
       + builtInBrowserContextItems.length;
     if (!continuation || (!text.length && !attachments.length && !contextCount)) return false;
-    if (text.startsWith("/")) return false;
+    // A command controls this chat; "/automate is a command, right?" is chat text.
+    if (isProviderSlashCommandInput(text)) return false;
     if (crossMachineRouteInFlightRef.current) return true;
     crossMachineRouteInFlightRef.current = true;
     const where = continuation.targetMachineName;
@@ -12703,9 +12700,15 @@ export function AgentChatPane({
       ?? (holders.length === 1 && !laneOnActiveBinding ? holders[0] : null);
     const pin = destination?.binding ?? null;
     const routesPinned = pin != null;
-    const routesUnpinned = !routesPinned
-      && laneOnActiveBinding
-      && machineNameForBinding(projectBinding) === continuation.targetMachineName;
+    // Unpinned goes to the tab's own machine, so it must be the destination:
+    // never the machine this chat runs on (the source), and a remote tab
+    // must carry the destination's name. A local tab has no account name
+    // ("This computer"), so not being the source is what identifies it.
+    const activeIsSource = machineIdForBinding(projectBinding)
+      === machineIdForBinding(chatEffectiveBinding ?? projectBinding);
+    const activeIsDestination = !activeIsSource
+      && (projectBinding?.kind !== "remote" || machineNameForBinding(projectBinding) === continuation.targetMachineName);
+    const routesUnpinned = !routesPinned && laneOnActiveBinding && activeIsDestination;
     const routable = routesPinned || routesUnpinned;
     /**
      * Hand the words over rather than lose them: files and attached context
@@ -12782,6 +12785,7 @@ export function AgentChatPane({
     appControlContextItems.length,
     attachments.length,
     builtInBrowserContextItems.length,
+    chatEffectiveBinding,
     contextAttachments.length,
     crossMachineLanesByMachineId,
     draft,
@@ -16380,18 +16384,7 @@ export function AgentChatPane({
       sessionId={selectedSessionId}
       record={selectedSession?.crossMachineHandoff}
       runtimePin={chatRuntimePin}
-      continuationPrompt={crossMachineHandoffFallback?.sessionId === selectedSessionId
-        && crossMachineHandoffFallback.handoffId === selectedSession?.crossMachineHandoff?.handoffId
-        ? crossMachineHandoffFallback.continuationPrompt
-        : null}
-      onRecord={(next) => {
-        applyCrossMachineHandoffRecord(selectedSessionId, next);
-        setCrossMachineHandoffFallback((current) => {
-          if (!current || current.sessionId !== selectedSessionId
-            || current.handoffId !== selectedSession?.crossMachineHandoff?.handoffId) return current;
-          return next ? { ...current, handoffId: next.handoffId } : null;
-        });
-      }}
+      onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
       style={composerBannerStyle}
     />
   ) : null;
@@ -17292,13 +17285,8 @@ export function AgentChatPane({
             setCrossMachineHandoffOpen(false);
             setCrossMachinePreselectedMachine(null);
           }}
-          onStarted={(record, continuationPrompt) => {
+          onStarted={(record) => {
             setHandoffNote("");
-            setCrossMachineHandoffFallback({
-              sessionId: selectedSessionId,
-              handoffId: record.handoffId,
-              continuationPrompt,
-            });
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />

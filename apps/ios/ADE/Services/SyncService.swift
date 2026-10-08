@@ -22602,6 +22602,7 @@ final class SyncService: ObservableObject {
       // session), which means a full reset must clear it explicitly — otherwise
       // another project's / a stale connection's summaries would linger.
       chatSummaryCache.removeAll()
+      crossMachineHandoffClearedSessionIds.removeAll()
       // Project-scoped for the same reason the summary cache is: a session id
       // from another project must never lend its lineage to a row here.
       sessionParentIdentityKeys.removeAll()

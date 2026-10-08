@@ -98,6 +98,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     reusedSession: false,
   });
   let validate: () => Promise<void> = async () => {};
+  let failPrepare: string | null = null;
   const waiters: Array<() => void> = [];
 
   const orchestrator = createCrossMachineHandoffOrchestrator({
@@ -147,6 +148,11 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     listUserMessageIds: () => [...chat.userMessageIds],
     prepare: async (args) => {
       prepared.push(structuredClone(args));
+      if (failPrepare) {
+        const message = failPrepare;
+        failPrepare = null;
+        throw new Error(message);
+      }
       const capsule = {
         version: 1,
         handoffId: args.handoffId,
@@ -225,6 +231,10 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     },
     setValidate: (behavior: () => Promise<void>) => {
       validate = behavior;
+    },
+    /** The next prepare (packing) fails with this message. */
+    failNextPrepare: (message: string) => {
+      failPrepare = message;
     },
   };
 }
@@ -454,6 +464,40 @@ describe("cross-machine move orchestrator", () => {
     expect(h.accepted).toHaveLength(accepts);
     expect(h.notices.map((notice) => notice.state)).toEqual([state]);
     expect(h.outcomes).toEqual([{ handoffId: started.handoffId, outcome: state }]);
+  });
+
+  it("continues a fork that failed while packing as a brief with the same saved choices", async () => {
+    const h = createHarness();
+    h.failNextPrepare("This chat's history is too large to fork.");
+    const started = await h.start({
+      mode: "fork",
+      continuationPrompt: "Run the UI tests next.",
+      reasoningEffort: "high",
+      claudePermissionMode: "plan",
+    });
+    expect(await h.settled()).toMatchObject({ handoffId: started.handoffId, state: "failed", mode: "fork", checkpoint: null });
+
+    const resumed = await h.orchestrator.retry(SESSION, { asBrief: true });
+    expect(resumed).toMatchObject({ handoffId: started.handoffId, state: "sending", mode: "brief" });
+    expect(await h.settled()).toMatchObject({ state: "continued", mode: "brief" });
+    // Only the mode changed: the person's prompt, effort and permissions travel.
+    expect(h.prepared).toHaveLength(2);
+    expect(h.prepared[1]).toMatchObject({
+      mode: "brief",
+      continuationPrompt: "Run the UI tests next.",
+      reasoningEffort: "high",
+      claudePermissionMode: "plan",
+    });
+
+    // A move that got past packing may have arrived: it can't turn into a brief.
+    const h2 = createHarness();
+    h2.setAccept(() => {
+      throw new Error("Mac mini refused the move.");
+    });
+    await h2.start({ mode: "fork" });
+    expect(await h2.settled()).toMatchObject({ state: "failed", mode: "fork" });
+    await expect(h2.orchestrator.retry(SESSION, { asBrief: true })).rejects.toThrow(/can continue as a brief/);
+    expect(h2.record()).toMatchObject({ state: "failed", mode: "fork" });
   });
 
   it("orders every write of a move after the one before, even when the clock stalls", async () => {

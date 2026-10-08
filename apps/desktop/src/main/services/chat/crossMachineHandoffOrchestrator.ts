@@ -1089,11 +1089,26 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
    * bypass the destination's record and could start a second agent on the
    * same branch. The person checks that machine, then starts a new move.
    */
-  const retry = async (sourceSessionId: string): Promise<AgentChatCrossMachineHandoffRecord> => {
-    const persisted = deps.readPersisted(sourceSessionId);
+  const retry = async (
+    sourceSessionId: string,
+    options: { asBrief?: boolean } = {},
+  ): Promise<AgentChatCrossMachineHandoffRecord> => {
+    let persisted = deps.readPersisted(sourceSessionId);
     if (!persisted) throw new Error("There is no move to retry.");
     if (persisted.record.state !== "failed" && persisted.record.state !== "unknown") return persisted.record;
     if (running.has(sourceSessionId)) return persisted.record;
+    if (options.asBrief) {
+      // Only a fork that failed before it was packed: nothing was sent, so a
+      // brief with the same saved choices can replace it.
+      if (persisted.record.mode !== "fork" || persisted.record.state !== "failed" || persisted.record.checkpoint != null
+        || deps.outbox.read(persisted.record.handoffId)) {
+        throw new Error("Only a fork that failed before it was sent can continue as a brief.");
+      }
+      persisted = {
+        request: { ...persisted.request, mode: "brief" },
+        record: { ...persisted.record, mode: "brief" },
+      };
+    }
     const source = deps.getSource(sourceSessionId);
     if (source?.turnActive) throw new Error("This chat is responding. Retry when the turn ends.");
     const oldId = persisted.record.handoffId;

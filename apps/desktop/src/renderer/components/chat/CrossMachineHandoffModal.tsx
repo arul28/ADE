@@ -151,7 +151,7 @@ export function CrossMachineHandoffModal({
    * The brain accepted the move. Progress from here lives in the banner above
    * the composer, so the modal closes.
    */
-  onStarted: (record: AgentChatCrossMachineHandoffRecord, continuationPrompt: string | null) => void;
+  onStarted: (record: AgentChatCrossMachineHandoffRecord) => void;
   /** Machine to select on open (key or name), e.g. from the session menu. */
   preselectedMachine?: string | null;
 }) {
@@ -368,7 +368,7 @@ export function CrossMachineHandoffModal({
         ...(cloneApproved || queuedCloneApproved ? { clone: true } : {}),
         ...(turnActive ? { whenTurnEnds: true } : {}),
       }, runtimePinRef.current);
-      onStarted(record, continuationPrompt.trim() || null);
+      onStarted(record);
       onClose();
     } catch (startError) {
       const message = errorText(startError);
