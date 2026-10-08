@@ -9,9 +9,21 @@ import { create } from "zustand";
  * The default preset is the home page as it shipped before widgets existed:
  * Projects as a tall column with Working now stacked under it, Activity &
  * usage across the top right, Limits & machines and Pull requests below.
+ *
+ * Saved layouts: the page keeps named presets ("Default" first) and shows the
+ * active one; every edit lands in the active preset. Version 2 storage holds
+ * the presets. Version 1 held one layout; it loads as the "Default" preset,
+ * and the active layout is still mirrored there so an older build keeps
+ * opening the page the user last saw.
  */
 
+/** Version 1: one layout. Read for migration and kept in step with the active preset. */
 export const HOME_LAYOUT_STORAGE_KEY = "ade.home.layout.v1";
+/** Version 2: named presets and which one is showing. */
+export const HOME_LAYOUTS_STORAGE_KEY = "ade.home.layouts.v2";
+
+/** Cycles saved layouts while the home page shows; rebindable in keybindings. */
+export const HOME_LAYOUT_KEYBINDING = { id: "home.layout.next", fallback: "Mod+Shift+L" } as const;
 
 export type HomeWidgetType =
   | "projects"
@@ -25,6 +37,7 @@ export type HomeWidgetType =
   | "machine"
   | "heatmap"
   | "shipped"
+  | "feed"
   | "nowPlaying";
 
 /** S 1×1 · M 1×2 (tall) · L 2×2 · W 2×1 (wide), in grid columns × rows. */
@@ -56,7 +69,7 @@ export type HomeLayout = {
 };
 
 const WIDGET_TYPES = new Set<HomeWidgetType>([
-  "projects", "running", "activity", "limits", "prs", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "nowPlaying",
+  "projects", "running", "activity", "limits", "prs", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "feed", "nowPlaying",
 ]);
 
 export function defaultHomeLayout(): HomeLayout {
@@ -111,21 +124,84 @@ export function normalizeHomeLayout(value: unknown): HomeLayout {
   };
 }
 
-function readStoredLayout(): HomeLayout {
-  try {
-    const raw = window.localStorage.getItem(HOME_LAYOUT_STORAGE_KEY);
-    return raw ? normalizeHomeLayout(JSON.parse(raw)) : defaultHomeLayout();
-  } catch {
-    return defaultHomeLayout();
-  }
+export type HomeLayoutPreset = { id: string; name: string; layout: HomeLayout };
+
+export type HomeLayouts = { version: 2; activeId: string; presets: HomeLayoutPreset[] };
+
+export const DEFAULT_PRESET_ID = "default";
+const PRESET_NAME_MAX = 40;
+const PRESETS_MAX = 12;
+
+function defaultLayouts(layout: HomeLayout = defaultHomeLayout()): HomeLayouts {
+  return { version: 2, activeId: DEFAULT_PRESET_ID, presets: [{ id: DEFAULT_PRESET_ID, name: "Default", layout }] };
 }
 
-function writeStoredLayout(layout: HomeLayout) {
+export function cleanPresetName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.replace(/\s+/g, " ").trim().slice(0, PRESET_NAME_MAX);
+  return name || null;
+}
+
+/**
+ * Reads stored layouts: version 2 when present and usable, else a version 1
+ * layout as the "Default" preset, else the shipped default. Bad entries are
+ * dropped one by one; there is always at least one preset and the active id
+ * always names one of them.
+ */
+export function normalizeHomeLayouts(stored: unknown, legacy: unknown): HomeLayouts {
+  if (stored && typeof stored === "object" && Array.isArray((stored as { presets?: unknown }).presets)) {
+    const raw = stored as { activeId?: unknown; presets: unknown[] };
+    const seen = new Set<string>();
+    const presets: HomeLayoutPreset[] = [];
+    for (const entry of raw.presets) {
+      if (!entry || typeof entry !== "object" || presets.length >= PRESETS_MAX) continue;
+      const preset = entry as Record<string, unknown>;
+      const id = typeof preset.id === "string" && preset.id ? preset.id.slice(0, 64) : null;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      presets.push({ id, name: cleanPresetName(preset.name) ?? "Untitled", layout: normalizeHomeLayout(preset.layout) });
+    }
+    if (presets.length > 0) {
+      const activeId = typeof raw.activeId === "string" && seen.has(raw.activeId) ? raw.activeId : presets[0]!.id;
+      return { version: 2, activeId, presets };
+    }
+  }
+  return legacy != null ? defaultLayouts(normalizeHomeLayout(legacy)) : defaultLayouts();
+}
+
+function parseStored(key: string): unknown {
+  const raw = window.localStorage.getItem(key);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function readStoredLayouts(): HomeLayouts {
+  let stored: unknown = null;
+  let legacy: unknown = null;
   try {
-    window.localStorage.setItem(HOME_LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+    stored = parseStored(HOME_LAYOUTS_STORAGE_KEY);
+  } catch {
+    // Unreadable version 2: fall back to version 1 below.
+  }
+  try {
+    legacy = parseStored(HOME_LAYOUT_STORAGE_KEY);
+  } catch {
+    // Unreadable version 1 too: the default layout.
+  }
+  return normalizeHomeLayouts(stored, legacy);
+}
+
+function writeStoredLayouts(layouts: HomeLayouts) {
+  try {
+    window.localStorage.setItem(HOME_LAYOUTS_STORAGE_KEY, JSON.stringify(layouts));
+    const active = layouts.presets.find((preset) => preset.id === layouts.activeId);
+    if (active) window.localStorage.setItem(HOME_LAYOUT_STORAGE_KEY, JSON.stringify(active.layout));
   } catch {
     // localStorage can be full or unavailable; the layout still works this session.
   }
+}
+
+function activeLayout(layouts: HomeLayouts): HomeLayout {
+  return (layouts.presets.find((preset) => preset.id === layouts.activeId) ?? layouts.presets[0]!).layout;
 }
 
 /** A cell: one widget, plus whatever is stacked under it. */
@@ -180,8 +256,25 @@ function newItemId(type: HomeWidgetType): string {
   return `${type}-${Date.now().toString(36)}${idCounter}`;
 }
 
+function newPresetId(): string {
+  idCounter += 1;
+  return `layout-${Date.now().toString(36)}${idCounter}`;
+}
+
+function uniqueName(name: string, presets: readonly HomeLayoutPreset[], exceptId?: string): string {
+  const taken = new Set(presets.filter((preset) => preset.id !== exceptId).map((preset) => preset.name.toLowerCase()));
+  if (!taken.has(name.toLowerCase())) return name;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${name} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 type HomeLayoutStore = {
+  /** The active preset's layout: what the page shows. */
   layout: HomeLayout;
+  presets: HomeLayoutPreset[];
+  activeId: string;
   editing: boolean;
   setEditing: (editing: boolean) => void;
   moveCell: (fromId: string, toId: string, side: "before" | "after") => void;
@@ -193,17 +286,34 @@ type HomeLayoutStore = {
   updateSettings: (id: string, patch: Record<string, unknown>) => void;
   setAppearance: (patch: Partial<HomeAppearance>) => void;
   setColumns: (columns: 3 | 4) => void;
+  /** Puts the active preset back to the shipped default. */
   reset: () => void;
+  switchPreset: (id: string) => void;
+  /** Next (or previous) preset, wrapping; returns the one now showing. */
+  cyclePreset: (delta: 1 | -1) => HomeLayoutPreset | null;
+  /** Saves the current layout as a new preset and shows it; null at the preset limit. */
+  savePresetAs: (name: string) => HomeLayoutPreset | null;
+  renamePreset: (id: string, name: string) => void;
+  /** The last preset cannot be deleted. Deleting the active one shows the first left. */
+  deletePreset: (id: string) => void;
 };
 
 export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
+  const save = (presets: HomeLayoutPreset[], activeId: string) => {
+    const layouts: HomeLayouts = { version: 2, activeId, presets };
+    writeStoredLayouts(layouts);
+    set({ presets, activeId, layout: activeLayout(layouts) });
+  };
   const commit = (layout: HomeLayout) => {
-    writeStoredLayout(layout);
-    set({ layout });
+    const { presets, activeId } = get();
+    save(presets.map((preset) => (preset.id === activeId ? { ...preset, layout } : preset)), activeId);
   };
   const withItems = (items: HomeLayoutItem[]) => commit({ ...get().layout, items });
+  const initial = typeof window === "undefined" ? defaultLayouts() : readStoredLayouts();
   return {
-    layout: typeof window === "undefined" ? defaultHomeLayout() : readStoredLayout(),
+    layout: activeLayout(initial),
+    presets: initial.presets,
+    activeId: initial.activeId,
     editing: false,
     setEditing: (editing) => set({ editing }),
     moveCell: (fromId, toId, side) => withItems(moveCell(get().layout.items, fromId, toId, side)),
@@ -243,6 +353,38 @@ export const useHomeLayoutStore = create<HomeLayoutStore>((set, get) => {
     setAppearance: (patch) => commit({ ...get().layout, appearance: { ...get().layout.appearance, ...patch } }),
     setColumns: (columns) => commit({ ...get().layout, columns }),
     reset: () => commit(defaultHomeLayout()),
+    switchPreset: (id) => {
+      const { presets, activeId } = get();
+      if (id !== activeId && presets.some((preset) => preset.id === id)) save(presets, id);
+    },
+    cyclePreset: (delta) => {
+      const { presets, activeId } = get();
+      if (presets.length === 0) return null;
+      const index = presets.findIndex((preset) => preset.id === activeId);
+      const next = presets[(index + delta + presets.length) % presets.length]!;
+      if (next.id !== activeId) save(presets, next.id);
+      return next;
+    },
+    savePresetAs: (rawName) => {
+      const { presets, layout } = get();
+      const name = cleanPresetName(rawName);
+      if (!name || presets.length >= PRESETS_MAX) return null;
+      const preset: HomeLayoutPreset = { id: newPresetId(), name: uniqueName(name, presets), layout: structuredClone(layout) };
+      save([...presets, preset], preset.id);
+      return preset;
+    },
+    renamePreset: (id, rawName) => {
+      const { presets, activeId } = get();
+      const name = cleanPresetName(rawName);
+      if (!name) return;
+      save(presets.map((preset) => (preset.id === id ? { ...preset, name: uniqueName(name, presets, id) } : preset)), activeId);
+    },
+    deletePreset: (id) => {
+      const { presets, activeId } = get();
+      if (presets.length <= 1 || !presets.some((preset) => preset.id === id)) return;
+      const next = presets.filter((preset) => preset.id !== id);
+      save(next, id === activeId ? next[0]!.id : activeId);
+    },
   };
 });
 

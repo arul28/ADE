@@ -815,7 +815,7 @@ export type KeybindingDefinition = {
   id: string;
   description: string;
   defaultBinding: string;
-  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history";
+  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history" | "home";
 };
 
 export type KeybindingsSnapshot = {

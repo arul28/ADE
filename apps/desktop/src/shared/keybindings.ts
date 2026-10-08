@@ -85,6 +85,13 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     defaultBinding: "Enter",
     scope: "lanes"
   },
+  // Scope "home": handled by the home page while it is showing.
+  {
+    id: "home.layout.next",
+    description: "Switch to the next saved home layout",
+    defaultBinding: "Mod+Shift+L",
+    scope: "home"
+  },
   // Scope "work" means "handled inside the Work tools pane", not globally: the
   // pane attaches this to its own keydown handler. A global Escape binding would
   // fight the composer, every dialog, and the browser panel's own URL field.

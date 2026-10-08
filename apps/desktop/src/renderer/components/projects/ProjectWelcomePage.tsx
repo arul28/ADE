@@ -11,6 +11,7 @@ import {
   Globe,
   Plus,
   SlidersHorizontal,
+  SquaresFour,
   Trash,
 } from "@phosphor-icons/react";
 import { cloneTargetFor, projectMenuSections } from "./projectMenuEntries";
@@ -57,7 +58,8 @@ import {
 import { HomeWidgetGrid, type WidgetRenderContext } from "../home/HomeWidgetGrid";
 import { LazyHomeWidget } from "../home/homeWidgetRegistry";
 import { HomeDataContext, type HomeData } from "../home/homeData";
-import { useHomeLayoutStore } from "../home/homeLayout";
+import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore } from "../home/homeLayout";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { buildHomeHeadline, type HomeHeadline } from "../home/homeHeadline";
 import { openUsageDetails } from "./ProjectWelcomeSidePanels";
 import { localDayKey } from "../usage/ActivityHeatmap";
@@ -179,6 +181,31 @@ export function ProjectWelcomePage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [editingHome, setEditingHome]);
   useEffect(() => () => setEditingHome(false), [setEditingHome]);
+  // The saved-layouts chord (rebindable as home.layout.next) cycles layouts
+  // while this page shows. Typing in a field keeps the keystroke.
+  const keybindings = useAppStore((s) => s.keybindings);
+  const layoutBinding = useMemo(
+    () => getEffectiveBinding(keybindings, HOME_LAYOUT_KEYBINDING.id, HOME_LAYOUT_KEYBINDING.fallback),
+    [keybindings],
+  );
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !eventMatchesBinding(event, layoutBinding)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      const store = useHomeLayoutStore.getState();
+      if (store.presets.length < 2) {
+        showToast({ id: "home-layout-switch", tone: "neutral", title: "Only one layout saved", message: "Customize the page, then Save as… to add another.", durationMs: 2600 });
+        return;
+      }
+      const next = store.cyclePreset(1);
+      if (next) showToast({ id: "home-layout-switch", tone: "neutral", icon: <SquaresFour size={15} weight="fill" />, title: `Layout: ${next.name}`, durationMs: 1600 });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layoutBinding]);
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
@@ -682,6 +709,22 @@ export function ProjectWelcomePage() {
     else openUsageDetails();
   }, [navigate, project]);
 
+  // Pinned projects (the recents pin) for the feed's "pinned only" view: every
+  // checkout of a pinned group, so an event from any of its machines matches.
+  const pinnedProjects = useMemo(() => visibleProjectGroups
+    .filter((group) => group.pinned)
+    .map((group) => ({
+      name: group.displayName,
+      rootPaths: group.locations.map((location) => location.summary.rootPath).filter(Boolean),
+    })), [visibleProjectGroups]);
+  const machineOnlineSince = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const connection of remoteSnapshot?.connections ?? []) {
+      if (connection.state === "connected" && connection.connectedAt) map.set(connection.target.id, connection.connectedAt);
+    }
+    return map;
+  }, [remoteSnapshot]);
+
   const homeData = useMemo((): HomeData => ({
     stats: recentStats,
     prs: pullRequests,
@@ -690,7 +733,10 @@ export function ProjectWelcomePage() {
     webMode,
     openPrs: project ? () => navigate("/prs") : undefined,
     openActivity: () => navigate("/activity"),
-  }), [navigate, project, pullRequests, recentStats, webMode]);
+    pinnedProjects,
+    machineRows,
+    machineOnlineSince,
+  }), [machineOnlineSince, machineRows, navigate, pinnedProjects, project, pullRequests, recentStats, webMode]);
 
   // The page's own card look, when the user set one in edit mode. Scoped to
   // this page: the same tokens drive every other kit card in the app.

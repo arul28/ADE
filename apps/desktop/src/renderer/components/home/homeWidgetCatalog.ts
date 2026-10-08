@@ -1,6 +1,7 @@
 import {
   ChartBar,
   ClipboardText,
+  ClockCounterClockwise,
   CloudSun,
   Cpu,
   FolderSimple,
@@ -124,6 +125,14 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     defaultSize: "s",
     minHeight: { s: 180, m: 240, l: 240, w: 190 },
   },
+  feed: {
+    title: "Feed",
+    description: "Merges, finished chats, releases and Linear issues, across projects and machines.",
+    icon: ClockCounterClockwise,
+    sizes: ["m", "l", "s", "w"],
+    defaultSize: "m",
+    minHeight: { s: 200, m: 260, l: 260, w: 200 },
+  },
   nowPlaying: {
     title: "Now playing",
     description: "Apple Music, without leaving ADE.",
@@ -144,6 +153,6 @@ export const HOME_SIZE_LABEL: Record<HomeWidgetSize, { short: string; long: stri
 
 /** Gallery order: what is new first, then the cards the page shipped with. */
 export const HOME_GALLERY_ORDER: readonly HomeWidgetType[] = [
-  "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "nowPlaying",
+  "feed", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "nowPlaying",
   "projects", "running", "activity", "limits", "prs",
 ];

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowCounterClockwise, Check, Drop, Plus } from "@phosphor-icons/react";
-import { Dialog, confirmDialog } from "../ui/dialog";
+import { ArrowCounterClockwise, CaretDown, Check, Drop, FloppyDisk, PencilSimple, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
+import { Dialog, confirmDialog, promptDialog } from "../ui/dialog";
 import { Z_LAYERS } from "../ui/zLayers";
-import { useHomeLayoutStore, type HomeWidgetSize, type HomeWidgetType } from "./homeLayout";
+import { useAppStore } from "../../state/appStore";
+import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
+import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore, type HomeWidgetSize, type HomeWidgetType } from "./homeLayout";
 import { HOME_GALLERY_ORDER, HOME_SIZE_LABEL, HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
 import "./homeWidgets.css";
 
@@ -30,7 +32,7 @@ function AppearancePopover({ onClose }: { onClose: () => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const onPointer = (event: PointerEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node) && !(event.target as Element).closest?.("[data-home-look-toggle]")) onClose();
+      if (ref.current && !ref.current.contains(event.target as Node) && !(event.target as Element).closest?.("[data-home-popover-toggle]")) onClose();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -99,6 +101,113 @@ function AppearancePopover({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Closes a popover on an outside pointer or Escape (toggle buttons carry `data-home-popover-toggle`). */
+function useDismiss(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
+  useEffect(() => {
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target as Element;
+      if (ref.current && !ref.current.contains(target) && !target.closest?.("[data-home-popover-toggle]")) onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [onClose, ref]);
+}
+
+function LayoutsPopover({ onClose }: { onClose: () => void }) {
+  const presets = useHomeLayoutStore((s) => s.presets);
+  const activeId = useHomeLayoutStore((s) => s.activeId);
+  const switchPreset = useHomeLayoutStore((s) => s.switchPreset);
+  const savePresetAs = useHomeLayoutStore((s) => s.savePresetAs);
+  const renamePreset = useHomeLayoutStore((s) => s.renamePreset);
+  const deletePreset = useHomeLayoutStore((s) => s.deletePreset);
+  const keybindings = useAppStore((s) => s.keybindings);
+  const shortcut = projectSidebarShortcutLabel(keybindings, HOME_LAYOUT_KEYBINDING);
+  const ref = useRef<HTMLDivElement | null>(null);
+  // A prompt is a dialog over the page; the popover stays put under it.
+  const [prompting, setPrompting] = useState(false);
+  useDismiss(ref, prompting ? () => {} : onClose);
+  const nameTaken = (value: string, exceptId?: string) =>
+    presets.some((preset) => preset.id !== exceptId && preset.name.toLowerCase() === value.trim().toLowerCase())
+      ? "A layout already has that name."
+      : null;
+
+  const saveAs = async () => {
+    setPrompting(true);
+    const name = await promptDialog({
+      title: "Save layout as",
+      message: "Saves the widgets, sizes, order and card look you see now.",
+      placeholder: "Focus, Reviews, Monday…",
+      confirmLabel: "Save",
+      validate: (value) => nameTaken(value),
+    });
+    setPrompting(false);
+    if (name) savePresetAs(name);
+  };
+  const rename = async (id: string, current: string) => {
+    setPrompting(true);
+    const name = await promptDialog({ title: "Rename layout", defaultValue: current, confirmLabel: "Rename", validate: (value) => nameTaken(value, id) });
+    setPrompting(false);
+    if (name) renamePreset(id, name);
+  };
+  const remove = async (id: string, name: string) => {
+    setPrompting(true);
+    const confirmed = await confirmDialog({ title: `Delete "${name}"?`, message: "Only this saved layout is deleted. The others stay as they are.", confirmLabel: "Delete", destructive: true });
+    setPrompting(false);
+    if (confirmed) deletePreset(id);
+  };
+
+  return (
+    <div ref={ref} className="ade-home-look ade-home-layouts" role="dialog" aria-label="Saved layouts" style={{ zIndex: Z_LAYERS.popover }}>
+      <div className="ade-home-layouts-list" role="radiogroup" aria-label="Layout">
+        {presets.map((preset) => (
+          <div key={preset.id} className="ade-home-layouts-row" data-active={preset.id === activeId || undefined}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={preset.id === activeId}
+              className="ade-home-layouts-pick"
+              onClick={() => switchPreset(preset.id)}
+            >
+              <span className="ade-home-layouts-check" aria-hidden>{preset.id === activeId ? <Check size={12} weight="bold" /> : null}</span>
+              <span className="ade-home-layouts-name">{preset.name}</span>
+              <span className="ade-home-layouts-count kit-num">{preset.layout.items.length}</span>
+            </button>
+            <button type="button" className="kit-icon-btn" aria-label={`Rename ${preset.name}`} title="Rename" onClick={() => void rename(preset.id, preset.name)}>
+              <PencilSimple size={12} />
+            </button>
+            <button
+              type="button"
+              className="kit-icon-btn"
+              aria-label={`Delete ${preset.name}`}
+              title={presets.length <= 1 ? "Your only layout" : "Delete"}
+              disabled={presets.length <= 1}
+              onClick={() => void remove(preset.id, preset.name)}
+            >
+              <Trash size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="ade-home-look-foot">
+        <span>{shortcut && presets.length > 1 ? `${shortcut} switches layouts.` : "Every change saves to the layout that is showing."}</span>
+        <button type="button" className="kit-btn" onClick={() => void saveAs()}>
+          <FloppyDisk size={12} aria-hidden /> Save as…
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function WidgetGallery({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const items = useHomeLayoutStore((s) => s.layout.items);
   const add = useHomeLayoutStore((s) => s.add);
@@ -153,10 +262,31 @@ function WidgetGallery({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 
 export default function HomeEditTools({ onDone }: { onDone: () => void }) {
   const reset = useHomeLayoutStore((s) => s.reset);
+  const activeName = useHomeLayoutStore((s) => s.presets.find((preset) => preset.id === s.activeId)?.name ?? "Default");
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookOpen, setLookOpen] = useState(false);
+  const [layoutsOpen, setLayoutsOpen] = useState(false);
   return (
     <div className="ade-home-edit-bar">
+      <div className="ade-home-look-anchor">
+        <button
+          type="button"
+          className="ade-home-action"
+          aria-expanded={layoutsOpen}
+          aria-label={`Layout: ${activeName}`}
+          title="Saved layouts"
+          data-home-popover-toggle
+          onClick={() => {
+            setLookOpen(false);
+            setLayoutsOpen((value) => !value);
+          }}
+        >
+          <SquaresFour size={14} aria-hidden />
+          <span className="ade-home-action-label ade-home-layouts-current">{activeName}</span>
+          <CaretDown size={11} aria-hidden />
+        </button>
+        {layoutsOpen ? <LayoutsPopover onClose={() => setLayoutsOpen(false)} /> : null}
+      </div>
       <button type="button" className="ade-home-action" onClick={() => setGalleryOpen(true)}>
         <Plus size={14} aria-hidden />
         <span className="ade-home-action-label">Add widget</span>
@@ -166,8 +296,11 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           type="button"
           className="ade-home-action"
           aria-expanded={lookOpen}
-          data-home-look-toggle
-          onClick={() => setLookOpen((value) => !value)}
+          data-home-popover-toggle
+          onClick={() => {
+            setLayoutsOpen(false);
+            setLookOpen((value) => !value);
+          }}
         >
           <Drop size={14} aria-hidden />
           <span className="ade-home-action-label">Card look</span>
@@ -179,8 +312,8 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
         className="ade-home-action"
         onClick={() => {
           void confirmDialog({
-            title: "Reset the home page?",
-            message: "Widgets, sizes, order and the card look go back to the default layout.",
+            title: `Reset "${activeName}"?`,
+            message: "This layout's widgets, sizes, order and card look go back to the shipped home page. Other saved layouts stay.",
             confirmLabel: "Reset",
           }).then((confirmed) => {
             if (confirmed) reset();
