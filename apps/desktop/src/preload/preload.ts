@@ -1139,7 +1139,7 @@ import type {
 } from "../shared/types";
 import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
-import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState } from "../shared/types/homeWidgets";
+import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -13522,7 +13522,7 @@ const adeBridge = {
       copyImage: (pngDataUrl: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareCopyImage, pngDataUrl),
       saveImage: (args: { pngDataUrl: string; fileName: string }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.shareSaveImage, args),
     },
-  },
+  } satisfies HomeWidgetsBridge,
   music: {
     getState: () => ipcRenderer.invoke(MUSIC_IPC.getState),
     warm: () => ipcRenderer.invoke(MUSIC_IPC.warm),
